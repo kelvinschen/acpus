@@ -1,10 +1,10 @@
 import { basename } from "node:path";
 import { childScopes, walkNodes, type ExprIR, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { isJsonValue, type JsonPrimitive, type JsonValue, type TemplateIR } from "@acpus/expression/ir";
+import type { ArtifactRecord } from "../artifacts/types.js";
 import type { CommittedRuntimeEventRow } from "../hooks/events.js";
 import type { AgentObservationInspectionProjection } from "../observations/log.js";
 import type {
-  ArtifactRecord,
   RunDetails,
   RunDynamicAttempt,
   RunDynamicFrame,

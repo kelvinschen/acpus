@@ -9,7 +9,7 @@ import {
   type TaskExecutorOptions,
 } from "../../src/execution/task-executor.js";
 import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../../src/runtime-layout.js";
-import type { RegisterArtifactInput } from "../../src/store/store.js";
+import type { RegisterArtifactInput } from "../../src/artifacts/types.js";
 import { captureDirectoryIdentity } from "../../src/store/path-fence.js";
 
 export type TaskExecutorFixture = {

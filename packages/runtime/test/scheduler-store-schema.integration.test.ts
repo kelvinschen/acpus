@@ -1,4 +1,4 @@
-import { mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -9,10 +9,14 @@ import {
   openExistingRuntimeStore,
   openExistingWritableRuntimeStore,
   openRuntimeStore,
-  RUNTIME_APPLICATION_ID,
-  RUNTIME_STORAGE_VERSION,
   type RuntimeStore,
 } from "../src/store/store.js";
+import {
+  RUNTIME_APPLICATION_ID,
+  RUNTIME_STORAGE_VERSION,
+  openRuntimeDatabase,
+  readRuntimeDatabaseFormat,
+} from "../src/storage/database.js";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { prepareSyntheticWorkflow, validWorkflow } from "./support/runtime-fixtures.js";
 import { runtimeStateFingerprint } from "./support/tree-fingerprint.js";
@@ -237,7 +241,13 @@ describe("scheduler store format", () => {
   it.skipIf(process.platform === "win32")("only treats ENOENT and ENOTDIR store paths as absent", async () => {
     store?.close();
     store = undefined;
-    const runtimeRoot = resolveRuntimeLayout(dir).runtimeRoot;
+    const layout = resolveRuntimeLayout(dir);
+    await rm(layout.databasePath);
+    await symlink("missing.db", layout.databasePath);
+    await expect(readRuntimeDatabaseFormat(layout.databasePath)).rejects.toThrow("is not a regular file");
+    await expect(openExistingRuntimeStore(dir)).rejects.toThrow("is not a regular file");
+
+    const runtimeRoot = layout.runtimeRoot;
     await rm(runtimeRoot, { recursive: true, force: true });
     await writeFile(runtimeRoot, "not a directory");
     await expect(openExistingRuntimeStore(dir)).resolves.toBeUndefined();
@@ -246,6 +256,20 @@ describe("scheduler store format", () => {
     await symlink(basename(runtimeRoot), runtimeRoot);
     await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({ code: "ELOOP" });
   });
+
+  it.skipIf(process.platform === "win32").each(["-wal", "-shm"])(
+    "rejects a symbolic-link %s sidecar before creating a fresh database",
+    async suffix => {
+      const databasePath = join(dir, `fresh${suffix}.db`);
+      const sidecarPath = `${databasePath}${suffix}`;
+      const target = join(dir, `outside${suffix}`);
+      await writeFile(target, "sentinel\n");
+      await symlink(target, sidecarPath);
+
+      await expect(openRuntimeDatabase(databasePath)).rejects.toThrow("is not a regular file");
+      expect((await lstat(sidecarPath)).isSymbolicLink()).toBe(true);
+    },
+  );
 });
 
 function databaseFormat(db: DatabaseSync): { applicationId: number; userVersion: number } {

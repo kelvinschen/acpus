@@ -22,5 +22,6 @@
 
 ## Verification
 
-- Contract and type tests cover the `@acpus/tasks/git` export and `createWorktree` input/output inference.
-- Integration tests cover detached creation, dirty/source-path refusal, registered replacement, and non-worktree removal refusal.
+- `pnpm test:contract packages/tasks`: verifies the `@acpus/tasks/git` public export surface.
+- `pnpm test:type packages/tasks`: verifies `createWorktree` input/output inference through the public subpath.
+- `pnpm test:integration packages/tasks`: covers detached creation, dirty/source-path refusal, registered replacement, and non-worktree removal refusal through the public subpath.

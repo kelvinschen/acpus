@@ -199,4 +199,5 @@
 
 - `pnpm test:unit packages/web`: covers the compact Runtime status and repair action, browser projections/decoders, artifact response metadata and byte validation, workspace-scoped client state and selector behavior, Inspector rendering, optional Observation telemetry, controls, and graph interaction.
 - `pnpm test:contract packages/web`: covers Runtime store status and repair, stale-store gates, workspace catalog and scoped Run routes, verified preview/full artifact responses, read-only authorization, canonical deep `@ref` routes, Runtime delegation, private-data boundaries, control/error mapping, and access behavior.
+- `pnpm test:type packages/web`: verifies browser transport type shapes and the public static-visualization input contract.
 - `pnpm test:integration packages/web`: covers source preparation and static visualization through the Web seam.

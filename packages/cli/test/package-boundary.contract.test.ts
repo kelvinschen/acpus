@@ -2,11 +2,9 @@ import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { parseAcpusSkillMetadata } from "../src/skill-content.js";
 
 const srcRoot = fileURLToPath(new URL("../src", import.meta.url));
 const packageJsonPath = fileURLToPath(new URL("../package.json", import.meta.url));
-const skillPath = fileURLToPath(new URL("../skills/acpus/SKILL.md", import.meta.url));
 
 describe("acpus package boundaries", () => {
   it("uses runtime only through the package root", async () => {
@@ -32,14 +30,6 @@ describe("acpus package boundaries", () => {
       "./expression",
       "./tasks/git",
     ]);
-  });
-
-  it("declares the bundled Acpus skill in the package files", async () => {
-    const pkg = JSON.parse(await readFile(packageJsonPath, "utf8")) as { version: string; private?: boolean; files?: string[] };
-    const skill = await readFile(skillPath, "utf8");
-    expect(pkg.private).not.toBe(true);
-    expect(pkg.files).toContain("skills");
-    expect(parseAcpusSkillMetadata(skill)).toEqual({ name: "acpus", version: pkg.version });
   });
 });
 

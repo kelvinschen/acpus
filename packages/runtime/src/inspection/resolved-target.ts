@@ -1,5 +1,5 @@
+import type { ArtifactRecord } from "../artifacts/types.js";
 import type {
-  ArtifactRecord,
   RunDynamicAttempt,
   RunDynamicFrame,
   RunDynamicNodeInstance,

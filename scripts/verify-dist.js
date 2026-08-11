@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, matchesGlob, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, matchesGlob, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { requestDaemonShutdown } from "@acpus/runtime";
@@ -219,15 +219,29 @@ async function verifyPackedCli(packages) {
     const version = await runCli(["--version"]);
     assert.equal(version.stdout.trim(), packages.get("acpus").manifest.version);
 
-    const doctor = JSON.parse((await runCli(["doctor", "--json"])).stdout);
-    assert.equal(doctor.ok, true);
-    assert.equal(doctor.authoring.cli.version, packages.get("acpus").manifest.version);
-    assert.ok(doctor.authoring.cli.packageRoot.startsWith(consumerDirectory));
-    assert.equal(doctor.authoring.skills.bundled.status, "aligned");
-    for (const authority of Object.values(doctor.authoring.imports)) {
-      assert.equal(authority.packageRoot.startsWith(consumerDirectory), true);
-      assert.equal(existsSync(authority.packageRoot), true);
-      assert.equal(existsSync(authority.typesPath), true);
+    const doctor = await runCli(["doctor"]);
+    assert.match(doctor.stdout, /^Doctor checks passed\.$/mu);
+    const authoringTypes = doctor.stdout.split("\n")
+      .filter(line => line.startsWith("  acpus/"))
+      .map(line => {
+        const [specifier, typesPath] = line.trim().split(/\s{2,}/u);
+        return { specifier, typesPath };
+      });
+    assert.deepEqual(authoringTypes.map(({ specifier }) => specifier), [
+      "acpus/core",
+      "acpus/expression",
+      "acpus/tasks/git",
+    ]);
+    for (const { specifier, typesPath } of authoringTypes) {
+      assert.equal(typeof typesPath, "string", `${specifier} has no declaration path`);
+      assert.equal(isAbsolute(typesPath), true, `${specifier} declaration path is not absolute`);
+      const consumerRelativePath = relative(consumerDirectory, typesPath);
+      assert.equal(
+        consumerRelativePath === ".." || consumerRelativePath.startsWith(`..${sep}`) || isAbsolute(consumerRelativePath),
+        false,
+        `${specifier} declaration path resolved outside the packed consumer`,
+      );
+      assert.equal(existsSync(typesPath), true, `${specifier} declaration path is missing`);
     }
 
     const workflowSource = `import { defineWorkflow } from "acpus/core";
@@ -289,39 +303,46 @@ export default defineWorkflow({ name: "packed-cli-smoke" }).build(({ step }) => 
     const installed = await runCli(["skill", "install", "--project", "--agent", "universal,claude"]);
     assert.match(installed.stdout, /installed\s+universal/u);
     assert.match(installed.stdout, /installed\s+claude/u);
-    const aligned = JSON.parse((await runCli(["doctor", "--json"])).stdout);
-    assert.deepEqual(aligned.authoring.skills.installed.map(skill => ({
-      scope: skill.scope,
-      agent: skill.agent,
-      status: skill.status,
-      version: skill.version,
-    })), [
-      { scope: "project", agent: "universal", status: "aligned", version: doctor.authoring.cli.version },
-      { scope: "project", agent: "claude", status: "aligned", version: doctor.authoring.cli.version },
-    ]);
+    const aligned = await runCli(["doctor"]);
+    assert.match(aligned.stdout, /^Doctor checks passed\.$/mu);
+    assert.doesNotMatch(aligned.stdout, /\bstale\b/iu);
 
     const installedSkill = join(consumerDirectory, ".agents", "skills", "acpus", "SKILL.md");
     await writeFile(installedSkill, (await readFile(installedSkill, "utf8")).replace(/acpus-version:\s*[^\s]+/, "acpus-version: 0.0.0"));
-    const stale = JSON.parse((await runCli(["doctor", "--json"])).stdout);
-    assert.equal(stale.ok, true);
-    assert.ok(stale.checks.some(check => check.area === "skill" && check.status === "warn" && check.details?.remediation === "acpus skill install --project --agent universal"));
+    const stale = await runCli(["doctor"]);
+    assert.match(stale.stdout, /^Doctor checks passed with warnings\.$/mu);
+    assert.match(
+      stale.stdout,
+      /^warn\s+skill\s+Installed universal Acpus skill is stale; run 'acpus skill install --project --agent universal'\.$/mu,
+    );
 
     const installedManifestPath = join(consumerDirectory, "node_modules", "acpus", "package.json");
     const installedManifestSource = await readFile(installedManifestPath, "utf8");
     const installedManifest = JSON.parse(installedManifestSource);
     installedManifest.dependencies["@acpus/core"] = "0.0.0";
     await writeFile(installedManifestPath, `${JSON.stringify(installedManifest, null, 2)}\n`);
-    await assert.rejects(runCli(["doctor", "--json"]), error => {
-      const failed = JSON.parse(error.stdout);
-      return error.stderr === "" && failed.ok === false && failed.checks.some(check => check.area === "authoring" && check.status === "fail");
+    await assert.rejects(runCli(["doctor"]), error => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stdout, "");
+      assert.match(error.stderr, /^Doctor checks failed\.$/mu);
+      assert.match(
+        error.stderr,
+        /^fail\s+authoring\s+Resolved authoring package versions do not match the acpus package manifest\.$/mu,
+      );
+      return true;
     });
     await writeFile(installedManifestPath, installedManifestSource);
 
     const bundledSkill = join(consumerDirectory, "node_modules", "acpus", "skills", "acpus", "SKILL.md");
     await writeFile(bundledSkill, (await readFile(bundledSkill, "utf8")).replace(/acpus-version:\s*[^\s]+/, "acpus-version: 0.0.0"));
-    await assert.rejects(runCli(["doctor", "--json"]), error => {
-      const failed = JSON.parse(error.stdout);
-      return error.stderr === "" && failed.ok === false && failed.checks.some(check => check.area === "skill" && check.status === "fail");
+    await assert.rejects(runCli(["skill", "read"]), error => {
+      assert.equal(error.code, 1);
+      assert.equal(error.stdout, "");
+      assert.equal(
+        error.stderr,
+        "Bundled Acpus skill is missing or does not match this acpus package version.\n",
+      );
+      return true;
     });
   } finally {
     await rm(workspace, { recursive: true, force: true });
@@ -441,6 +462,17 @@ async function verifyPackage(packageDirectory, manifest, files) {
   }
 
   if (name === "@acpus/web") {
+    const clientEntry = "dist/client/index.html";
+    const clientAssets = [...packed].filter(path => path.startsWith("dist/client/assets/"));
+    const clientScript = clientAssets.find(path => path.endsWith(".js"));
+    const clientStylesheet = clientAssets.find(path => path.endsWith(".css"));
+    assert.ok(packed.has(clientEntry), `${name}: Vite client entry is not packed`);
+    assert.ok(clientScript, `${name}: Vite client script is not packed`);
+    assert.ok(clientStylesheet, `${name}: Vite client stylesheet is not packed`);
+    for (const path of [clientEntry, clientScript, clientStylesheet]) {
+      assert.ok((await readFile(join(packageDirectory, path))).byteLength > 0, `${name}: packed client output is empty: ${path}`);
+    }
+
     const declarationPath = "dist/server/static-viz-assets.generated.d.ts";
     assert.ok(packed.has(declarationPath), `${name}: static visualization declaration is not packed`);
     const declaration = await readFile(join(packageDirectory, declarationPath), "utf8");

@@ -998,6 +998,7 @@ function isWebGraphSelector(value: unknown): boolean {
 
 function isWebGraphRuntimeState(value: unknown): boolean {
   return isRecord(value)
+    && hasOnlyKeys(value, ["targetId", "target", "status", "context"])
     && typeof value.targetId === "string"
     && isControlTarget(value.target)
     && typeof value.status === "string"
@@ -1006,6 +1007,7 @@ function isWebGraphRuntimeState(value: unknown): boolean {
 
 function isServerConfig(value: unknown): value is ServerConfig {
   return isRecord(value)
+    && hasOnlyKeys(value, ["cwd", "access"])
     && typeof value.cwd === "string"
     && (value.access === "open" || value.access === "token");
 }

@@ -1,5 +1,5 @@
 import { assertType, expectTypeOf, test } from "vitest";
-import { defineWorkflow, task, z, type ArtifactRef, type JsonValue, type TaskFunction } from "../src/index.js";
+import { defineWorkflow, task, z, type ArtifactRef, type JsonValue, type TaskFunction } from "@acpus/core";
 import { lift, template, type Expr } from "@acpus/expression";
 
 test("loop state defines non-optional carried state and output shape", () => {

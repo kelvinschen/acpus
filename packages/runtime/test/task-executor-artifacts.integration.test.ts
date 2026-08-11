@@ -2,7 +2,7 @@ import { access, mkdir, readFile, readdir, rename, writeFile } from "node:fs/pro
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { err } from "neverthrow";
-import type { ArtifactRecord, RegisterArtifactInput } from "../src/store/store.js";
+import type { ArtifactRecord, RegisterArtifactInput } from "../src/artifacts/types.js";
 import {
   executeTaskNode,
   inlineTask,

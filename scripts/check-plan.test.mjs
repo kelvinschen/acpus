@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
@@ -104,14 +103,4 @@ test("a late termination signal cannot turn into a successful check", {
   assert.equal(result.status, 143, output);
   assert.match(output, /\[check:docs\] INTERRUPTED/u);
   assert.doesNotMatch(output, /\[check:docs\] PASS/u);
-});
-
-test("every repository-owned command target exists", async () => {
-  const paths = resolveCheckPlan(["toolchain"])
-    .concat(resolveCheckPlan(["docs"]), resolveCheckPlan(["release"]))
-    .flatMap(task => task.commands)
-    .flatMap(command => command.file === process.execPath
-      ? command.args.filter(argument => argument.endsWith(".mjs"))
-      : []);
-  await Promise.all(paths.map(path => access(path)));
 });

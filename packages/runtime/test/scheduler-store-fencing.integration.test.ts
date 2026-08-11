@@ -8,7 +8,8 @@ import { readArtifact, resolveArtifact } from "../src/runs/use-cases.js";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
 import type { AttemptStartInput, SchedulerSnapshot, SchedulerStorePort, SchedulerStoreResult } from "../src/scheduler/store-port.js";
 import { throwSchedulerStoreResult } from "../src/scheduler/store-port.js";
-import { openRuntimeStore, type RegisterArtifactInput, type RuntimeStore } from "../src/store/store.js";
+import type { RegisterArtifactInput } from "../src/artifacts/types.js";
+import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import { tryCaptureRunFile } from "../src/store/run-file.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 

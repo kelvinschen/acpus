@@ -44,7 +44,7 @@ async function createLegacyStore(workspace: string): Promise<string> {
       ) VALUES ('run_crash_wal', 'before-crash', 'running', 'workflow.ts', 'sha256:test',
         '2026-08-10T00:00:00.000Z', '2026-08-10T00:00:01.000Z')
     `).run();
-    database.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    database.exec("PRAGMA user_version = 8; PRAGMA wal_checkpoint(TRUNCATE)");
   } finally {
     database.close();
   }
@@ -66,7 +66,7 @@ async function commitRunUpdateThenKill(databasePath: string): Promise<void> {
   const child = spawn(process.execPath, ["--input-type=module", "-e", `
     import { DatabaseSync } from "node:sqlite";
     const database = new DatabaseSync(process.env.ACPUS_TEST_WAL_DATABASE);
-    database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL");
+    database.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA user_version = 9");
     database.prepare("UPDATE runs SET name = ?, status = ?, updated_at = ? WHERE id = ?")
       .run("committed-in-wal", "completed", "2026-08-10T00:00:02.000Z", "run_crash_wal");
     process.stdout.write("committed\\n");

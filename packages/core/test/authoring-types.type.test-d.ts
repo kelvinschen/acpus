@@ -12,7 +12,7 @@ import {
   type JsonValue,
   type ReusableTaskToken,
   type StepDeclaration,
-} from "../src/index.js";
+} from "@acpus/core";
 import { lift, md, template, type Expr } from "@acpus/expression";
 
 declare const durableSymbolKey: unique symbol;

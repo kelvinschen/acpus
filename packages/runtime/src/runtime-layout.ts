@@ -1,9 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { chmod, lstat, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
+import { RUNTIME_STORAGE_VERSION } from "./storage/database.js";
+import { writeGenerationMetadata } from "./storage/generation-metadata.js";
+import { writePrivateJsonAtomically } from "./storage/private-json.js";
 
 export const RUNTIME_LAYOUT_VERSION = 2;
 
@@ -105,7 +108,6 @@ const defaultDependencies: RuntimeLayoutDependencies = {
 
 const runtimeHomeOverrides = new Map<string, Array<{ token: symbol; home: string }>>();
 const privateDirectoryMode = 0o700;
-const privateFileMode = 0o600;
 
 export function resolveRuntimeLayout(
   cwd: string,
@@ -209,19 +211,7 @@ export function validateWorkspaceManifest(
   value: unknown,
   layout: RuntimeLayout,
 ): Result<AnyWorkspaceManifest, WorkspaceManifestFailure> {
-  if (!isPlainRecord(value)
-    || (value.manifestVersion !== 1 && value.manifestVersion !== RUNTIME_LAYOUT_VERSION)
-    || typeof value.workspaceKey !== "string"
-    || !/^[a-f0-9]{32}$/.test(value.workspaceKey)
-    || typeof value.canonicalPath !== "string"
-    || !isNodePlatform(value.platform)
-    || typeof value.createdAt !== "string"
-    || !isCanonicalTimestamp(value.createdAt)
-    || (value.manifestVersion === RUNTIME_LAYOUT_VERSION
-      ? !hasExactKeys(value, ["manifestVersion", "workspaceKey", "canonicalPath", "platform", "createdAt", "activeGenerationId"])
-        || typeof value.activeGenerationId !== "string"
-        || !isGenerationId(value.activeGenerationId)
-      : !hasExactKeys(value, ["manifestVersion", "workspaceKey", "canonicalPath", "platform", "createdAt"], ["filesystemIdentity"]))) {
+  if (!isWorkspaceManifest(value)) {
     return err({
       type: "manifest-invalid",
       path: layout.manifestPath,
@@ -242,6 +232,22 @@ export function validateWorkspaceManifest(
       message: `Workspace manifest '${layout.manifestPath}' has ${mismatch.field} '${mismatch.actual}', expected '${mismatch.expected}'.`,
     })
     : ok(manifest);
+}
+
+export function isWorkspaceManifest(value: unknown): value is AnyWorkspaceManifest {
+  return isPlainRecord(value)
+    && (value.manifestVersion === 1 || value.manifestVersion === RUNTIME_LAYOUT_VERSION)
+    && typeof value.workspaceKey === "string"
+    && /^[a-f0-9]{32}$/.test(value.workspaceKey)
+    && typeof value.canonicalPath === "string"
+    && isNodePlatform(value.platform)
+    && isCanonicalTimestamp(value.createdAt)
+    && (value.manifestVersion === RUNTIME_LAYOUT_VERSION
+      ? hasExactKeys(value, ["manifestVersion", "workspaceKey", "canonicalPath", "platform", "createdAt", "activeGenerationId"])
+        && typeof value.activeGenerationId === "string"
+        && isGenerationId(value.activeGenerationId)
+      : hasExactKeys(value, ["manifestVersion", "workspaceKey", "canonicalPath", "platform", "createdAt"], ["filesystemIdentity"])
+        && (value.filesystemIdentity === undefined || typeof value.filesystemIdentity === "string"));
 }
 
 /** Test-only workspace-scoped home override. It is deliberately absent from the package root. */
@@ -307,12 +313,12 @@ async function initializeFreshLayout(
   const generationId = `gen_${randomUUID()}`;
   const layout = runtimeLayoutForGeneration(workspace, generationId);
   await ensureGenerationDirectories(layout);
-  await writeFile(layout.generationMetadataPath, `${JSON.stringify({
+  await writeGenerationMetadata(layout.generationMetadataPath, {
     schemaVersion: 1,
     id: generationId,
-    storageVersion: 9,
+    storageVersion: RUNTIME_STORAGE_VERSION,
     createdAt: dependencies.now().toISOString(),
-  }, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: privateFileMode });
+  });
   await writeManifestAtomically(workspace.manifestPath, {
     manifestVersion: RUNTIME_LAYOUT_VERSION,
     workspaceKey: workspace.workspaceKey,
@@ -397,14 +403,10 @@ function readWorkspaceManifestSync(path: string): AnyWorkspaceManifest | undefin
   } catch {
     throw new Error(`Workspace manifest '${path}' is not valid JSON.`);
   }
-  if (!isPlainRecord(value) || (value.manifestVersion !== 1 && value.manifestVersion !== RUNTIME_LAYOUT_VERSION)) {
+  if (!isWorkspaceManifest(value)) {
     throw new Error(`Workspace manifest '${path}' does not match a supported layout.`);
   }
-  if (value.manifestVersion === RUNTIME_LAYOUT_VERSION
-    && (typeof value.activeGenerationId !== "string" || !isGenerationId(value.activeGenerationId))) {
-    throw new Error(`Workspace manifest '${path}' has no valid active generation.`);
-  }
-  return value as unknown as AnyWorkspaceManifest;
+  return value;
 }
 
 async function readWorkspaceManifest(path: string): Promise<unknown | undefined> {
@@ -424,11 +426,8 @@ async function readWorkspaceManifest(path: string): Promise<unknown | undefined>
 }
 
 async function writeManifestAtomically(path: string, manifest: WorkspaceManifest): Promise<void> {
-  const temporary = `${path}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporary, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: privateFileMode });
-    await rename(temporary, path);
-    if (process.platform !== "win32") await chmod(path, privateFileMode);
+    await writePrivateJsonAtomically(path, manifest);
   } catch (error) {
     throw operationFailure("write-manifest", path, error);
   }

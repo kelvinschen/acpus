@@ -7,7 +7,7 @@ import { ok, okAsync } from "neverthrow";
 import type { TaskExecutorOptions } from "../src/execution/task-executor.js";
 import { executeTaskNode } from "../src/execution/task-executor.js";
 import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
-import type { ArtifactRecord, RegisterArtifactInput } from "../src/store/store.js";
+import type { ArtifactRecord, RegisterArtifactInput } from "../src/artifacts/types.js";
 import { captureDirectoryIdentity } from "../src/store/path-fence.js";
 import { inlineTask } from "./support/task-executor-fixture.js";
 import type { TaskAttemptRunner } from "./support/task-attempt-harness.js";

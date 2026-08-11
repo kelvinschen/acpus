@@ -319,10 +319,8 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   >();
   expectTypeOf<Extract<PreparedRunWorkflow, { source: { kind: "workspace" } }>["sourceBundle"]>().toEqualTypeOf<undefined>();
   expectTypeOf<Extract<PreparedRunWorkflow, { source: { kind: "snapshot" } }>["sourceBundle"]>().toEqualTypeOf<WorkflowSourceBundle>();
-  expectTypeOf<CompilerPreparedWorkflow>().toMatchTypeOf<PreparedRunWorkflow>();
-  expectTypeOf<PreparedRunWorkflow>().toMatchTypeOf<CompilerPreparedWorkflow>();
-  expectTypeOf<CompilerWorkflowPreparationLock>().toMatchTypeOf<RunWorkflowLockArtifact>();
-  expectTypeOf<RunWorkflowLockArtifact>().toMatchTypeOf<CompilerWorkflowPreparationLock>();
+  expectTypeOf<CompilerPreparedWorkflow>().toEqualTypeOf<PreparedRunWorkflow>();
+  expectTypeOf<CompilerWorkflowPreparationLock>().toEqualTypeOf<RunWorkflowLockArtifact>();
   expectTypeOf<CompilerWorkflowSourceRef>().toMatchTypeOf<WorkflowSourceRef>();
   expectTypeOf<WorkflowSourceRef>().toMatchTypeOf<CompilerWorkflowSourceRef>();
   expectTypeOf<CompilerWorkflowSourceBundle>().toMatchTypeOf<WorkflowSourceBundle>();

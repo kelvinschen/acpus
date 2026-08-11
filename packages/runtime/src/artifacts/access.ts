@@ -10,7 +10,8 @@ import {
   type RunFileToken,
 } from "../store/run-file.js";
 import type { RunDirectoryToken } from "../store/path-fence.js";
-import type { ArtifactRecord, RuntimeStore } from "../store/store.js";
+import { parseArtifactUri } from "./reference.js";
+import type { ArtifactRecord } from "./types.js";
 
 export type ArtifactPathError =
   | { type: "invalid-artifact-ref"; message: string }
@@ -21,7 +22,10 @@ export type ArtifactPathError =
 export type ArtifactAccessContext = {
   cwd: string;
   runId: string;
-  store: Pick<RuntimeStore, "getArtifact" | "getRunDirectoryToken">;
+  store: {
+    getArtifact(runId: string, artifactId: string): ArtifactRecord | undefined;
+    getRunDirectoryToken(runId: string): RunDirectoryToken | undefined;
+  };
 };
 
 type BoundRegisteredArtifact = {
@@ -155,13 +159,4 @@ function unavailablePath(uri: string, runId: string, artifactId: string, reason:
     artifactId,
     message: `Artifact '${uri}' has no consumable local file: ${reason}.`,
   };
-}
-
-export function parseArtifactUri(
-  uri: string,
-): Result<{ runId: string; artifactId: string }, Extract<ArtifactPathError, { type: "invalid-artifact-ref" }>> {
-  const match = /^artifact:\/\/([^/?#\s]+)\/([^/?#\s]+)$/.exec(uri);
-  return match
-    ? ok({ runId: match[1]!, artifactId: match[2]! })
-    : err({ type: "invalid-artifact-ref", message: `ArtifactRef uri '${uri}' must use artifact://<runId>/<artifactId>.` });
 }

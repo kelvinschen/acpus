@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 import {
   resolveRuntimeLayout,
   runtimeLayoutFromManifest,
+  isWorkspaceManifest,
   validateRuntimeLayoutBoundary,
   validateWorkspaceManifest,
   type AnyWorkspaceManifest,
@@ -139,7 +140,11 @@ async function readWorkspaceShard(
   if (info.isSymbolicLink() || !info.isFile()) {
     throw new Error(`Workspace manifest '${manifestPath}' is not a regular file.`);
   }
-  const manifest = parseWorkspaceManifest(JSON.parse(await readFile(manifestPath, "utf8")) as unknown);
+  const value = JSON.parse(await readFile(manifestPath, "utf8")) as unknown;
+  if (!isWorkspaceManifest(value)) {
+    throw new Error("Workspace manifest does not match a supported layout version.");
+  }
+  const manifest = value;
   const layout = runtimeLayoutFromManifest(home, workspaceRoot, manifest);
   const validated = validateWorkspaceManifest(manifest, layout);
   if (validated.isErr()) throw new Error(validated.error.message);
@@ -147,20 +152,6 @@ async function readWorkspaceShard(
     throw new Error(`Workspace shard '${workspaceRoot}' does not match manifest key '${layout.workspaceKey}'.`);
   }
   return { layout, manifest };
-}
-
-function parseWorkspaceManifest(value: unknown): AnyWorkspaceManifest {
-  if (!isRecord(value)
-    || (value.manifestVersion !== 1 && value.manifestVersion !== 2)
-    || typeof value.workspaceKey !== "string"
-    || !isWorkspaceKey(value.workspaceKey)
-    || typeof value.canonicalPath !== "string"
-    || !isNodePlatform(value.platform)
-    || typeof value.createdAt !== "string"
-    || (value.filesystemIdentity !== undefined && typeof value.filesystemIdentity !== "string")) {
-    throw new Error("Workspace manifest does not match a supported layout version.");
-  }
-  return value as AnyWorkspaceManifest;
 }
 
 async function readOwnedDirectory(root: string, label: string) {
@@ -189,26 +180,6 @@ function isMissingPath(error: unknown): boolean {
     && error !== null
     && "code" in error
     && ((error as { code?: unknown }).code === "ENOENT" || (error as { code?: unknown }).code === "ENOTDIR");
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isNodePlatform(value: unknown): value is NodeJS.Platform {
-  return typeof value === "string" && [
-    "aix",
-    "android",
-    "darwin",
-    "freebsd",
-    "haiku",
-    "linux",
-    "netbsd",
-    "openbsd",
-    "sunos",
-    "win32",
-    "cygwin",
-  ].includes(value);
 }
 
 function errorMessage(error: unknown): string {

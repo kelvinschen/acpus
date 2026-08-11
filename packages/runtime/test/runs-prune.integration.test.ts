@@ -3,15 +3,14 @@ import { access, lstat, mkdir, readFile, rm, symlink, writeFile } from "node:fs/
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { pruneRuns } from "../src/index.js";
+import { pruneRuns, type PreparedRunWorkflow } from "@acpus/runtime";
 import { resolveRuntimeLayout, runtimeLayoutForGeneration, type RuntimeLayout } from "../src/runtime-layout.js";
 import { writeGenerationMetadata } from "../src/storage/generation-metadata.js";
+import { openRuntimeStore } from "../src/store/store.js";
 import {
-  openRuntimeStore,
   RUNTIME_APPLICATION_ID,
   RUNTIME_STORAGE_VERSION,
-  type PreparedRunWorkflow,
-} from "../src/store/store.js";
+} from "../src/storage/database.js";
 import { admitRunForTest } from "./support/runtime-store.js";
 import {
   prepareSyntheticWorkflow,

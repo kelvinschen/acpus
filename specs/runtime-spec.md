@@ -602,7 +602,7 @@ Runtime owns generic inspection semantics and public shape.
 
 ## Verification
 
-- `pnpm test:unit packages/runtime`: covers read-only store inspection, prune selection, fork compatibility, selector resolution, semantic trees/folding, Forensics projections, privacy, and stop policies.
-- `pnpm test:integration packages/runtime`: covers layout-v2 publication, serialized repair and first use, repair resumption, archived summaries, WAL-visible preservation, durable execution/recovery, read-only inspection, and safe known-workspace discovery.
+- `pnpm test:unit packages/runtime`: covers prepared-workflow closed validation and workspace referrer containment, read-only store inspection, prune selection, fork compatibility, selector resolution, semantic trees/folding, Forensics projections, privacy, and stop policies.
+- `pnpm test:integration packages/runtime`: covers layout-v2 publication, serialized repair and first use, repair resumption, canonical snapshot-manifest recovery, database/sidecar fencing, archived summaries, WAL-visible preservation, durable execution/recovery, read-only inspection, and safe known-workspace discovery.
 - `pnpm test:contract packages/cli`: covers the exact compact text distinction between initial Agent activity and intervals without current activity.
-- `pnpm --filter @acpus/runtime typecheck`: verifies the exported Runtime contracts and their consumers agree.
+- `pnpm --filter @acpus/runtime typecheck`: verifies the Runtime package implementation; `pnpm test:type packages/runtime` verifies its exported function and DTO contracts and their compiler, Core, Expression, and Agent Executor type relationships.

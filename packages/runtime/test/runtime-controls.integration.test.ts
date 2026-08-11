@@ -4,10 +4,10 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { JsonValue } from "@acpus/expression/ir";
-import { getRun, getRunVisualizationSnapshot, inspectNode, listRuns, tryNormalizeForkInput } from "@acpus/runtime";
+import { getRun, getRunVisualizationSnapshot, inspectNode, listRuns, tryNormalizeForkInput, type PreparedRunWorkflow } from "@acpus/runtime";
 import type { RunControlIntent } from "../src/scheduler/control.js";
 import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
-import { openExistingWritableRuntimeStore, openRuntimeStore, type PreparedRunWorkflow, type RunDetails } from "../src/store/store.js";
+import { openExistingWritableRuntimeStore, openRuntimeStore, type RunDetails } from "../src/store/store.js";
 import {
   admitSyntheticWorkflow,
   failOnceTaskWorkflow,

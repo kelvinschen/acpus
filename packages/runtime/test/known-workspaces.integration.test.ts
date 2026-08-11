@@ -10,8 +10,8 @@ import {
 } from "../src/runtime-layout.js";
 import {
   openRuntimeStore,
-  RUNTIME_STORAGE_VERSION,
 } from "../src/store/store.js";
+import { RUNTIME_STORAGE_VERSION } from "../src/storage/database.js";
 import { withSharedStorageHome, withStorageWorkspace } from "./support/storage-workspace.js";
 import { treeFingerprint } from "./support/tree-fingerprint.js";
 

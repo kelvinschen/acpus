@@ -12,7 +12,7 @@ import {
 import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
 import { captureDirectoryIdentity } from "../src/store/path-fence.js";
 import { verifyRunFile } from "../src/store/run-file.js";
-import type { ArtifactRecord } from "../src/store/store.js";
+import type { ArtifactRecord } from "../src/artifacts/types.js";
 
 const fileRace = vi.hoisted(() => ({
   phase: undefined as "open" | "read" | undefined,

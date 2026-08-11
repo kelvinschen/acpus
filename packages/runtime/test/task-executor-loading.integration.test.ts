@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
-import type { RegisterArtifactInput } from "../src/store/store.js";
+import type { RegisterArtifactInput } from "../src/artifacts/types.js";
 import {
   executeTaskNode,
   inlineTask,

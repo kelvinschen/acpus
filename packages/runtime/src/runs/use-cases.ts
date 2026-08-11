@@ -2,11 +2,13 @@ import type { JsonValue } from "@acpus/expression/ir";
 import type { WorkflowIR } from "@acpus/core/ir";
 import { err, ok, ResultAsync } from "neverthrow";
 import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
+import type { PreparedRunWorkflow } from "../admission/prepared-workflow.js";
 import {
-  parseArtifactUri,
   readVerifiedArtifact,
   tryResolveArtifactRef,
 } from "../artifacts/access.js";
+import { parseArtifactUri } from "../artifacts/reference.js";
+import type { ArtifactRecord } from "../artifacts/types.js";
 import { probeProcessLiveness } from "../process-liveness.js";
 import {
   canCancelRun,
@@ -23,13 +25,11 @@ import {
   openExistingRuntimeStore,
   openExistingWritableRuntimeStore,
   withRunInspectionSnapshot,
-  type PreparedRunWorkflow,
   type RuntimeDiagnostics,
   type DaemonDiagnostics,
   type RunDetails,
-  type ArtifactRecord, type RunDeleteFailure, type RunRecord,
+  type RunDeleteFailure, type RunRecord,
 } from "../store/store.js";
-export type { ArtifactRecord };
 export type { RunDeleteFailure } from "../store/store.js";
 
 export type RunVisualizationControlTarget = RuntimeControlTarget;

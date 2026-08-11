@@ -665,6 +665,11 @@ function malformedEndpointCases() {
       call: () => getConfig(),
       body: { ok: true, config: { cwd: "/workspace", access: "admin" } },
     },
+    {
+      name: "server-config with an extra field",
+      call: () => getConfig(),
+      body: { ok: true, config: { cwd: "/workspace", access: "token", private: true } },
+    },
   ];
 }
 
@@ -742,6 +747,19 @@ function malformedVisualizationCases() {
               ...graph.fanoutOccurrences[0],
               context: [{ nodeId: "fanout", kind: "fanout", itemIndex: -1 }],
             }],
+          },
+        },
+      },
+    },
+    {
+      name: "an extra runtime-state field",
+      body: {
+        ok: true,
+        result: {
+          ...ready,
+          graph: {
+            ...graph,
+            runtimeStates: [{ ...graph.runtimeStates[0], private: true }],
           },
         },
       },

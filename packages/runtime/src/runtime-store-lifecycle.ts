@@ -1,20 +1,14 @@
 import { randomUUID } from "node:crypto";
 import {
   chmod,
-  copyFile,
   lstat,
-  mkdtemp,
   mkdir,
   readFile,
   readdir,
   rename,
   rm,
-  writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { DatabaseSync } from "node:sqlite";
-import { pathToFileURL } from "node:url";
 import { err, ok, ResultAsync } from "neverthrow";
 import { requestDaemonShutdown, requestDaemonStatus } from "./daemon/socket.js";
 import { probeProcessLiveness } from "./process-liveness.js";
@@ -22,6 +16,7 @@ import {
   RUNTIME_LAYOUT_VERSION,
   ensureRuntimeLayout,
   isGenerationId,
+  isWorkspaceManifest,
   resolveRuntimeLayout,
   resolveRuntimeWorkspaceLayout,
   runtimeLayoutForGeneration,
@@ -35,15 +30,15 @@ import {
   type RuntimeGenerationSummary,
 } from "./runtime-history.js";
 import { acquireRuntimeExclusiveLock, RuntimeLockTimeoutError } from "./runtime-lock.js";
+import { openRuntimeStoreAtLayout } from "./store/store.js";
 import {
-  assertRuntimeGenerationSealSafe,
-  openRuntimeStoreAtLayout,
+  hasNoPendingRuntimeDatabaseWal,
+  openRuntimeDatabase,
   readRuntimeDatabaseFormat,
   RUNTIME_APPLICATION_ID,
   RUNTIME_STORAGE_VERSION,
-  RuntimeGenerationActiveError,
   UnrecognizedRuntimeDatabaseError,
-} from "./store/store.js";
+} from "./storage/database.js";
 import {
   inspectRuntimeGeneration,
   PartialRuntimeGenerationError,
@@ -55,6 +50,7 @@ import {
   writeRunIndex,
   type ArchivedRunSummary,
 } from "./storage/generation-metadata.js";
+import { writePrivateJsonAtomically } from "./storage/private-json.js";
 
 const transitionSchemaVersion = 1;
 
@@ -68,7 +64,7 @@ type RuntimeStoreCurrent =
   | {
       state: "ready";
       layoutVersion: 2;
-      storageVersion: 9;
+      storageVersion: typeof RUNTIME_STORAGE_VERSION;
       generationId: string;
     }
   | {
@@ -116,6 +112,77 @@ export type RuntimeStoreFailure = {
   type: "busy" | "unsupported" | "failed";
   message: string;
 };
+
+class RuntimeGenerationActiveError extends Error {
+  constructor(
+    readonly path: string,
+    readonly blocker: "run lease" | "daemon" | "ACP ownership",
+  ) {
+    super(`Runtime generation '${path}' has an active ${blocker} and cannot be sealed.`);
+    this.name = "RuntimeGenerationActiveError";
+  }
+}
+
+async function assertRuntimeGenerationSealSafe(layout: RuntimeLayout): Promise<void> {
+  await assertAcpOwnershipClear(layout);
+  let info;
+  try {
+    info = await lstat(layout.databasePath);
+  } catch (error) {
+    if (isMissing(error)) return;
+    throw error;
+  }
+  if (info.isSymbolicLink() || !info.isFile()) {
+    throw new Error(`Runtime database '${layout.databasePath}' is not a regular file.`);
+  }
+  const database = await openRuntimeDatabase(layout.databasePath, { readOnly: true });
+  try {
+    const tables = new Set((database.prepare(`
+      SELECT name FROM sqlite_schema
+      WHERE type = 'table' AND name IN ('daemon_lease', 'run_leases')
+    `).all() as Array<{ name: string }>).map(row => row.name));
+    if (tables.has("run_leases")) {
+      const active = database.prepare(`
+        SELECT COUNT(*) AS count
+        FROM run_leases
+        WHERE released_at IS NULL AND lease_expires_at > ?
+      `).get(new Date().toISOString()) as { count: number };
+      if (active.count > 0) throw new RuntimeGenerationActiveError(layout.runtimeRoot, "run lease");
+    }
+    if (tables.has("daemon_lease")) {
+      const daemon = database.prepare(`
+        SELECT pid
+        FROM daemon_lease
+        ORDER BY updated_at DESC
+        LIMIT 1
+      `).get() as { pid: number | null } | undefined;
+      if (daemon?.pid && probeProcessLiveness(daemon.pid) !== "dead") {
+        throw new RuntimeGenerationActiveError(layout.runtimeRoot, "daemon");
+      }
+    }
+  } catch (error) {
+    if (error instanceof RuntimeGenerationActiveError) throw error;
+    throw new Error(`Runtime generation '${layout.runtimeRoot}' cannot be proven inactive: ${errorMessage(error)}.`);
+  } finally {
+    database.close();
+  }
+}
+
+async function assertAcpOwnershipClear(layout: RuntimeLayout): Promise<void> {
+  let info;
+  try {
+    info = await lstat(layout.acpWorkersRoot);
+  } catch (error) {
+    if (isMissing(error)) return;
+    throw error;
+  }
+  if (info.isSymbolicLink() || !info.isDirectory()) {
+    throw new Error(`ACP ownership directory '${layout.acpWorkersRoot}' is not a regular directory.`);
+  }
+  if ((await readdir(layout.acpWorkersRoot)).length > 0) {
+    throw new RuntimeGenerationActiveError(layout.runtimeRoot, "ACP ownership");
+  }
+}
 
 export function inspectRuntimeStore(
   cwd: string,
@@ -209,7 +276,7 @@ async function repairRuntimeStoreValue(cwd: string): Promise<{ changed: boolean 
     }
     if (assessment.transition.type === "none") throw new Error("Runtime store does not need repair.");
     const journal = await createTransitionJournal(workspace, assessment);
-    await writeJsonAtomically(workspace.transitionJournalPath, journal);
+    await writePrivateJsonAtomically(workspace.transitionJournalPath, journal);
     return await resumeTransition(cwd, workspace, journal);
   } finally {
     await lock.release();
@@ -305,7 +372,7 @@ async function inspectRuntimeStoreValue(cwd: string): Promise<RuntimeStoreAssess
         current = { state: "absent" };
         transition = { type: "initialize" };
       }
-    } else if (!isManifestLike(manifestRead.value)) {
+    } else if (!hasSupportedManifestHeader(manifestRead.value)) {
       const observedLayoutVersion = isRecord(manifestRead.value)
         && Number.isSafeInteger(manifestRead.value.manifestVersion)
         && Number(manifestRead.value.manifestVersion) > RUNTIME_LAYOUT_VERSION
@@ -409,7 +476,7 @@ async function inspectLegacyStore(
   }
   let format;
   try {
-    format = await readRuntimeDatabaseFormatIncludingWal(layout);
+    format = await readRuntimeDatabaseFormat(layout.databasePath);
   } catch {
     return unrecognizedStore(1);
   }
@@ -518,7 +585,7 @@ async function inspectGenerationStore(
   }
   let format;
   try {
-    format = await readRuntimeDatabaseFormatIncludingWal(layout);
+    format = await readRuntimeDatabaseFormat(layout.databasePath);
   } catch {
     return unrecognizedStore(2, layout.generationId);
   }
@@ -545,7 +612,7 @@ async function inspectGenerationStore(
       current: {
         state: "ready",
         layoutVersion: 2,
-        storageVersion: 9,
+        storageVersion: RUNTIME_STORAGE_VERSION,
         generationId: layout.generationId,
       },
       transition: { type: "none" },
@@ -634,7 +701,7 @@ async function inspectSourceCompatibility(
   }
   let format;
   try {
-    format = await readRuntimeDatabaseFormatIncludingWal(layout);
+    format = await readRuntimeDatabaseFormat(layout.databasePath);
   } catch (error) {
     if (error instanceof UnrecognizedRuntimeDatabaseError) {
       return unrecognizedStore(layoutVersion, generationId);
@@ -788,7 +855,7 @@ async function resumeTransition(
     unpublished: true,
   });
   store.close();
-  const nextFormat = await readRuntimeDatabaseFormat(next);
+  const nextFormat = await readRuntimeDatabaseFormat(next.databasePath);
   if (nextFormat?.applicationId !== RUNTIME_APPLICATION_ID
     || nextFormat.userVersion !== RUNTIME_STORAGE_VERSION) {
     throw new Error(`New generation '${next.generationId}' did not verify at storage v${RUNTIME_STORAGE_VERSION}.`);
@@ -800,12 +867,12 @@ async function resumeTransition(
     workspaceKey: workspace.workspaceKey,
     canonicalPath: workspace.canonicalPath,
     platform: workspace.platform,
-    createdAt: isManifestLike(previousManifest?.value)
+    createdAt: isWorkspaceManifest(previousManifest?.value)
       ? previousManifest.value.createdAt
       : journal.startedAt,
     activeGenerationId: journal.nextGenerationId,
   };
-  await writeJsonAtomically(workspace.manifestPath, manifest);
+  await writePrivateJsonAtomically(workspace.manifestPath, manifest);
   await rm(workspace.transitionJournalPath);
 
   const after = await inspectRuntimeStoreValue(cwd);
@@ -918,16 +985,17 @@ async function inspectActivityBlockers(layout: RuntimeLayout): Promise<RuntimeSt
     if (!await assertOptionalRegularFile(layout.databasePath, "Runtime database")) return blockers;
     await assertOptionalRegularFile(`${layout.databasePath}-wal`, "Runtime database WAL");
     await assertOptionalRegularFile(`${layout.databasePath}-shm`, "Runtime database shared memory");
-    if (await hasPendingWriteAheadLog(layout.databasePath)) {
+    if (!await hasNoPendingRuntimeDatabaseWal(layout.databasePath)) {
       blockers.push({
         type: "activity-unproven",
         message: "Runtime store has an uncheckpointed write-ahead log.",
       });
       return blockers;
     }
-    const location = pathToFileURL(layout.databasePath);
-    location.searchParams.set("immutable", "1");
-    const database = new DatabaseSync(location, { readOnly: true });
+    const database = await openRuntimeDatabase(layout.databasePath, {
+      readOnly: true,
+      immutable: true,
+    });
     try {
       const tables = new Set((database.prepare(`
         SELECT name FROM sqlite_schema
@@ -1001,13 +1069,15 @@ async function extractPortableRunIndex(
     if (isMissing(error)) return undefined;
     throw error;
   }
-  if (info.isSymbolicLink() || !info.isFile()) return undefined;
-  let database: DatabaseSync | undefined;
+  if (info.isSymbolicLink() || !info.isFile()) {
+    throw new Error(`Runtime database '${layout.databasePath}' is not a regular file.`);
+  }
+  if (immutableInspection && !await hasNoPendingRuntimeDatabaseWal(layout.databasePath)) return undefined;
+  const database = await openRuntimeDatabase(layout.databasePath, {
+    readOnly: true,
+    immutable: immutableInspection,
+  });
   try {
-    if (immutableInspection && await hasPendingWriteAheadLog(layout.databasePath)) return undefined;
-    const location = immutableInspection ? pathToFileURL(layout.databasePath) : layout.databasePath;
-    if (location instanceof URL) location.searchParams.set("immutable", "1");
-    database = new DatabaseSync(location, { readOnly: true });
     const application = database.prepare("PRAGMA application_id").get() as { application_id: unknown };
     const version = database.prepare("PRAGMA user_version").get() as { user_version: unknown };
     if (Number(application.application_id) !== RUNTIME_APPLICATION_ID
@@ -1032,112 +1102,7 @@ async function extractPortableRunIndex(
   } catch {
     return undefined;
   } finally {
-    database?.close();
-  }
-}
-
-async function hasPendingWriteAheadLog(databasePath: string): Promise<boolean> {
-  try {
-    const info = await lstat(`${databasePath}-wal`);
-    if (info.isSymbolicLink() || !info.isFile()) {
-      throw new Error(`Runtime database WAL '${databasePath}-wal' is not a regular file.`);
-    }
-    return info.size > 0;
-  } catch (error) {
-    if (isMissing(error)) return false;
-    throw error;
-  }
-}
-
-async function readRuntimeDatabaseFormatIncludingWal(
-  layout: RuntimeLayout,
-): Promise<{ applicationId: number; userVersion: number } | undefined> {
-  const mainFormat = await readRuntimeDatabaseFormat(layout);
-  if (!mainFormat || !await hasPendingWriteAheadLog(layout.databasePath)) return mainFormat;
-
-  const probeRoot = await mkdtemp(join(tmpdir(), "acpus-runtime-store-probe-"));
-  const probeDatabasePath = join(probeRoot, "runtime.db");
-  try {
-    const sources = await captureProbeSources(layout.databasePath, probeDatabasePath);
-    await Promise.all(sources.map(source => copyFile(source.path, source.destination)));
-    await verifyProbeSources(sources);
-
-    const database = new DatabaseSync(probeDatabasePath, { readOnly: true });
-    try {
-      const application = database.prepare("PRAGMA application_id").get() as { application_id: unknown };
-      const version = database.prepare("PRAGMA user_version").get() as { user_version: unknown };
-      return {
-        applicationId: Number(application.application_id),
-        userVersion: Number(version.user_version),
-      };
-    } finally {
-      database.close();
-    }
-  } finally {
-    await rm(probeRoot, { recursive: true, force: true });
-  }
-}
-
-type ProbeSource = {
-  path: string;
-  destination: string;
-  label: string;
-  identity: RegularFileIdentity;
-};
-
-type RegularFileIdentity = {
-  dev: bigint;
-  ino: bigint;
-  size: bigint;
-  mtimeNs: bigint;
-  ctimeNs: bigint;
-};
-
-async function captureProbeSources(databasePath: string, probeDatabasePath: string): Promise<ProbeSource[]> {
-  const candidates = [
-    { path: databasePath, destination: probeDatabasePath, label: "Runtime database", optional: false },
-    { path: `${databasePath}-wal`, destination: `${probeDatabasePath}-wal`, label: "Runtime database WAL", optional: false },
-    { path: `${databasePath}-shm`, destination: `${probeDatabasePath}-shm`, label: "Runtime database shared memory", optional: true },
-  ];
-  const sources: ProbeSource[] = [];
-  for (const candidate of candidates) {
-    const identity = await regularFileIdentity(candidate.path, candidate.label, candidate.optional);
-    if (identity) sources.push({ ...candidate, identity });
-  }
-  return sources;
-}
-
-async function verifyProbeSources(sources: ProbeSource[]): Promise<void> {
-  for (const source of sources) {
-    const current = await regularFileIdentity(source.path, source.label, false);
-    if (!current || current.dev !== source.identity.dev || current.ino !== source.identity.ino
-      || current.size !== source.identity.size || current.mtimeNs !== source.identity.mtimeNs
-      || current.ctimeNs !== source.identity.ctimeNs) {
-      throw new Error(`${source.label} '${source.path}' changed while its format was inspected.`);
-    }
-  }
-}
-
-async function regularFileIdentity(
-  path: string,
-  label: string,
-  optional: boolean,
-): Promise<RegularFileIdentity | undefined> {
-  try {
-    const info = await lstat(path, { bigint: true });
-    if (info.isSymbolicLink() || !info.isFile()) {
-      throw new Error(`${label} '${path}' is not a regular file.`);
-    }
-    return {
-      dev: info.dev,
-      ino: info.ino,
-      size: info.size,
-      mtimeNs: info.mtimeNs,
-      ctimeNs: info.ctimeNs,
-    };
-  } catch (error) {
-    if (optional && isMissing(error)) return undefined;
-    throw error;
+    database.close();
   }
 }
 
@@ -1276,21 +1241,6 @@ async function readTransitionJournal(path: string): Promise<RuntimeStoreTransiti
   return value;
 }
 
-async function writeJsonAtomically(path: string, value: unknown): Promise<void> {
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
-    await rename(temporary, path);
-    if (process.platform !== "win32") await chmod(path, 0o600);
-  } finally {
-    await rm(temporary, { force: true });
-  }
-}
-
 function activityLayout(workspace: RuntimeLayout, current: RuntimeStoreCurrent): RuntimeLayout {
   if (current.state !== "absent" && current.layoutVersion === 2 && current.generationId) {
     return runtimeLayoutForGeneration(workspace, current.generationId);
@@ -1298,7 +1248,7 @@ function activityLayout(workspace: RuntimeLayout, current: RuntimeStoreCurrent):
   return workspace;
 }
 
-function isManifestLike(value: unknown): value is WorkspaceManifest {
+function hasSupportedManifestHeader(value: unknown): value is WorkspaceManifest {
   return typeof value === "object"
     && value !== null
     && !Array.isArray(value)
@@ -1367,7 +1317,7 @@ async function safeGenerationState(layout: RuntimeLayout): Promise<RuntimeGenera
 
 async function safeDatabaseFormat(layout: RuntimeLayout): Promise<{ applicationId: number; userVersion: number } | undefined> {
   try {
-    return await readRuntimeDatabaseFormat(layout);
+    return await readRuntimeDatabaseFormat(layout.databasePath);
   } catch {
     return undefined;
   }

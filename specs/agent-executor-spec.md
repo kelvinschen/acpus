@@ -148,10 +148,10 @@ and operator-facing recovery.
 ## Verification
 
 - `pnpm test:unit packages/agent-executor`: verifies named Agent resolution,
-  command bypass, worker IPC, response collection, managed-worker lifecycle,
+  command bypass, response collection, managed-worker lifecycle,
   bounded cleanup, identity-safe startup recovery, session projection
   persistence, and normalized status classification.
 - `pnpm test:integration packages/agent-executor`: verifies effective Acpx
   configuration and managed named-Agent startup and failure behavior.
 - `pnpm test:contract packages/agent-executor` and `pnpm test:type packages/agent-executor`:
-  verify the exported managed-executor and normalized result surface.
+  verify the closed worker IPC protocol, exported managed-executor, and normalized result surface.

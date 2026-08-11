@@ -8,8 +8,9 @@ import {
   requestDaemonAdmitRun,
   requestDaemonControl,
   startDaemonLoop,
-} from "../src/index.js";
-import type { PreparedRunWorkflow, Sha256Digest } from "../src/store/store.js";
+  type PreparedRunWorkflow,
+  type Sha256Digest,
+} from "@acpus/runtime";
 import { openRuntimeStore } from "../src/store/store.js";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
 import { admitRunForTest } from "./support/runtime-store.js";
@@ -113,6 +114,37 @@ describe("runtime workflow snapshots", () => {
           await rm(sourcesRoot, { recursive: true });
           await rename(openedSourcesRoot, sourcesRoot);
         }
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it.each([
+    { name: "invalid UTF-8", corrupt: invalidUtf8Manifest, message: "invalid manifest" },
+    {
+      name: "a leading UTF-8 BOM",
+      corrupt: (manifest: Buffer) => Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), manifest]),
+      message: "failed manifest verification",
+    },
+  ])("rejects $name in an otherwise canonical snapshot manifest", async ({ corrupt, message }) => {
+    await withRuntimeWorkspace("workflow-snapshot-manifest-utf8", async workspace => {
+      const base = await prepareSyntheticWorkflow(workspace, validWorkflow());
+      const prepared = snapshotPreparedWorkflow(base, [
+        { path: "helper-\uFFFD.ts", content: "export const helper = true;\n" },
+        { path: "workflow.ts", content: "export default 1;\n" },
+      ]);
+      const store = await openRuntimeStore(workspace);
+      try {
+        await admitRunForTest(store, { prepared, cwd: workspace, input: { ready: true } });
+        if (prepared.source.kind !== "snapshot") throw new Error("expected snapshot source");
+        const manifestPath = join(dirnameOfFiles(snapshotPath(workspace, prepared.source.digest)), "manifest.json");
+        const manifest = await readFile(manifestPath);
+        await writeFile(manifestPath, corrupt(manifest));
+
+        await expect(store.admitRun({ prepared, cwd: workspace, input: { ready: true } }))
+          .rejects.toThrow(message);
+        expect(store.listRuns()).toHaveLength(1);
       } finally {
         store.close();
       }
@@ -324,6 +356,17 @@ function snapshotPath(
 
 function dirnameOfFiles(filesRoot: string): string {
   return join(filesRoot, "..");
+}
+
+function invalidUtf8Manifest(manifest: Buffer): Buffer {
+  const replacement = Buffer.from("\uFFFD");
+  const offset = manifest.indexOf(replacement);
+  if (offset < 0) throw new Error("Snapshot manifest has no replacement character test vector.");
+  return Buffer.concat([
+    manifest.subarray(0, offset),
+    Buffer.from([0xff]),
+    manifest.subarray(offset + replacement.length),
+  ]);
 }
 
 async function expectSnapshotModes(filesRoot: string, filePaths: readonly string[]): Promise<void> {

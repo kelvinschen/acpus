@@ -1,8 +1,8 @@
 import {
-  isRuntimeStoreBusyError,
   openRuntimeStoreAtLayout,
   type RuntimeStore,
 } from "../store/store.js";
+import { isRuntimeStoreBusyError } from "../storage/database.js";
 import { formatHookLoadError, loadHooksConfig } from "../hooks/loader.js";
 import { createHookRunner } from "../hooks/runner.js";
 import { tryLoadRuntimeConfiguration } from "../configuration.js";

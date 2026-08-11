@@ -1,17 +1,24 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
-import { access, chmod, lstat, mkdir, open, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
+import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { pathToFileURL } from "node:url";
-import { validateWorkflowIR, walkNodes, type AgentDefinitionIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
+import { walkNodes, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { staticExprShape, type JsonValue, type StaticExprShape } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { resolveArtifactRegistrationPath } from "../artifacts/registration-path.js";
-import { parseArtifactUri } from "../artifacts/access.js";
+import { parseArtifactUri } from "../artifacts/reference.js";
+import type { ArtifactRecord, RegisterArtifactInput } from "../artifacts/types.js";
 import { rewriteArtifactValue, type ArtifactRewriteFailure } from "../artifacts/rewrite.js";
-import { compactUndefined, parseAgentOverrideMap, tryParseAgentOverrideMap, type AgentOverrideParseFailure } from "../control/agent-overrides.js";
+import {
+  normalizeAgentOverrides,
+  parseAgentOverrideMap,
+  tryParseAgentOverrideMap,
+  tryValidateAgentOverrides,
+  withAgentOverrides,
+  type AgentOverrideMap,
+  type AgentOverrideValidationFailure,
+} from "../control/agent-overrides.js";
 import { tryCreateDeadline, tryParsePersistedDeadline } from "../deadline.js";
 import { AgentObservationLog } from "../observations/log.js";
 import type { HookJournalEntry } from "../hooks/journal.js";
@@ -32,6 +39,19 @@ import { decodeSchedulerPayload, isSchedulerEventType } from "../scheduler/event
 import { decodeCommittedRuntimeEventRow, type CommittedRuntimeEventRow } from "../hooks/events.js";
 import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
 import {
+  createWorkflowSourceSnapshotManifest,
+  isRunWorkflowLockArtifact,
+  isWorkflowSourceSnapshotManifest,
+  parseWorkflowSource,
+  tryValidatePreparedRunWorkflow,
+  workflowSourceGraphDigestFromManifest,
+  type PreparedRunValidationFailure,
+  type PreparedRunWorkflow,
+  type RunWorkflowLockArtifact,
+  type Sha256Digest,
+  type WorkflowSourceRef,
+} from "../admission/prepared-workflow.js";
+import {
   ensureRuntimeLayout,
   resolveRuntimeLayout,
   validateRuntimeLayoutBoundary,
@@ -40,6 +60,15 @@ import {
 } from "../runtime-layout.js";
 import { acquireRuntimeSharedLock, type RuntimeSharedLock } from "../runtime-lock.js";
 import { inspectRuntimeGeneration } from "../storage/generation.js";
+import {
+  assertRuntimeDatabaseFormat,
+  hasNoPendingRuntimeDatabaseWal,
+  openRuntimeDatabase,
+  RUNTIME_APPLICATION_ID,
+  RUNTIME_STORAGE_VERSION,
+  runtimeDatabaseFormat,
+  validateRuntimeDatabasePaths,
+} from "../storage/database.js";
 import {
   captureDirectoryIdentity,
   DirectoryFence,
@@ -53,18 +82,9 @@ import {
 import {
   assertRunFileIdentity,
   verifyRunFile,
-  type RunFileToken,
 } from "./run-file.js";
 
 export type RunStatus = "pending" | "running" | "paused" | "awaiting" | "failed" | "completed" | "canceled";
-
-export type PreparedRunValidationFailure = {
-  type: "prepared-workflow-invalid";
-  reason: "invalid-ir-json" | "invalid-ir" | "ir-mismatch" | "ir-digest-mismatch" | "source-graph-mismatch" | "source-bundle-mismatch" | "package-lock-mismatch" | "entry-mismatch";
-  message: string;
-};
-
-export type AgentOverrideValidationFailure = AgentOverrideParseFailure;
 
 export type AdmitRunFailure = PreparedRunValidationFailure
   | SchemaNormalizationFailure
@@ -144,9 +164,6 @@ const DUE_SIGNAL_WAIT_WHERE = `
       AND signal_waits.deadline_at <= ?
   )
 `;
-
-export const RUNTIME_APPLICATION_ID = 0x41435055;
-export const RUNTIME_STORAGE_VERSION = 9;
 
 export type RunStoreSummary = {
   runCount: number;
@@ -234,68 +251,6 @@ type AdmitRunInput = {
   cwd: string;
   agentOverrides?: AgentOverrideMap;
 };
-
-export type AgentOverrideMap = Record<string, AgentOverrideSpec>;
-
-type AgentOverrideSpec = {
-  use?: string;
-  command?: string;
-  model?: string;
-  permissionMode?: "approve-reads" | "approve-all" | "deny-all";
-  config?: Record<string, string>;
-  cwd?: string;
-  env?: Record<string, string>;
-};
-
-export type RunWorkflowLockArtifact = {
-  kind: "acpus_workflow_preparation_lock";
-  version: 2;
-  workflow: {
-    source: WorkflowSourceRef;
-    entryDigest: Sha256Digest;
-  };
-  ir: {
-    path: "workflow.ir.json";
-    digest: Sha256Digest;
-  };
-  packageLockDigest?: Sha256Digest;
-  sourceGraphDigest: Sha256Digest;
-};
-
-export type Sha256Digest = `sha256:${string}`;
-
-export type WorkflowSourceRef =
-  | { kind: "workspace"; entry: string }
-  | { kind: "snapshot"; entry: string; digest: Sha256Digest };
-
-export type WorkflowSourceFile = {
-  path: string;
-  content: string;
-};
-
-export type WorkflowSourceBundle = {
-  kind: "acpus_workflow_source_bundle";
-  version: 1;
-  files: readonly WorkflowSourceFile[];
-};
-
-type PreparedRunWorkflowBase = {
-  ir: WorkflowIR;
-  irJson: string;
-  sourceGraphDigest: Sha256Digest;
-  packageLockDigest?: Sha256Digest;
-  lock: RunWorkflowLockArtifact;
-};
-
-export type PreparedRunWorkflow =
-  | PreparedRunWorkflowBase & {
-    source: Extract<WorkflowSourceRef, { kind: "workspace" }>;
-    sourceBundle?: never;
-  }
-  | PreparedRunWorkflowBase & {
-    source: Extract<WorkflowSourceRef, { kind: "snapshot" }>;
-    sourceBundle: WorkflowSourceBundle;
-  };
 
 export type RunRecord = {
   id: string;
@@ -551,31 +506,6 @@ type ControlOptions = {
   target?: string;
 };
 
-export type RegisterArtifactInput = {
-  id: string;
-  runId: string;
-  nodeKey: string;
-  attemptId: string;
-  attempt: number;
-  ownerEpoch: number;
-  mediaType?: string;
-  digest: string;
-  size: number;
-  relativePath: string;
-  file: RunFileToken;
-};
-
-
-export type ArtifactRecord = {
-  id: string;
-  runId: string;
-  nodeKey: string;
-  attempt: number;
-  mediaType?: string;
-  digest: string;
-  size: number;
-  path: string;
-};
 type WriteExecutionMetadataInput = {
   runId: string;
   attemptId?: string;
@@ -689,7 +619,6 @@ export async function openRuntimeStore(cwd: string): Promise<RuntimeStore> {
   const generation = await inspectRuntimeGeneration(layout);
   if (generation === "complete") {
     await validateExistingLayout(layout);
-    await assertDatabasePath(layout.databasePath);
     await validateDatabaseFileIfPresent(layout.databasePath);
   } else {
     layout = await requireRuntimeLayout(cwd);
@@ -703,7 +632,6 @@ export async function openRuntimeStoreAtLayout(
 ): Promise<RuntimeStore> {
   if (!options.prevalidated) {
     await inspectRuntimeGeneration(layout);
-    await assertDatabasePath(layout.databasePath);
     await validateDatabaseFileIfPresent(layout.databasePath);
   }
   const lock = options.lock === false
@@ -715,8 +643,7 @@ export async function openRuntimeStoreAtLayout(
   try {
     await inspectRuntimeGeneration(layout);
     if (!options.unpublished) await validateExistingLayout(layout);
-    await assertDatabasePath(layout.databasePath);
-    db = openDatabase(layout.databasePath);
+    db = await openRuntimeDatabase(layout.databasePath);
     await setPrivateFileMode(layout.databasePath, layout.platform);
     initializeDatabase(db, layout.databasePath);
     const store = new SqliteRuntimeStore(db, layout, lock);
@@ -746,19 +673,13 @@ export async function openExistingRuntimeStoreAtLayout(
   readOnly: boolean,
   options: { lock?: boolean; immutable?: boolean } = {},
 ): Promise<RuntimeStore | undefined> {
-  try {
-    await access(layout.databasePath);
-  } catch (error) {
-    if (isMissingPathError(error)) return undefined;
-    throw error;
-  }
+  if (!await validateRuntimeDatabasePaths(layout.databasePath)) return undefined;
   await validateExistingLayout(layout);
-  await assertDatabasePath(layout.databasePath);
   await validateDatabaseFileIfPresent(layout.databasePath);
   if (readOnly) {
     const immutable = options.immutable === true
-      && await hasNoPendingWriteAheadLog(layout.databasePath);
-    const db = openDatabase(layout.databasePath, true, immutable);
+      && await hasNoPendingRuntimeDatabaseWal(layout.databasePath);
+    const db = await openRuntimeDatabase(layout.databasePath, { readOnly: true, immutable });
     return new SqliteRuntimeStore(db, layout);
   }
   const lock = options.lock === false ? undefined : await acquireRuntimeSharedLock(layout);
@@ -766,8 +687,7 @@ export async function openExistingRuntimeStoreAtLayout(
   try {
     await inspectRuntimeGeneration(layout);
     await validateExistingLayout(layout);
-    await assertDatabasePath(layout.databasePath);
-    db = openDatabase(layout.databasePath);
+    db = await openRuntimeDatabase(layout.databasePath);
     validateDatabase(db, layout.databasePath);
     initializeSchema(db);
   } catch (error) {
@@ -784,121 +704,6 @@ export async function openExistingRuntimeStoreAtLayout(
     db?.close();
     lock?.release();
     throw error;
-  }
-}
-
-export async function assertRuntimeGenerationSealSafe(layout: RuntimeLayout): Promise<void> {
-  await assertAcpOwnershipClear(layout);
-  try {
-    await access(layout.databasePath);
-  } catch (error) {
-    if (isMissingPathError(error)) return;
-    throw error;
-  }
-  await assertDatabasePath(layout.databasePath);
-  const db = openDatabase(layout.databasePath, true);
-  try {
-    const tables = new Set((db.prepare(`
-      SELECT name FROM sqlite_schema
-      WHERE type = 'table' AND name IN ('daemon_lease', 'run_leases')
-    `).all() as Array<{ name: string }>).map(row => row.name));
-    if (tables.has("run_leases")) {
-      const active = db.prepare(`
-        SELECT COUNT(*) AS count
-        FROM run_leases
-        WHERE released_at IS NULL AND lease_expires_at > ?
-      `).get(new Date().toISOString()) as CountRow;
-      if (active.count > 0) throw new RuntimeGenerationActiveError(layout.runtimeRoot, "run lease");
-    }
-    if (tables.has("daemon_lease")) {
-      const daemon = db.prepare(`
-        SELECT pid, heartbeat_at
-        FROM daemon_lease
-        ORDER BY updated_at DESC
-        LIMIT 1
-      `).get() as { pid: number | null; heartbeat_at: string | null } | undefined;
-      if (daemon?.pid && probeProcessLiveness(daemon.pid) !== "dead") {
-        throw new RuntimeGenerationActiveError(layout.runtimeRoot, "daemon");
-      }
-    }
-  } catch (error) {
-    if (error instanceof RuntimeGenerationActiveError) throw error;
-    throw new Error(`Runtime generation '${layout.runtimeRoot}' cannot be proven inactive: ${causeMessage(error)}.`);
-  } finally {
-    db.close();
-  }
-}
-
-export class RuntimeGenerationActiveError extends Error {
-  constructor(
-    readonly path: string,
-    readonly blocker: "run lease" | "daemon" | "ACP ownership",
-  ) {
-    super(`Runtime generation '${path}' has an active ${blocker} and cannot be sealed.`);
-    this.name = "RuntimeGenerationActiveError";
-  }
-}
-
-async function assertAcpOwnershipClear(layout: RuntimeLayout): Promise<void> {
-  let info;
-  try {
-    info = await lstat(layout.acpWorkersRoot);
-  } catch (error) {
-    if (isMissingPathError(error)) return;
-    throw error;
-  }
-  if (info.isSymbolicLink() || !info.isDirectory()) {
-    throw new Error(`ACP ownership directory '${layout.acpWorkersRoot}' is not a regular directory.`);
-  }
-  if ((await readdir(layout.acpWorkersRoot)).length > 0) {
-    throw new RuntimeGenerationActiveError(layout.runtimeRoot, "ACP ownership");
-  }
-}
-
-class IncompatibleRuntimeDatabaseError extends Error {
-  constructor(
-    readonly path: string,
-    readonly applicationId: number,
-    readonly userVersion: number,
-  ) {
-    super(
-      `Runtime database '${path}' uses application_id ${applicationId} and user_version ${userVersion}; `
-      + `expected ${RUNTIME_APPLICATION_ID} and ${RUNTIME_STORAGE_VERSION}.`,
-    );
-    this.name = "IncompatibleRuntimeDatabaseError";
-  }
-}
-
-export class UnrecognizedRuntimeDatabaseError extends Error {
-  constructor(readonly path: string) {
-    super(`Runtime database '${path}' does not have a valid SQLite header.`);
-    this.name = "UnrecognizedRuntimeDatabaseError";
-  }
-}
-
-export async function readRuntimeDatabaseFormat(
-  layout: RuntimeLayout,
-): Promise<{ applicationId: number; userVersion: number } | undefined> {
-  try {
-    await access(layout.databasePath);
-  } catch (error) {
-    if (isMissingPathError(error)) return undefined;
-    throw error;
-  }
-  await assertDatabasePath(layout.databasePath);
-  const file = await open(layout.databasePath, "r");
-  try {
-    const header = Buffer.alloc(100);
-    const { bytesRead } = await file.read(header, 0, header.length, 0);
-    if (bytesRead < header.length || header.subarray(0, 16).toString("binary") !== "SQLite format 3\0") {
-      throw new UnrecognizedRuntimeDatabaseError(layout.databasePath);
-    }
-    return {
-      userVersion: header.readUInt32BE(60),
-      applicationId: header.readUInt32BE(68),
-    };
-  } finally {
-    await file.close();
   }
 }
 
@@ -958,42 +763,12 @@ async function setPrivateFileMode(path: string, platform: NodeJS.Platform): Prom
   if (platform !== "win32") await chmod(path, 0o600);
 }
 
-async function assertDatabasePath(path: string): Promise<void> {
-  try {
-    const info = await lstat(path);
-    if (info.isSymbolicLink() || !info.isFile()) {
-      throw new Error(`Runtime database '${path}' is not a regular file.`);
-    }
-  } catch (error) {
-    if (isMissingPathError(error)) return;
-    throw error;
-  }
-  await assertDatabaseSidecarPaths(path);
-}
-
-async function assertDatabaseSidecarPaths(path: string): Promise<void> {
-  for (const [suffix, label] of [["-wal", "WAL"], ["-shm", "shared memory"]] as const) {
-    const sidecar = `${path}${suffix}`;
-    try {
-      const info = await lstat(sidecar);
-      if (info.isSymbolicLink() || !info.isFile()) {
-        throw new Error(`Runtime database ${label} '${sidecar}' is not a regular file.`);
-      }
-    } catch (error) {
-      if (!isMissingPathError(error)) throw error;
-    }
-  }
-}
-
 async function validateDatabaseFileIfPresent(path: string): Promise<void> {
-  try {
-    await access(path);
-  } catch (error) {
-    if (isMissingPathError(error)) return;
-    throw error;
-  }
-  await assertDatabasePath(path);
-  const db = openDatabase(path, true, await hasNoPendingWriteAheadLog(path));
+  if (!await validateRuntimeDatabasePaths(path)) return;
+  const db = await openRuntimeDatabase(path, {
+    readOnly: true,
+    immutable: await hasNoPendingRuntimeDatabaseWal(path),
+  });
   try {
     validateDatabase(db, path);
   } finally {
@@ -4718,58 +4493,21 @@ function derivedIdempotencyKey(idempotencyKey: string, suffix: string): string {
   return `${idempotencyKey}:${suffix}`;
 }
 
-const RUNTIME_STORE_BUSY_TIMEOUT_MS = 5_000;
-const SQLITE_EXPERIMENTAL_WARNING = "SQLite is an experimental feature and might change at any time";
-let databaseSyncConstructor: typeof import("node:sqlite").DatabaseSync | undefined;
-
-export function isRuntimeStoreBusyError(error: unknown): boolean {
-  if (typeof error !== "object" || error === null) return false;
-  const candidate = error as { code?: unknown; errcode?: unknown };
-  if (candidate.code === "SQLITE_BUSY" || candidate.code === "SQLITE_LOCKED") return true;
-  return candidate.code === "ERR_SQLITE_ERROR" && (candidate.errcode === 5 || candidate.errcode === 6);
-}
-
-function openDatabase(path: string, readOnly = false, immutable = false): DatabaseSync {
-  const DatabaseSync = loadDatabaseSync();
-  const location = immutable ? pathToFileURL(path) : path;
-  if (location instanceof URL) location.searchParams.set("immutable", "1");
-  const db = new DatabaseSync(location, {
-    enableForeignKeyConstraints: true,
-    readOnly,
-    timeout: RUNTIME_STORE_BUSY_TIMEOUT_MS,
-  });
-  db.exec("PRAGMA foreign_keys = ON;");
-  return db;
-}
-
-async function hasNoPendingWriteAheadLog(path: string): Promise<boolean> {
-  try {
-    const info = await lstat(`${path}-wal`);
-    if (info.isSymbolicLink() || !info.isFile()) {
-      throw new Error(`Runtime database WAL '${path}-wal' is not a regular file.`);
-    }
-    return info.size === 0;
-  } catch (error) {
-    if (isMissingPathError(error)) return true;
-    throw error;
-  }
-}
-
 function initializeDatabase(db: DatabaseSync, path: string): void {
-  const format = databaseFormat(db);
+  const format = runtimeDatabaseFormat(db);
   const tables = db.prepare(`
     SELECT COUNT(*) AS count
     FROM sqlite_schema
     WHERE type = 'table' AND name NOT LIKE 'sqlite_%'
   `).get() as CountRow;
   if (tables.count > 0) {
-    assertDatabaseFormat(format, path);
+    assertRuntimeDatabaseFormat(format, path);
     db.exec("PRAGMA journal_mode = WAL;");
     initializeSchema(db);
     return;
   }
   if (format.applicationId !== 0 || format.userVersion !== 0) {
-    assertDatabaseFormat(format, path);
+    assertRuntimeDatabaseFormat(format, path);
   }
   db.exec("PRAGMA auto_vacuum = INCREMENTAL;");
   db.exec("PRAGMA journal_mode = WAL;");
@@ -4791,34 +4529,7 @@ function initializeDatabase(db: DatabaseSync, path: string): void {
 }
 
 function validateDatabase(db: DatabaseSync, path: string): void {
-  assertDatabaseFormat(databaseFormat(db), path);
-}
-
-function databaseFormat(db: DatabaseSync): { applicationId: number; userVersion: number } {
-  const application = db.prepare("PRAGMA application_id").get() as { application_id: number };
-  const version = db.prepare("PRAGMA user_version").get() as { user_version: number };
-  return { applicationId: Number(application.application_id), userVersion: Number(version.user_version) };
-}
-
-function assertDatabaseFormat(format: { applicationId: number; userVersion: number }, path: string): void {
-  if (format.applicationId === RUNTIME_APPLICATION_ID && format.userVersion === RUNTIME_STORAGE_VERSION) return;
-  throw new IncompatibleRuntimeDatabaseError(path, format.applicationId, format.userVersion);
-}
-
-function loadDatabaseSync(): typeof import("node:sqlite").DatabaseSync {
-  if (databaseSyncConstructor) return databaseSyncConstructor;
-
-  const emitWarning = process.emitWarning;
-  process.emitWarning = function emitWarningExceptSqliteExperimental(this: NodeJS.Process, ...args: unknown[]): void {
-    if (args[0] === SQLITE_EXPERIMENTAL_WARNING && args[1] === "ExperimentalWarning") return;
-    Reflect.apply(emitWarning, this, args);
-  } as typeof process.emitWarning;
-  try {
-    databaseSyncConstructor = (createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite")).DatabaseSync;
-    return databaseSyncConstructor;
-  } finally {
-    process.emitWarning = emitWarning;
-  }
+  assertRuntimeDatabaseFormat(runtimeDatabaseFormat(db), path);
 }
 
 function initializeSchema(db: DatabaseSync): void {
@@ -5190,74 +4901,6 @@ function parseAgentOverrides(json: string): AgentOverrideMap {
   return parseAgentOverrideMap(JSON.parse(json) as unknown);
 }
 
-export function tryValidateAgentOverrides(ir: WorkflowIR, input: AgentOverrideMap | undefined): Result<AgentOverrideMap, AgentOverrideValidationFailure> {
-  if (input === undefined) return ok({});
-  return tryParseAgentOverrideMap(input, ir.agents).map(parsed => normalizeAgentOverrides(ir, parsed));
-}
-
-function normalizeAgentOverrides(ir: WorkflowIR, input: AgentOverrideMap | undefined, inherited: AgentOverrideMap = {}): AgentOverrideMap {
-  const base = Object.fromEntries(Object.entries(inherited).filter(([name]) => ir.agents[name])) as AgentOverrideMap;
-  if (input === undefined) return base;
-  const incoming = parseAgentOverrideMap(input, ir.agents);
-  const merged = Object.fromEntries(Object.entries(incoming).map(([name, override]) => {
-    const previous = base[name] ?? {};
-    const declared = ir.agents[name]!;
-    return [name, mergeAgentOverride(declared, previous, override)];
-  }));
-  return { ...base, ...merged };
-}
-
-function mergeAgentOverride(declared: AgentDefinitionIR, previous: AgentOverrideSpec, incoming: AgentOverrideSpec): AgentOverrideSpec {
-  const before = agentIdentity(declared, previous);
-  const after = agentIdentity(declared, { ...previous, ...incoming });
-  const changedIdentity = incoming.use !== undefined || incoming.command !== undefined
-    ? before.kind !== after.kind || before.value !== after.value
-    : false;
-  const merged = changedIdentity
-    ? { ...previous, model: undefined, config: undefined, ...incoming }
-    : { ...previous, ...incoming };
-  if (incoming.use !== undefined) delete merged.command;
-  if (incoming.command !== undefined) delete merged.use;
-  return compactUndefined(merged) as AgentOverrideSpec;
-}
-
-function withAgentOverrides(ir: WorkflowIR, overrides: AgentOverrideMap): WorkflowIR {
-  if (Object.keys(overrides).length === 0) return ir;
-  return {
-    ...ir,
-    agents: Object.fromEntries(Object.entries(ir.agents).map(([name, definition]) => [
-      name,
-      applyAgentOverride(definition, overrides[name]),
-    ])),
-  };
-}
-
-function applyAgentOverride(definition: AgentDefinitionIR, override: AgentOverrideSpec | undefined): AgentDefinitionIR {
-  if (!override) return definition;
-  const identityChanged = override.use !== undefined || override.command !== undefined
-    ? agentIdentity(definition, {}).kind !== agentIdentity(definition, override).kind
-      || agentIdentity(definition, {}).value !== agentIdentity(definition, override).value
-    : false;
-  const shared = {
-    model: override.model ?? (identityChanged ? undefined : definition.model),
-    permissionMode: override.permissionMode ?? definition.permissionMode,
-    config: override.config ?? (identityChanged ? undefined : definition.config),
-    cwd: override.cwd ?? definition.cwd,
-    env: override.env ?? definition.env,
-  };
-  if (override.command !== undefined) return compactUndefined({ kind: "agent_command", command: override.command, ...shared }) as AgentDefinitionIR;
-  if (override.use !== undefined) return compactUndefined({ kind: "agent_definition", use: override.use, ...shared }) as AgentDefinitionIR;
-  return compactUndefined({ ...definition, ...shared }) as AgentDefinitionIR;
-}
-
-function agentIdentity(definition: AgentDefinitionIR, override: AgentOverrideSpec): { kind: "use" | "command"; value: string } {
-  if (override.command !== undefined) return { kind: "command", value: override.command };
-  if (override.use !== undefined) return { kind: "use", value: override.use };
-  return definition.kind === "agent_command"
-    ? { kind: "command", value: definition.command }
-    : { kind: "use", value: definition.use };
-}
-
 
 function toRunRecord(row: Record<string, unknown>): RunRecord {
   return withoutUndefined({
@@ -5275,189 +4918,6 @@ function toRunRecord(row: Record<string, unknown>): RunRecord {
 
 function collectNodeIds(scope: ScopeIR): string[] {
   return Array.from(walkNodes(scope), ({ node }) => node.id);
-}
-
-export function tryValidatePreparedRunWorkflow(cwd: string, prepared: PreparedRunWorkflow): Result<PreparedRunWorkflow, PreparedRunValidationFailure> {
-  if (!isPreparedRunWorkflow(prepared)) {
-    return preparedInvalid("source-bundle-mismatch", "Prepared workflow does not match the current closed format.");
-  }
-  const candidate = prepared;
-  let ir: unknown;
-  try {
-    ir = JSON.parse(candidate.irJson);
-  } catch {
-    return preparedInvalid("invalid-ir-json", "Prepared workflow IR JSON is invalid.");
-  }
-  if (stableJsonLine(ir) !== stableJsonLine(candidate.ir)) {
-    return preparedInvalid("ir-mismatch", "Prepared workflow IR JSON does not match prepared IR.");
-  }
-  const parsedIr = ir as WorkflowIR;
-  const invalid = validateWorkflowIR(parsedIr).find(diagnostic => diagnostic.severity === "error");
-  if (invalid) {
-    return preparedInvalid("invalid-ir", `Prepared workflow IR is invalid: ${invalid.code}: ${invalid.message}`);
-  }
-  const existingError = parsedIr.diagnostics.find(diagnostic => diagnostic.severity === "error");
-  if (existingError) {
-    return preparedInvalid("invalid-ir", `Prepared workflow IR contains an error diagnostic: ${existingError.code}: ${existingError.message}`);
-  }
-  if (digest(Buffer.from(candidate.irJson)) !== candidate.lock.ir.digest) {
-    return preparedInvalid("ir-digest-mismatch", "Prepared workflow lock IR digest does not match IR JSON.");
-  }
-  if (candidate.lock.sourceGraphDigest !== candidate.sourceGraphDigest) {
-    return preparedInvalid("source-graph-mismatch", "Prepared workflow lock source graph digest does not match prepared source graph digest.");
-  }
-  const hasPackageLockDigest = Object.prototype.hasOwnProperty.call(candidate, "packageLockDigest");
-  const lockHasPackageLockDigest = Object.prototype.hasOwnProperty.call(candidate.lock, "packageLockDigest");
-  if (hasPackageLockDigest !== lockHasPackageLockDigest || candidate.packageLockDigest !== candidate.lock.packageLockDigest) {
-    return preparedInvalid("package-lock-mismatch", "Prepared workflow lock package lock digest does not match prepared package lock digest.");
-  }
-  if (stableJsonLine(candidate.lock.workflow.source) !== stableJsonLine(candidate.source)) {
-    return preparedInvalid("entry-mismatch", "Prepared workflow lock source does not match prepared workflow source.");
-  }
-  if (candidate.source.kind === "snapshot") {
-    const files = candidate.sourceBundle!.files;
-    const entry = files.find(file => file.path === candidate.source.entry);
-    if (!entry) {
-      return preparedInvalid("entry-mismatch", "Prepared workflow source entry is missing from its source bundle.");
-    }
-    if (digest(Buffer.from(entry.content)) !== candidate.lock.workflow.entryDigest) {
-      return preparedInvalid("entry-mismatch", "Prepared workflow entry digest does not match its source bundle.");
-    }
-    const graphDigest = workflowSourceGraphDigest(candidate.source.entry, files);
-    if (candidate.source.digest !== graphDigest || candidate.sourceGraphDigest !== graphDigest) {
-      return preparedInvalid("source-graph-mismatch", "Prepared workflow source graph digest does not match its source bundle.");
-    }
-  } else {
-    const entryMismatch = () => preparedInvalid("entry-mismatch", "Prepared workspace entry does not match its preparation lock.");
-    const root = realpathSync(resolve(cwd));
-    try {
-      const entry = resolve(root, candidate.source.entry);
-      const info = lstatSync(entry);
-      if (!isContainedPath(root, entry)
-        || info.isSymbolicLink()
-        || !info.isFile()
-        || !isContainedPath(root, realpathSync(entry))
-        || digest(readFileSync(entry)) !== candidate.lock.workflow.entryDigest) {
-        return entryMismatch();
-      }
-    } catch (error) {
-      if (isMissingPathError(error)) return entryMismatch();
-      throw error;
-    }
-  }
-  return ok({ ...structuredClone(candidate), ir: parsedIr });
-}
-
-export function isPreparedRunWorkflow(value: unknown): value is PreparedRunWorkflow {
-  if (!isPlainObject(value)
-    || !isPlainObject(value.source)
-    || !isWorkflowSourceRef(value.source)
-    || !isPlainObject(value.ir)
-    || typeof value.ir.name !== "string"
-    || !isPlainObject(value.ir.root)
-    || typeof value.irJson !== "string"
-    || !isSha256Digest(value.sourceGraphDigest)
-    || (Object.prototype.hasOwnProperty.call(value, "packageLockDigest") && !isSha256Digest(value.packageLockDigest))
-    || !isRunWorkflowLockArtifact(value.lock)) {
-    return false;
-  }
-  if (value.source.kind === "workspace") {
-    return hasExactObjectKeys(value, ["source", "ir", "irJson", "sourceGraphDigest", "lock"], ["packageLockDigest"]);
-  }
-  return hasExactObjectKeys(value, ["source", "sourceBundle", "ir", "irJson", "sourceGraphDigest", "lock"], ["packageLockDigest"])
-    && isWorkflowSourceBundle(value.sourceBundle);
-}
-
-function isRunWorkflowLockArtifact(value: unknown): value is RunWorkflowLockArtifact {
-  return isPlainObject(value)
-    && hasExactObjectKeys(value, ["kind", "version", "workflow", "ir", "sourceGraphDigest"], ["packageLockDigest"])
-    && value.kind === "acpus_workflow_preparation_lock"
-    && value.version === 2
-    && isSha256Digest(value.sourceGraphDigest)
-    && (!Object.prototype.hasOwnProperty.call(value, "packageLockDigest") || isSha256Digest(value.packageLockDigest))
-    && isPlainObject(value.workflow)
-    && hasExactObjectKeys(value.workflow, ["source", "entryDigest"])
-    && isWorkflowSourceRef(value.workflow.source)
-    && isSha256Digest(value.workflow.entryDigest)
-    && isPlainObject(value.ir)
-    && hasExactObjectKeys(value.ir, ["path", "digest"])
-    && value.ir.path === "workflow.ir.json"
-    && isSha256Digest(value.ir.digest);
-}
-
-function isWorkflowSourceRef(value: unknown): value is WorkflowSourceRef {
-  if (!isPlainObject(value) || !isPortableSourcePath(value.entry)) return false;
-  if (value.kind === "workspace") return hasExactObjectKeys(value, ["kind", "entry"]);
-  return value.kind === "snapshot"
-    && hasExactObjectKeys(value, ["kind", "entry", "digest"])
-    && isSha256Digest(value.digest);
-}
-
-function isWorkflowSourceBundle(value: unknown): value is WorkflowSourceBundle {
-  if (!isPlainObject(value)
-    || !hasExactObjectKeys(value, ["kind", "version", "files"])
-    || value.kind !== "acpus_workflow_source_bundle"
-    || value.version !== 1
-    || !Array.isArray(value.files)) {
-    return false;
-  }
-  let previous: string | undefined;
-  const paths: string[] = [];
-  for (const file of value.files) {
-    if (!isPlainObject(file)
-      || !hasExactObjectKeys(file, ["path", "content"])
-      || !isPortableSourcePath(file.path)
-      || typeof file.content !== "string"
-      || previous !== undefined && previous >= file.path) {
-      return false;
-    }
-    previous = file.path;
-    paths.push(file.path);
-  }
-  return !hasSourcePathInventoryCollision(paths);
-}
-
-function isPortableSourcePath(value: unknown): value is string {
-  return typeof value === "string"
-    && value.length > 0
-    && !value.startsWith("/")
-    && !/^[A-Za-z]:/.test(value)
-    && !value.includes("\\")
-    && !value.includes("\0")
-    && value.split("/").every(segment => segment.length > 0 && segment !== "." && segment !== "..");
-}
-
-function isSha256Digest(value: unknown): value is Sha256Digest {
-  return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
-}
-
-function hasExactObjectKeys(value: Record<string, unknown>, required: string[], optional: string[] = []): boolean {
-  const allowed = new Set([...required, ...optional]);
-  return required.every(key => Object.prototype.hasOwnProperty.call(value, key))
-    && Object.keys(value).every(key => allowed.has(key));
-}
-
-function workflowSourceGraphDigest(entry: string, files: readonly WorkflowSourceFile[]): Sha256Digest {
-  return workflowSourceGraphDigestFromDigests(
-    entry,
-    files.map(file => ({ path: file.path, digest: digest(Buffer.from(file.content)) })),
-  );
-}
-
-function workflowSourceGraphDigestFromDigests(
-  entry: string,
-  files: readonly { path: string; digest: Sha256Digest }[],
-): Sha256Digest {
-  return digest(Buffer.from(stableJsonLine({
-    kind: "acpus_workflow_source_graph",
-    version: 1,
-    entry,
-    files,
-  })));
-}
-
-function preparedInvalid(reason: PreparedRunValidationFailure["reason"], message: string): Result<never, PreparedRunValidationFailure> {
-  return err({ type: "prepared-workflow-invalid", reason, message });
 }
 
 function stableJsonLine(value: unknown): string {
@@ -5541,7 +5001,7 @@ async function publishWorkflowSource(
       assertStaged();
       await writeFile(path, file.content, { encoding: "utf8", flag: "wx", mode: 0o600 });
     }
-    const manifest = workflowSourceSnapshotManifest(prepared.source, sourceBundle.files);
+    const manifest = createWorkflowSourceSnapshotManifest(prepared.source, sourceBundle.files);
     assertStaged();
     await writeFile(join(staging, "manifest.json"), stableJsonLine(manifest), { encoding: "utf8", flag: "wx", mode: 0o600 });
     assertStaged();
@@ -5614,12 +5074,6 @@ function resolveFrozenSourceRoot(
   return target.path;
 }
 
-function parseWorkflowSource(json: string): WorkflowSourceRef {
-  const value = JSON.parse(json) as unknown;
-  if (!isWorkflowSourceRef(value)) throw new Error("Persisted workflow source reference is invalid.");
-  return value;
-}
-
 async function ownedDirectoryExists(path: string): Promise<boolean> {
   try {
     const info = await lstat(path);
@@ -5631,27 +5085,6 @@ async function ownedDirectoryExists(path: string): Promise<boolean> {
     if (isMissingPathError(error)) return false;
     throw error;
   }
-}
-
-type WorkflowSourceSnapshotManifest = {
-  kind: "acpus_workflow_source_snapshot";
-  version: 1;
-  entry: string;
-  digest: Sha256Digest;
-  files: Array<{ path: string; digest: Sha256Digest }>;
-};
-
-function workflowSourceSnapshotManifest(
-  source: Extract<WorkflowSourceRef, { kind: "snapshot" }>,
-  files: readonly WorkflowSourceFile[],
-): WorkflowSourceSnapshotManifest {
-  return {
-    kind: "acpus_workflow_source_snapshot",
-    version: 1,
-    entry: source.entry,
-    digest: source.digest,
-    files: files.map(file => ({ path: file.path, digest: digest(Buffer.from(file.content)) })),
-  };
 }
 
 function verifyPublishedWorkflowSource(
@@ -5666,13 +5099,15 @@ function verifyPublishedWorkflowSource(
   const manifestBytes = readContainedFileSync(snapshot.verify(), "manifest.json");
   snapshot.verify();
   let manifest: unknown;
+  let manifestJson: string;
   try {
-    manifest = JSON.parse(manifestBytes.toString("utf8"));
+    manifestJson = new TextDecoder("utf-8", { fatal: true }).decode(manifestBytes);
+    manifest = JSON.parse(manifestJson);
   } catch {
     throw new Error(`Frozen workflow snapshot '${source.digest}' has an invalid manifest.`);
   }
   if (!isWorkflowSourceSnapshotManifest(manifest)
-    || manifestBytes.toString("utf8") !== stableJsonLine(manifest)
+    || !manifestBytes.equals(Buffer.from(stableJsonLine(manifest), "utf8"))
     || manifest.entry !== source.entry
     || manifest.digest !== source.digest
     || workflowSourceGraphDigestFromManifest(manifest) !== source.digest) {
@@ -5696,37 +5131,6 @@ function verifyPublishedWorkflowSource(
   }
   snapshot.verify();
   files.verify();
-}
-
-function isWorkflowSourceSnapshotManifest(value: unknown): value is WorkflowSourceSnapshotManifest {
-  if (!isPlainObject(value)
-    || !hasExactObjectKeys(value, ["kind", "version", "entry", "digest", "files"])
-    || value.kind !== "acpus_workflow_source_snapshot"
-    || value.version !== 1
-    || !isPortableSourcePath(value.entry)
-    || !isSha256Digest(value.digest)
-    || !Array.isArray(value.files)) {
-    return false;
-  }
-  let previous: string | undefined;
-  const paths: string[] = [];
-  for (const file of value.files) {
-    if (!isPlainObject(file)
-      || !hasExactObjectKeys(file, ["path", "digest"])
-      || !isPortableSourcePath(file.path)
-      || !isSha256Digest(file.digest)
-      || previous !== undefined && previous >= file.path) {
-      return false;
-    }
-    previous = file.path;
-    paths.push(file.path);
-  }
-  return !hasSourcePathInventoryCollision(paths)
-    && value.files.some(file => file.path === value.entry);
-}
-
-function workflowSourceGraphDigestFromManifest(manifest: WorkflowSourceSnapshotManifest): Sha256Digest {
-  return workflowSourceGraphDigestFromDigests(manifest.entry, manifest.files);
 }
 
 function collectSnapshotFilePaths(
@@ -5773,29 +5177,6 @@ function assertPrivateSnapshotMode(
 
 function compareSourcePaths(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function hasSourcePathInventoryCollision(paths: readonly string[]): boolean {
-  const inventory = new Map<string, { spelling: string; kind: "directory" | "file" }>();
-  for (const path of paths) {
-    const segments = path.split("/");
-    for (let index = 0; index < segments.length; index += 1) {
-      const spelling = segments.slice(0, index + 1).join("/");
-      const key = portableCaseFold(spelling);
-      const kind = index === segments.length - 1 ? "file" : "directory";
-      const existing = inventory.get(key);
-      if (existing) {
-        if (existing.spelling !== spelling || existing.kind !== kind || kind === "file") return true;
-      } else {
-        inventory.set(key, { spelling, kind });
-      }
-    }
-  }
-  return false;
-}
-
-function portableCaseFold(value: string): string {
-  return value.normalize("NFC").toUpperCase().toLowerCase().normalize("NFC");
 }
 
 function digestHexForPath(value: Sha256Digest): string {
@@ -6337,12 +5718,6 @@ function hasErrorCode(error: unknown, code: string): boolean {
 
 function causeMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
 }
 
 function summarizeWorkflowForEvent(ir: WorkflowIR): {

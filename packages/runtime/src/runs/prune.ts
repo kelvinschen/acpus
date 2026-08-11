@@ -1,9 +1,11 @@
 import { lstat, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import type { WorkflowSourceRef } from "../admission/prepared-workflow.js";
 import { inspectRuntimeStoreInternal } from "../runtime-store-lifecycle.js";
 import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout, runtimeLayoutForGeneration, type RuntimeLayout } from "../runtime-layout.js";
 import { acquireRuntimeExclusiveLock } from "../runtime-lock.js";
-import { openExistingRuntimeStoreAtLayout, type WorkflowSourceRef } from "../store/store.js";
+import { hasNoPendingRuntimeDatabaseWal } from "../storage/database.js";
+import { openExistingRuntimeStoreAtLayout } from "../store/store.js";
 import { discoverWorkspaceShards, resolveAvailableWorkspaceLayout } from "../workspace-discovery.js";
 
 export type PruneReport = {
@@ -251,7 +253,7 @@ async function activeRuns(
   immutable: boolean,
 ): Promise<Array<{ id: string; status: string; updatedAt: string }>> {
   const current = resolveRuntimeLayout(layout.canonicalPath);
-  if (immutable && await hasPendingWriteAheadLog(current.databasePath)) {
+  if (immutable && !await hasNoPendingRuntimeDatabaseWal(current.databasePath)) {
     throw new Error("Runtime store has an uncheckpointed write-ahead log; dry-run cannot inspect it without mutation.");
   }
   const store = await openExistingRuntimeStoreAtLayout(current, true, { immutable, lock: false });
@@ -263,20 +265,6 @@ async function activeRuns(
     })) ?? [];
   } finally {
     store?.close();
-  }
-}
-
-async function hasPendingWriteAheadLog(databasePath: string): Promise<boolean> {
-  try {
-    const path = `${databasePath}-wal`;
-    const info = await lstat(path);
-    if (info.isSymbolicLink() || !info.isFile()) {
-      throw new Error(`Runtime database WAL '${path}' is not a regular file.`);
-    }
-    return info.size > 0;
-  } catch (error) {
-    if (isMissing(error)) return false;
-    throw error;
   }
 }
 

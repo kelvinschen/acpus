@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isRuntimeStoreBusyError } from "../src/store/store.js";
+import { isRuntimeStoreBusyError } from "../src/storage/database.js";
 
 describe.concurrent("runtime store busy adapter", () => {
   it("recognizes SQLite busy and locked identities without matching unrelated messages", () => {

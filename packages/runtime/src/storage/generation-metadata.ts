@@ -1,7 +1,8 @@
-import { randomUUID } from "node:crypto";
-import { chmod, lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
+import { RUNTIME_STORAGE_VERSION } from "./database.js";
+import { writePrivateJsonAtomically } from "./private-json.js";
 
-export const H1_RUN_INDEX_STORAGE_VERSION = 9;
+export const H1_RUN_INDEX_STORAGE_VERSION = RUNTIME_STORAGE_VERSION;
 
 export type RuntimeGenerationMetadata = {
   schemaVersion: 1;
@@ -49,11 +50,11 @@ export async function readRunIndex(path: string): Promise<RuntimeRunIndex | unde
 
 export async function writeGenerationMetadata(path: string, value: RuntimeGenerationMetadata): Promise<void> {
   if (!isGenerationMetadata(value)) throw new Error("Runtime generation metadata is invalid.");
-  await writeJsonAtomically(path, value);
+  await writePrivateJsonAtomically(path, value);
 }
 
 export async function writeRunIndex(path: string, runs: ArchivedRunSummary[]): Promise<void> {
-  await writeJsonAtomically(path, {
+  await writePrivateJsonAtomically(path, {
     schemaVersion: 1,
     runs: [...runs].sort(compareArchivedRuns),
   } satisfies RuntimeRunIndex);
@@ -78,21 +79,6 @@ async function readJsonFile(path: string): Promise<unknown | undefined> {
     return JSON.parse(await readFile(path, "utf8")) as unknown;
   } catch (error) {
     throw new RuntimeMetadataFormatError(`Runtime metadata '${path}' is not valid JSON: ${errorMessage(error)}.`);
-  }
-}
-
-async function writeJsonAtomically(path: string, value: unknown): Promise<void> {
-  const temporary = `${path}.${randomUUID()}.tmp`;
-  try {
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
-    await rename(temporary, path);
-    if (process.platform !== "win32") await chmod(path, 0o600);
-  } finally {
-    await rm(temporary, { force: true });
   }
 }
 

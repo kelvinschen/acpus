@@ -7,9 +7,11 @@ import {
 } from "../../runtime/src/runtime-layout.js";
 import {
   openRuntimeStore,
+} from "../../runtime/src/store/store.js";
+import {
   RUNTIME_APPLICATION_ID,
   RUNTIME_STORAGE_VERSION,
-} from "../../runtime/src/store/store.js";
+} from "../../runtime/src/storage/database.js";
 import { runCli } from "../src/program.js";
 import { followRun } from "../src/run-follow.js";
 import { CaptureStream } from "./support/capture-stream.js";

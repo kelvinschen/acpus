@@ -50,5 +50,6 @@
 
 ## Verification
 
+- `pnpm test:contract packages/loader`: verifies the package-root public export surface.
 - Integration tests cover official facade and TypeScript module loading in clean source and built-package environments without ambient workspace dependencies.
 - Resolver tests cover explicit source and dependency authorities, ESM/CJS hooks, relative `.js` to TypeScript, `development` fallback boundaries, normal import conditions, and usable scratch-config paths.

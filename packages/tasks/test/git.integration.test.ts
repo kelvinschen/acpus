@@ -5,17 +5,11 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { createDollar } from "@acpus/core/runtime";
-import { createWorktree } from "../src/git.js";
-import { createWorktree as publicCreateWorktree } from "@acpus/tasks/git";
+import { createWorktree } from "@acpus/tasks/git";
 
 const exec = promisify(execFile);
 
 describe("createWorktree", () => {
-  it("is exported through the public git subpath", () => {
-    expect(publicCreateWorktree.kind).toBe("external");
-    expect(publicCreateWorktree).toBe(createWorktree);
-  });
-
   it("creates a detached worktree from a tiny local repository", async () => {
     const root = await mkdtemp(join(tmpdir(), "acpus-create-worktree-"));
     try {

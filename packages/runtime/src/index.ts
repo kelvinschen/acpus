@@ -2,6 +2,16 @@ export {
   tryNormalizeWorkflowInput,
   type SchemaNormalizationFailure,
 } from "./admission/input.js";
+export type {
+  PreparedRunValidationFailure,
+  PreparedRunWorkflow,
+  RunWorkflowLockArtifact,
+  Sha256Digest,
+  WorkflowSourceBundle,
+  WorkflowSourceFile,
+  WorkflowSourceRef,
+} from "./admission/prepared-workflow.js";
+export type { ArtifactRecord } from "./artifacts/types.js";
 export {
   startDaemonLoop,
   type DaemonLoopHandle,
@@ -48,7 +58,6 @@ export {
   type RuntimeHealthCheck,
   type RuntimeHealthReport,
   type RuntimePersistence,
-  type ArtifactRecord,
   type RunVisualizationControlTarget,
   type RunVisualizationControls,
   type RunVisualizationSnapshot,
@@ -134,12 +143,7 @@ export {
   type WorkflowVisualizationSignalWait,
 } from "./visualization/overlay.js";
 export {
-  tryValidateAgentOverrides,
   type AdmitRunFailure,
-  type AgentOverrideValidationFailure,
-  type PreparedRunValidationFailure,
-  type AgentOverrideMap,
-  type PreparedRunWorkflow,
   type RunDynamicAttempt,
   type RunDynamicDetails,
   type RunDynamicFrame,
@@ -151,12 +155,12 @@ export {
   type RunForkInfo,
   type RunRecord,
   type RunStatus,
-  type RunWorkflowLockArtifact,
-  type Sha256Digest,
-  type WorkflowSourceBundle,
-  type WorkflowSourceFile,
-  type WorkflowSourceRef,
 } from "./store/store.js";
+export {
+  tryValidateAgentOverrides,
+  type AgentOverrideMap,
+  type AgentOverrideValidationFailure,
+} from "./control/agent-overrides.js";
 export {
   inspectRuntimeStore,
   repairRuntimeStore,

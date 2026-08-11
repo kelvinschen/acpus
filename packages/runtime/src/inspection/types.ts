@@ -1,9 +1,9 @@
 import type { AgentDefinitionIR, ExprIR, NodeIR, SchemaIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTelemetryAvailability } from "@acpus/agent-executor";
+import type { ArtifactRecord } from "../artifacts/types.js";
+import type { AgentOverrideMap } from "../control/agent-overrides.js";
 import type {
-  AgentOverrideMap,
-  ArtifactRecord,
   RunDetails,
   RunForkInfo,
   RunStatus,
