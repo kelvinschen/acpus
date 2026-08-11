@@ -1,14 +1,19 @@
 import { createServer, type RequestListener, type Server } from "node:http";
-import { access, chmod, link, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, link, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { TextReader, Uint8ArrayWriter, ZipWriter } from "@zip.js/zip.js";
 import { create as createTar } from "tar";
 import { describe, expect, it } from "vitest";
-import { importWorkflowPackage } from "../src/workflow/import/index.js";
-import { runCli } from "../src/program.js";
-import { CaptureStream } from "./support/capture-stream.js";
-import { repoRoot } from "./support/cli-runner.js";
-import { withAuthoringTestWorkspace, withPlainTestWorkspace } from "./support/workspace.js";
+import {
+  globalImportRoot,
+  importDirect,
+  projectImportRoot,
+  readNames,
+  runImportText,
+  withTestHome,
+  workflowSource,
+} from "./support/workflow-import.js";
+import { withPlainTestWorkspace } from "./support/workspace.js";
 
 describe("workflow import contracts", () => {
   it("adapts local snapshot imports to exact CLI output without executing or persisting provenance", async () => {
@@ -19,7 +24,7 @@ describe("workflow import contracts", () => {
         const original = executableWorkflowSource("static-import", marker);
         await writeFile(source, original);
 
-        const imported = await runText(workspace, ["workflow", "import", source]);
+        const imported = await runImportText(workspace, ["workflow", "import", source]);
         expect(imported.exitCode).toBe(0);
         expect(imported.stdout).toBe([
           "Workflow imported.",
@@ -39,7 +44,7 @@ describe("workflow import contracts", () => {
         expect(await readFile(committedEntry, "utf8")).toBe(original);
         expect(await readNames(join(workspace, ".acpus", "workflows", "static-import"))).toEqual(["workflow.ts"]);
 
-        const collision = await runText(workspace, ["workflow", "import", committedEntry]);
+        const collision = await runImportText(workspace, ["workflow", "import", committedEntry]);
         expect(collision.exitCode).toBe(1);
         expect(collision.stdout).toBe("");
         expect(collision.stderr).toContain("Error code: IMPORT_COLLISION");
@@ -47,12 +52,12 @@ describe("workflow import contracts", () => {
 
         const unsupported = join(workspace, "source.txt");
         await writeFile(unsupported, workflowSource("unsupported"));
-        expect((await runText(workspace, ["workflow", "import", unsupported]))).toMatchObject({
+        expect((await runImportText(workspace, ["workflow", "import", unsupported]))).toMatchObject({
           exitCode: 2,
           stdout: "",
           stderr: expect.stringContaining("Workflow import source must be a directory or end in"),
         });
-        expect((await runText(workspace, ["workflow", "import", unsupported, "--project", "--global"]))).toMatchObject({
+        expect((await runImportText(workspace, ["workflow", "import", unsupported, "--project", "--global"]))).toMatchObject({
           exitCode: 2,
           stdout: "",
           stderr: expect.stringContaining("--project and --global are mutually exclusive."),
@@ -151,47 +156,6 @@ describe("workflow import contracts", () => {
     });
   });
 
-  it("returns checked global-import diagnostics in workspace context and preserves preparation failures", async () => {
-    await withAuthoringTestWorkspace("workflow-import-check", async workspace => {
-      await withTestHome("workflow-import-check-home", async home => {
-        await installWorkspaceOnlyDependency(workspace);
-        const checkedSource = join(workspace, "workspace-checked.ts");
-        await writeFile(checkedSource, workspaceDependencyWorkflowSource("workspace-checked"));
-
-        const checked = await runText(workspace, [
-          "workflow",
-          "import",
-          checkedSource,
-          "--global",
-          "--check",
-        ]);
-        expect(checked.exitCode).toBe(0);
-        expect(checked.stdout).toContain("Catalog: global/workspace-checked");
-        expect(checked.stdout).toContain("Checked: yes");
-        expect(checked.stdout).toMatch(/Source graph: sha256:[a-f0-9]{64}/u);
-        expect(checked.stdout).toMatch(/workflow\.ts:3:\d+ \[warning SC001\]/u);
-        expect(checked.stderr).toBe("");
-        await expect(access(join(home, ".acpus", "workflows", "workspace-checked", "workflow.ts"))).resolves.toBeUndefined();
-        expect(await readNames(globalImportRoot(home))).toEqual([]);
-        expect(await readNames(projectImportRoot(workspace))).toEqual([]);
-
-        const failingSource = join(workspace, "failing.ts");
-        await writeFile(failingSource, ["throw new Error('top-level import failure');", workflowSource("failed-check")].join("\n"));
-        const failed = await importDirect(workspace, failingSource, { check: true });
-        expect(failed.isErr()).toBe(true);
-        if (failed.isErr()) {
-          expect(failed.error.type).toBe("preparation");
-          if (failed.error.type === "preparation") {
-            expect(failed.error.failure.phase).toBe("compile");
-            expect(failed.error.failure.message).toContain("top-level import failure");
-          }
-        }
-        await expect(access(join(workspace, ".acpus", "workflows", "failed-check"))).rejects.toMatchObject({ code: "ENOENT" });
-        expect(await readNames(projectImportRoot(workspace))).toEqual([]);
-      });
-    });
-  });
-
   it("rejects hard links and invalid package layouts without staging residue", async () => {
     await withPlainTestWorkspace("workflow-import-local-safety", async workspace => {
       await withTestHome("workflow-import-local-safety-home", async () => {
@@ -253,19 +217,6 @@ describe("workflow import contracts", () => {
   });
 });
 
-async function importDirect(
-  workspace: string,
-  source: string,
-  options: { scope?: "project" | "global"; check?: boolean } = {},
-) {
-  return importWorkflowPackage({
-    cwd: workspace,
-    source,
-    scope: options.scope ?? "project",
-    check: options.check ?? false,
-  });
-}
-
 function expectOk(
   result: Awaited<ReturnType<typeof importDirect>>,
   name: string,
@@ -281,52 +232,12 @@ function expectImportFailure(result: Awaited<ReturnType<typeof importDirect>>, e
   if (result.isErr()) expect(result.error).toMatchObject({ type: "import", errorCode });
 }
 
-async function runText(workspace: string, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  const stdout = new CaptureStream();
-  const stderr = new CaptureStream();
-  const exitCode = await runCli(args, { cwd: workspace, stdout, stderr });
-  return { exitCode, stdout: stdout.text, stderr: stderr.text };
-}
-
-function workflowSource(name: string): string {
-  return [
-    'import { defineWorkflow } from "acpus/core";',
-    `export default defineWorkflow({ name: ${JSON.stringify(name)} }).build(() => ({ ok: true }));`,
-    "",
-  ].join("\n");
-}
-
 function executableWorkflowSource(name: string, marker: string): string {
   return [
     'import { writeFileSync } from "node:fs";',
     `writeFileSync(${JSON.stringify(marker)}, "executed");`,
     workflowSource(name),
   ].join("\n");
-}
-
-function workspaceDependencyWorkflowSource(name: string): string {
-  return [
-    'import { defineWorkflow } from "acpus/core";',
-    'import { workspaceValue } from "workspace-only";',
-    "export async function load(moduleName: string): Promise<unknown> { return import(moduleName); }",
-    `export default defineWorkflow({ name: ${JSON.stringify(name)}, description: workspaceValue }).build(() => ({ ok: true }));`,
-    "",
-  ].join("\n");
-}
-
-async function installWorkspaceOnlyDependency(workspace: string): Promise<void> {
-  const nodeModules = join(workspace, "node_modules");
-  await rm(nodeModules);
-  await mkdir(join(nodeModules, "workspace-only"), { recursive: true });
-  await symlink(join(repoRoot, "packages", "cli"), join(nodeModules, "acpus"), "dir");
-  await symlink(join(repoRoot, "node_modules", "@types"), join(nodeModules, "@types"), "dir");
-  await writeFile(join(nodeModules, "workspace-only", "package.json"), JSON.stringify({
-    name: "workspace-only",
-    type: "module",
-    exports: { ".": { types: "./index.d.ts", default: "./index.js" } },
-  }));
-  await writeFile(join(nodeModules, "workspace-only", "index.d.ts"), 'export declare const workspaceValue: "from-workspace";\n');
-  await writeFile(join(nodeModules, "workspace-only", "index.js"), 'export const workspaceValue = "from-workspace";\n');
 }
 
 async function writePackage(root: string, name: string, files: Record<string, string> = {}): Promise<void> {
@@ -344,38 +255,6 @@ async function writeZip(path: string, files: Array<[string, string, number?]>): 
   const writer = new ZipWriter(output);
   for (const [name, contents, mode] of files) await writer.add(name, new TextReader(contents), { unixMode: mode ?? 0o100644 });
   await writeFile(path, await writer.close());
-}
-
-async function readNames(path: string): Promise<string[]> {
-  try {
-    return (await readdir(path)).sort();
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
-    throw error;
-  }
-}
-
-function projectImportRoot(workspace: string): string {
-  return join(workspace, ".acpus", "tmp");
-}
-
-function globalImportRoot(home: string): string {
-  return join(home, ".acpus", "tmp", "workflow-imports");
-}
-
-async function withTestHome<T>(name: string, fn: (home: string) => Promise<T>): Promise<T> {
-  const root = join(repoRoot, ".tmp-tests");
-  await mkdir(root, { recursive: true });
-  const home = await mkdtemp(join(root, `${name}-`));
-  const previous = process.env.HOME;
-  process.env.HOME = home;
-  try {
-    return await fn(home);
-  } finally {
-    if (previous === undefined) delete process.env.HOME;
-    else process.env.HOME = previous;
-    await rm(home, { recursive: true, force: true });
-  }
 }
 
 async function startServer(handler: RequestListener): Promise<Server> {

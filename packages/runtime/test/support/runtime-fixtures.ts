@@ -51,8 +51,10 @@ export async function withRuntimeWorkspace<T>(
     return await fn(workspace);
   } finally {
     restoreHome();
-    await rm(workspace, { recursive: true, force: true });
-    await rm(home, { recursive: true, force: true });
+    await Promise.all([
+      rm(workspace, { recursive: true, force: true }),
+      rm(home, { recursive: true, force: true }),
+    ]);
   }
 }
 

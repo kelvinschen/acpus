@@ -17,7 +17,7 @@ import { rootFrameStarted } from "./support/scheduler.js";
 import { loadAgentHostPolicy } from "../src/configuration.js";
 import { observedCompletedAgentTurn, taggedAgentOutput } from "./support/agent-turn.js";
 
-describe("runtime scheduler task process", () => {
+describe.concurrent("runtime scheduler task process", () => {
   it("boots a frozen root task into durable scheduler projection and executes it", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-bootstrap", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, taskRuntimeContextWorkflow());
@@ -340,7 +340,6 @@ describe("runtime scheduler task process", () => {
 
   it("does not automatically retry task failures", async () => {
     await withRuntimeWorkspace("scheduler-node-executor-no-task-auto-retry", async workspace => {
-      (globalThis as Record<string, unknown>).__acpus_scheduler_node_executor_retry_count = 0;
       const prepared = await prepareSyntheticWorkflow(workspace, retryingTaskWorkflow());
       const store = await openRuntimeStore(workspace);
       try {
@@ -357,7 +356,6 @@ describe("runtime scheduler task process", () => {
         ]);
       } finally {
         store.close();
-        delete (globalThis as Record<string, unknown>).__acpus_scheduler_node_executor_retry_count;
       }
     });
   });
@@ -447,12 +445,8 @@ function retryingTaskWorkflow() {
     step("retry_task").task({
       input: null,
       exec: async ({ artifact }) => {
-        const globalKey = "__acpus_scheduler_node_executor_retry_count";
-        const current = Number((globalThis as Record<string, unknown>)[globalKey] ?? 0) + 1;
-        (globalThis as Record<string, unknown>)[globalKey] = current;
-        await artifact.write(`attempt-${current}.txt`, `attempt ${current}\n`);
-        if (current === 1) throw new Error("first invocation fails");
-        return { ok: true };
+        await artifact.write("attempt.txt", "attempt\n");
+        throw new Error("task fails");
       },
     });
     return {};

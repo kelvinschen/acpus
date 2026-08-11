@@ -98,8 +98,11 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
 });
 
 async function waitForDaemonUnavailable(workspace: string): Promise<void> {
-  await expect.poll(async () => {
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline) {
     const status = await requestDaemonStatus(workspace);
-    return status.isErr();
-  }).toBe(true);
+    if (status.isErr()) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error(`Daemon remained available after graceful shutdown for '${workspace}'.`);
 }
