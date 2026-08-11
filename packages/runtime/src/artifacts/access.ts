@@ -1,7 +1,7 @@
 import { closeSync, constants as fsConstants, fstatSync, openSync, readFileSync, type BigIntStats } from "node:fs";
 import { isAbsolute } from "node:path";
+import { sha256Digest } from "@acpus/core/content-identity";
 import { err, ok, type Result } from "neverthrow";
-import { sha256Digest } from "../content-digest.js";
 import { resolveRuntimeLayout } from "../runtime-layout.js";
 import {
   assertRunFileIdentity,

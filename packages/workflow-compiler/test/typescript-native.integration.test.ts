@@ -1,10 +1,10 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { sha256Digest } from "@acpus/core/content-identity";
 import { Snapshot } from "typescript/unstable/sync";
 import { describe, expect, it, vi } from "vitest";
 import { tryCompileWorkflowModule } from "../src/compiler/module.js";
-import { sha256Digest } from "../src/digest.js";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 

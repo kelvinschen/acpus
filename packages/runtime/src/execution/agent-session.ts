@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { sha256Digest } from "@acpus/core/content-identity";
 import type { AgentNodeIR } from "@acpus/core/ir";
 import { err, ok, type Result } from "neverthrow";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
@@ -39,7 +40,7 @@ export function resolveAgentSessionGroupDigest(
 ): Result<string | undefined, ResolutionError> {
   return renderSessionKey(node, scope).map(sessionKey => sessionKey === undefined
     ? undefined
-    : `sha256:${createHash("sha256").update(SESSION_GROUP_DOMAIN).update(sessionKey).digest("hex")}`);
+    : sha256Digest(`${SESSION_GROUP_DOMAIN}${sessionKey}`));
 }
 
 function renderSessionKey(node: AgentNodeIR, scope: EvaluationScope): Result<string | undefined, ResolutionError> {

@@ -78,7 +78,7 @@
 - A snapshot source reference MUST contain exactly its portable entry and `sha256:<hex>` source-graph digest.
 - A snapshot prepared workflow MUST contain one canonical `acpus_workflow_source_bundle` v1; workspace prepared workflows MUST NOT contain a source bundle.
 - Bundle file paths MUST be safe portable POSIX relative paths in ascending ordinal order, with no duplicates, file/directory prefix conflicts, or NFC/case-folded path or directory-segment collisions, and the exact entry MUST be present.
-- Runtime MUST recompute the snapshot source graph as `sha256(stableJsonLine({ kind: "acpus_workflow_source_graph", version: 1, entry, files: [{ path, digest: sha256(utf8Content) }] }))`; it MUST equal both the source reference digest and prepared `sourceGraphDigest`.
+- Runtime MUST recompute the snapshot source graph through the canonical [Core content identity](core-spec.md#content-identity) contract; it MUST equal both the source reference digest and prepared `sourceGraphDigest`.
 - Runtime MUST verify the lock entry digest against the corresponding bundle file for snapshots and the live regular non-symbolic-link workspace entry for workspace sources.
 - A source bundle is admission-only: Runtime MUST NOT persist it in SQLite, run capsules, locks, events, fork fingerprints, or public run metadata.
 - Admission MUST publish a verified snapshot through a private staging directory, `0700` directories, `0600` files, and atomic rename beneath the current store's `store/sources/snapshots/<sha256-hex>/`; an existing digest path MUST have its private modes, manifest, inventory, and contents fully verified before reuse on POSIX platforms.

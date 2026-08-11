@@ -1,5 +1,5 @@
 import { writeFile } from "node:fs/promises";
-import type { Sha256Digest } from "../digest.js";
+import { isSha256Digest } from "@acpus/core/content-identity";
 import { tryCompileWorkflowModule } from "./module.js";
 import type { CompileWorkerEnvelope } from "./worker-protocol.js";
 
@@ -32,8 +32,4 @@ try {
   };
   await writeFile(out, `${JSON.stringify(envelope, null, 2)}\n`);
   process.exitCode = 1;
-}
-
-function isSha256Digest(value: unknown): value is Sha256Digest {
-  return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
 }

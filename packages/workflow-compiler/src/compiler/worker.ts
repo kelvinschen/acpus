@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Sha256Digest } from "@acpus/core/content-identity";
 import { err, ResultAsync, type Result } from "neverthrow";
 import type { CompiledWorkflowModule, CompileWorkflowModuleError } from "./module.js";
-import type { Sha256Digest } from "../digest.js";
 import { runProcess, type ProcessResult } from "./process.js";
 import {
   interpretCompileWorkerOutput,

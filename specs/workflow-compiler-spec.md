@@ -12,7 +12,7 @@
 - The package MUST expose `tryPrepareWorkflow(options)`.
 - The package MUST expose `extractWorkflowMetadata(source, fileName)` as a `ResultAsync<WorkflowMetadata, WorkflowMetadataError>` static-analysis API.
 - The package MUST expose `WorkflowPreparationError` and public preparation, lock, and failure types.
-- The package MUST expose `Sha256Digest`, `WorkflowSourceFile`, `WorkflowSourceInput`, `WorkflowSourceRef`, and `WorkflowSourceBundle`.
+- The package MUST expose the canonical Core `Sha256Digest` type alongside `WorkflowSourceFile`, `WorkflowSourceInput`, `WorkflowSourceRef`, and `WorkflowSourceBundle`.
 - The package MUST expose `CompileWorkerFailure` and `PackageLockFailure` as public failure types without exposing the worker process entrypoint.
 - The package MUST NOT expose a public preflight artifact writer.
 - The package MUST NOT expose a binary.
@@ -188,8 +188,6 @@ type WorkflowPreparationOptions = {
 - `WorkflowSourceRef` and `WorkflowSourceBundle` MUST use these closed shapes.
 
 ```ts
-type Sha256Digest = `sha256:${string}`;
-
 type WorkflowSourceRef =
   | { kind: "workspace"; entry: string }
   | { kind: "snapshot"; entry: string; digest: Sha256Digest };
@@ -215,19 +213,8 @@ type WorkflowSourceBundle = {
 - A snapshot IR value that retains the private materialization path MUST fail with type `source-invalid` and phase `source` before preparation returns either a prepared workflow or a validation failure.
 
 - Bundle files MUST be sorted by locale-independent path code-unit order.
-- Source-file content digests MUST be SHA-256 of UTF-8 content.
-- `sourceGraphDigest` MUST be SHA-256 of recursively key-sorted stable JSON plus one trailing newline for this payload:
-
-```ts
-{
-  kind: "acpus_workflow_source_graph",
-  version: 1,
-  entry,
-  files: [{ path, digest }]
-}
-```
-
-- The source-graph payload files MUST be path-sorted and contain no absolute paths, mtimes, modes, source roots, or package-lock data.
+- Source-file content digests and `sourceGraphDigest` MUST use the canonical [Core content identity](core-spec.md#content-identity) contract.
+- The source-graph inventory MUST contain the path-sorted prepared files and MUST contain no absolute paths, mtimes, modes, source roots, or package-lock data.
 - A snapshot source digest MUST equal its prepared `sourceGraphDigest`.
 - A workspace source graph MUST use paths relative to `workspaceDir` and the same digest payload without returning a bundle. A supported local static source or affecting nearest package manifest outside `workspaceDir` MUST remain live and use a leading `../` path; a path on a different volume that cannot be represented relative to `workspaceDir` MUST fail with type `source-invalid` and phase `source`.
 - `PreparedWorkflow` MUST be a closed union in which workspace sources have no `sourceBundle` and snapshot sources require the matching inline `sourceBundle`.

@@ -3,6 +3,7 @@ import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { isSha256Digest, sha256Digest, sha256DigestHex } from "@acpus/core/content-identity";
 import { walkNodes, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { staticExprShape, type JsonValue, type StaticExprShape } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
@@ -44,7 +45,6 @@ import {
 import type { ForkReplayFact } from "./replay-model.js";
 import { requireActiveOwnerEpoch, SqliteSchedulerStorePort, throwSchedulerStoreError } from "./scheduler-store.js";
 import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
-import { sha256Digest, type Sha256Digest } from "../content-digest.js";
 import { isContainedPath } from "../path-containment.js";
 import {
   createWorkflowSourceSnapshotManifest,
@@ -779,11 +779,11 @@ class SqliteRuntimeStore implements RuntimeStore {
       `).run(
         runId,
         "workflow.ir.json",
-        sha256Digest(Buffer.from(prepared.value.irJson)),
+        sha256Digest(prepared.value.irJson),
         stableJsonLine(normalizedInput.value),
         stableJsonLine(agentOverrides.value),
         "lock.json",
-        sha256Digest(Buffer.from(lockJson)),
+        sha256Digest(lockJson),
         prepared.value.packageLockDigest ?? null,
         stableJsonLine(prepared.value.source),
       );
@@ -1296,12 +1296,12 @@ class SqliteRuntimeStore implements RuntimeStore {
       `).run(
         forkId,
         "workflow.ir.json",
-        sha256Digest(Buffer.from(forkIrJson)),
+        sha256Digest(forkIrJson),
         forkInputJson,
         stableJsonLine(forkAgentOverrides),
         null,
         "lock.json",
-        sha256Digest(Buffer.from(forkLockJson)),
+        sha256Digest(forkLockJson),
         forkPackageLockDigest,
         stableJsonLine(forkSource),
       );
@@ -2244,7 +2244,7 @@ async function publishWorkflowSource(
     snapshots.verify();
     return;
   }
-  const digestHex = digestHexForPath(prepared.source.digest);
+  const digestHex = sha256DigestHex(prepared.source.digest);
   const parent = snapshots.verify();
   const staging = join(parent, `.staging-${digestHex}-${randomUUID()}`);
   snapshots.verify();
@@ -2313,7 +2313,7 @@ function snapshotRootForSource(
   layout: RuntimeLayout,
   source: Extract<WorkflowSourceRef, { kind: "snapshot" }>,
 ): string {
-  return join(layout.sourcesRoot, "snapshots", digestHexForPath(source.digest));
+  return join(layout.sourcesRoot, "snapshots", sha256DigestHex(source.digest));
 }
 
 function resolveFrozenSourceRoot(
@@ -2447,10 +2447,6 @@ function assertPrivateSnapshotMode(
 
 function compareSourcePaths(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
-}
-
-function digestHexForPath(value: Sha256Digest): string {
-  return value.slice("sha256:".length);
 }
 
 async function ensureFencedChildDirectory(
@@ -2745,7 +2741,7 @@ function verifyRegisteredArtifact(
 ): void {
   if (!Number.isSafeInteger(expected.size)
     || expected.size < 0
-    || !/^sha256:[a-f0-9]{64}$/.test(expected.digest)) {
+    || !isSha256Digest(expected.digest)) {
     throw new Error(`Artifact '${expected.id}' has invalid size or digest metadata.`);
   }
   const label = `Artifact '${expected.id}'`;

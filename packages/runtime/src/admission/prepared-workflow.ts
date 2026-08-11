@@ -1,8 +1,13 @@
 import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
+import {
+  isSha256Digest,
+  sha256Digest,
+  workflowSourceGraphDigest,
+  type Sha256Digest,
+} from "@acpus/core/content-identity";
 import { validateWorkflowIR, walkNodes, type WorkflowIR } from "@acpus/core/ir";
 import { err, ok, type Result } from "neverthrow";
-import { sha256Digest, type Sha256Digest } from "../content-digest.js";
 import { isContainedPath } from "../path-containment.js";
 import { stableJsonLine } from "../stable-json.js";
 
@@ -102,7 +107,7 @@ export function tryValidatePreparedRunWorkflow(
   if (existingError) {
     return preparedInvalid("invalid-ir", `Prepared workflow IR contains an error diagnostic: ${existingError.code}: ${existingError.message}`);
   }
-  if (sha256Digest(Buffer.from(candidate.irJson)) !== candidate.lock.ir.digest) {
+  if (sha256Digest(candidate.irJson) !== candidate.lock.ir.digest) {
     return preparedInvalid("ir-digest-mismatch", "Prepared workflow lock IR digest does not match IR JSON.");
   }
   if (candidate.lock.sourceGraphDigest !== candidate.sourceGraphDigest) {
@@ -122,10 +127,13 @@ export function tryValidatePreparedRunWorkflow(
     if (!entry) {
       return preparedInvalid("entry-mismatch", "Prepared workflow source entry is missing from its source bundle.");
     }
-    if (sha256Digest(Buffer.from(entry.content)) !== candidate.lock.workflow.entryDigest) {
+    if (sha256Digest(entry.content) !== candidate.lock.workflow.entryDigest) {
       return preparedInvalid("entry-mismatch", "Prepared workflow entry digest does not match its source bundle.");
     }
-    const graphDigest = workflowSourceGraphDigest(candidate.source.entry, files);
+    const graphDigest = workflowSourceGraphDigest(
+      candidate.source.entry,
+      files.map(file => ({ path: file.path, digest: sha256Digest(file.content) })),
+    );
     if (candidate.source.digest !== graphDigest || candidate.sourceGraphDigest !== graphDigest) {
       return preparedInvalid("source-graph-mismatch", "Prepared workflow source graph digest does not match its source bundle.");
     }
@@ -221,7 +229,7 @@ export function createWorkflowSourceSnapshotManifest(
     version: 1,
     entry: source.entry,
     digest: source.digest,
-    files: files.map(file => ({ path: file.path, digest: sha256Digest(Buffer.from(file.content)) })),
+    files: files.map(file => ({ path: file.path, digest: sha256Digest(file.content) })),
   };
 }
 
@@ -255,7 +263,7 @@ export function isWorkflowSourceSnapshotManifest(value: unknown): value is Workf
 export function workflowSourceGraphDigestFromManifest(
   manifest: WorkflowSourceSnapshotManifest,
 ): Sha256Digest {
-  return workflowSourceGraphDigestFromDigests(manifest.entry, manifest.files);
+  return workflowSourceGraphDigest(manifest.entry, manifest.files);
 }
 
 function isWorkflowSourceRef(value: unknown): value is WorkflowSourceRef {
@@ -290,25 +298,6 @@ function isWorkflowSourceBundle(value: unknown): value is WorkflowSourceBundle {
   return !hasSourcePathInventoryCollision(paths);
 }
 
-function workflowSourceGraphDigest(entry: string, files: readonly WorkflowSourceFile[]): Sha256Digest {
-  return workflowSourceGraphDigestFromDigests(
-    entry,
-    files.map(file => ({ path: file.path, digest: sha256Digest(Buffer.from(file.content)) })),
-  );
-}
-
-function workflowSourceGraphDigestFromDigests(
-  entry: string,
-  files: readonly { path: string; digest: Sha256Digest }[],
-): Sha256Digest {
-  return sha256Digest(Buffer.from(stableJsonLine({
-    kind: "acpus_workflow_source_graph",
-    version: 1,
-    entry,
-    files,
-  })));
-}
-
 function isPortableSourcePath(value: unknown): value is string {
   return typeof value === "string"
     && value.length > 0
@@ -317,10 +306,6 @@ function isPortableSourcePath(value: unknown): value is string {
     && !value.includes("\\")
     && !value.includes("\0")
     && value.split("/").every(segment => segment.length > 0 && segment !== "." && segment !== "..");
-}
-
-function isSha256Digest(value: unknown): value is Sha256Digest {
-  return typeof value === "string" && /^sha256:[a-f0-9]{64}$/.test(value);
 }
 
 function hasSourcePathInventoryCollision(paths: readonly string[]): boolean {

@@ -1,7 +1,11 @@
 import { isAbsolute, relative, resolve, sep } from "node:path";
+import {
+  sha256Digest,
+  workflowSourceGraphDigest,
+  type Sha256Digest,
+} from "@acpus/core/content-identity";
 import type { DiagnosticIR } from "@acpus/core/ir";
 import { err, ok, type Result } from "neverthrow";
-import { sha256Digest, stableJsonLine, type Sha256Digest } from "../digest.js";
 
 export type WorkflowSourceFile = {
   path: string;
@@ -109,14 +113,10 @@ export function sourceGraphDigest(
   entry: string,
   files: readonly WorkflowSourceFile[],
 ): Sha256Digest {
-  return sha256Digest(stableJsonLine({
-    kind: "acpus_workflow_source_graph",
-    version: 1,
+  return workflowSourceGraphDigest(
     entry,
-    files: [...files]
-      .sort(compareSourceFiles)
-      .map(file => ({ path: file.path, digest: sha256Digest(file.content) })),
-  }));
+    files.map(file => ({ path: file.path, digest: sha256Digest(file.content) })),
+  );
 }
 
 function sourcePathCollision(paths: readonly string[]): string | undefined {

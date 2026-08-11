@@ -62,10 +62,11 @@ only for rare, substantial subdivisions. Keep terminology stable.
   bold labels when they improve scanning; otherwise bold only a short
   conclusion, condition, contrast, actor, or action. **NEVER** bold a complete
   section deck, sentence, or paragraph. For CJK labels, put trailing punctuation
-  outside bold markers: **标签**：正文.
-- Use contrast only for a material distinction. Use “not X but Y” /
-  “不是 X，而是 Y” only to reject a plausible reading; otherwise state Y
-  directly. Let real categories determine item count.
+  outside bold markers: **标签**：正文. Let real categories determine item count.
+- State facts directly. Before finalizing, search for “not X but Y” /
+  “不是 X，而是 Y” and rewrite every occurrence unless X was explicitly raised
+  by the user or evidence as a likely misconception and rejecting it changes
+  the conclusion or action. **NEVER** use this construction in headings.
 - Do not restage one claim in the title, thesis, section deck, rich-block
   takeaway, and conclusion. Each recurrence must add evidence, scope,
   consequence, or action. Follow the report language's natural syntax; in

@@ -1,6 +1,6 @@
 import { validateWorkflowIR, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
+import { isSha256Digest, type Sha256Digest } from "@acpus/core/content-identity";
 import { err, ok, type Result } from "neverthrow";
-import type { Sha256Digest } from "../digest.js";
 import type { CompiledWorkflowModule, CompileWorkflowModuleError } from "./module.js";
 import type { ProcessResult } from "./process.js";
 
@@ -74,7 +74,7 @@ export function parseCompileWorkerEnvelope(
 function isCompiledWorkflowModule(value: unknown): value is CompiledWorkflowModule {
   return isRecord(value)
     && hasExactKeys(value, ["ir", "sourceDigest"])
-    && /^sha256:[a-f0-9]{64}$/.test(asString(value.sourceDigest))
+    && isSha256Digest(value.sourceDigest)
     && isWorkflowIR(value.ir);
 }
 
@@ -144,10 +144,6 @@ function invalidResult(message: string, result: CompletedProcess): WorkerProtoco
     stdoutTail: result.stdoutTail,
     stderrTail: result.stderrTail,
   };
-}
-
-function asString(value: unknown): string {
-  return typeof value === "string" ? value : "";
 }
 
 function hasExactKeys(value: Record<string, unknown>, required: string[], optional: string[] = []): boolean {

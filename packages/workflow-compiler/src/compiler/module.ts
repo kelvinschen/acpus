@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, resolve, relative } from "node:path";
 import { pathToFileURL } from "node:url";
+import { sha256Digest, type Sha256Digest } from "@acpus/core/content-identity";
 import { importAuthoringModule } from "@acpus/loader";
 import {
   isWorkflowDefinition,
@@ -10,7 +11,6 @@ import {
 } from "@acpus/core/workflow";
 import type { WorkflowIR } from "@acpus/core/ir";
 import { analyzeWorkflowTasks, resolveTaskReferenceMetadata } from "../task-analysis/index.js";
-import { sha256Digest, type Sha256Digest } from "../digest.js";
 import { err, ok, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
 
 export type CompiledWorkflowModule = {

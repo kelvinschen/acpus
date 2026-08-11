@@ -461,6 +461,15 @@ code {
   font-weight: 500;
 }
 
+:is(h1, h2, h3, h4):has(code) code {
+  padding-block: 0;
+  font-size: .86em;
+}
+h1:has(code) { line-height: 1.2; }
+h2:has(code) { line-height: 1.26; }
+h3:has(code) { line-height: 1.3; }
+h4:has(code) { line-height: 1.35; }
+
 pre {
   margin-block: var(--space-lg) var(--space-xl);
   padding: var(--space-lg);
@@ -933,6 +942,8 @@ img {
   line-height: 1.1;
   letter-spacing: -.015em;
 }
+
+:root[data-language] h1:has(code) { line-height: 1.2; }
 
 :root[data-language="zh-CN"] h1,
 :root[data-language="zh-CN"] h2,

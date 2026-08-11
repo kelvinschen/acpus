@@ -1,11 +1,11 @@
 import { readFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { sha256Digest, type Sha256Digest } from "@acpus/core/content-identity";
 import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import type { WorkflowCheckResult } from "../check/runner.js";
 import { compileWorkflow, type CompileWorkerFailure } from "../compiler/worker.js";
-import { sha256Digest, type Sha256Digest } from "../digest.js";
 import {
   mergeSourceDiagnostics,
   remapSourceDiagnostics,
@@ -20,7 +20,6 @@ import {
 } from "./source-preparation.js";
 import { createScratchDir } from "./temp.js";
 
-export type { Sha256Digest } from "../digest.js";
 export type {
   WorkflowSourceBundle,
   WorkflowSourceFile,

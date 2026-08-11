@@ -1,8 +1,8 @@
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import { sha256Digest } from "@acpus/core/content-identity";
 import { describe, expect, it } from "vitest";
 import { checkTypeScript } from "../src/check/typescript.js";
-import { sha256Digest } from "../src/digest.js";
 import { createScratchDir } from "../src/preflight/temp.js";
 import { runCheck, withCheckWorkspace } from "./support/check-workspace.js";
 

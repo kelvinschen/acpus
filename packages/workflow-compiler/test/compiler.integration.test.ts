@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { sha256Digest, type Sha256Digest } from "@acpus/core/content-identity";
 import { describe, expect, it } from "vitest";
 import {
   tryCompileWorkflowModule,
@@ -11,7 +12,6 @@ import {
 } from "../src/compiler/module.js";
 import { walkNodes, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { evaluateExpr } from "@acpus/expression/evaluator";
-import { sha256Digest, type Sha256Digest } from "../src/digest.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));

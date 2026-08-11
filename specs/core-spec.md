@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@acpus/core` owns the TypeScript workflow DSL, schema bridge, node authoring shapes, serializable `WorkflowIR`, and structural IR validation. [Expression](expression-spec.md) owns expression and template semantics; the [Workflow Compiler](workflow-compiler-spec.md) owns TypeScript module checks, task callsite analysis, and reusable task preparation.
+`@acpus/core` owns the TypeScript workflow DSL, schema bridge, node authoring shapes, serializable `WorkflowIR`, structural IR validation, and shared content identity. [Expression](expression-spec.md) owns expression and template semantics; the [Workflow Compiler](workflow-compiler-spec.md) owns TypeScript module checks, task callsite analysis, and reusable task preparation.
 
 ## Requirements
 
@@ -14,7 +14,15 @@
 - `@acpus/core/schema` MUST expose the native `z` authoring object, `toSchemaIR`, `tryToSchemaIR`, and `schemaToJsonSchema`.
 - `@acpus/core/runtime` MUST expose the task command wrapper factory `createDollar` and related task runtime types.
 - `@acpus/core/ir` MUST expose `validateWorkflowIR`, `tryParseDurationMs`, `childScopes`, `walkNodes`, `DurationParseError`, and public IR and traversal types.
+- `@acpus/core/content-identity` MUST expose `Sha256Digest`, `sha256Digest`, `isSha256Digest`, `sha256DigestHex`, and `workflowSourceGraphDigest` without adding runtime values to the root authoring entrypoint.
 - The core package MUST NOT expose a binary; command behavior belongs to the `acpus` CLI package.
+
+### Content Identity
+
+- `Sha256Digest` MUST use the `sha256:<64-lowercase-hex>` wire shape. String content MUST be hashed as its exact UTF-8 bytes without normalization or framing; byte content MUST be hashed verbatim.
+- Digest validation MUST accept only the complete canonical wire shape, and digest-to-hex extraction MUST reject malformed values.
+- Workflow source-graph identity MUST hash compact recursively key-sorted JSON plus one trailing LF for `{ kind: "acpus_workflow_source_graph", version: 1, entry, files: [{ path, digest }] }`.
+- Source-graph files and object keys MUST be ordered by locale-independent code-unit order without mutating caller-owned input.
 
 ### Workflow Authoring
 
@@ -210,3 +218,4 @@
 - Dollar integration tests cover live process defaults, captured output, rendered commands, exit controls, timeouts, and abort-listener cleanup.
 - Lowering and validation tests cover deterministic closed `WorkflowIR`, duration rules, task targets, output/ref legality, and single-owner diagnostics.
 - Traversal tests cover every node kind, child-scope order, ancestry, and the public traversal type unions.
+- Content-identity tests cover the exact subpath exports, digest wire format, UTF-8 and byte semantics, strict validation, hex extraction, and canonical source-graph vectors.

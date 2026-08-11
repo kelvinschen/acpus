@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
+import { sha256Digest } from "@acpus/core/content-identity";
 import type { AgentDefinitionIR, AgentNodeIR, WorkflowIR } from "@acpus/core/ir";
 import {
   acpxSessionProjectionPath,
@@ -12,7 +13,6 @@ import {
 } from "@acpus/agent-executor";
 import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
-import { sha256Digest } from "../content-digest.js";
 import {
   removeRunFile,
   verifyRunFile,

@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { sha256Digest } from "@acpus/core/content-identity";
 import type { AgentDefinitionIR, AgentNodeIR, ExprIR, NodeIR, SignalNodeIR, TaskNodeIR } from "@acpus/core/ir";
 import { tryEvaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import { resolveAgentSessionGroupDigest } from "../execution/agent-session.js";
@@ -108,7 +108,7 @@ function canonicalValue(
 }
 
 function digest(value: unknown): string {
-  return `sha256:${createHash("sha256").update(stableJson(value)).digest("hex")}`;
+  return sha256Digest(stableJson(value));
 }
 
 export function isReplayLeaf(node: NodeIR): node is ReplayLeaf {

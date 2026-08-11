@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Sha256Digest } from "@acpus/core/content-identity";
 import { describe, expect, it } from "vitest";
 import type { WorkflowIR } from "@acpus/core/ir";
 import {
@@ -10,7 +11,6 @@ import {
   type PreparedRunWorkflow,
   type WorkflowSourceFile,
 } from "../src/admission/prepared-workflow.js";
-import type { Sha256Digest } from "../src/content-digest.js";
 import { stableJson } from "../src/stable-json.js";
 
 type SnapshotPreparedWorkflow = Extract<PreparedRunWorkflow, { source: { kind: "snapshot" } }>;

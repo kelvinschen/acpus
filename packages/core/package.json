@@ -20,6 +20,11 @@
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
     },
+    "./content-identity": {
+      "development": "./src/content-identity.ts",
+      "types": "./dist/content-identity.d.ts",
+      "default": "./dist/content-identity.js"
+    },
     "./schema": {
       "development": "./src/schema.ts",
       "types": "./dist/schema.d.ts",

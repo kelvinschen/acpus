@@ -1,10 +1,10 @@
 import { lstat, mkdir, readFile, realpath, stat, symlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
+import type { Sha256Digest } from "@acpus/core/content-identity";
 import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
 import { err, ok, type Result } from "neverthrow";
 import { checkWorkflow, type WorkflowCheckResult } from "../check/runner.js";
-import type { Sha256Digest } from "../digest.js";
 import {
   canonicalizeFilesSource,
   canonicalizeSourcePath,

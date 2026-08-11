@@ -1,9 +1,9 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { sha256Digest, type Sha256Digest } from "@acpus/core/content-identity";
 import type { DiagnosticIR } from "@acpus/core/ir";
 import { checkTypeScript } from "./typescript.js";
 import type { TypeScriptNativeFailure } from "../typescript/native.js";
-import { sha256Digest, type Sha256Digest } from "../digest.js";
 import type { CheckedSourceFile } from "./source-capture.js";
 
 export type WorkflowCheckResult = {

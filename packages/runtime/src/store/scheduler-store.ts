@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { sha256Digest } from "@acpus/core/content-identity";
 import type { JsonValue } from "@acpus/expression/ir";
-import { sha256Digest } from "../content-digest.js";
 import { tryCreateDeadline } from "../deadline.js";
 import { stableJson, stableJsonLine } from "../stable-json.js";
 import { planCancelControl, planRetryControl, settleRetryControlSnapshot, validateRetryControlRun } from "../scheduler/control-plan.js";

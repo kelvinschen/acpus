@@ -1,5 +1,6 @@
 import { lstat, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
+import { sha256DigestHex } from "@acpus/core/content-identity";
 import type { WorkflowSourceRef } from "../admission/prepared-workflow.js";
 import { inspectRuntimeStoreInternal } from "../runtime-store-lifecycle.js";
 import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout, runtimeLayoutForGeneration, type RuntimeLayout } from "../runtime-layout.js";
@@ -303,7 +304,7 @@ async function pruneUnreferencedSources(
   onDelete: (bytes: number) => void,
 ): Promise<void> {
   const referenced = new Set(sources.flatMap(source => source.kind === "snapshot"
-    ? [source.digest.slice("sha256:".length)]
+    ? [sha256DigestHex(source.digest)]
     : []));
   const root = join(layout.sourcesRoot, "snapshots");
   for (const snapshot of await readOwnedDirectory(root, "Runtime workflow snapshots")) {

@@ -1,5 +1,12 @@
 import { assertType, expectTypeOf, test } from "vitest";
 import { defineWorkflow, task, z, type ArtifactRef, type TaskContext } from "@acpus/core";
+import {
+  isSha256Digest,
+  sha256Digest,
+  sha256DigestHex,
+  workflowSourceGraphDigest,
+  type Sha256Digest,
+} from "@acpus/core/content-identity";
 import { lift, template, type Expr, type Resolvable } from "@acpus/expression";
 import { refExpr, type ExprIR } from "@acpus/expression/ir";
 import type { Result } from "neverthrow";
@@ -58,6 +65,8 @@ import type { StepInput as WorkflowStepInput } from "@acpus/core/workflow";
 import type { GraphInput as WorkflowGraphInput } from "@acpus/core/workflow";
 // @ts-expect-error Task input constraints are internal implementation details.
 import type { RuntimeInput as WorkflowRuntimeInput } from "@acpus/core/workflow";
+// @ts-expect-error content identity types belong to the dedicated subpath.
+import type { Sha256Digest as RootSha256Digest } from "@acpus/core";
 void (null as unknown as StepInput);
 void (null as unknown as GraphInput);
 void (null as unknown as RuntimeInput);
@@ -94,6 +103,14 @@ test("public package subpaths expose the intended type surface", () => {
   >();
   expectTypeOf(childScopes).toEqualTypeOf<(node: NodeIR) => readonly NodeChildScope[]>();
   expectTypeOf(walkNodes).toEqualTypeOf<(scope: ScopeIR) => IterableIterator<NodeVisit>>();
+  expectTypeOf<Sha256Digest>().toEqualTypeOf<`sha256:${string}`>();
+  expectTypeOf(sha256Digest).toEqualTypeOf<(content: string | Uint8Array) => Sha256Digest>();
+  expectTypeOf(isSha256Digest).toEqualTypeOf<(value: unknown) => value is Sha256Digest>();
+  expectTypeOf(sha256DigestHex).toEqualTypeOf<(value: Sha256Digest) => string>();
+  expectTypeOf(workflowSourceGraphDigest).toEqualTypeOf<(
+    entry: string,
+    files: readonly { readonly path: string; readonly digest: Sha256Digest }[],
+  ) => Sha256Digest>();
   expectTypeOf<NodeVisit>().toEqualTypeOf<{
     node: NodeIR;
     ancestry: readonly NodeChildScope[];
@@ -143,4 +160,5 @@ test("public package subpaths expose the intended type surface", () => {
   void (null as unknown as RootOutputValues);
   void (null as unknown as WorkflowOutputValue);
   void (null as unknown as WorkflowOutputValues);
+  void (null as unknown as RootSha256Digest);
 });

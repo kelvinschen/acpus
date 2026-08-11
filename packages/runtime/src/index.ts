@@ -10,7 +10,7 @@ export type {
   WorkflowSourceFile,
   WorkflowSourceRef,
 } from "./admission/prepared-workflow.js";
-export type { Sha256Digest } from "./content-digest.js";
+export type { Sha256Digest } from "@acpus/core/content-identity";
 export type { ArtifactRecord } from "./artifacts/types.js";
 export {
   startDaemonLoop,

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import * as core from "@acpus/core";
+import * as contentIdentity from "@acpus/core/content-identity";
 import * as ir from "@acpus/core/ir";
 import * as runtime from "@acpus/core/runtime";
 import * as schema from "@acpus/core/schema";
@@ -24,6 +25,15 @@ describe("@acpus/core public API", () => {
       "z",
     ]);
     expect(schema.z).toBe(nativeZ);
+  });
+
+  it("exports content identity operations from its dedicated entrypoint", () => {
+    expect(Object.keys(contentIdentity).sort()).toEqual([
+      "isSha256Digest",
+      "sha256Digest",
+      "sha256DigestHex",
+      "workflowSourceGraphDigest",
+    ]);
   });
 
   it("exports workflow helpers from the workflow entrypoint", () => {
