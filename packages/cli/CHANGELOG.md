@@ -1,5 +1,11 @@
 # acpus
 
+## 0.13.5
+
+### Patch Changes
+
+- c970649: Improve deep-research image collection and presentation, and turn evidence limits into reader-facing findings.
+
 ## 0.13.4
 
 ### Patch Changes
