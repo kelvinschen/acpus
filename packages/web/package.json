@@ -1,6 +1,6 @@
 {
   "name": "@acpus/web",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "Acpus WebUI — local operator console for run observation and control.",
   "license": "MIT",

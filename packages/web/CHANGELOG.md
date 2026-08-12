@@ -1,5 +1,16 @@
 # @acpus/web
 
+## 0.3.1
+
+### Patch Changes
+
+- c34af71: Bind reads and streamed admission to one opaque Runtime authority, safely retire an idle predecessor daemon, preserve active or incompatible stores without mutation, and map typed Runtime availability directly in CLI and Web recovery flows.
+- Updated dependencies [261912e]
+- Updated dependencies [c34af71]
+  - @acpus/core@0.12.0
+  - @acpus/workflow-compiler@0.3.4
+  - @acpus/runtime@0.16.1
+
 ## 0.3.0
 
 ### Minor Changes

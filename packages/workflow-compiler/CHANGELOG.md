@@ -1,5 +1,14 @@
 # @acpus/workflow-compiler
 
+## 0.3.4
+
+### Patch Changes
+
+- 261912e: Centralize canonical SHA-256 content identity and workflow source-graph digests in Core for Compiler and Runtime consumers.
+- Updated dependencies [261912e]
+  - @acpus/core@0.12.0
+  - @acpus/loader@0.2.3
+
 ## 0.3.3
 
 ### Patch Changes
