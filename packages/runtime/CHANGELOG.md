@@ -1,5 +1,15 @@
 # @acpus/runtime
 
+## 0.16.1
+
+### Patch Changes
+
+- 261912e: Centralize canonical SHA-256 content identity and workflow source-graph digests in Core for Compiler and Runtime consumers.
+- c34af71: Bind reads and streamed admission to one opaque Runtime authority, safely retire an idle predecessor daemon, preserve active or incompatible stores without mutation, and map typed Runtime availability directly in CLI and Web recovery flows.
+- Updated dependencies [261912e]
+  - @acpus/core@0.12.0
+  - @acpus/loader@0.2.3
+
 ## 0.16.0
 
 ### Minor Changes

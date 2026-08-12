@@ -1,5 +1,21 @@
 # acpus
 
+## 0.13.4
+
+### Patch Changes
+
+- 6c2b8bd: Add a bounded RLM frontier workflow with minimal machine-readable seams, prose evidence dossiers, and independent final synthesis.
+- 9032cfc: Add hover and keyboard source previews to deep-research HTML reports while preserving citation navigation.
+- c34af71: Bind reads and streamed admission to one opaque Runtime authority, safely retire an idle predecessor daemon, preserve active or incompatible stores without mutation, and map typed Runtime availability directly in CLI and Web recovery flows.
+- Updated dependencies [261912e]
+- Updated dependencies [c34af71]
+  - @acpus/core@0.12.0
+  - @acpus/workflow-compiler@0.3.4
+  - @acpus/runtime@0.16.1
+  - @acpus/web@0.3.1
+  - @acpus/loader@0.2.3
+  - @acpus/tasks@0.1.8
+
 ## 0.13.3
 
 ### Patch Changes

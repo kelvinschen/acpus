@@ -1,5 +1,11 @@
 # @acpus/core
 
+## 0.12.0
+
+### Minor Changes
+
+- 261912e: Centralize canonical SHA-256 content identity and workflow source-graph digests in Core for Compiler and Runtime consumers.
+
 ## 0.11.0
 
 ### Minor Changes
