@@ -481,12 +481,14 @@ p { margin-block: 0 var(--space-lg); text-wrap: pretty; }
 }
 .image-figure .publication-image {
   display: block;
-  width: auto;
+  width: 100%;
+  height: auto;
   max-width: 100%;
-  max-height: min(68vh, 48rem);
-  margin-inline: auto;
+  max-height: none;
+  margin-inline: 0;
   object-fit: contain;
 }
+.image-figure > .evidence-caption { margin-block-start: var(--space-sm); }
 .section-deck {
   margin-block-end: var(--space-xl);
   color: var(--color-ink);
@@ -785,7 +787,6 @@ tr:last-child td { border-block-end: 0; }
 }
 .article-opening--cover > .opening-cover .evidence-caption {
   order: 2;
-  margin-block-start: var(--space-sm);
 }
 .article-opening--cover > .opening-cover .evidence-note { order: 3; }
 .article-opening--cover > .image-figure .publication-image {

@@ -40,8 +40,9 @@ use a deck to preview content, inventory confirmed versus unconfirmed evidence,
 or repeat a generic limitation. Use H2 only for the major stages that form the
 article's route. **ALWAYS** give a complex H2 internal structure: when two or
 more sibling submechanisms, cases, or evidence layers each need sustained
-explanation, group them under concise, descriptive H3s; use a labeled list when
-the items are brief and parallel, and prose when the thought is continuous.
+explanation, group them under concise H3s naming the scoped subject and finding;
+use a labeled list when the items are brief and parallel, and prose when the
+thought is continuous.
 **NEVER** promote dependent detail to H2, create an H3 for a lone short
 paragraph, or split one continuous argument merely to satisfy a quota. Use H4
 only for rare, substantial subdivisions. Keep terminology stable.
@@ -61,10 +62,12 @@ only for rare, substantial subdivisions. Keep terminology stable.
   conclusion, condition, contrast, actor, or action. **NEVER** bold a complete
   section deck, sentence, or paragraph. For CJK labels, put trailing punctuation
   outside bold markers: **标签**：正文. Let real categories determine item count.
-- State facts directly. Before finalizing, search for “not X but Y” /
-  “不是 X，而是 Y” and rewrite every occurrence unless X was explicitly raised
-  by the user or evidence as a likely misconception and rejecting it changes
-  the conclusion or action. **NEVER** use this construction in headings.
+- State facts directly. Keep negation for real absence, inability, or rules.
+  Turn evidence limits into reader-facing findings: say what is established,
+  name the exact unresolved dimension, and give its consequence. Avoid
+  quotation-led rebuttals, “not X but Y,” and audit verdicts such as “X cannot
+  prove, answer, represent, or replace Y” anywhere; reject a premise ONLY when
+  explicitly raised and consequential.
 - Do not restage one claim in the title, thesis, section deck, rich-block
   takeaway, and conclusion. Each recurrence must add evidence, scope,
   consequence, or action. Follow the report language's natural syntax; in
@@ -124,11 +127,16 @@ language-tagged code fences, TeX, images, and links. Introduce rich blocks in
 nearby prose and state their essential conclusion in accessible text so the
 prose and rich form reinforce each other.
 
-- Use a verified dossier cover by default immediately after thesis, before first
-  H2; omit only if invalid, misleading, or out of scope. Never
-  substitute an interactive, Mermaid, ECharts, table, list, or alert. Require a
-  direct HTTPS or PNG/JPEG/WebP/GIF data URL, meaningful alt text, then one italic
-  caption with the source link. Never decorate.
+- Every image needs a direct HTTPS or PNG/JPEG/WebP/GIF data URL, meaningful alt,
+  and an italic caption naming its visible subject, source link, and
+  provider/status. Keep interpretation and evidence limits in nearby prose.
+- Use a verified dossier cover by default after thesis, before the first H2;
+  omit only if invalid, misleading, or out of scope. Never substitute an
+  interactive, Mermaid, ECharts, table, list, or alert, and never decorate.
+- For visual subjects, use dossier body images when they make objects, states,
+  comparisons, or changes faster to understand; the cover does not substitute.
+  Place each after the relevant passage and prefer a few useful views over
+  quotas or repetition.
 - Use a GitHub-style alert for one key conclusion, boundary, action, or material
   risk: start with > [!TYPE] and an optional title, prefix every content line
   with >, and choose NOTE, TIP, IMPORTANT, WARNING, or CAUTION. Do not repeat

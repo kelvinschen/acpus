@@ -338,23 +338,27 @@ function normalizeImages() {
   for (const image of [...article.querySelectorAll("img[src]")]) {
     const src = image.getAttribute("src") || "";
     const safe = safeImage(src);
-    const paragraph = standaloneImageParagraph(image);
-    if (!paragraph) {
+    const imageBlock = standaloneImageParagraph(image);
+    if (!imageBlock) {
       if (safe === undefined) image.replaceWith(document.createTextNode(image.getAttribute("alt") || ""));
       else image.setAttribute("src", safe);
       continue;
     }
 
-    const trailingCaption = italicCaption(paragraph.nextElementSibling);
+    const { paragraph, inlineCaption } = imageBlock;
+    const trailingCaption = inlineCaption ? undefined : italicCaption(paragraph.nextElementSibling);
     const figure = document.createElement("figure");
-    figure.className = "evidence-figure image-figure width-medium";
+    figure.className = "evidence-figure image-figure";
     paragraph.before(figure);
     figure.append(paragraph);
-    if (trailingCaption) {
+    if (inlineCaption || trailingCaption) {
       const caption = document.createElement("figcaption");
       caption.className = "evidence-caption";
-      caption.append(...trailingCaption.childNodes);
-      trailingCaption.remove();
+      if (inlineCaption) caption.append(inlineCaption);
+      else {
+        caption.append(...trailingCaption.childNodes);
+        trailingCaption.remove();
+      }
       figure.append(caption);
     }
 
@@ -387,7 +391,10 @@ function standaloneImageParagraph(image) {
   const paragraph = image.parentElement;
   if (!paragraph || paragraph.tagName !== "P" || paragraph.parentElement !== article) return undefined;
   const content = [...paragraph.childNodes].filter(node => node.nodeType !== Node.TEXT_NODE || node.textContent.trim() !== "");
-  return content.length === 1 && content[0] === image ? paragraph : undefined;
+  if (content[0] !== image || content.length > 2) return undefined;
+  const inlineCaption = content[1];
+  if (inlineCaption && (inlineCaption.nodeType !== Node.ELEMENT_NODE || inlineCaption.tagName !== "EM")) return undefined;
+  return { paragraph, inlineCaption };
 }
 
 function italicCaption(element) {
