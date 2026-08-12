@@ -62,7 +62,7 @@ Read [Advanced CLI Operations](advanced-cli-operations.md#runtime-control-detail
 
 - Runtime automatically settles derivable work after cancellation or owner loss, even when another branch awaits an untimed Signal.  DO NOT intervene solely because a run is temporarily non-terminal; re-inspect after settlement, then retry or fork if needed.
 
-- For standalone artifact registry lookup, read `advanced-cli-operations.md`; use target inspection when paths need surrounding recovery state. DO NOT guess at run-local paths.
+- For artifact lookup, read [CLI Operations](cli-operations.md#artifacts); use target inspection when paths need surrounding recovery state. DO NOT guess at run-local paths.
 
 ## ACP worker silence and residual ownership
 

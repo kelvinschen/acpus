@@ -1,6 +1,6 @@
 # CLI Operations
 
-Use this for the ordinary lifecycle: run, observe, interact, and stop, plus validation without execution. Use `acpus <cmd> --help` for exact options. For control semantics, optional tooling, or run deletion, read [Advanced CLI Operations](advanced-cli-operations.md); for retry/fork and failure diagnosis, read [Runtime Recovery](runtime-recovery.md).
+Use this for the ordinary lifecycle: run, observe, access artifacts, interact, and stop, plus validation without execution. Use `acpus <cmd> --help` for exact options. For control semantics, optional tooling, or run deletion, read [Advanced CLI Operations](advanced-cli-operations.md); for retry/fork and failure diagnosis, read [Runtime Recovery](runtime-recovery.md).
 
 ## Agent overrides
 
@@ -54,6 +54,15 @@ Options:
 3. At terminal state, verify output and artifacts. Use `jq` for focused JSON reads.
 
 Read [Advanced CLI Operations](advanced-cli-operations.md#inspection-details) only for candidate selection or follow mechanics.
+
+## Artifacts
+
+```sh
+acpus runs artifacts <run-id> [--target <target>] [--json]
+acpus runs artifact 'artifact://<run-id>/<artifact-id>' [--json]
+```
+
+`artifacts` lists registered metadata and paths; `artifact` resolves one ref to verified local metadata and path. Read through the returned path with a bounded, type-appropriate tool.
 
 ## Runtime controls
 

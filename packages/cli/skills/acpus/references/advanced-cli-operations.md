@@ -2,7 +2,7 @@
 
 Read this only for Forensics, inspection candidate-selection/follow mechanics, detailed runtime
 controls, catalogs, import, static visualization, WebUI, bundled-skill
-management, artifact lookup, run deletion, or CLI automation. Use
+management, run deletion, or CLI automation. Use
 `acpus <cmd> --help` for exact options.
 
 If the CLI is unavailable, ask before suggesting `npm install -g acpus`.
@@ -156,22 +156,6 @@ acpus --version
 Skill commands manage the Acpus skill bundled with this CLI and refuse targets not identifiable as Acpus skills. In a terminal they prompt only for missing scope or Agent selections. Scoped automation must provide `--project` or `--global` and `--agent`; selected roots are `.agents/skills/acpus` for universal agents and `.claude/skills/acpus` for Claude under the project or home directory. Install creates missing selected roots. They do not install or remove the npm package.
 
 Alternatively, `--dir <skills-root>` selects one custom skills root without an Agent selection and installs or uninstalls `<skills-root>/acpus`. 
-
-## Artifacts
-
-```sh
-acpus runs artifact 'artifact://<run-id>/<artifact-id>' [--json]
-acpus runs artifacts <run-id> [--target <node-or-frame-or-attempt>] [--json]
-```
-
-Use singular `artifact` to resolve one ArtifactRef into verified local source
-metadata. It prints the absolute path, media type, size, digest, and producing
-node attempt without reading the file body. Inspect the source through that path
-with a range- or query-limited tool appropriate to its type and size.
-
-Use plural `artifacts` to list registered artifact metadata and absolute paths.
-Use `--target` to narrow one static/dynamic node, frame, or attempt; use target
-inspection instead when surrounding execution state is also needed.
 
 ## Run maintenance
 

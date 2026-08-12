@@ -20,7 +20,7 @@ For Agent-heavy authoring, calibrate logical work before topology; broad or unce
 ### **READ first**
 
 - **Authoring** Read `references/authoring.md` completely;
-- **Run or observe:** Read `references/cli-operations.md` for admission, inspection, ordinary interaction, and stop controls;
+- **Run or observe:** Read `references/cli-operations.md` for admission, inspection, artifacts, ordinary interaction, and stop controls;
 - **Recover or intervene:** Read `references/runtime-recovery.md` for failed/timed-out/stale runs, exceptional mid-run update, retry/fork decisions, or deep diagnostics.
 - **Library/catalog reuse:** Only user-written `/wf:<hint>` or `/workflow:<hint>` requests enable library/catalog lookup or reuse. Unmarked, read only user-named workflows to explain/modify/diagnose. For reuse read README first, implementation only to modify/diagnose; else follow **Author or adapt**.
 - **Choose an agent:** Read `references/acpx-agents.md` when Agent availability matters.
@@ -29,7 +29,7 @@ For Agent-heavy authoring, calibrate logical work before topology; broad or unce
 
 - **Advanced authoring:** Read `references/advanced-authoring.md` only when the requirement needs Agent session reuse, reusable or prebuilt Tasks, third-party package imports, artifacts, Task process controls, or cooperative Task cancellation.
 - **Signal authoring:** Read `references/signal-authoring.md` only for parallel Signal waits, payload validation, timeout behavior, or duration syntax.
-- **Advanced CLI operations:** Read `references/advanced-cli-operations.md` only when the requirement needs Forensics, inspection candidate-selection/follow mechanics, detailed runtime-control mechanics, catalogs, import, static visualization, WebUI, bundled-skill management, standalone artifact lookup, run deletion, version lookup, or structured CLI automation.
+- **Advanced CLI operations:** Read `references/advanced-cli-operations.md` only when the requirement needs Forensics, inspection candidate-selection/follow mechanics, detailed runtime-control mechanics, catalogs, import, static visualization, WebUI, bundled-skill management, run deletion, version lookup, or structured CLI automation.
 - **Review Agent records:** Read `references/agent-records.md` only for settled turn artifacts or the run-local acpx session projection.
 - **Configure hooks:** Read `references/hooks-json.md`.
 

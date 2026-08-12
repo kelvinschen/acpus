@@ -319,12 +319,7 @@ function normalizeArticle() {
     link.rel = "noopener noreferrer";
   }
 
-  for (const image of article.querySelectorAll("img[src]")) {
-    const src = image.getAttribute("src") || "";
-    const safe = safeImage(src);
-    if (safe === undefined) image.replaceWith(document.createTextNode(image.getAttribute("alt") || ""));
-    else image.setAttribute("src", safe);
-  }
+  normalizeImages();
 
   linkCitationMarkers();
 
@@ -337,6 +332,100 @@ function normalizeArticle() {
   buildArticleNavigation(sections, navigationHeadings);
   installHeadingPermalinks(article.querySelectorAll("h2, h3"));
   installTargetFeedback();
+}
+
+function normalizeImages() {
+  for (const image of [...article.querySelectorAll("img[src]")]) {
+    const src = image.getAttribute("src") || "";
+    const safe = safeImage(src);
+    const paragraph = standaloneImageParagraph(image);
+    if (!paragraph) {
+      if (safe === undefined) image.replaceWith(document.createTextNode(image.getAttribute("alt") || ""));
+      else image.setAttribute("src", safe);
+      continue;
+    }
+
+    const trailingCaption = italicCaption(paragraph.nextElementSibling);
+    const figure = document.createElement("figure");
+    figure.className = "evidence-figure image-figure width-medium";
+    paragraph.before(figure);
+    figure.append(paragraph);
+    if (trailingCaption) {
+      const caption = document.createElement("figcaption");
+      caption.className = "evidence-caption";
+      caption.append(...trailingCaption.childNodes);
+      trailingCaption.remove();
+      figure.append(caption);
+    }
+
+    if (safe === undefined) {
+      replaceFailedImageFigure(figure, image);
+      continue;
+    }
+
+    image.classList.add("publication-image");
+    image.decoding = "async";
+    image.setAttribute("src", safe);
+    let settled = false;
+    const ready = () => {
+      if (settled) return;
+      settled = true;
+      markOpeningVisualReady(figure);
+    };
+    const failed = () => {
+      if (settled) return;
+      settled = true;
+      replaceFailedImageFigure(figure, image);
+    };
+    image.addEventListener("load", ready, { once: true });
+    image.addEventListener("error", failed, { once: true });
+    if (image.complete) queueMicrotask(() => image.naturalWidth > 0 ? ready() : failed());
+  }
+}
+
+function standaloneImageParagraph(image) {
+  const paragraph = image.parentElement;
+  if (!paragraph || paragraph.tagName !== "P" || paragraph.parentElement !== article) return undefined;
+  const content = [...paragraph.childNodes].filter(node => node.nodeType !== Node.TEXT_NODE || node.textContent.trim() !== "");
+  return content.length === 1 && content[0] === image ? paragraph : undefined;
+}
+
+function italicCaption(element) {
+  if (!element || element.tagName !== "P") return undefined;
+  const content = [...element.childNodes].filter(node => node.nodeType !== Node.TEXT_NODE || node.textContent.trim() !== "");
+  return content.length === 1 && content[0].nodeType === Node.ELEMENT_NODE && content[0].tagName === "EM"
+    ? element
+    : undefined;
+}
+
+function replaceFailedImageFigure(figure, image) {
+  const opening = figure.closest(".article-opening");
+  if (opening || isBeforeFirstSection(figure)) {
+    figure.remove();
+    if (opening) classifyArticleOpening();
+    return;
+  }
+  image.replaceWith(document.createTextNode(image.getAttribute("alt") || ""));
+}
+
+function isBeforeFirstSection(element) {
+  const firstSection = article.querySelector(":scope > h2");
+  return element.parentElement === article && firstSection !== null
+    && Boolean(element.compareDocumentPosition(firstSection) & Node.DOCUMENT_POSITION_FOLLOWING);
+}
+
+function thesisLabel() {
+  const labels = { "zh-CN": "研究摘要", ja: "研究概要", ko: "연구 요약", en: "Research brief" };
+  return labels[language] || labels.en;
+}
+
+function markOpeningVisualReady(visual, source = visual) {
+  if (!isCoverVisual(visual)) return;
+  const opening = source.closest(".article-opening") || visual.closest(".article-opening");
+  if (!opening && !isBeforeFirstSection(source)) return;
+  visual.classList.add("is-cover-ready");
+  visual.removeAttribute("aria-hidden");
+  if (opening && visual.isConnected) classifyArticleOpening();
 }
 
 function wrapArticleOpening(firstSection) {
@@ -357,20 +446,46 @@ function wrapArticleOpening(firstSection) {
 function classifyArticleOpening() {
   const opening = article.querySelector(":scope > .article-opening");
   if (!opening) return;
-  opening.classList.remove("article-opening--text", "article-opening--lead");
-  for (const element of opening.querySelectorAll(":scope > .opening-lead")) element.classList.remove("opening-lead");
-  const lead = [...opening.children].find(isOpeningLead);
-  if (!lead) {
+  opening.classList.remove("article-opening--text", "article-opening--cover");
+  for (const element of opening.querySelectorAll(":scope > .opening-thesis, :scope > .opening-cover, :scope > .opening-visual-pending")) {
+    element.classList.remove("opening-thesis", "opening-cover", "opening-visual-pending");
+  }
+
+  const title = opening.querySelector(":scope > h1");
+  const thesis = title?.nextElementSibling?.tagName === "P" && !title.nextElementSibling.querySelector("img")
+    ? title.nextElementSibling
+    : undefined;
+  if (thesis) {
+    thesis.classList.add("opening-thesis");
+    thesis.dataset.label = thesisLabel();
+  }
+
+  const visual = [...opening.children].find(isOpeningVisual);
+  if (visual?.matches("pre:has(> code.language-interactive)")) {
+    const context = evidenceContext(visual);
+    if (context.caption && context.caption !== thesis) context.caption.classList.add("opening-cover-context");
+    context.note?.classList.add("opening-cover-context");
+  }
+
+  if (!visual?.classList.contains("is-cover-ready")) {
     opening.classList.add("article-opening--text");
+    if (visual) {
+      visual.classList.add("opening-visual-pending");
+      visual.setAttribute("aria-hidden", "true");
+    }
     return;
   }
-  lead.classList.add("opening-lead");
-  opening.classList.add("article-opening--lead");
+  visual.classList.add("opening-cover");
+  visual.removeAttribute("aria-hidden");
+  opening.classList.add("article-opening--cover");
 }
 
-function isOpeningLead(element) {
-  if (element.matches(".markdown-alert, .table-wrap, .evidence-figure:not(.interactive-figure), ul, ol")) return true;
-  return element.tagName === "P" && element.querySelector("img") !== null;
+function isOpeningVisual(element) {
+  return isCoverVisual(element) || element.matches("pre:has(> code.language-interactive)");
+}
+
+function isCoverVisual(element) {
+  return element.matches(".image-figure, .interactive-figure");
 }
 
 function buildArticleNavigation(sections, headings) {
@@ -612,14 +727,20 @@ function installCitationPreviews(citations, sourceItems) {
         preview.style.inset = top + "px auto auto " + left + "px";
       };
 
-      host.addEventListener("pointerenter", () => {
+      host.addEventListener("pointerenter", event => {
+        if (event.pointerType === "touch") return;
+        host.classList.add("is-preview-hovered");
         host.classList.remove("is-preview-dismissed");
         position();
       });
-      host.addEventListener("pointerleave", () => host.classList.remove("is-preview-dismissed"));
+      host.addEventListener("pointerleave", () => {
+        host.classList.remove("is-preview-hovered", "is-preview-dismissed");
+      });
       host.addEventListener("focusin", position);
       host.addEventListener("focusout", event => {
-        if (!host.contains(event.relatedTarget)) host.classList.remove("is-preview-dismissed");
+        if (!host.contains(event.relatedTarget)) {
+          host.classList.remove("is-preview-dismissed", "is-preview-focus-suppressed");
+        }
       });
       host.addEventListener("keydown", event => {
         if (event.key !== "Escape") return;
@@ -655,6 +776,9 @@ function installTargetFeedback() {
     const link = event.target.closest?.("a[href^='#']");
     const target = link ? resolveTarget(link) : undefined;
     if (!target) return;
+    if (link.classList.contains("citation-backlink")) {
+      target.closest(".citation-preview-host")?.classList.add("is-preview-focus-suppressed");
+    }
     setTimeout(() => {
       target.focus?.({ preventScroll: true });
       pulseTarget(target);
@@ -921,7 +1045,8 @@ function evidenceContext(pre) {
   const before = pre.previousElementSibling;
   const after = pre.nextElementSibling;
   return {
-    caption: before?.tagName === "P" && startsWithStrong(before) && !isEvidenceNote(before) ? before : undefined,
+    caption: before?.tagName === "P" && !before.classList.contains("opening-thesis")
+      && startsWithStrong(before) && !isEvidenceNote(before) ? before : undefined,
     note: after?.tagName === "P" && isEvidenceNote(after) ? after : undefined,
   };
 }
@@ -983,12 +1108,12 @@ function sanitizeSvg(svg) {
 async function renderEChartsBlocks() {
   const candidates = [];
   for (const block of article.querySelectorAll("pre > code.language-echarts")) {
+    const pre = block.parentElement;
+    if (!pre) continue;
     try {
       const option = JSON.parse(block.textContent || "");
       if (!isRecord(option)) throw new Error("ECharts option must be an object.");
       normalizeEChartsOption(option);
-      const pre = block.parentElement;
-      if (!pre) continue;
       const table = dataTableFor(option);
       const widthClass = chartWidthClass(option, table);
       candidates.push({
@@ -1141,6 +1266,7 @@ async function renderInteractiveBlocks() {
         stage.classList.add("is-ready");
         appendEvidenceCaption(figure, candidate.context);
         appendEvidenceNote(figure, candidate.context);
+        markOpeningVisualReady(figure, candidate.pre);
         candidate.pre.remove();
         resolve();
       },
@@ -1150,8 +1276,15 @@ async function renderInteractiveBlocks() {
         clearTimeout(entry.timer);
         interactiveFrames.delete(id);
         figure.remove();
-        candidate.pre.hidden = false;
-        console.warn("Interactive content could not be rendered; preserving its source.", message || "Unknown error.");
+        if (candidate.pre.closest(".article-opening")) {
+          candidate.context.caption?.remove();
+          candidate.context.note?.remove();
+          candidate.pre.remove();
+          classifyArticleOpening();
+        } else {
+          candidate.pre.hidden = false;
+        }
+        console.warn("Interactive content could not be rendered.", message || "Unknown error.");
         resolve();
       },
     };
@@ -1525,7 +1658,7 @@ function documentHtml(markdown: string): string {
   THESIS: One deterministic editorial renderer keeps attention on the research instead of theme selection.
   OWN-WORLD: Near-white warm paper, system-sans reading, system-serif headlines, JetBrains Mono evidence, restrained carmine, and only structural rulework; no paper texture, decorative lines, black gridwork, generic cards, or renderer-authored claims.
   STORY: Orient the reader, expose the governing relationship, then make evidence easy to inspect.
-  FIRST VIEWPORT: Title, short thesis, and the first useful structural cue—not a decorative hero.
+  FIRST VIEWPORT: Title, short thesis, and an optional orienting image or immediately legible interactive.
   FORM: A continuous single-column long document with a wrapping contents rail, aligned prose and callouts, and wider evidence surfaces.
   FINISH: Static print rhythm after the functional loader, exact alignment, legible evidence, and citations that behave as navigation.
 -->

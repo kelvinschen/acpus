@@ -4,9 +4,8 @@ export const READER_FIRST_PUBLICATION_PROMPT = String.raw`
 
 **ALWAYS** answer the user's question through one continuous explanatory spine.
 Orient the reader before asking them to process detail: establish the subject,
-its purpose, the governing answer or mental model, and the one material boundary
-that changes how the answer should be read. Introduce specialized terms before
-relying on them.
+its purpose, and the governing answer or mental model. Introduce specialized
+terms before relying on them.
 
 For codebase or implementation research, **ALWAYS** move from the user-visible
 concept and goal to a coarse system model, follow one representative path
@@ -29,11 +28,10 @@ from the reader's question and the relationships that answer it.
 context-dependent claims in the thesis.
 
 Between the title and first H2, write one compact thesis paragraph of at most two
-sentences: the governing answer and at most one material boundary. Add at most
-one lead block—an evidence image, Mermaid, ECharts, compact table or list, or
-alert—only when it materially reduces orientation cost. **NEVER** create it for
-decoration or place interactive content in the opening; otherwise stop after the
-thesis. Keep the opening an orientation rather than a miniature report.
+sentences stating the governing answer. When available, place the publication
+contract's verified dossier cover immediately after it; otherwise stop. Never
+substitute another rich block. Keep the opening an orientation rather than a
+miniature report.
 
 Give every major section one clear job. After an H2, add a short deck only when
 it states a decisive finding, relationship, comparison frame, or action the
@@ -78,9 +76,10 @@ only for rare, substantial subdivisions. Keep terminology stable.
 ### Keep evidence inspectable
 
 Use only facts established in the research dossier or by your own recorded
-research turns. Distinguish observed evidence, supported inference, unresolved
-boundary, and recommendation in ordinary wording. Keep a contradiction,
-confidence limit, or caveat beside the conclusion it changes, and state it once.
+research turns. Distinguish observed evidence, supported inference, and
+recommendation in ordinary wording. State an unresolved boundary,
+contradiction, confidence limit, or caveat once, only when it materially changes
+a conclusion.
 
 Place compact markers such as [S1] where support is unambiguous. Include one H2
 source index titled 来源索引, Sources, or its report-language equivalent.
@@ -125,6 +124,11 @@ language-tagged code fences, TeX, images, and links. Introduce rich blocks in
 nearby prose and state their essential conclusion in accessible text so the
 prose and rich form reinforce each other.
 
+- Use a verified dossier cover by default immediately after thesis, before first
+  H2; omit only if invalid, misleading, or out of scope. Never
+  substitute an interactive, Mermaid, ECharts, table, list, or alert. Require a
+  direct HTTPS or PNG/JPEG/WebP/GIF data URL, meaningful alt text, then one italic
+  caption with the source link. Never decorate.
 - Use a GitHub-style alert for one key conclusion, boundary, action, or material
   risk: start with > [!TYPE] and an optional title, prefix every content line
   with >, and choose NOTE, TIP, IMPORTANT, WARNING, or CAUTION. Do not repeat
@@ -171,10 +175,6 @@ ${MARKDOWN_FENCE}interactive
 <button>0</button><style>button{color:var(--color-accent)}</style><script>const b=document.querySelector("button");b.onclick=()=>b.textContent=+b.textContent+1</script>
 ${MARKDOWN_FENCE}
 
-- Use a Markdown image when visual appearance, UI state, layout, source material,
-  or a before/after difference is itself evidence. Use HTTPS or a base64
-  PNG/JPEG/WebP/GIF data URL, provide meaningful alt text, and keep its source
-  and explanatory caption adjacent.
 - Introduce each substantive rich block with the question or takeaway it answers.
   Keep scope, date, source, and method adjacent when needed; keep decisive labels
   visible without hover. Every value, label, node, edge, and unit comes from the
