@@ -22,6 +22,9 @@ const TEX_PLUGIN_URL = "https://cdn.jsdelivr.net/npm/@mdit/plugin-tex@1.0.2/+esm
 const KATEX_STYLE_URL = "https://cdn.jsdelivr.net/npm/katex@0.18.1/dist/katex-swap.min.css";
 const BEAUTIFUL_MERMAID_URL = "https://cdn.jsdelivr.net/npm/beautiful-mermaid@1.1.3/+esm";
 const ECHARTS_URL = "https://cdn.jsdelivr.net/npm/echarts@6.1.0/dist/echarts.esm.min.js";
+const OUTFIT_FONT_URL = "https://cdn.jsdelivr.net/npm/@fontsource-variable/outfit@5.3.0/index.css";
+const MI_SANS_FONT_URLS = ["Regular", "Medium", "Demibold"]
+  .map(weight => `https://cdn.jsdelivr.net/npm/misans@4.1.0/lib/Normal/MiSans-${weight}.min.css`);
 const MONO_FONT_URL = "https://cdn.jsdelivr.net/npm/@fontsource-variable/jetbrains-mono@5.3.0/index.css";
 
 const CLIENT_SCRIPT = String.raw`
@@ -33,6 +36,8 @@ const TEX_PLUGIN_URL = "${TEX_PLUGIN_URL}";
 const KATEX_STYLE_URL = "${KATEX_STYLE_URL}";
 const BEAUTIFUL_MERMAID_URL = "${BEAUTIFUL_MERMAID_URL}";
 const ECHARTS_URL = "${ECHARTS_URL}";
+const OUTFIT_FONT_URL = "${OUTFIT_FONT_URL}";
+const MI_SANS_FONT_URLS = ${JSON.stringify(MI_SANS_FONT_URLS)};
 const MONO_FONT_URL = "${MONO_FONT_URL}";
 const MARKDOWN_TIMEOUT_MS = 12000;
 const OPTIONAL_PLUGIN_TIMEOUT_MS = 4000;
@@ -211,10 +216,12 @@ function loadStylesheet(url) {
 }
 
 function loadFonts() {
-  const link = document.createElement("link");
-  link.rel = "stylesheet";
-  link.href = MONO_FONT_URL;
-  document.head.append(link);
+  for (const url of [OUTFIT_FONT_URL, ...MI_SANS_FONT_URLS, MONO_FONT_URL]) {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = url;
+    document.head.append(link);
+  }
 }
 
 function installHeadingIds(markdown) {
@@ -260,7 +267,6 @@ function normalizeArticle() {
   };
   const codeRegions = [...article.querySelectorAll("pre")];
   for (const [index, pre] of codeRegions.entries()) {
-    pre.classList.add("width-medium");
     pre.tabIndex = 0;
     pre.setAttribute("role", "region");
     pre.setAttribute("aria-label", (codeLabels[language] || codeLabels.en)(index + 1));
@@ -322,12 +328,16 @@ function normalizeArticle() {
   normalizeImages();
 
   linkCitationMarkers();
+  structureEvidenceCaptions();
+  groupConsecutiveImages();
 
   const sections = [...article.querySelectorAll(":scope > h2")];
+  decorateSectionHeadings(sections);
   for (const heading of sections) {
     if (heading.nextElementSibling?.tagName === "P") heading.nextElementSibling.classList.add("section-deck");
   }
   wrapArticleOpening(sections[0]);
+  installPublicationMeta();
   const navigationHeadings = [...article.querySelectorAll(":scope > h2, :scope > h3")];
   buildArticleNavigation(sections, navigationHeadings);
   installHeadingPermalinks(article.querySelectorAll("h2, h3"));
@@ -374,6 +384,12 @@ function normalizeImages() {
     const ready = () => {
       if (settled) return;
       settled = true;
+      figure.classList.add(image.naturalWidth < image.naturalHeight
+        ? "image-figure--portrait"
+        : "image-figure--landscape");
+      new ResizeObserver(([entry]) => {
+        figure.style.setProperty("--image-rendered-width", entry.contentRect.width + "px");
+      }).observe(image);
       markOpeningVisualReady(figure);
     };
     const failed = () => {
@@ -384,6 +400,63 @@ function normalizeImages() {
     image.addEventListener("load", ready, { once: true });
     image.addEventListener("error", failed, { once: true });
     if (image.complete) queueMicrotask(() => image.naturalWidth > 0 ? ready() : failed());
+  }
+}
+
+function structureEvidenceCaptions() {
+  const sourcePattern = /(?:来源|Source|出典|출처)\s*[:：]/iu;
+  for (const caption of article.querySelectorAll(".image-figure > .evidence-caption")) {
+    if (caption.querySelector(":scope > .caption-description, :scope > .caption-meta")) continue;
+    const text = caption.textContent || "";
+    const match = sourcePattern.exec(text);
+    const description = document.createElement("span");
+    description.className = "caption-description";
+    if (!match || match.index === undefined) {
+      description.append(...caption.childNodes);
+      caption.append(description);
+      continue;
+    }
+
+    const walker = document.createTreeWalker(caption, NodeFilter.SHOW_TEXT);
+    let consumed = 0;
+    let boundary;
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const next = consumed + node.data.length;
+      if (match.index <= next) {
+        boundary = { node, offset: match.index - consumed };
+        break;
+      }
+      consumed = next;
+    }
+    if (!boundary) continue;
+
+    const metadata = document.createElement("span");
+    metadata.className = "caption-meta";
+    const range = document.createRange();
+    range.setStart(boundary.node, boundary.offset);
+    range.setEnd(caption, caption.childNodes.length);
+    metadata.append(range.extractContents());
+    description.append(...caption.childNodes);
+    caption.replaceChildren(description, metadata);
+  }
+}
+
+function groupConsecutiveImages() {
+  const figures = [...article.querySelectorAll(":scope > .image-figure")];
+  for (const figure of figures) {
+    if (!figure.isConnected || isBeforeFirstSection(figure)) continue;
+    const next = figure.nextElementSibling;
+    if (!next?.classList.contains("image-figure") || next.nextElementSibling?.classList.contains("image-figure")) continue;
+    const previous = figure.previousElementSibling;
+    if (previous?.classList.contains("image-figure")) continue;
+    const group = document.createElement("div");
+    group.className = "image-comparison";
+    group.setAttribute("role", "group");
+    const labels = { "zh-CN": "并列图片比较", ja: "画像比較", ko: "이미지 비교", en: "Image comparison" };
+    group.setAttribute("aria-label", labels[language] || labels.en);
+    figure.before(group);
+    group.append(figure, next);
   }
 }
 
@@ -426,6 +499,48 @@ function thesisLabel() {
   return labels[language] || labels.en;
 }
 
+function decorateSectionHeadings(sections) {
+  const labels = { "zh-CN": "章节", ja: "章", ko: "장", en: "Section" };
+  const label = labels[language] || labels.en;
+  for (const [index, heading] of sections.entries()) {
+    heading.dataset.sectionNumber = String(index + 1).padStart(2, "0");
+    heading.dataset.sectionLabel = label;
+    heading.dataset.sectionTitle = heading.textContent?.trim() || heading.id;
+  }
+}
+
+function installPublicationMeta() {
+  const opening = article.querySelector(":scope > .article-opening");
+  const title = opening?.querySelector(":scope > h1");
+  if (!opening || !title || opening.querySelector(":scope > .publication-meta")) return;
+  const sourceHeading = findSourceHeading();
+  const range = document.createRange();
+  range.selectNodeContents(article);
+  if (sourceHeading) range.setEndBefore(sourceHeading);
+  const reportText = range.toString();
+  const cjkCount = (reportText.match(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu) || []).length;
+  const wordCount = (reportText.replace(/[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu, " ")
+    .match(/[\p{Letter}\p{Number}]+(?:['’.-][\p{Letter}\p{Number}]+)*/gu) || []).length;
+  const minutes = Math.max(1, Math.ceil(cjkCount / 400 + wordCount / 220));
+  const sourceCount = article.querySelectorAll("[id^='source-']").length;
+  const labels = {
+    "zh-CN": ["深度调研", "约 " + minutes + " 分钟", sourceCount + " 个来源"],
+    ja: ["ディープリサーチ", "約 " + minutes + " 分", "出典 " + sourceCount + " 件"],
+    ko: ["딥 리서치", "약 " + minutes + "분", "출처 " + sourceCount + "개"],
+    en: ["Deep research", "About " + minutes + " min", sourceCount + " sources"],
+  };
+  const meta = document.createElement("div");
+  meta.className = "publication-meta";
+  meta.setAttribute("role", "group");
+  meta.setAttribute("aria-label", (labels[language] || labels.en).join(", "));
+  for (const value of labels[language] || labels.en) {
+    const item = document.createElement("span");
+    item.textContent = value;
+    meta.append(item);
+  }
+  title.after(meta);
+}
+
 function markOpeningVisualReady(visual, source = visual) {
   if (!isCoverVisual(visual)) return;
   const opening = source.closest(".article-opening") || visual.closest(".article-opening");
@@ -459,9 +574,7 @@ function classifyArticleOpening() {
   }
 
   const title = opening.querySelector(":scope > h1");
-  const thesis = title?.nextElementSibling?.tagName === "P" && !title.nextElementSibling.querySelector("img")
-    ? title.nextElementSibling
-    : undefined;
+  const thesis = [...opening.children].find(element => element.tagName === "P" && !element.querySelector("img"));
   if (thesis) {
     thesis.classList.add("opening-thesis");
     thesis.dataset.label = thesisLabel();
@@ -506,19 +619,37 @@ function buildArticleNavigation(sections, headings) {
   disclosure.className = "article-nav-disclosure";
   const summary = document.createElement("summary");
   summary.className = "article-nav-summary";
-  summary.textContent = label;
+  const summaryLabel = document.createElement("span");
+  summaryLabel.className = "article-nav-summary-label";
+  summaryLabel.textContent = label;
+  const summaryCurrent = document.createElement("span");
+  summaryCurrent.className = "article-nav-summary-current";
+  summary.append(summaryLabel, summaryCurrent);
   const linksContainer = document.createElement("div");
   linksContainer.className = "article-nav-links";
+  const progress = document.createElement("span");
+  progress.className = "article-nav-progress";
+  progress.setAttribute("aria-hidden", "true");
+  progress.append(document.createElement("span"));
   const links = new Map();
+  let sectionId = sections[0]?.id;
   for (const heading of headings) {
+    if (heading.tagName === "H2") sectionId = heading.id;
     const link = document.createElement("a");
     link.className = heading.tagName === "H3" ? "article-nav-subsection" : "article-nav-section";
     link.href = "#" + heading.id;
-    link.textContent = heading.textContent || heading.id;
+    link.dataset.sectionId = sectionId || heading.id;
+    if (heading.tagName === "H2" && heading.dataset.sectionNumber) {
+      const number = document.createElement("span");
+      number.className = "article-nav-number";
+      number.textContent = heading.dataset.sectionNumber;
+      link.append(number);
+    }
+    link.append(document.createTextNode(heading.dataset.sectionTitle || heading.textContent || heading.id));
     links.set(heading.id, link);
     linksContainer.append(link);
   }
-  disclosure.append(summary, linksContainer);
+  disclosure.append(summary, progress, linksContainer);
   nav.replaceChildren(disclosure);
   nav.hidden = false;
 
@@ -552,8 +683,18 @@ function buildArticleNavigation(sections, headings) {
   let current;
   const setCurrent = heading => {
     if (!heading || current === heading.id) return;
-    for (const link of links.values()) link.removeAttribute("aria-current");
+    const activeSectionId = heading.tagName === "H2"
+      ? heading.id
+      : headings.slice(0, headings.indexOf(heading) + 1).reverse().find(candidate => candidate.tagName === "H2")?.id;
+    for (const link of links.values()) {
+      link.removeAttribute("aria-current");
+      link.classList.toggle("is-current-section", link.dataset.sectionId === activeSectionId);
+    }
     links.get(heading.id)?.setAttribute("aria-current", "location");
+    const activeSection = sections.find(section => section.id === activeSectionId);
+    summaryCurrent.textContent = activeSection
+      ? " · " + (activeSection.dataset.sectionTitle || activeSection.textContent || activeSection.id)
+      : "";
     current = heading.id;
   };
   setCurrent(headings[0]);
@@ -563,14 +704,27 @@ function buildArticleNavigation(sections, headings) {
     setCurrent(headings.find(heading => "#" + heading.id === link.getAttribute("href")));
     if (!wideNavigation.matches) disclosure.open = false;
   });
-  if ("IntersectionObserver" in window) {
-    const observer = new IntersectionObserver(entries => {
-      const visible = entries.filter(entry => entry.isIntersecting)
-        .sort((left, right) => left.boundingClientRect.top - right.boundingClientRect.top);
-      if (visible.length > 0) setCurrent(visible[0].target);
-    }, { rootMargin: "-10% 0px -80% 0px", threshold: 0 });
-    for (const heading of headings) observer.observe(heading);
-  }
+  let frame;
+  const updateReadingPosition = () => {
+    frame = undefined;
+    const threshold = window.innerHeight * .22;
+    let active = headings[0];
+    for (const heading of headings) {
+      if (heading.getBoundingClientRect().top > threshold) break;
+      active = heading;
+    }
+    setCurrent(active);
+    const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+    const value = scrollable > 0 ? Math.min(1, Math.max(0, window.scrollY / scrollable)) : 0;
+    nav.style.setProperty("--reading-progress", String(value));
+  };
+  const scheduleReadingPosition = () => {
+    if (frame !== undefined) return;
+    frame = requestAnimationFrame(updateReadingPosition);
+  };
+  updateReadingPosition();
+  window.addEventListener("scroll", scheduleReadingPosition, { passive: true });
+  window.addEventListener("resize", scheduleReadingPosition);
 }
 
 function installHeadingPermalinks(headings) {
@@ -596,9 +750,7 @@ function installHeadingPermalinks(headings) {
 }
 
 function linkCitationMarkers() {
-  const sourceHeading = [...article.querySelectorAll("h2, h3")].reverse().find(heading =>
-    /(?:来源|参考文献|出典|출처|참고|sources?|references?)/iu.test(heading.textContent || ""),
-  );
+  const sourceHeading = findSourceHeading();
   if (!sourceHeading) return;
 
   const sources = new Map();
@@ -675,6 +827,46 @@ function linkCitationMarkers() {
     }
   }
   installCitationPreviews(citations, sourceItems);
+  groupCorroboratingCitations();
+}
+
+function findSourceHeading() {
+  return [...article.querySelectorAll("h2, h3")].reverse().find(heading =>
+    /(?:来源|参考文献|出典|출처|참고|sources?|references?)/iu.test(heading.textContent || ""),
+  );
+}
+
+function groupCorroboratingCitations() {
+  for (const parent of article.querySelectorAll("p, li, td, figcaption")) {
+    const nodes = [...parent.childNodes];
+    for (let index = 0; index < nodes.length;) {
+      const hosts = [];
+      let cursor = index;
+      while (cursor < nodes.length) {
+        const node = nodes[cursor];
+        if (node.nodeType === Node.ELEMENT_NODE && node.classList.contains("citation-preview-host")) {
+          hosts.push(node);
+          cursor += 1;
+          continue;
+        }
+        if (hosts.length > 0 && node.nodeType === Node.TEXT_NODE && /^\s*$/u.test(node.data)) {
+          cursor += 1;
+          continue;
+        }
+        break;
+      }
+      if (hosts.length > 1) {
+        const cluster = document.createElement("span");
+        cluster.className = "evidence-cluster";
+        cluster.setAttribute("role", "group");
+        const labels = { "zh-CN": "多个来源共同支持", ja: "複数の出典による裏付け", ko: "여러 출처의 교차 지원", en: "Supported by multiple sources" };
+        cluster.setAttribute("aria-label", labels[language] || labels.en);
+        hosts[0].before(cluster);
+        for (const host of hosts) cluster.append(host);
+      }
+      index = Math.max(cursor, index + 1);
+    }
+  }
 }
 
 function installCitationPreviews(citations, sourceItems) {
@@ -825,7 +1017,7 @@ function svgIcon(paths) {
 async function renderMermaidBlocks() {
   const candidates = [...article.querySelectorAll("pre > code.language-mermaid")].flatMap(block => {
     const pre = block.parentElement;
-    return pre ? [{ block, pre, context: evidenceContext(pre), loader: startVisualLoading(pre, "diagram", "width-medium") }] : [];
+    return pre ? [{ block, pre, context: evidenceContext(pre), loader: startVisualLoading(pre, "diagram") }] : [];
   });
   if (candidates.length === 0) return;
   let renderMermaidSVG;
@@ -864,7 +1056,7 @@ async function renderMermaidBlocks() {
       svg.setAttribute("aria-label", diagramLabel);
 
       const figure = document.createElement("figure");
-      figure.className = "evidence-figure mermaid-figure " + mermaidWidthClass(svg);
+      figure.className = "evidence-figure mermaid-figure";
       const scroll = document.createElement(lightbox ? "button" : "div");
       scroll.className = "figure-scroll";
       const renderedSvg = document.importNode(svg, true);
@@ -1034,9 +1226,9 @@ function restoreMermaidDiagram(lightbox, restoreFocus = true) {
   if (restoreFocus) active.opener.focus({ preventScroll: true });
 }
 
-function startVisualLoading(pre, kind, widthClass) {
+function startVisualLoading(pre, kind) {
   const loader = document.createElement("div");
-  loader.className = "visual-loader " + widthClass;
+  loader.className = "visual-loader";
   loader.setAttribute("role", "status");
   loader.setAttribute("aria-label", loadingLabel(kind));
   const indicator = document.createElement("span");
@@ -1087,13 +1279,6 @@ function evidenceLabel(context) {
   return context.caption?.textContent?.trim() || "";
 }
 
-function mermaidWidthClass(svg) {
-  const viewBox = (svg.getAttribute("viewBox") || "").trim().split(/[ ,]+/u).map(Number);
-  if (viewBox.length !== 4 || viewBox.some(value => !Number.isFinite(value))) return "width-medium";
-  const [, , width, height] = viewBox;
-  return width > 900 || width / Math.max(height, 1) > 2.4 ? "width-evidence" : "width-medium";
-}
-
 function revealVisualSource(candidate) {
   candidate.loader.remove();
   candidate.pre.hidden = false;
@@ -1122,15 +1307,13 @@ async function renderEChartsBlocks() {
       if (!isRecord(option)) throw new Error("ECharts option must be an object.");
       normalizeEChartsOption(option);
       const table = dataTableFor(option);
-      const widthClass = chartWidthClass(option, table);
       candidates.push({
         block,
         pre,
         option,
         table,
-        widthClass,
         context: evidenceContext(pre),
-        loader: startVisualLoading(pre, "chart", widthClass),
+        loader: startVisualLoading(pre, "chart"),
       });
     } catch (error) {
       console.warn("An ECharts option is invalid; preserving its source.", error);
@@ -1175,7 +1358,7 @@ async function renderEChartsBlocks() {
 
   for (const candidate of candidates) {
     const figure = document.createElement("figure");
-    figure.className = "evidence-figure echarts-figure " + candidate.widthClass;
+    figure.className = "evidence-figure echarts-figure";
     const accessibleTitle = optionTitle(candidate.option) || evidenceLabel(candidate.context) || nearbyHeading(candidate.pre) || "Chart";
     const mount = document.createElement("div");
     mount.className = "echarts-mount";
@@ -1210,7 +1393,7 @@ function replaceWithDataFallback(candidate) {
     return;
   }
   const figure = document.createElement("figure");
-  figure.className = "evidence-figure echarts-fallback " + candidate.widthClass;
+  figure.className = "evidence-figure echarts-fallback";
   appendEvidenceCaption(figure, candidate.context);
   const details = dataDetails(candidate.table);
   details.open = true;
@@ -1240,14 +1423,14 @@ function handleInteractiveMessage(event) {
 async function renderInteractiveBlocks() {
   const candidates = [...article.querySelectorAll("pre > code.language-interactive")].flatMap(block => {
     const pre = block.parentElement;
-    return pre ? [{ block, pre, context: evidenceContext(pre), loader: startVisualLoading(pre, "interactive", "width-medium") }] : [];
+    return pre ? [{ block, pre, context: evidenceContext(pre), loader: startVisualLoading(pre, "interactive") }] : [];
   });
   if (candidates.length === 0) return;
 
   await Promise.all(candidates.map((candidate, index) => new Promise(resolve => {
     const id = "interactive-" + (index + 1);
     const figure = document.createElement("figure");
-    figure.className = "evidence-figure interactive-figure width-medium";
+    figure.className = "evidence-figure interactive-figure";
     const stage = document.createElement("div");
     stage.className = "interactive-stage";
     const iframe = document.createElement("iframe");
@@ -1255,7 +1438,6 @@ async function renderInteractiveBlocks() {
     iframe.loading = "eager";
     iframe.title = evidenceLabel(candidate.context) || nearbyHeading(candidate.pre) || interactiveTitle();
     iframe.setAttribute("aria-hidden", "true");
-    candidate.loader.classList.remove("width-medium", "width-evidence");
     candidate.loader.replaceWith(figure);
     stage.append(candidate.loader, iframe);
     figure.append(stage);
@@ -1564,6 +1746,14 @@ function prepareTableRegion(wrap) {
   wrap.tabIndex = 0;
   wrap.setAttribute("role", "region");
   wrap.setAttribute("aria-label", labels[language] || labels.en);
+  const updateEdges = () => {
+    const overflow = wrap.scrollWidth - wrap.clientWidth;
+    wrap.classList.toggle("can-scroll-left", wrap.scrollLeft > 1);
+    wrap.classList.toggle("can-scroll-right", overflow - wrap.scrollLeft > 1);
+  };
+  wrap.addEventListener("scroll", updateEdges, { passive: true });
+  new ResizeObserver(updateEdges).observe(wrap);
+  queueMicrotask(updateEdges);
 }
 
 function tableWidthClass(table) {
@@ -1585,13 +1775,6 @@ function chartHeight(option) {
     return Math.min(720, Math.max(340, count * 36 + 120));
   }
   return asArray(option.series).some(series => isRecord(series) && series.type === "gauge") ? 360 : 440;
-}
-
-function chartWidthClass(option, table) {
-  const seriesCount = asArray(option.series).filter(isRecord).length;
-  const panelCount = Math.max(asArray(option.grid).length, asArray(option.xAxis).length, asArray(option.yAxis).length);
-  const denseTable = table && (table.headers.length > 3 || table.rows.length > 12);
-  return seriesCount > 1 || panelCount > 1 || denseTable ? "width-evidence" : "width-medium";
 }
 
 function optionTitle(option) {
@@ -1663,10 +1846,10 @@ function documentHtml(markdown: string): string {
 <body class="is-loading"><!--
   DIRECTION CONTRACT
   THESIS: One deterministic editorial renderer keeps attention on the research instead of theme selection.
-  OWN-WORLD: Near-white warm paper, system-sans reading, system-serif headlines, JetBrains Mono evidence, restrained carmine, and only structural rulework; no paper texture, decorative lines, black gridwork, generic cards, or renderer-authored claims.
+  OWN-WORLD: Near-white warm paper, lively Outfit reading and headlines with MiSans for zh-CN, JetBrains Mono evidence, restrained carmine, and only structural rulework; no paper texture, decorative lines, black gridwork, generic cards, or renderer-authored claims.
   STORY: Orient the reader, expose the governing relationship, then make evidence easy to inspect.
   FIRST VIEWPORT: Title, short thesis, and an optional orienting image or immediately legible interactive.
-  FORM: A continuous single-column long document with a wrapping contents rail, aligned prose and callouts, and wider evidence surfaces.
+  FORM: A continuous single-column long document with a wrapping contents rail, aligned prose, callouts, diagrams, charts, and interactives; only content-sized tables may extend wider.
   FINISH: Static print rhythm after the functional loader, exact alignment, legible evidence, and citations that behave as navigation.
 -->
   <noscript><style>body.is-loading .publication-source{display:block}.publication-loader{display:none}</style></noscript>
