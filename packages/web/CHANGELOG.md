@@ -1,5 +1,11 @@
 # @acpus/web
 
+## 0.3.2
+
+### Patch Changes
+
+- b2ad506: Support URL-backed Run Monitor navigation with workspace-aware deep links and browser history.
+
 ## 0.3.1
 
 ### Patch Changes
