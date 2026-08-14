@@ -1,5 +1,12 @@
 # acpus
 
+## 0.13.6
+
+### Patch Changes
+
+- Updated dependencies [b2ad506]
+  - @acpus/web@0.3.2
+
 ## 0.13.5
 
 ### Patch Changes
