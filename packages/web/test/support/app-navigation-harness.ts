@@ -141,6 +141,7 @@ let restoreReactActEnvironment = () => {};
 
 beforeEach(() => {
   restoreReactActEnvironment = installReactActEnvironment();
+  window.history.replaceState(null, "", "/");
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -178,6 +179,7 @@ afterEach(async () => {
   restoreProperty(window, "matchMedia", originalMatchMedia);
   restoreProperty(document, "startViewTransition", originalStartViewTransition);
   delete document.documentElement.dataset.runTransition;
+  window.history.replaceState(null, "", "/");
   restoreReactActEnvironment();
 });
 

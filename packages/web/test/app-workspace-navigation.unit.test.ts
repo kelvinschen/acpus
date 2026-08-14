@@ -20,6 +20,25 @@ import { waitForReact } from "./support/react-act-environment.js";
 const api = appNavigationApi();
 
 describe("App workspace navigation", () => {
+  it("opens an explicitly scoped run directly from the URL", async () => {
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
+    window.history.replaceState(null, "", "/?workspace=ws_remote&run=run_remote");
+    api.listWorkspaces.mockResolvedValue(multiWorkspaceCatalog);
+    api.listRuns.mockImplementation(async (workspaceKey: string) => workspaceKey === "ws_remote" ? [remoteRun] : runs);
+    api.getRunRuntimeSnapshot.mockResolvedValue({
+      run: { ...remoteRun, input: {} },
+      workflow: { name: remoteRun.name, agents: {} },
+      graph: undefined,
+      controls: { canCancelRun: false, retryTargets: [] },
+    });
+
+    await renderApp();
+
+    await waitForReact(() => expect(api.getRunRuntimeSnapshot).toHaveBeenCalledWith("ws_remote", remoteRun.id));
+    expect(container.querySelector(".run-workspace-identity")?.textContent).toContain("reports");
+    expect(container.querySelector(".workspace-access-state")?.textContent).toContain("Read only");
+  });
+
   it("switches workspace scope without a page animation and keeps remote Run Monitor read only", async () => {
     Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: vi.fn() });
     const viewTransitions = installViewTransitions();
@@ -40,6 +59,7 @@ describe("App workspace navigation", () => {
     await selectWorkspace("reports");
 
     await waitForReact(() => expect(runCard(remoteRun.id)).not.toBeNull());
+    expect(window.location.search).toBe("?workspace=ws_remote");
     expect(runCard("run_alpha")).toBeNull();
     expect(api.listRuns).toHaveBeenCalledWith("ws_remote");
     expect(viewTransitions.start).not.toHaveBeenCalled();
@@ -49,11 +69,13 @@ describe("App workspace navigation", () => {
       await new Promise(resolve => setTimeout(resolve, 0));
     });
     await waitForReact(() => expect(api.getRunRuntimeSnapshot).toHaveBeenCalledWith("ws_remote", remoteRun.id));
+    expect(window.location.search).toBe("?workspace=ws_remote&run=run_remote");
     expect(container.querySelector(".run-workspace-identity")?.textContent).toContain("reports");
     expect(container.querySelector(".workspace-access-state")?.textContent).toContain("Read only");
     expect(container.querySelector(".control-strip")).toBeNull();
 
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Back to Runs"]')!.click());
+    expect(window.location.search).toBe("?workspace=ws_remote");
     expect(container.querySelector<HTMLButtonElement>('button[aria-label^="Workspace:"]')?.getAttribute("aria-label")).toContain("reports");
     expect(runCard(remoteRun.id)).not.toBeNull();
   });
@@ -90,6 +112,7 @@ describe("App workspace navigation", () => {
     expect(container.querySelector(".workspace-access-state")?.textContent).toContain("Unavailable");
     expect(container.querySelector('[aria-label="Select run"]')).toBeNull();
     expect(container.querySelector(".control-strip")).toBeNull();
+    expect(window.location.search).toBe("?workspace=ws_remote&run=run_remote");
   });
 
   it("falls back to the current workspace with a toast when a selected Runs workspace disappears", async () => {
@@ -109,6 +132,7 @@ describe("App workspace navigation", () => {
     await waitForReact(() => expect(runCard("run_alpha")).not.toBeNull());
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Returned to the current workspace");
     expect(container.querySelector<HTMLButtonElement>('button[aria-label^="Workspace:"]')?.getAttribute("aria-label")).toContain("workspace");
+    expect(window.location.search).toBe("");
   });
 
 });

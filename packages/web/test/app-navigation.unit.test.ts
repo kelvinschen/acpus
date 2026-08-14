@@ -17,6 +17,29 @@ import { waitForReact } from "./support/react-act-environment.js";
 const api = appNavigationApi();
 
 describe("App run navigation", () => {
+  it("opens a current-workspace run directly from the URL without an initial transition", async () => {
+    const viewTransitions = installViewTransitions();
+    window.history.replaceState(null, "", "/?token=secret&run=run_alpha");
+
+    await renderApp();
+
+    await waitForReact(() => expect(api.getRunRuntimeSnapshot).toHaveBeenCalledWith("ws_current", "run_alpha"));
+    expect(container.querySelector('[aria-label="Run Monitor"]')).not.toBeNull();
+    expect(window.location.search).toBe("?token=secret&run=run_alpha");
+    expect(viewTransitions.start).not.toHaveBeenCalled();
+  });
+
+  it("keeps an unknown run URL on the Run Monitor error surface", async () => {
+    window.history.replaceState(null, "", "/?run=run_missing");
+    api.getRunRuntimeSnapshot.mockRejectedValue(new Error("Run not found."));
+
+    await renderApp();
+
+    await waitForReact(() => expect(container.querySelector(".run-header-error")?.textContent).toContain("Run not found."));
+    expect(window.location.search).toBe("?run=run_missing");
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Back to Runs"]')).not.toBeNull();
+  });
+
   it("fixes a repairable Runtime store with one action", async () => {
     api.getRuntimeStore
       .mockResolvedValueOnce({ state: "needs-fix", message: "Runtime data needs an update." })
@@ -48,6 +71,7 @@ describe("App run navigation", () => {
       runCard("run_alpha")!.click();
       await new Promise(resolve => setTimeout(resolve, 0));
     });
+    expect(window.location.search).toBe("?run=run_alpha");
     expect(buttonByText("Select test node")).toBeDefined();
     expect(api.getRunRuntimeSnapshot).toHaveBeenCalledWith("ws_current", "run_alpha");
     expect(container.querySelector('.nav-button[aria-label="Runs"]')?.getAttribute("aria-current")).toBe("page");
@@ -57,13 +81,47 @@ describe("App run navigation", () => {
 
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label="Back to Runs"]')!.click());
     expect(container.querySelector(".runs-page-header h2")?.textContent).toBe("Runs");
+    expect(window.location.search).toBe("");
 
     await act(async () => {
       runCard("run_beta")!.click();
       await new Promise(resolve => setTimeout(resolve, 0));
     });
     expect(api.getRunRuntimeSnapshot).toHaveBeenCalledWith("ws_current", "run_beta");
+    expect(window.location.search).toBe("?run=run_beta");
     expect(container.querySelector('[data-testid="graph-target"]')?.textContent).toBe("none");
+  });
+
+  it("restores run views from browser history and clears graph selection", async () => {
+    await renderApp();
+    await waitForReact(() => expect(runCard("run_alpha")).not.toBeNull());
+    await act(async () => {
+      runCard("run_alpha")!.click();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await act(async () => buttonByText("Select test node")!.click());
+    expect(container.querySelector('[data-testid="graph-target"]')?.textContent).toBe("node");
+
+    window.history.pushState(null, "", "/?run=run_beta");
+    await act(async () => window.dispatchEvent(new PopStateEvent("popstate")));
+
+    await waitForReact(() => expect(api.getRunRuntimeSnapshot).toHaveBeenCalledWith("ws_current", "run_beta"));
+    expect(container.querySelector('[data-testid="graph-target"]')?.textContent).toBe("none");
+    await waitForReact(() => expect(container.querySelector(".run-meta")?.textContent).toContain("run_beta"));
+
+    await act(async () => {
+      window.history.back();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await waitForReact(() => expect(window.location.search).toBe("?run=run_alpha"));
+    await waitForReact(() => expect(container.querySelector(".run-meta")?.textContent).toContain("run_alpha"));
+
+    await act(async () => {
+      window.history.forward();
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await waitForReact(() => expect(window.location.search).toBe("?run=run_beta"));
+    await waitForReact(() => expect(container.querySelector(".run-meta")?.textContent).toContain("run_beta"));
   });
 
   it("switches runs from Run Monitor without keeping the old graph selection", async () => {
@@ -152,6 +210,7 @@ describe("App run navigation", () => {
     });
     expect(viewTransitions.transitions[0]?.skipTransition).toHaveBeenCalledOnce();
     expect(container.querySelector(".workflow-viz-grid")).not.toBeNull();
+    expect(window.location.search).toBe("?view=workflows");
 
     await act(async () => viewTransitions.transitions[0]!.runUpdate());
     expect(container.querySelector('[aria-label="Run Monitor"]')).toBeNull();

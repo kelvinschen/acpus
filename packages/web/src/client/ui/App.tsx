@@ -1,5 +1,5 @@
 import * as React from "react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import Activity from "lucide-react/dist/esm/icons/activity.js";
@@ -28,6 +28,7 @@ import { RunsPage } from "./RunsPage.js";
 import { RuntimeStoreNotice } from "./RuntimeStoreNotice.js";
 import { ToastViewport, useToasts } from "./Toast.js";
 import { WorkflowsPage } from "./WorkflowsPage.js";
+import { appViewFromUrl, type AppView, urlForAppView } from "./navigation.js";
 import { Button } from "./shadcn/button.js";
 import {
   Popover,
@@ -37,11 +38,6 @@ import {
 } from "./shadcn/popover.js";
 
 const logoLockupUrl = new URL("../assets/logo-lockup.svg", import.meta.url).href;
-
-type AppView =
-  | { page: "runs" }
-  | { page: "run-monitor"; workspaceKey: string; runId: string }
-  | { page: "workflows" };
 
 type RunViewTransition = {
   finished: Promise<unknown>;
@@ -54,8 +50,10 @@ type RunViewTransitionDocument = Document & {
 
 export function App() {
   const queryClient = useQueryClient();
-  const [view, setView] = useState<AppView>({ page: "runs" });
-  const [selectedRunsWorkspaceKey, setSelectedRunsWorkspaceKey] = useState<string | undefined>();
+  const [view, setView] = useState<AppView>(() => appViewFromUrl(new URL(window.location.href)));
+  const [selectedRunsWorkspaceKey, setSelectedRunsWorkspaceKey] = useState<string | undefined>(
+    view.page === "workflows" ? undefined : view.workspaceKey,
+  );
   const [graphTarget, setGraphTarget] = useState<GraphInspectionTarget | undefined>();
   const [statusOpen, setStatusOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -74,7 +72,9 @@ export function App() {
     queryFn: listWorkspaces,
     refetchInterval: 30_000,
   });
-  const selectedWorkspaceKey = selectedRunsWorkspaceKey ?? workspaces.data?.currentWorkspaceKey;
+  const selectedWorkspaceKey = view.page === "workflows"
+    ? selectedRunsWorkspaceKey ?? workspaces.data?.currentWorkspaceKey
+    : view.workspaceKey ?? workspaces.data?.currentWorkspaceKey;
   const selectedWorkspaceAvailable = workspaces.data === undefined
     || workspaces.data.workspaces.some(workspace => workspace.key === selectedWorkspaceKey);
   const selectedWorkspace = workspaces.data?.workspaces.find(workspace => workspace.key === selectedWorkspaceKey);
@@ -114,24 +114,21 @@ export function App() {
     delete document.documentElement.dataset.runTransition;
   }, []);
 
-  useEffect(() => {
-    if (view.page !== "runs" || !selectedRunsWorkspaceKey || !workspaces.data) return;
-    if (workspaces.data.workspaces.some(workspace => workspace.key === selectedRunsWorkspaceKey)) return;
-    setSelectedRunsWorkspaceKey(workspaces.data.currentWorkspaceKey);
-    setGraphTarget(undefined);
-    push({
-      tone: "error",
-      title: "Workspace unavailable",
-      detail: "The selected workspace is no longer available. Returned to the current workspace.",
-    });
-  }, [push, selectedRunsWorkspaceKey, view.page, workspaces.data]);
-
-  const changeView = (nextView: AppView, direction?: "forward" | "back") => {
+  const changeView = useCallback((
+    nextView: AppView,
+    direction?: "forward" | "back",
+    historyMode: "push" | "replace" | "none" = "push",
+  ) => {
     const sequence = runViewTransitionSequence.current + 1;
     runViewTransitionSequence.current = sequence;
     const update = () => {
       if (runViewTransitionSequence.current !== sequence) return;
+      if (historyMode !== "none") {
+        const url = urlForAppView(new URL(window.location.href), nextView, workspaces.data?.currentWorkspaceKey);
+        window.history[historyMode === "push" ? "pushState" : "replaceState"](null, "", url);
+      }
       setView(nextView);
+      if (nextView.page !== "workflows") setSelectedRunsWorkspaceKey(nextView.workspaceKey);
       setGraphTarget(undefined);
     };
     const viewTransitionDocument = document as RunViewTransitionDocument;
@@ -154,7 +151,27 @@ export function App() {
       delete document.documentElement.dataset.runTransition;
     };
     void transition.finished.then(clearTransition, clearTransition);
-  };
+  }, [workspaces.data?.currentWorkspaceKey]);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const nextView = appViewFromUrl(new URL(window.location.href));
+      changeView(nextView, viewDirection(view, nextView), "none");
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [changeView, view]);
+
+  useEffect(() => {
+    if (view.page !== "runs" || !view.workspaceKey || !workspaces.data) return;
+    if (workspaces.data.workspaces.some(workspace => workspace.key === view.workspaceKey)) return;
+    changeView({ page: "runs", workspaceKey: workspaces.data.currentWorkspaceKey }, undefined, "replace");
+    push({
+      tone: "error",
+      title: "Workspace unavailable",
+      detail: "The selected workspace is no longer available. Returned to the current workspace.",
+    });
+  }, [changeView, push, view, workspaces.data]);
 
   return (
     <main className={`app-shell ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
@@ -179,7 +196,10 @@ export function App() {
             icon={<Activity size={17} />}
             label="Runs"
             active={view.page === "runs" || view.page === "run-monitor"}
-            onClick={() => changeView({ page: "runs" }, view.page === "run-monitor" ? "back" : undefined)}
+            onClick={() => changeView(
+              { page: "runs", ...(selectedWorkspaceKey ? { workspaceKey: selectedWorkspaceKey } : {}) },
+              view.page === "run-monitor" ? "back" : undefined,
+            )}
           />
           <NavButton icon={<FileSearch size={17} />} label="Workflows" active={view.page === "workflows"} onClick={() => changeView({ page: "workflows" })} />
         </nav>
@@ -218,26 +238,24 @@ export function App() {
                   ...(selectedWorkspaceReadable ? [runs.refetch()] : []),
                 ])}
                 onSelectWorkspace={workspaceKey => {
-                  setSelectedRunsWorkspaceKey(workspaceKey);
-                  setGraphTarget(undefined);
+                  changeView({ page: "runs", workspaceKey });
                 }}
                 onOpenRun={runId => selectedWorkspaceKey && changeView({ page: "run-monitor", workspaceKey: selectedWorkspaceKey, runId }, "forward")}
               />
             )}
-            {view.page === "run-monitor" && (
+            {view.page === "run-monitor" && selectedWorkspaceKey && (
               <RunMonitorPage
-                workspaceKey={view.workspaceKey}
-                workspace={workspaces.data?.workspaces.find(workspace => workspace.key === view.workspaceKey)}
+                workspaceKey={selectedWorkspaceKey}
+                workspace={workspaces.data?.workspaces.find(workspace => workspace.key === selectedWorkspaceKey)}
                 currentWorkspaceKey={workspaces.data?.currentWorkspaceKey}
                 runId={view.runId}
                 runs={runs.data ?? []}
                 selectedTarget={graphTarget}
                 onSelectRun={id => {
-                  setView({ page: "run-monitor", workspaceKey: view.workspaceKey, runId: id });
-                  setGraphTarget(undefined);
+                  changeView({ page: "run-monitor", workspaceKey: selectedWorkspaceKey, runId: id });
                 }}
                 onSelectTarget={setGraphTarget}
-                onBack={() => changeView({ page: "runs" }, "back")}
+                onBack={() => changeView({ page: "runs", workspaceKey: selectedWorkspaceKey }, "back")}
               />
             )}
             {view.page === "workflows" && <WorkflowsPage />}
@@ -247,6 +265,12 @@ export function App() {
       <ToastViewport toasts={toasts} onDismiss={dismiss} />
     </main>
   );
+}
+
+function viewDirection(current: AppView, next: AppView): "forward" | "back" | undefined {
+  if (current.page === "runs" && next.page === "run-monitor") return "forward";
+  if (current.page === "run-monitor" && next.page === "runs") return "back";
+  return undefined;
 }
 
 function StatusInfoPopover({
