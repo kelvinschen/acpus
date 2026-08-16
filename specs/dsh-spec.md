@@ -498,7 +498,7 @@ cancelSessionTask(input: {
   projection bounds, long polling, Client state, and Profile action behavior.
 - `pnpm test:contract packages/dsh`: verifies public exports, preset metadata,
   the closed six-tool catalog, the generated Profile Remote descriptor and
-  strict safe result projection, and packed artifacts.
+  strict safe result projection.
 - `pnpm test:integration packages/dsh`: verifies real DSH Loader composition,
   direct embedded admission, Acpx Agent execution, restart observation, Signal
   parking and reconciliation, terminal followup deduplication, missing-parent
@@ -506,3 +506,6 @@ cancelSessionTask(input: {
   no-CLI/no-DSH-worker boundary.
 - `pnpm --filter @acpus/dsh typecheck`: verifies supported Acpus and DSH public
   API use.
+- `pnpm test:dist`: verifies packed package exports, Client handoff, embedded
+  DSH Agent behavior, and installation with DSH host peers while only
+  `esbuild` is authorized to run a dependency build script.
