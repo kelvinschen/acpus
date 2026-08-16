@@ -1520,7 +1520,11 @@ class SqliteRuntimeStore implements RuntimeStore {
     const forkAgentOverrides = normalizeAgentOverrides(forkIr, options.agentOverrides, sourceAgentOverrides);
     let forkInput = options.input;
     if (forkInput !== undefined || options.prepared) {
-      const normalized = tryNormalizeWorkflowInput(forkIr, forkInput ?? JSON.parse(input.input_json) as JsonValue, "Fork input");
+      const normalized = tryNormalizeWorkflowInput(
+        forkIr,
+        forkInput === undefined ? JSON.parse(input.input_json) as JsonValue : forkInput,
+        "Fork input",
+      );
       if (normalized.isErr()) return err(normalized.error);
       forkInput = normalized.value;
     }

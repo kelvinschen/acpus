@@ -166,7 +166,10 @@ export class AcpusMode extends TypertRemoteService {
     }
     const prepared = await prepareAuthoringWorkflow(workspace, request.workflow);
     if (prepared.status === "invalid") return prepared;
-    const normalized = normalizeAuthoringInput(prepared.prepared, request.input ?? {});
+    const normalized = normalizeAuthoringInput(
+      prepared.prepared,
+      request.input === undefined ? {} : request.input,
+    );
     if (normalized.status === "invalid") return normalized;
     let link = await this.links.provisional(identity);
     if (link.runId === undefined) {

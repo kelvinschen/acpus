@@ -222,11 +222,11 @@ function normalizeProfile(value: unknown): AgentProfile | undefined {
   const id = normalizeProfileId(value.id);
   const use = normalizeAgentUse(value.use);
   const guidance = normalizeBoundedText(value.guidance, MAX_GUIDANCE_LENGTH);
-  const model = value.model === undefined
+  const model = value.model === undefined || value.model === ""
     ? undefined
     : normalizeBoundedText(value.model, MAX_MODEL_LENGTH);
   if (id === undefined || use === undefined || guidance === undefined
-    || (value.model !== undefined && model === undefined)) {
+    || (value.model !== undefined && value.model !== "" && model === undefined)) {
     return undefined;
   }
   return { id, use, ...(model === undefined ? {} : { model }), guidance };

@@ -3,6 +3,7 @@ import { access, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/pr
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
+import { defineWorkflow, z } from "@acpus/core";
 import { getRun, listRuns, tryNormalizeForkInput, type PreparedRunWorkflow } from "@acpus/runtime";
 import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
 import { openExistingWritableRuntimeStore } from "../src/store/store.js";
@@ -372,6 +373,27 @@ describe.concurrent("runtime controls and recovery", () => {
       expect((await getRun(workspace, inputFork!.run.id))._unsafeUnwrap()).toMatchObject({ status: "completed", output: { value: "new" } });
     });
   }, 20_000);
+
+  it("preserves an explicit null fork input instead of inheriting the source input", async () => {
+    await withRuntimeWorkspace("runtime-fork-null-input", async workspace => {
+      const workflow = defineWorkflow({
+        name: "runtime-fork-null-input",
+        inputSchema: z.union([z.string(), z.null()]),
+      }).build(({ input, step }) => {
+        step("accept_input").assert({ condition: true });
+        return { value: input };
+      });
+      const source = await admitSyntheticWorkflow(workspace, workflow, "source");
+
+      const fork = await forkRun(workspace, source.run.id, { input: null });
+      await advanceRun(workspace, fork.run.id);
+
+      expect((await getRun(workspace, fork.run.id))._unsafeUnwrap()).toMatchObject({
+        status: "completed",
+        output: { value: null },
+      });
+    });
+  });
 
   it("reports targeted fork checkpoint failures from the store boundary", async () => {
     await withRuntimeWorkspace("runtime-fork-checkpoint-typed-error", async workspace => {
