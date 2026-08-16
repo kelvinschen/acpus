@@ -9,7 +9,7 @@ import {
   withTaskExecutorWorkspace,
 } from "./support/task-executor-fixture.js";
 
-describe("task executor artifacts", () => {
+describe.concurrent("task executor artifacts", () => {
   it("resolves bound input artifacts to an absolute path that survives process.chdir", async () => {
     await withTaskExecutorWorkspace(async ({ runtimeRunDir, taskOptions }) => {
       const runId = "run_input_path";

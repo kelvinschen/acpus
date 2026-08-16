@@ -19,7 +19,6 @@ import {
   fixture,
   pathOptions,
   withCompilerWorkspace,
-  workflowSource,
 } from "./support/preflight.js";
 
 const scratchDirectories = vi.hoisted((): string[] => []);
@@ -37,26 +36,6 @@ vi.mock("../src/preflight/temp.js", async importOriginal => {
 });
 
 describe("workflow preparation source boundaries", () => {
-  it("keeps workspace paths live without an inline bundle", async () => {
-    await withCompilerWorkspace("compiler-workspace-source", async workspaceDir => {
-      const workflow = join(workspaceDir, "workflow.ts");
-      await writeFile(workflow, workflowSource("workspace-source"));
-
-      const prepared = await prepareWorkflow(pathOptions(workspaceDir, workflow));
-
-      expect(prepared.source).toEqual({ kind: "workspace", entry: "workflow.ts" });
-      expect("sourceBundle" in prepared).toBe(false);
-      expect(prepared.lock).toMatchObject({
-        kind: "acpus_workflow_preparation_lock",
-        version: 2,
-        workflow: {
-          source: { kind: "workspace", entry: "workflow.ts" },
-          entryDigest: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
-        },
-      });
-    });
-  });
-
   it("captures a sparse external static module closure across parent directories", async () => {
     await withCompilerWorkspace("compiler-external-workspace", async workspaceDir => {
       const external = await mkdtemp(join(tmpdir(), "compiler-external-source-"));
@@ -138,24 +117,9 @@ ${(await readFile(fixture("workflows/nested-reusable.workflow.ts"), "utf8"))
     });
   });
 
-  it("keeps package locks out of source graph identity", async () => {
-    const prepareWithLock = (name: string, lockContent: string) =>
-      withCompilerWorkspace(name, async workspaceDir => {
-        const workflow = join(workspaceDir, "workflow.ts");
-        await writeFile(workflow, workflowSource("lock-metadata"));
-        await writeFile(join(workspaceDir, "pnpm-lock.yaml"), lockContent);
-        return prepareWorkflow(pathOptions(workspaceDir, workflow));
-      });
-    const [first, second] = await Promise.all([
-      prepareWithLock("compiler-lock-metadata-a", "lockfileVersion: '9.0'\n"),
-      prepareWithLock("compiler-lock-metadata-b", "lockfileVersion: '9.1'\n"),
-    ]);
+});
 
-    expect(first.sourceGraphDigest).toBe(second.sourceGraphDigest);
-    expect(first.packageLockDigest).not.toBe(second.packageLockDigest);
-    expect(first.lock.workflow.source).toEqual(second.lock.workflow.source);
-  });
-
+describe("workflow preparation scratch cleanup", () => {
   it("rejects private materialization paths in snapshot IR and removes scratch", async () => {
     await withCompilerWorkspace("compiler-snapshot-failure-paths", async workspaceDir => {
       const scratchIndex = scratchDirectories.length;

@@ -13,7 +13,7 @@ import { openRuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRunDir, runtimeRow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { advanceRuntimeRun } from "./support/scheduler.js";
 
-describe("runtime hook integration", () => {
+describe.concurrent("runtime hook integration", () => {
   it("triggers hooks from newly committed rows only", async () => {
     await withRuntimeWorkspace("hooks-runtime-new-rows", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, hookTaskWorkflow());
@@ -86,7 +86,7 @@ describe("runtime hook integration", () => {
           db.close();
         }
 
-        expect(() => store.listDaemonWork()).toThrow(
+        expect(() => store.listRuntimeWork()).toThrow(
           `hook dispatch cursor ${lastSequence + 1} exceeds committed event sequence ${lastSequence}`,
         );
       } finally {

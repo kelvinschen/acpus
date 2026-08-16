@@ -88,6 +88,19 @@ export function readInspection(
   })());
 }
 
+export function readInspectionAtStore(
+  store: RuntimeStore,
+  view: InspectionViewQuery,
+): ResultAsync<InspectionRead, InspectionError> {
+  const invalid = view.kind === "target" ? validateCoherentTarget(view.target) : undefined;
+  if (invalid) return invalidCoherentInspection(invalid);
+  return new ResultAsync(withCoherentInspectionRunAtStore(
+    store,
+    view.runId,
+    state => readCoherentView(state, view),
+  ));
+}
+
 /**
  * Observes durable semantic state.  The initial projection is immediate; later
  * cycles first read only the durable change token and build a view only when it
@@ -180,15 +193,50 @@ export async function* observeInspectionAtStore(
     }
     const changes = inspectionChanges(previous.changeView, cycle.value.changeView, cycle.value.events, cycle.value.run);
     const timeline = timelineChanges(previous.view, cycle.value.view, changes);
-    if (changes.length > 0 || timeline?.length) {
+    const activity = query.updates === "activity"
+      && inspectionActivityChanged(previous.view, cycle.value.view);
+    if (changes.length > 0 || timeline?.length || activity) {
       yield ok({
         kind: "update",
         changes,
         ...(timeline?.length ? { timeline } : {}),
+        ...(activity ? { activity: true as const } : {}),
       });
     }
     previous = cycle.value;
   }
+}
+
+export function inspectionActivityChanged(
+  previous: InspectionView,
+  current: InspectionView,
+): boolean {
+  return JSON.stringify(inspectionActivityProjection(previous))
+    !== JSON.stringify(inspectionActivityProjection(current));
+}
+
+function inspectionActivityProjection(view: InspectionView): unknown {
+  if (view.kind === "run") return treeActivityProjection(view.tree);
+  if (view.detail === "summary") return view.pulse;
+  if (view.detail === "timeline") return view.current;
+  return undefined;
+}
+
+function treeActivityProjection(
+  tree: readonly import("./types.js").InspectionTreeEntry[],
+): unknown[] {
+  return tree.map(entry => entry.type === "item"
+    ? {
+        subject: entry.subject,
+        agent: entry.agent === undefined ? undefined : { name: entry.agent.name },
+        pulse: entry.pulse,
+        children: treeActivityProjection(entry.children),
+      }
+    : {
+        fold: entry.scope,
+        range: entry.range,
+        children: treeActivityProjection(entry.children),
+      });
 }
 
 type CoherentInspectionRun = {
@@ -328,6 +376,7 @@ async function readCoherentView(
       ir: state.frozen.ir,
       run: state.run,
       ...(observations ? { observations } : {}),
+      ...(view.structure === "materialized" ? { structure: "materialized" as const } : {}),
     }));
   }
   const resolved = resolveCoherentTarget(state, view.target, pinnedTarget);
@@ -780,6 +829,9 @@ function sameSubject(left: import("./types.js").InspectionSubject, right: import
 }
 
 function validateObserveInspectionQuery(query: ObserveInspectionQuery): InspectionError | undefined {
+  if (query.updates !== undefined && query.updates !== "decision" && query.updates !== "activity") {
+    return { type: "invalid-query", message: "Inspection updates must be 'decision' or 'activity'." };
+  }
   const view = query.view as InspectionViewQuery;
   if (view.kind === "target" && view.detail === "forensics") {
     return { type: "invalid-query", message: "Forensics inspection is one-shot and cannot be observed." };

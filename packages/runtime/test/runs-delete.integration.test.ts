@@ -261,12 +261,13 @@ function insertDaemonLease(workspace: string, heartbeatAt: string): void {
   const db = new DatabaseSync(runtimeDatabasePath(workspace));
   try {
     db.prepare(`
-      INSERT INTO daemon_lease (
-        workspace_realpath, generation, pid, heartbeat_at, idle_since_at,
+      INSERT INTO runtime_authority (
+        workspace_realpath, epoch, owner_id, pid, heartbeat_at,
+        released_at, idle_since_at,
         idle_stop_ms, protocol_version, package_version, node_version,
         exec_path, updated_at
       )
-      VALUES (?, 1, ?, ?, NULL, 30000, 1, 'test', ?, ?, ?)
+      VALUES (?, 1, 'stale-test-owner', ?, ?, NULL, NULL, 30000, 1, 'test', ?, ?, ?)
     `).run(workspace, process.pid, heartbeatAt, process.version, process.execPath, new Date().toISOString());
   } finally {
     db.close();

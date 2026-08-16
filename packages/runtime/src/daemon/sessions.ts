@@ -9,11 +9,12 @@ import {
 import { dispatchCommittedHooksForRun } from "../hooks/dispatch.js";
 import type { HookRunner } from "../hooks/runner.js";
 import type { ForkRunFailure, RunDetails, RuntimeStore } from "../store/store.js";
-import type { DaemonControlIntent, DaemonControlResult } from "./protocol.js";
+import type { RuntimeControlIntent, RuntimeControlResult } from "../runtime-contracts.js";
 import { CoalescingNodeProgressWriter } from "../progress/writer.js";
 import type { RuntimeConfiguration } from "../configuration.js";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import type { ManagedAcpExecutor } from "@acpus/agent-executor";
+import { randomUUID } from "node:crypto";
 
 type ActiveRunSession = {
   execution: RunExecution;
@@ -53,6 +54,7 @@ export class RunExecutionSessions {
     runtimeConfiguration: RuntimeConfiguration,
     private readonly onRunIncident: (incident: RunIncident) => void = () => undefined,
     managedAcpExecutor?: ManagedAcpExecutor,
+    private readonly runtimeAuthorityOwnerId = randomUUID(),
   ) {
     this.progressWriter = new CoalescingNodeProgressWriter(store);
     this.scheduler = createRuntimeRunScheduler({
@@ -125,11 +127,11 @@ export class RunExecutionSessions {
     return { disposition: "started", run: existing };
   }
 
-  control(intent: DaemonControlIntent): ResultAsync<DaemonControlResult, RunSessionControlFailure> {
+  control(intent: RuntimeControlIntent): ResultAsync<RuntimeControlResult, RunSessionControlFailure> {
     return new ResultAsync(this.controlResult(intent));
   }
 
-  private async controlResult(intent: DaemonControlIntent): Promise<Result<DaemonControlResult, RunSessionControlFailure>> {
+  private async controlResult(intent: RuntimeControlIntent): Promise<Result<RuntimeControlResult, RunSessionControlFailure>> {
     const session = this.sessions.get(intent.runId);
     if (!session) return this.controlWithShortSession(intent);
     if (intent.type === "fork") return this.fork(intent);
@@ -161,7 +163,10 @@ export class RunExecutionSessions {
 
   private startExecution(runId: string): void {
     this.failures.delete(runId);
-    const execution = this.scheduler.start({ runId, ownerId: `daemon:${process.pid}:${runId}` });
+    const execution = this.scheduler.start({
+      runId,
+      ownerId: `runtime-authority:${this.runtimeAuthorityOwnerId}:${runId}`,
+    });
     const session: ActiveRunSession = { execution, promise: execution.result };
     session.promise = session.promise.finally(() => {
       this.progressWriter.flushMatching(progress => progress.runId === runId);
@@ -179,14 +184,18 @@ export class RunExecutionSessions {
     });
   }
 
-  private async controlWithShortSession(intent: DaemonControlIntent): Promise<Result<DaemonControlResult, RunSessionControlFailure>> {
+  private async controlWithShortSession(intent: RuntimeControlIntent): Promise<Result<RuntimeControlResult, RunSessionControlFailure>> {
     const existing = this.store.getRun(intent.runId);
     if (!existing) return err({ type: "run-not-found", runId: intent.runId, message: `Run '${intent.runId}' was not found.` });
-    const claim = this.store.scheduler.claimRun(intent.runId, `daemon:${process.pid}:${intent.runId}:control`, 30_000);
+    const claim = this.store.scheduler.claimRun(
+      intent.runId,
+      `runtime-authority:${this.runtimeAuthorityOwnerId}:${intent.runId}:control`,
+      30_000,
+    );
     if (!claim) {
       return err({ type: "run-not-controllable", runId: intent.runId, message: `Control '${intent.type}' could not be applied to run '${intent.runId}'.` });
     }
-    let result: DaemonControlResult;
+    let result: RuntimeControlResult;
     let reopened = false;
     try {
       if (intent.type === "fork") return await this.fork(intent);
@@ -212,7 +221,7 @@ export class RunExecutionSessions {
     return ok(result);
   }
 
-  private async fork(intent: Extract<DaemonControlIntent, { type: "fork" }>): Promise<Result<DaemonControlResult, RunSessionControlFailure>> {
+  private async fork(intent: Extract<RuntimeControlIntent, { type: "fork" }>): Promise<Result<RuntimeControlResult, RunSessionControlFailure>> {
     const fork = await this.store.forkRun(intent.runId, {
       requestId: intent.requestId,
       ...(intent.target === undefined ? {} : { target: intent.target }),
@@ -254,13 +263,13 @@ export class RunExecutionSessions {
   }
 }
 
-function continuesAfterShortControl(intent: DaemonControlIntent): boolean {
+function continuesAfterShortControl(intent: RuntimeControlIntent): boolean {
   return intent.type === "signal"
     || intent.type === "steer"
     || intent.type === "cancel" && intent.target !== undefined;
 }
 
-function controlIntent(intent: DaemonControlIntent): RunControlIntent {
+function controlIntent(intent: RuntimeControlIntent): RunControlIntent {
   if (intent.type === "signal") {
     return {
       requestId: intent.requestId,
@@ -287,7 +296,7 @@ function controlIntent(intent: DaemonControlIntent): RunControlIntent {
   throw new Error(`Unsupported active control '${intent.type}'.`);
 }
 
-function daemonControlResult(effect: SchedulerControlEffect, run: RunDetails): DaemonControlResult {
+function daemonControlResult(effect: SchedulerControlEffect, run: RunDetails): RuntimeControlResult {
   if (effect.type === "pause") return { ...effect, run };
   if (effect.type === "resume") return { ...effect, run };
   if (effect.type === "retry") return { ...effect, run };

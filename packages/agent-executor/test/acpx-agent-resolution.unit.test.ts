@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AcpxAgentResolutionSystemError,
   parseAcpxAgentOverrides,
+  resolveAcpAgentLaunch,
   resolveAcpxAgentLaunch,
 } from "../src/acpx-agent-resolution.js";
 
@@ -94,6 +95,46 @@ describe("Acpx Agent config-show output", () => {
     mockConfigShow(null, JSON.stringify({ agents: {} }));
 
     expect((await resolveNamed("not-configured"))._unsafeUnwrap()).toBe("not-configured");
+  });
+
+  it("resolves a host Agent before consulting Acpx config", async () => {
+    const resolver = vi.fn(({ model }: { model?: string }) => [
+      process.execPath,
+      "host-agent.mjs",
+      model ?? "default",
+    ]);
+
+    const result = await resolveAcpAgentLaunch({
+      agent: { kind: "named", name: "embedded-agent" },
+      cwd: process.cwd(),
+      env: process.env,
+      model: "selected-model",
+      namedAgentLaunches: { "embedded-agent": resolver },
+    });
+
+    expect(result._unsafeUnwrap()).toEqual([
+      process.execPath,
+      "host-agent.mjs",
+      "selected-model",
+    ]);
+    expect(resolver).toHaveBeenCalledWith({ model: "selected-model" });
+    expect(mocks.access).not.toHaveBeenCalled();
+    expect(mocks.execFile).not.toHaveBeenCalled();
+  });
+
+  it("keeps an explicit command authoritative over host Agents", async () => {
+    const resolver = vi.fn(() => [process.execPath, "host-agent.mjs"]);
+
+    const result = await resolveAcpAgentLaunch({
+      agent: { kind: "command", command: "explicit-agent --stdio" },
+      cwd: process.cwd(),
+      env: process.env,
+      namedAgentLaunches: { "embedded-agent": resolver },
+    });
+
+    expect(result._unsafeUnwrap()).toBe("explicit-agent --stdio");
+    expect(resolver).not.toHaveBeenCalled();
+    expect(mocks.access).not.toHaveBeenCalled();
   });
 
   it("does not cache a named mapping between resolutions", async () => {

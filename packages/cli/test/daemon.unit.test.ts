@@ -477,7 +477,7 @@ function authority(authorityId: string, leaseGeneration: number, digestChar: str
     workspaceKey: "workspace-key",
     runtimeAbi: 1 as const,
     layoutVersion: 2 as const,
-    storageVersion: 9 as const,
+    storageVersion: 10 as const,
     authorityId,
     storeBinding: `sha256:${digestChar.repeat(64)}` as const,
     leaseGeneration,

@@ -6,6 +6,7 @@ import {
   type AcpRuntimeEvent,
   type AcpRuntimeHandle,
   type AcpRuntimeTurnResult,
+  type AcpRuntimeUsageBreakdown,
 } from "acpx/runtime";
 import type {
   AgentBackendFailure,
@@ -134,6 +135,7 @@ async function runTurn(
       await state.runtime.setConfigOption?.({ handle, key, value });
     }
 
+    const usageBefore = await readPerRequestUsage(state.runtime, handle);
     operation = "prompt";
     const controller = new AbortController();
     const turn = state.runtime.startTurn({
@@ -152,6 +154,7 @@ async function runTurn(
     emitActivity(state, turnId);
     for await (const event of turn.events) emitRuntimeEvent(state, turnId, accumulator, event);
     const terminal = await turn.result;
+    await applyPromptResponseUsage(state.runtime, handle, usageBefore, accumulator);
     const result = terminalResult(accumulator, terminal, active?.abortReason);
     emitTurnEnd(state, turnId, accumulator, result);
     send({ type: "turn-result", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: state.workerId, attemptId: state.attemptId, turnId, result });
@@ -162,6 +165,33 @@ async function runTurn(
   } finally {
     active = undefined;
   }
+}
+
+async function readPerRequestUsage(
+  runtime: AcpRuntime,
+  runtimeHandle: AcpRuntimeHandle,
+): Promise<Map<string, AcpRuntimeUsageBreakdown> | undefined> {
+  if (!runtime.getStatus) return undefined;
+  try {
+    const status = await runtime.getStatus({ handle: runtimeHandle });
+    return new Map(Object.entries(status.usage?.perRequest ?? {}));
+  } catch {
+    return undefined;
+  }
+}
+
+async function applyPromptResponseUsage(
+  runtime: AcpRuntime,
+  runtimeHandle: AcpRuntimeHandle,
+  before: Map<string, AcpRuntimeUsageBreakdown> | undefined,
+  accumulator: TurnAccumulator,
+): Promise<void> {
+  if (before === undefined) return;
+  const after = await readPerRequestUsage(runtime, runtimeHandle);
+  if (after === undefined) return;
+  const additions = [...after].filter(([id]) => !before.has(id));
+  if (additions.length !== 1) return;
+  accumulator.tokenUsage = { source: "prompt_response", ...additions[0]![1] };
 }
 
 function emitRuntimeEvent(state: InitializedWorker, turnId: string, accumulator: TurnAccumulator, event: AcpRuntimeEvent): void {

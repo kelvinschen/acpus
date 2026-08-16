@@ -10,7 +10,7 @@ import {
   withTaskExecutorWorkspace,
 } from "./support/task-executor-fixture.js";
 
-describe("task executor loading and process context", () => {
+describe.concurrent("task executor loading and process context", () => {
   it("executes inline task source that contains esbuild name helpers", async () => {
     await withTaskExecutorWorkspace(async ({ taskOptions }) => {
       const node = {

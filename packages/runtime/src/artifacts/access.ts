@@ -2,7 +2,6 @@ import { closeSync, constants as fsConstants, fstatSync, openSync, readFileSync,
 import { isAbsolute } from "node:path";
 import { sha256Digest } from "@acpus/core/content-identity";
 import { err, ok, type Result } from "neverthrow";
-import { resolveRuntimeLayout } from "../runtime-layout.js";
 import {
   assertRunFileIdentity,
   tryCaptureRunFile,
@@ -20,9 +19,9 @@ export type ArtifactPathError =
   | { type: "artifact-path-invalid"; runId: string; artifactId: string; message: string };
 
 export type ArtifactAccessContext = {
-  cwd: string;
   runId: string;
   store: {
+    readonly runsRoot: string;
     getArtifact(runId: string, artifactId: string): ArtifactRecord | undefined;
     getRunDirectoryToken(runId: string): RunDirectoryToken | undefined;
   };
@@ -139,7 +138,7 @@ function tryBindRegisteredArtifact(
   if (run.runId !== context.runId) {
     throw new Error(`Registered artifact '${artifact.id}' run directory belongs to run '${run.runId}', not '${context.runId}'.`);
   }
-  if (run.runsRoot.path !== resolveRuntimeLayout(context.cwd).runsRoot) {
+  if (run.runsRoot.path !== context.store.runsRoot) {
     throw new Error(`Registered artifact '${artifact.id}' run directory escapes the runtime runs root.`);
   }
   const file = tryCaptureRunFile(run, artifact.path, `Registered artifact '${artifact.id}'`);

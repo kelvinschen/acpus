@@ -6,14 +6,14 @@ import { join } from "node:path";
 import { err, ok, type Result } from "neverthrow";
 import {
   AcpxAgentResolutionSystemError,
-  resolveAcpxAgentLaunch,
-  type AcpxAgentLaunch,
+  resolveAcpAgentLaunch,
   type AcpxAgentResolutionFailure,
 } from "./acpx-agent-resolution.js";
 import {
   finishAcpOwnership,
   writeAcpOwnershipManifest,
 } from "./ownership.js";
+import { normalizeAcpExecutorOwner, type AcpExecutorOwnerIdentity } from "./owner.js";
 import {
   processStartToken,
   PROCESS_TREE_CLEANUP_BUDGET_MS,
@@ -22,6 +22,7 @@ import {
 import type {
   AcpOwnershipManifest,
   AgentBackendFailure,
+  AcpAgentLaunch,
   AgentTurnProgress,
   AgentTurnRequest,
   AgentTurnResult,
@@ -74,22 +75,16 @@ type ActiveTurn = {
 
 type ManagedAcpExecutorState = {
   readonly options: ManagedAcpExecutorOptions;
-  readonly daemon: { pid: number; startToken?: string; generation: string };
+  readonly owner: AcpExecutorOwnerIdentity;
   readonly workers: Map<string, WorkerState>;
   readonly starting: Set<Promise<Result<WorkerState, AcpxAgentResolutionFailure>>>;
   shuttingDown: boolean;
 };
 
-/** Creates the daemon-owned executor. Each call to withAttempt owns one worker tree. */
+/** Creates the managed executor. Each call to withAttempt owns one worker tree. */
 export async function createManagedAcpExecutor(options: ManagedAcpExecutorOptions): Promise<ManagedAcpExecutor> {
-  const pid = options.daemon.pid ?? process.pid;
-  const startToken = await processStartToken(pid);
-  const daemon = {
-    pid,
-    ...(startToken === undefined ? {} : { startToken }),
-    generation: String(options.daemon.generation),
-  };
-  const state: ManagedAcpExecutorState = { options, daemon, workers: new Map(), starting: new Set(), shuttingDown: false };
+  const owner = await normalizeAcpExecutorOwner(options.owner);
+  const state: ManagedAcpExecutorState = { options, owner, workers: new Map(), starting: new Set(), shuttingDown: false };
   return {
     withAttempt: async <T>(input: ManagedAcpAttemptInput, use: (attempt: ManagedAcpAttempt) => Promise<T>): Promise<T> => {
       if (state.shuttingDown) return use(unavailableAttempt(workerLostFailure("ACP executor is shutting down.")));
@@ -122,7 +117,7 @@ export async function createManagedAcpExecutor(options: ManagedAcpExecutorOption
     shutdown: async (): Promise<void> => {
       state.shuttingDown = true;
       await Promise.allSettled([...state.starting]);
-      await Promise.all([...state.workers.values()].map(worker => cleanupWorker(state, worker, "daemon shutdown")));
+      await Promise.all([...state.workers.values()].map(worker => cleanupWorker(state, worker, "executor shutdown")));
     },
   };
 }
@@ -131,7 +126,15 @@ async function startWorker(
   state: ManagedAcpExecutorState,
   input: ManagedAcpAttemptInput,
 ): Promise<Result<WorkerState, AcpxAgentResolutionFailure>> {
-  const resolved = await resolveAcpxAgentLaunch({ agent: input.agent, cwd: input.cwd, env: input.env });
+  const resolved = await resolveAcpAgentLaunch({
+    agent: input.agent,
+    cwd: input.cwd,
+    env: input.env,
+    ...(input.model === undefined ? {} : { model: input.model }),
+    ...(state.options.namedAgentLaunches === undefined
+      ? {}
+      : { namedAgentLaunches: state.options.namedAgentLaunches }),
+  });
   if (resolved.isErr()) return err(resolved.error);
   return ok(await startResolvedWorker(state, input, resolved.value));
 }
@@ -139,7 +142,7 @@ async function startWorker(
 async function startResolvedWorker(
   state: ManagedAcpExecutorState,
   input: ManagedAcpAttemptInput,
-  resolvedLaunch: AcpxAgentLaunch,
+  resolvedLaunch: AcpAgentLaunch,
 ): Promise<WorkerState> {
   await Promise.all([
     mkdir(state.options.workersRoot, { recursive: true, mode: WORKERS_DIRECTORY_MODE }),
@@ -166,12 +169,12 @@ async function startResolvedWorker(
     if (earlyError) throw earlyError;
     if (closedEarly) throw new Error("ACP worker exited before initialization.");
     manifest = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       workerId,
       runId: input.runId,
       attemptId: input.attemptId,
       sessionName: input.sessionName,
-      daemon: state.daemon,
+      owner: state.owner,
       worker: {
         pid: child.pid,
         ...(workerStartToken === undefined ? {} : { startToken: workerStartToken }),

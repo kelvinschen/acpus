@@ -10,7 +10,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 
 - The package MUST expose the `acpus` binary, the bundled `skills/acpus/SKILL.md`, and authoring facades at `acpus/core`, `acpus/expression`, and `acpus/tasks/git`.
 - The bundled skill version MUST equal the containing CLI package version; the root package entrypoint does not combine the authoring facades.
-- The CLI daemon entry MUST publish its containing CLI package version through daemon status and lease `packageVersion` metadata.
+- The CLI daemon entry MUST publish its containing CLI package version through daemon status and Runtime-authority `packageVersion` metadata.
 - The CLI MUST expose the following command grammar; bracketed flags are optional and `wf` aliases `workflow`.
 
 | Command | Options and behavior |
@@ -96,7 +96,8 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - JSON option files MUST contain strict JSON. Missing, unreadable, empty, invalid, BOM-prefixed, JSONC, stdin, and non-JSON inputs fail as usage errors before preparation or mutation.
 - `--agents` inline or file-backed values MUST parse as a JSON object before preparation or mutation.
 - Preparation failures MUST map to their compiler-owned `source`, `check`, `compile`, `lock`, or `validate` phases.
-- Every workflow run MUST prepare and admit through the workspace daemon; the CLI never owns scheduler advancement, leases, active attempts, or execution abort controllers.
+- Every workflow run MUST prepare and admit through the workspace daemon Adapter; the CLI never owns Runtime authority, scheduler advancement, run leases, active attempts, or execution abort controllers.
+- The daemon Adapter MUST open one `WorkspaceRuntime` and translate existing protocol requests to its admission, control, inspection, artifact, and admission-lookup operations without changing the CLI wire contract.
 - The CLI MUST establish one Runtime authority through status and the [Runtime authority update contract](runtime-spec.md#controls-and-daemon). A matching current authority MUST bypass lifecycle inspection; a blocked predecessor or unknown daemon MUST remain unchanged and fail as `RUNTIME_UPDATE_BLOCKED`.
 - Every `workflow run` MUST create one admission request id after preparation and reuse it across pre-admission authority handshakes and reconnects.
 - Every `workflow run` mode MUST use exactly one `submitAndObserve` stream. Default mode MUST stop at admission; `--follow` and `--await-decision` MUST continue on that stream with the corresponding Runtime stop policy and MUST NOT poll the store after daemon admission.

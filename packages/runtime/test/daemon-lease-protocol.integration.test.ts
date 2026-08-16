@@ -31,7 +31,7 @@ describe.concurrent("daemon lease socket protocol", () => {
             workspaceKey: expect.any(String),
             runtimeAbi: 1,
             layoutVersion: 2,
-            storageVersion: 9,
+            storageVersion: 10,
             authorityId: expect.any(String),
             storeBinding: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
             leaseGeneration: expect.any(Number),
@@ -51,7 +51,7 @@ describe.concurrent("daemon lease socket protocol", () => {
       });
       try {
         await expect(requestDaemonShutdown(dir)).resolves.toEqual({ status: "shutdown" });
-        await waitUntil(() => store.getRuntimeDiagnostics().daemon === undefined);
+        await waitUntil(() => store.getRuntimeDiagnostics().authority === undefined);
       } finally {
         await loop.shutdown();
       }
@@ -170,8 +170,9 @@ describe.concurrent("daemon lease socket protocol", () => {
     await withDaemonLeaseWorkspace(async ({ dir, store }) => {
       const endpoint = daemonEndpoint(dir);
       if (endpoint.startsWith("\0") || process.platform === "win32") return;
-      store.claimDaemon({
+      store.claimRuntimeAuthority({
         workspaceRealpath: dir,
+        ownerId: "socket-owner",
         pid: process.pid,
         protocolVersion: 1,
         packageVersion: "0.0.0-test",

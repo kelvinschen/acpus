@@ -21,7 +21,7 @@ function unwrapDaemon<T>(result: Result<T, DaemonClientFailure>): T {
   throw Object.assign(new Error(result.error.message), result.error.type === "rejected" ? { code: result.error.code } : {});
 }
 
-describe("daemon execution owner epochs", () => {
+describe.concurrent("daemon execution owner epochs", () => {
   it.concurrent("releases a paused owner before resume starts a new attempt epoch", async () => {
     await withRuntimeWorkspace("daemon-pause-resume-owner-epoch", async workspace => {
       const markerPath = join(workspace, "pause-resume.marker");

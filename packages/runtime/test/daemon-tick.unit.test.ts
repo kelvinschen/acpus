@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { runDaemonTick } from "../src/daemon/tick.js";
+import { runRuntimeTick } from "../src/daemon/tick.js";
 import type { RunRecord } from "../src/store/store.js";
 
 describe("daemon tick", () => {
   it("propagates non-busy hook journal prune failures after starting runnable work", async () => {
     const started: string[] = [];
 
-    await expect(runDaemonTick(fakeStore(undefined, true), { startSession: runId => {
+    await expect(runRuntimeTick(fakeStore(undefined, true), { startSession: runId => {
       started.push(runId);
       return "started";
     } })).rejects.toThrow("hook journal unavailable");
@@ -17,7 +17,7 @@ describe("daemon tick", () => {
     const dispatched: string[] = [];
     const store = fakeStore({ hookDispatchRunIds: ["run_2"], idleBlockers: 1 });
 
-    await expect(runDaemonTick(store, {
+    await expect(runRuntimeTick(store, {
       startSession: () => "terminal",
       dispatchHooks: runId => {
         dispatched.push(runId);
@@ -26,11 +26,25 @@ describe("daemon tick", () => {
     })).resolves.toEqual({ runs: 0, idleBlockers: 1 });
     expect(dispatched).toEqual(["run_2"]);
   });
+
+  it("does not dispatch hook backlog concurrently with a newly started run session", async () => {
+    const dispatched: string[] = [];
+    const store = fakeStore({ hookDispatchRunIds: ["run_1"], idleBlockers: 1 });
+
+    await expect(runRuntimeTick(store, {
+      startSession: () => "started",
+      dispatchHooks: runId => {
+        dispatched.push(runId);
+        return "dispatched";
+      },
+    })).resolves.toEqual({ runs: 1, idleBlockers: 1 });
+    expect(dispatched).toEqual([]);
+  });
 });
 
-function fakeStore(work = { hookDispatchRunIds: [] as string[], idleBlockers: 0 }, failPrune = false): Parameters<typeof runDaemonTick>[0] {
+function fakeStore(work = { hookDispatchRunIds: [] as string[], idleBlockers: 0 }, failPrune = false): Parameters<typeof runRuntimeTick>[0] {
   return {
-    listDaemonWork() {
+    listRuntimeWork() {
       return { startableRuns: [runRecord()], ...work };
     },
     pruneHookJournal() {

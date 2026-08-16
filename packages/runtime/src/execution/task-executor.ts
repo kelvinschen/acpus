@@ -16,7 +16,7 @@ export type TaskExecutorOptions = {
   cwd: string;
   sourceRoot?: string;
   runId: string;
-  store: Pick<RuntimeStore, "getRunDirectoryToken" | "writeExecutionMetadata" | "registerArtifact" | "getArtifact">;
+  store: Pick<RuntimeStore, "runsRoot" | "getRunDirectoryToken" | "writeExecutionMetadata" | "registerArtifact" | "getArtifact">;
   nodeKey?: string;
   attemptId: string;
   attemptNo: number;
@@ -41,7 +41,7 @@ async function executeTaskNodeResult(node: TaskNodeIR, scope: EvaluationScope, o
   const workspaceDir = resolve(options.cwd);
   const input = evaluateTaskInput(node, scope);
   if (input.isErr()) return err(input.error);
-  const artifactPaths = resolveTaskArtifactPaths(input.value, node.id, workspaceDir, options);
+  const artifactPaths = resolveTaskArtifactPaths(input.value, node.id, options);
   if (artifactPaths.isErr()) return resolutionFailure(artifactPaths.error);
   const nodeKey = options.nodeKey ?? node.id;
   const authoredCwd = node.run.cwd ? tryResolveString(node.run.cwd, scope, `Task node '${node.id}' cwd`) : ok(workspaceDir);
@@ -113,13 +113,12 @@ function evaluateTaskInput(node: TaskNodeIR, scope: EvaluationScope): Result<Jso
 function resolveTaskArtifactPaths(
   input: JsonValue,
   nodeId: string,
-  cwd: string,
   options: TaskExecutorOptions,
 ): Result<Record<string, RunFileToken>, ResolutionError> {
   const paths: Record<string, RunFileToken> = {};
   const visit = (value: unknown): Result<void, ResolutionError> => {
     if (isArtifactRefCandidate(value)) {
-      const resolved = tryBindArtifactRef(value, { cwd, runId: options.runId, store: options.store });
+      const resolved = tryBindArtifactRef(value, { runId: options.runId, store: options.store });
       if (resolved.isErr()) {
         return err({
           type: "evaluation",

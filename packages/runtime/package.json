@@ -12,6 +12,11 @@
       "development": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./host": {
+      "development": "./src/host.ts",
+      "types": "./dist/host.d.ts",
+      "default": "./dist/host.js"
     }
   },
   "main": "./dist/index.js",

@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { access, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
-import { createServer, type Server } from "node:net";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import {
+  awaitRuntimeStoreOffline,
   inspectRuntimeStore,
   readInspection,
   repairRuntimeStore,
 } from "../src/index.js";
+import { captureProcessIdentity } from "../src/process-liveness.js";
 import {
   resolveRuntimeLayout,
   resolveRuntimeWorkspaceLayout,
@@ -18,11 +19,16 @@ import {
   RUNTIME_APPLICATION_ID,
   RUNTIME_STORAGE_VERSION,
 } from "../src/storage/database.js";
-import { openRuntimeStore, openRuntimeStoreAtLayout } from "../src/store/store.js";
+import { openRuntimeStoreAtLayout } from "../src/store/store.js";
+import {
+  createLegacyStore,
+  startPredecessorDaemon,
+} from "./support/runtime-store-lifecycle.js";
+import { initializeRuntimeStoreForTest } from "./support/runtime-fixtures.js";
 import { withStorageWorkspace } from "./support/storage-workspace.js";
 import { treeFingerprint } from "./support/tree-fingerprint.js";
 
-describe("Runtime store repair", () => {
+describe.concurrent("Runtime store repair", () => {
   it("treats an absent store as ready and never initializes it", async () => {
     await withStorageWorkspace("runtime-repair-absent", async workspace => {
       const root = resolveRuntimeWorkspaceLayout(workspace).home;
@@ -34,6 +40,24 @@ describe("Runtime store repair", () => {
       expect(inspected.isOk() && inspected.value).toEqual({ state: "ready" });
       expect(repaired.isOk() && repaired.value).toEqual({ changed: false });
       await expect(access(root)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
+  it.skipIf(process.platform !== "linux")("treats a reused authority PID as offline", async () => {
+    await withStorageWorkspace("runtime-offline-reused-pid", async workspace => {
+      await initializeRuntimeStoreForTest(workspace);
+      const identity = captureProcessIdentity();
+      if (identity.startToken === undefined) throw new Error("Expected a Linux process start token.");
+      const store = await openRuntimeStoreAtLayout(resolveRuntimeLayout(workspace));
+      store.claimRuntimeAuthority({
+        workspaceRealpath: workspace,
+        ownerId: "stale-owner",
+        pid: identity.pid,
+        processStartToken: `${identity.startToken}:reused`,
+      })._unsafeUnwrap();
+      store.close();
+
+      expect((await awaitRuntimeStoreOffline(workspace)).isOk()).toBe(true);
     });
   });
 
@@ -200,7 +224,7 @@ describe("Runtime store repair", () => {
 
   it("leaves a newer store untouched", async () => {
     await withStorageWorkspace("runtime-repair-newer", async workspace => {
-      await createLegacyStore(workspace, 10);
+      await createLegacyStore(workspace, 11);
       const home = resolveRuntimeWorkspaceLayout(workspace).home;
       const before = await treeFingerprint(home);
 
@@ -240,7 +264,7 @@ describe("Runtime store repair", () => {
         sources: [{
           kind: "legacy-runtime",
           generationId: `gen_${randomUUID()}`,
-          storageVersion: 9,
+          storageVersion: 10,
           createdAt: "2026-08-10T00:00:00.000Z",
         }],
       }, null, 2)}\n`);
@@ -338,7 +362,7 @@ describe("Runtime store repair", () => {
       const conflictingMetadata = `${JSON.stringify({
         schemaVersion: 1,
         id: `gen_${randomUUID()}`,
-        storageVersion: 9,
+        storageVersion: 10,
         createdAt: interrupted.startedAt,
       }, null, 2)}\n`;
       await mkdir(next.generationRoot!, { recursive: true });
@@ -372,51 +396,6 @@ describe("Runtime store repair", () => {
     });
   });
 });
-
-type RunSummary = {
-  id: string;
-  name: string;
-  status: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
-async function createLegacyStore(workspace: string, storageVersion: number, run?: RunSummary): Promise<void> {
-  const store = await openRuntimeStore(workspace);
-  store.close();
-  const current = resolveRuntimeLayout(workspace);
-  if (run) {
-    const database = new DatabaseSync(current.databasePath);
-    try {
-      database.prepare(`
-        INSERT INTO runs (
-          id, name, status, workflow_entry, source_graph_digest, created_at, updated_at
-        ) VALUES (?, ?, ?, 'workflow.ts', 'sha256:test', ?, ?)
-      `).run(run.id, run.name, run.status, run.createdAt, run.updatedAt);
-    } finally {
-      database.close();
-    }
-  }
-  const database = new DatabaseSync(current.databasePath);
-  try {
-    database.exec(`PRAGMA user_version = ${storageVersion}; PRAGMA wal_checkpoint(TRUNCATE)`);
-  } finally {
-    database.close();
-  }
-
-  const workspaceLayout = resolveRuntimeWorkspaceLayout(workspace);
-  const manifest = JSON.parse(await readFile(current.manifestPath, "utf8")) as Record<string, unknown>;
-  await mkdir(workspaceLayout.workspaceRoot, { recursive: true });
-  await rename(current.runtimeRoot, workspaceLayout.legacyRuntimeRoot);
-  await rm(workspaceLayout.generationsRoot, { recursive: true, force: true });
-  await writeFile(workspaceLayout.manifestPath, `${JSON.stringify({
-    manifestVersion: 1,
-    workspaceKey: manifest.workspaceKey,
-    canonicalPath: manifest.canonicalPath,
-    platform: manifest.platform,
-    createdAt: manifest.createdAt,
-  }, null, 2)}\n`);
-}
 
 type TransitionCheckpoint = "source-sealed" | "next-generation-verified" | "manifest-published";
 
@@ -470,7 +449,7 @@ async function createInterruptedTransition(workspace: string, checkpoint: Transi
     await writeFile(next.generationMetadataPath, `${JSON.stringify({
       schemaVersion: 1,
       id: nextGenerationId,
-      storageVersion: 9,
+      storageVersion: 10,
       createdAt: startedAt,
     }, null, 2)}\n`);
     const store = await openRuntimeStoreAtLayout(next, {
@@ -493,64 +472,4 @@ async function createInterruptedTransition(workspace: string, checkpoint: Transi
   }
 
   return { workspace: layout, source, nextGenerationId, startedAt };
-}
-
-async function startPredecessorDaemon(
-  workspace: string,
-  options: { blockShutdown?: boolean; protocolVersion?: number } = {},
-): Promise<{
-  shutdownRequests(): number;
-  close(): Promise<void>;
-}> {
-  const endpoint = resolveRuntimeWorkspaceLayout(workspace).daemonEndpoint;
-  let shutdownRequests = 0;
-  let closed = false;
-  const server = createServer({ allowHalfOpen: true }, socket => {
-    const chunks: Buffer[] = [];
-    socket.on("data", chunk => chunks.push(Buffer.from(chunk)));
-    socket.on("end", () => {
-      const request = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { method?: unknown };
-      if (request.method === "status") {
-        socket.end(JSON.stringify({
-          ok: true,
-          result: {
-            status: "ok",
-            pid: process.pid,
-            generation: 1,
-            protocolVersion: options.protocolVersion ?? 3,
-            packageVersion: "0.15.0-test",
-          },
-        }));
-        return;
-      }
-      shutdownRequests += 1;
-      if (options.blockShutdown) {
-        socket.end(JSON.stringify({
-          ok: false,
-          error: { code: "CONTROL_CONFLICT", message: "Daemon has active runtime users." },
-        }));
-        return;
-      }
-      socket.end(JSON.stringify({ ok: true, result: { status: "shutdown" } }), () => {
-        if (!closed) {
-          closed = true;
-          server.close();
-        }
-      });
-    });
-  });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(endpoint, resolve);
-  });
-  return {
-    shutdownRequests: () => shutdownRequests,
-    close: () => closeServer(server, () => { closed = true; }),
-  };
-}
-
-async function closeServer(server: Server, markClosed: () => void): Promise<void> {
-  if (!server.listening) return;
-  markClosed();
-  await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
 }

@@ -4,6 +4,16 @@ export type AgentSelector =
   | { kind: "named"; name: string }
   | { kind: "command"; command: string };
 
+export type AcpAgentLaunch = string | string[];
+
+export type NamedAcpAgentLaunchResolver = (input: Readonly<{
+  model?: string;
+}>) => readonly string[];
+
+export type NamedAcpAgentLaunchRegistry = Readonly<
+  Record<string, NamedAcpAgentLaunchResolver>
+>;
+
 export type AgentJsonValue = null | boolean | number | string | AgentJsonValue[] | { [key: string]: AgentJsonValue };
 
 export type AgentBackendFailureKind =
@@ -201,12 +211,12 @@ export type ManagedAcpExecutor = {
 };
 
 export type AcpOwnershipManifest = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   workerId: string;
   runId: string;
   attemptId: string;
   sessionName: string;
-  daemon: {
+  owner: {
     pid: number;
     startToken?: string;
     generation: string;
@@ -233,6 +243,7 @@ export type AcpOwnershipHealth = {
 export type ManagedAcpExecutorOptions = {
   workersRoot: string;
   sessionStateDirectoryForRun(runId: string): string;
-  daemon: { generation: string | number; pid?: number };
+  owner: { generation: string | number; pid?: number; startToken?: string };
+  namedAgentLaunches?: NamedAcpAgentLaunchRegistry;
   onDegraded?: (manifest: AcpOwnershipManifest) => void;
 };

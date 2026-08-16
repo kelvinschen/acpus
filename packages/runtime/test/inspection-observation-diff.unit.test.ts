@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { inspectionChanges } from "../src/inspection/use-cases.js";
+import {
+  inspectionActivityChanged,
+  inspectionChanges,
+} from "../src/inspection/use-cases.js";
 import type { InspectionTreeEntry, InspectionView } from "../src/inspection/types.js";
 import type { RunDetails } from "../src/store/store.js";
 
@@ -124,6 +127,29 @@ describe("coherent inspection change selection", () => {
     expect(inspectionChanges(runBefore, runAfter, [], run())).toEqual([]);
     expect(inspectionChanges(summaryBefore, summaryAfter, [], run())).toEqual([]);
     expect(inspectionChanges(timelineBefore, timelineAfter, [], run())).toEqual([]);
+    expect(inspectionActivityChanged(runBefore, runAfter)).toBe(true);
+    expect(inspectionActivityChanged(summaryBefore, summaryAfter)).toBe(true);
+    expect(inspectionActivityChanged(timelineBefore, timelineAfter)).toBe(true);
+  });
+
+  it("does not treat Agent telemetry as an activity update", () => {
+    const before = treeView([{
+      ...item("review", "agent", "@abcdefabcdef", "running"),
+      agent: {
+        name: "codex",
+        telemetry: { inputTokens: 100, contextWindow: { used: 100, size: 1_000 } },
+      },
+    }]);
+    const after = treeView([{
+      ...item("review", "agent", "@abcdefabcdef", "running"),
+      agent: {
+        name: "codex",
+        telemetry: { inputTokens: 200, contextWindow: { used: 200, size: 1_000 } },
+      },
+    }]);
+
+    expect(inspectionChanges(before, after, [], run())).toEqual([]);
+    expect(inspectionActivityChanged(before, after)).toBe(false);
   });
 
   it("carries attention and visibility that trigger a target change", () => {
@@ -180,7 +206,7 @@ function targetActivityView(
 function treeView(children: InspectionTreeEntry[]): Extract<InspectionView, { kind: "run" }> {
   return {
     kind: "run",
-    run: { id: "run", name: "workflow", status: "running" },
+    run: { id: "run", name: "workflow", status: "running", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:01.000Z" },
     counts: { total: 2 },
     tree: [{
       type: "item",
@@ -223,7 +249,7 @@ function runView(
 ): Extract<InspectionView, { kind: "run" }> {
   return {
     kind: "run",
-    run: { id: "run", name: "workflow", status: "running" },
+    run: { id: "run", name: "workflow", status: "running", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:01.000Z" },
     counts: { total: 1 },
     tree: [{
       type: "item",

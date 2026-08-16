@@ -605,8 +605,8 @@ function runDetails(id = "run_admitted") {
     execution: {
       state: "inactive",
       lastStatus: "pending",
-      reason: "daemon_alive",
-      daemonHeartbeatAt: "2026-07-24T00:00:00.000Z",
+      reason: "runtime_authority_alive",
+      runtimeAuthorityHeartbeatAt: "2026-07-24T00:00:00.000Z",
     },
   };
 }

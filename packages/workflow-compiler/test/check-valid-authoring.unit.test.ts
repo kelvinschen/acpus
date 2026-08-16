@@ -170,6 +170,9 @@ describe("workflow valid authoring checks", () => {
     });
   });
 
+});
+
+describe("workflow invalid authoring checks", () => {
   it("keeps invalid inline and reusable Task input diagnostics local without cascade fallout", async () => {
     await withCheckWorkspace("workflow-invalid-task-input", async cwd => {
       const result = await runCheck(cwd, `
@@ -196,14 +199,8 @@ describe("workflow valid authoring checks", () => {
       const typescript = result.diagnostics.filter(diagnostic => diagnostic.code.startsWith("TS"));
       expect(result.diagnostics).toHaveLength(2);
       expect(typescript).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          code: "TS2769",
-          source: expect.objectContaining({ line: 11 }),
-        }),
-        expect.objectContaining({
-          code: "TS2769",
-          source: expect.objectContaining({ line: 16 }),
-        }),
+        expect.objectContaining({ code: "TS2769", source: expect.objectContaining({ line: 11 }) }),
+        expect.objectContaining({ code: "TS2769", source: expect.objectContaining({ line: 16 }) }),
       ]));
       expect(typescript.map(diagnostic => diagnostic.code)).not.toContain("TS7031");
       expect(typescript.map(diagnostic => diagnostic.code)).not.toContain("TS2345");

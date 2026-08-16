@@ -2,6 +2,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const dshRoot = join(root, "packages", "dsh");
+const dshRemoteCheck = {
+  file: process.execPath,
+  args: [join(dshRoot, "scripts", "remote-artifacts.mjs"), "check"],
+  cwd: dshRoot,
+};
 const sourceGraphIssues = [
   "files",
   "exports",
@@ -33,6 +39,10 @@ const tasks = new Map([
         cwd: root,
       },
     ],
+  }],
+  ["dsh:remote", {
+    name: "dsh:remote",
+    commands: [dshRemoteCheck],
   }],
   ["graph:source", {
     name: "graph:source",
@@ -73,13 +83,14 @@ const tasks = new Map([
   }],
   ["release", {
     name: "release",
-    commands: [nodeCommand("scripts/checks/release.mjs")],
+    commands: [dshRemoteCheck, nodeCommand("scripts/checks/release.mjs")],
   }],
 ]);
 
 export const checkNames = Object.freeze([...tasks.keys()]);
 export const defaultCheckNames = Object.freeze([
   "toolchain",
+  "dsh:remote",
   "graph:source",
   "graph:strict",
   "docs",

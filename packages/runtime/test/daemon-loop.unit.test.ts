@@ -8,12 +8,12 @@ import type { ManagedAcpExecutor } from "@acpus/agent-executor";
 import { daemonEndpoint } from "../src/daemon/client.js";
 import type { DaemonHandlers } from "../src/daemon/server.js";
 import { RunExecutionSessions } from "../src/daemon/sessions.js";
-import type { DaemonTickResult } from "../src/daemon/tick.js";
+import type { RuntimeTickResult } from "../src/daemon/tick.js";
 import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
 import { openRuntimeStore } from "../src/store/store.js";
 import { treeFingerprint } from "./support/tree-fingerprint.js";
 
-const runDaemonTick = vi.fn<() => Promise<DaemonTickResult>>();
+const runRuntimeTick = vi.fn<() => Promise<RuntimeTickResult>>();
 const startupCleanup = vi.hoisted(() => ({ failure: undefined as Error | undefined }));
 const daemonServer = vi.hoisted(() => ({ handlers: undefined as DaemonHandlers | undefined }));
 const cleanupTrace = vi.hoisted(() => ({
@@ -29,7 +29,7 @@ const startupRecovery = vi.hoisted(() => ({
   failure: undefined as Error | undefined,
 }));
 
-vi.mock("../src/daemon/tick.js", () => ({ runDaemonTick }));
+vi.mock("../src/daemon/tick.js", () => ({ runRuntimeTick }));
 vi.mock("../src/daemon/server.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../src/daemon/server.js")>();
   return {
@@ -68,11 +68,11 @@ vi.mock("@acpus/agent-executor", async importOriginal => {
 vi.mock("../src/store/store.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../src/store/store.js")>();
   const instrument = (store: Awaited<ReturnType<typeof actual.openRuntimeStoreAtLayout>>) => {
-    const claimDaemon = store.claimDaemon.bind(store);
-    store.claimDaemon = input => {
-      const lease = claimDaemon(input);
-      startupRecovery.claimed = true;
-      return lease;
+    const claimRuntimeAuthority = store.claimRuntimeAuthority.bind(store);
+    store.claimRuntimeAuthority = input => {
+      const claim = claimRuntimeAuthority(input);
+      if (claim.isOk()) startupRecovery.claimed = true;
+      return claim;
     };
     const recover = store.observationLog.reconcileTerminalTurns.bind(store.observationLog);
     store.observationLog.reconcileTerminalTurns = async () => {
@@ -85,10 +85,10 @@ vi.mock("../src/store/store.js", async importOriginal => {
     store.cleanupStagedRunDirectories = () => startupCleanup.failure === undefined
       ? cleanup()
       : Promise.reject(startupCleanup.failure);
-    const releaseDaemon = store.releaseDaemon.bind(store);
-    store.releaseDaemon = input => {
+    const releaseRuntimeAuthority = store.releaseRuntimeAuthority.bind(store);
+    store.releaseRuntimeAuthority = input => {
       cleanupTrace.calls.push("store:release");
-      const released = releaseDaemon(input);
+      const released = releaseRuntimeAuthority(input);
       if (cleanupTrace.releaseFailure) throw cleanupTrace.releaseFailure;
       return released;
     };
@@ -108,7 +108,10 @@ vi.mock("../src/store/store.js", async importOriginal => {
   };
 });
 
-const { startDaemonLoop } = await import("../src/daemon/loop.js");
+const {
+  DaemonRuntimeStoreReadinessError,
+  startDaemonLoop,
+} = await import("../src/daemon/loop.js");
 
 let dir: string;
 let runtimeHome: string;
@@ -132,7 +135,7 @@ beforeEach(async () => {
   startupRecovery.calls = 0;
   startupRecovery.openedGenerationIds = [];
   startupRecovery.failure = undefined;
-  runDaemonTick.mockReset();
+  runRuntimeTick.mockReset();
 });
 
 afterEach(async () => {
@@ -148,7 +151,7 @@ afterEach(async () => {
 describe("daemon loop", () => {
   it("initializes a fresh store and leaves an outdated store unchanged", async () => {
     const absent = await treeFingerprint(runtimeHome);
-    runDaemonTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+    runRuntimeTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 50,
       idleStopMs: 1_000,
@@ -162,8 +165,7 @@ describe("daemon loop", () => {
     await expect(startDaemonLoop(dir, { packageVersion: "test" })).rejects.toMatchObject({
       name: "DaemonRuntimeStoreReadinessError",
       failure: {
-        type: "repair-required",
-        command: "acpus doctor --fix",
+        type: "runtime-store-unavailable",
       },
     });
     await expect(access(daemonEndpoint(dir))).rejects.toMatchObject({ code: "ENOENT" });
@@ -171,7 +173,7 @@ describe("daemon loop", () => {
   });
 
   it("adopts one active generation when fresh daemon starts race", async () => {
-    runDaemonTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+    runRuntimeTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
 
     const starts = await Promise.allSettled([
       startDaemonLoop(dir, { heartbeatMs: 50, idleStopMs: 1_000, packageVersion: "test" }),
@@ -207,14 +209,16 @@ describe("daemon loop", () => {
     const layout = resolveRuntimeLayout(dir);
     const db = new DatabaseSync(layout.databasePath, { readOnly: true });
     try {
-      expect(db.prepare("SELECT COUNT(*) AS count FROM daemon_lease").get()).toEqual({ count: 0 });
+      expect(db.prepare(
+        "SELECT COUNT(*) AS count FROM runtime_authority WHERE released_at IS NULL",
+      ).get()).toEqual({ count: 0 });
     } finally {
       db.close();
     }
     await expect(access(daemonEndpoint(dir))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("attempts every startup cleanup stage and reports all failures", async () => {
+  it("attempts every startup cleanup stage and returns a typed open failure", async () => {
     await initializeReadyStore();
     const startupFailure = new Error("startup cleanup failed");
     const executorFailure = new Error("executor shutdown failed");
@@ -225,24 +229,25 @@ describe("daemon loop", () => {
 
     const rejected = await startDaemonLoop(dir, { packageVersion: "test" }).catch(error => error);
 
-    expect(rejected).toBeInstanceOf(AggregateError);
-    expect((rejected as AggregateError).errors).toEqual([
-      startupFailure,
-      executorFailure,
-      releaseFailure,
-    ]);
+    expect(rejected).toBeInstanceOf(DaemonRuntimeStoreReadinessError);
+    expect(rejected).toMatchObject({
+      failure: {
+        type: "runtime-open-failed",
+        message: "Workspace Runtime startup could not release every resource.",
+      },
+    });
     expect(cleanupTrace.calls).toEqual([
-      "server:close",
       "executor:shutdown",
       "store:release",
       "store:close",
+      "server:close",
     ]);
     await expect(access(daemonEndpoint(dir))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("recovers terminal observations only after claiming daemon ownership", async () => {
     await initializeReadyStore();
-    runDaemonTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+    runRuntimeTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
 
     const loop = await startDaemonLoop(dir, {
       idleStopMs: 1_000,
@@ -269,7 +274,9 @@ describe("daemon loop", () => {
     const layout = resolveRuntimeLayout(dir);
     const db = new DatabaseSync(layout.databasePath, { readOnly: true });
     try {
-      expect(db.prepare("SELECT COUNT(*) AS count FROM daemon_lease").get()).toEqual({ count: 0 });
+      expect(db.prepare(
+        "SELECT COUNT(*) AS count FROM runtime_authority WHERE released_at IS NULL",
+      ).get()).toEqual({ count: 0 });
     } finally {
       db.close();
     }
@@ -279,7 +286,7 @@ describe("daemon loop", () => {
   it("continues heartbeating while a work tick is still running", async () => {
     await initializeReadyStore();
     let finishTick!: () => void;
-    runDaemonTick.mockImplementationOnce(() => new Promise(resolve => {
+    runRuntimeTick.mockImplementationOnce(() => new Promise(resolve => {
       finishTick = () => resolve({ runs: 1, idleBlockers: 1 });
     }));
 
@@ -289,7 +296,7 @@ describe("daemon loop", () => {
       packageVersion: "test",
     });
     try {
-      await waitUntil(() => runDaemonTick.mock.calls.length > 0);
+      await waitUntil(() => runRuntimeTick.mock.calls.length > 0);
       const firstHeartbeat = await waitUntilValue(() => daemonHeartbeat(dir));
       await waitUntil(() => daemonHeartbeat(dir) !== firstHeartbeat);
       finishTick();
@@ -302,7 +309,7 @@ describe("daemon loop", () => {
   it("waits for an active work tick before closing the store", async () => {
     await initializeReadyStore();
     let finishTick!: () => void;
-    runDaemonTick.mockImplementationOnce(() => new Promise(resolve => {
+    runRuntimeTick.mockImplementationOnce(() => new Promise(resolve => {
       finishTick = () => resolve({ runs: 1, idleBlockers: 1 });
     }));
 
@@ -311,9 +318,9 @@ describe("daemon loop", () => {
       idleStopMs: 1_000,
       packageVersion: "test",
     });
-    await waitUntil(() => runDaemonTick.mock.calls.length > 0);
+    await waitUntil(() => runRuntimeTick.mock.calls.length > 0);
     await new Promise(resolve => setTimeout(resolve, 30));
-    expect(runDaemonTick).toHaveBeenCalledOnce();
+    expect(runRuntimeTick).toHaveBeenCalledOnce();
     let shutdownResolved = false;
     const shutdown = loop.shutdown().then(() => {
       shutdownResolved = true;
@@ -327,7 +334,7 @@ describe("daemon loop", () => {
 
   it("withdraws request authority as soon as protocol shutdown is accepted", async () => {
     await initializeReadyStore();
-    runDaemonTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+    runRuntimeTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 50,
       idleStopMs: 1_000,
@@ -363,7 +370,7 @@ describe("daemon loop", () => {
 
   it("continues normal shutdown cleanup after independent stage failures", async () => {
     await initializeReadyStore();
-    runDaemonTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+    runRuntimeTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
     const stopFailure = new Error("session stop failed");
     const executorFailure = new Error("executor shutdown failed");
     const hooksFailure = new Error("hook drain failed");
@@ -410,7 +417,7 @@ describe("daemon loop", () => {
 
   it("retries transient store-busy tick failures", async () => {
     await initializeReadyStore();
-    runDaemonTick
+    runRuntimeTick
       .mockRejectedValueOnce(Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" }))
       .mockResolvedValue({ runs: 1, idleBlockers: 0 });
     const onShutdown = vi.fn();
@@ -421,7 +428,7 @@ describe("daemon loop", () => {
       onShutdown,
     });
     try {
-      await waitUntil(() => runDaemonTick.mock.calls.length >= 2);
+      await waitUntil(() => runRuntimeTick.mock.calls.length >= 2);
       expect(onShutdown).not.toHaveBeenCalled();
     } finally {
       await loop.shutdown();
@@ -430,7 +437,7 @@ describe("daemon loop", () => {
 
   it("notifies automatic shutdown even when lease release fails", async () => {
     await initializeReadyStore();
-    runDaemonTick.mockResolvedValue({ runs: 1, idleBlockers: 0 });
+    runRuntimeTick.mockResolvedValue({ runs: 1, idleBlockers: 0 });
     let notify!: () => void;
     const notified = new Promise<void>(resolve => { notify = resolve; });
     const loop = await startDaemonLoop(dir, {
@@ -439,14 +446,14 @@ describe("daemon loop", () => {
       packageVersion: "test",
       onShutdown: notify,
     });
-    await waitUntil(() => runDaemonTick.mock.calls.length > 0);
+    await waitUntil(() => runRuntimeTick.mock.calls.length > 0);
     const db = new DatabaseSync(resolveRuntimeLayout(dir).databasePath);
-    db.exec("DROP TABLE daemon_lease");
+    db.exec("DROP TABLE runtime_authority");
     db.close();
 
     await notified;
 
-    await expect(loop.shutdown()).rejects.toThrow("no such table: daemon_lease");
+    await expect(loop.shutdown()).rejects.toThrow("no such table: runtime_authority");
   });
 });
 
@@ -497,7 +504,7 @@ async function waitUntilValue<T>(read: () => T | undefined): Promise<T> {
 function daemonHeartbeat(workspace: string): string | undefined {
   const db = new DatabaseSync(resolveRuntimeLayout(workspace).databasePath, { readOnly: true });
   try {
-    const row = db.prepare("SELECT heartbeat_at FROM daemon_lease").get() as { heartbeat_at: string | null } | undefined;
+    const row = db.prepare("SELECT heartbeat_at FROM runtime_authority").get() as { heartbeat_at: string | null } | undefined;
     return row?.heartbeat_at ?? undefined;
   } finally {
     db.close();

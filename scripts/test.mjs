@@ -4,10 +4,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projects = [
-  { name: "unit", args: ["--project", "unit"], maxWorkers: "22%" },
-  { name: "contract+type", args: ["--project", "contract", "--project", "type-contract"], maxWorkers: "13%" },
-  { name: "integration:1", args: ["--project", "integration", "--shard=1/2"], maxWorkers: "24%" },
-  { name: "integration:2", args: ["--project", "integration", "--shard=2/2"], maxWorkers: "24%" },
+  { name: "integration", args: ["--project", "integration", "--maxConcurrency=5"], maxWorkers: "47%" },
+  { name: "unit", args: ["--project", "unit"], maxWorkers: "28%" },
+  { name: "contract+type", args: ["--project", "contract", "--project", "type-contract"], maxWorkers: "12%" },
   { name: "e2e+regression", args: ["--project", "e2e", "--project", "regression"], maxWorkers: "3%" },
 ];
 const require = createRequire(import.meta.url);

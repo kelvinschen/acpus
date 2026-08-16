@@ -13,6 +13,7 @@ import {
 test("the default check owns the complete non-release verification order", () => {
   assert.deepEqual(defaultCheckNames, [
     "toolchain",
+    "dsh:remote",
     "graph:source",
     "graph:strict",
     "docs",
@@ -20,6 +21,17 @@ test("the default check owns the complete non-release verification order", () =>
   ]);
   assert.deepEqual(resolveCheckPlan().map(task => task.name), defaultCheckNames);
   assert(!defaultCheckNames.includes("release"));
+});
+
+test("default and release checks share the canonical DSH Remote verification", () => {
+  const [remote] = resolveCheckPlan(["dsh:remote"])[0].commands;
+  const release = resolveCheckPlan(["release"])[0].commands;
+
+  assert.equal(release[0], remote);
+  assert.equal(remote.args[0].endsWith("/packages/dsh/scripts/remote-artifacts.mjs"), true);
+  assert.equal(remote.args[1], "check");
+  assert.equal(remote.cwd.endsWith("/packages/dsh"), true);
+  assert.equal(release[1].args.at(-1).endsWith("/scripts/checks/release.mjs"), true);
 });
 
 test("a named check selects one exact task", () => {
@@ -48,7 +60,7 @@ test("the runner stops at the first failed task", async () => {
   });
 
   await assert.rejects(run(), failure);
-  assert.deepEqual(started, ["toolchain", "graph:source"]);
+  assert.deepEqual(started, ["toolchain", "dsh:remote", "graph:source"]);
 });
 
 test("the source graph covers dead code and dependency issues in one Knip command", () => {

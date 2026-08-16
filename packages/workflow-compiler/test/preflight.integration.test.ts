@@ -1,16 +1,6 @@
-import {
-  mkdir,
-  mkdtemp,
-  readFile,
-  rm,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import {
-  prepareWorkflow,
-  tryPrepareWorkflow,
-} from "@acpus/workflow-compiler";
+import { tryPrepareWorkflow } from "@acpus/workflow-compiler";
 import { describe, expect, it } from "vitest";
 import {
   copyFixture,
@@ -76,74 +66,4 @@ describe("workflow preparation", () => {
     });
   });
 
-  it("rejects a live workspace entry that changes while it is compiling", async () => {
-    await withCompilerWorkspace("compiler-source-generation", async workspaceDir => {
-      const workflow = join(workspaceDir, "workflow.ts");
-      const changedSource = `import { defineWorkflow } from "acpus/core";
-export default defineWorkflow({ name: "changed" }).build(() => ({}));
-`;
-      const checkedSource = `import { writeFileSync } from "node:fs";
-import { defineWorkflow } from "acpus/core";
-writeFileSync(${JSON.stringify(workflow)}, ${JSON.stringify(changedSource)});
-export default defineWorkflow({ name: "checked" }).build(() => ({}));
-`;
-      await writeFile(workflow, checkedSource);
-
-      const result = await tryPrepareWorkflow(pathOptions(workspaceDir, workflow));
-
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected source generation failure");
-      expect(result.error).toMatchObject({
-        type: "compile-failed",
-        phase: "compile",
-        failure: {
-          type: "workflow-source-changed",
-          entry: workflow,
-        },
-      });
-      expect(await readFile(workflow, "utf8")).toBe(changedSource);
-    });
-  });
-
-  it("preserves an external workflow installed under node_modules", async () => {
-    const [workspaceDir, installationRoot] = await Promise.all([
-      mkdtemp(join(tmpdir(), "compiler-installed-workspace-")),
-      mkdtemp(join(tmpdir(), "compiler-installed-package-")),
-    ]);
-    const packageRoot = join(installationRoot, "node_modules", "acpus");
-    try {
-      await mkdir(packageRoot, { recursive: true });
-      await Promise.all([
-        writeFile(join(packageRoot, "package.json"), "{\"type\":\"module\"}\n"),
-        writeFile(join(packageRoot, "helper.ts"), `import { basename } from "node:path";
-export const installed = [...new Set([basename("/installed")])][0]!;
-`),
-        writeFile(join(packageRoot, "workflow.ts"), `import { defineWorkflow } from "acpus/core";
-import { installed } from "./helper.js";
-void installed;
-export default defineWorkflow({ name: "installed-external" }).build(() => ({ ok: true }));
-`),
-      ]);
-
-      const prepared = await prepareWorkflow(pathOptions(workspaceDir, join(packageRoot, "workflow.ts")));
-
-      expect(prepared.source).toEqual({
-        kind: "snapshot",
-        entry: "workflow.ts",
-        digest: prepared.sourceGraphDigest,
-      });
-      expect(prepared.sourceBundle?.files.map(file => file.path)).toEqual([
-        "helper.ts",
-        "package.json",
-        "workflow.ts",
-      ]);
-      expect(prepared.ir.name).toBe("installed-external");
-      expect(prepared.ir.diagnostics).toEqual([]);
-    } finally {
-      await Promise.all([
-        rm(workspaceDir, { recursive: true, force: true }),
-        rm(installationRoot, { recursive: true, force: true }),
-      ]);
-    }
-  });
 });

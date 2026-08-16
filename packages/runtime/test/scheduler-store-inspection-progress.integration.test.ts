@@ -3,12 +3,52 @@ import { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
 import { describe, expect, it, vi } from "vitest";
 import * as occurrenceRefs from "../src/scheduler/occurrence-ref.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStore, withRunInspectionSnapshot } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { awaitingSignal, dbRow, dbRun, dbScalar, readyNode } from "./support/store-port-fixtures.js";
 
 describe("scheduler store inspection, progress, and validation", () => {
+  it("serializes concurrent async inspection snapshots on one store connection", async () => {
+    await withRuntimeWorkspace("scheduler-store-concurrent-snapshots", async workspace => {
+      const store = await openRuntimeStore(workspace);
+      try {
+        const events: string[] = [];
+        let releaseFirst!: () => void;
+        const firstBlocked = new Promise<void>(resolve => {
+          releaseFirst = resolve;
+        });
+        const first = withRunInspectionSnapshot(store, async () => {
+          events.push("first:start");
+          await firstBlocked;
+          events.push("first:end");
+          return 1;
+        });
+        await vi.waitFor(() => expect(events).toEqual(["first:start"]));
+        const second = withRunInspectionSnapshot(store, async () => {
+          events.push("second:start");
+          await Promise.resolve();
+          events.push("second:end");
+          return 2;
+        });
+
+        await Promise.resolve();
+        expect(events).toEqual(["first:start"]);
+        releaseFirst();
+
+        await expect(Promise.all([first, second])).resolves.toEqual([1, 2]);
+        expect(events).toEqual([
+          "first:start",
+          "first:end",
+          "second:start",
+          "second:end",
+        ]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
   it("reads inspection events, projection, and cursors from one store snapshot", async () => {
     await withRuntimeWorkspace("scheduler-store-inspection-read", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
@@ -760,7 +800,7 @@ describe("scheduler store inspection, progress, and validation", () => {
 
         awaitingSignal(store, run.id, claim, "corrupted-deadline:signal", { deadlineAt: "2026-07-10T00:00:00.000Z" });
         dbRun(workspace, "UPDATE signal_waits SET deadline_at = 'not-a-deadline' WHERE run_id = ? AND node_key = 'approve~1'", run.id);
-        expect(() => store.listDaemonWork(new Date("2026-07-10T00:00:01.000Z")))
+        expect(() => store.listRuntimeWork(new Date("2026-07-10T00:00:01.000Z")))
           .toThrow(`Signal wait '${run.id}:approve~1' has invalid persisted deadline "not-a-deadline".`);
       } finally {
         store.close();

@@ -6,7 +6,7 @@ export function runtimeReadFailureCode(failure: RuntimeReadFailure): string {
 
 export function runtimeReadFailureMessage(failure: RuntimeReadFailure): string {
   if (failure.type === "runtime-store-repair-required") {
-    return `${failure.message}\nRun: ${failure.command}`;
+    return `${failure.message}\nRun: acpus doctor --fix`;
   }
   if (failure.type === "runtime-store-unsupported") {
     return `${failure.message}\nRun: acpus doctor`;

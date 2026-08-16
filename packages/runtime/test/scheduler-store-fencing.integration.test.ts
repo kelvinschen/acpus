@@ -203,9 +203,12 @@ describe("scheduler store attempt fences", () => {
         const ready = appendReadyInstances(store.scheduler, run.id, claim.ownerEpoch, ["leaf"]);
         const attempt = unwrap(store.scheduler.tryStartAttempt(startInput(run.id, "leaf", claim.ownerEpoch, ready.version)));
         const first = artifactInput(store, run.id, attempt.attemptId, claim.ownerEpoch, "artifact_first");
+        const second = artifactInput(store, run.id, attempt.attemptId, claim.ownerEpoch, "artifact_second");
 
         await materializeArtifact(store, first);
+        await materializeArtifact(store, second);
         expect(store.registerArtifact(first).isOk()).toBe(true);
+        expect(store.registerArtifact(second).isOk()).toBe(true);
         unwrap(store.scheduler.tryCommitAttemptResult({
           runId: run.id,
           attemptId: attempt.attemptId,
@@ -219,7 +222,8 @@ describe("scheduler store attempt fences", () => {
         expect(rejected.isErr()).toBe(true);
         if (rejected.isOk()) throw new Error("expected terminal artifact registration to fail");
         expect(rejected.error).toMatchObject({ type: "terminal-attempt", attemptId: attempt.attemptId, status: "completed" });
-        expect(store.listArtifacts(run.id).map(artifact => artifact.id)).toEqual([first.id]);
+        expect(store.listArtifacts(run.id).map(artifact => artifact.id)).toEqual([first.id, second.id]);
+        expect(store.listArtifacts(run.id, 1).map(artifact => artifact.id)).toEqual([first.id]);
       } finally {
         store.close();
       }

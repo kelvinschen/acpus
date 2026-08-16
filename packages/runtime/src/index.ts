@@ -19,6 +19,10 @@ export {
 } from "./daemon/loop.js";
 export type { RunIncident } from "./daemon/sessions.js";
 export {
+  RUNTIME_ABI_VERSION,
+  type RuntimeAuthorityIdentity,
+} from "./runtime-contracts.js";
+export {
   tryLoadRuntimeConfiguration,
   type AgentHostPolicy,
   type AgentHostPolicyFailure,
@@ -37,7 +41,6 @@ export {
 } from "./daemon/client.js";
 export {
   DAEMON_PROTOCOL_VERSION,
-  RUNTIME_ABI_VERSION,
   type DaemonControlIntent,
   type DaemonErrorCode,
   type DaemonShutdownResult,
@@ -50,7 +53,6 @@ export {
   type DaemonStatus,
   type DaemonStatusProbe,
   type DaemonSubmitAndObserveInput,
-  type RuntimeAuthorityIdentity,
 } from "./daemon/protocol.js";
 export {
   deleteRun,
@@ -96,6 +98,9 @@ export type {
   InspectionError,
   InspectionObservation,
   InspectionRead,
+  InspectionAgentTelemetry,
+  InspectionTreeAgent,
+  InspectionToolActivity,
   InspectionVisibility,
   InspectionView,
   InspectionForensicsView,

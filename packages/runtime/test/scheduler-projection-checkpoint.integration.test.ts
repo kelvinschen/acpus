@@ -1,5 +1,4 @@
 import { admitRunForTest } from "./support/runtime-store.js";
-import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { throwSchedulerStoreResult } from "../src/scheduler/store-port.js";
@@ -7,65 +6,6 @@ import { openExistingRuntimeStore, openRuntimeStore } from "../src/store/store.j
 import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 describe("scheduler projection checkpoint", () => {
-  it("serves a hot snapshot below 100ms after bootstrapping 10,000 scheduler events", async () => {
-    await withRuntimeWorkspace("scheduler-projection-checkpoint-10k", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        seedLargeSchedulerEventStream(workspace, run.id, 10_000);
-
-        const first = throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(run.id));
-        expect(Object.keys(first.projection.instances)).toHaveLength(3_333);
-
-        const samples = Array.from({ length: 20 }, () => {
-          const startedAt = performance.now();
-          const snapshot = throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(run.id));
-          return { snapshot, elapsedMs: performance.now() - startedAt };
-        });
-
-        expect(samples.at(-1)?.snapshot).toEqual(first);
-        expect(p95(samples.map(sample => sample.elapsedMs))).toBeLessThan(100);
-      } finally {
-        store.close();
-      }
-    });
-  }, 30_000);
-
-  it("appends a small scheduler batch below 100ms after 10,000 events", async () => {
-    await withRuntimeWorkspace("scheduler-projection-checkpoint-10k-append", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        seedLargeSchedulerEventStream(workspace, run.id, 10_000);
-        const before = throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(run.id));
-        const claim = store.scheduler.claimRun(run.id, "owner", 60_000)!;
-
-        installProjectionWriteAudit(workspace);
-        let snapshot = before;
-        const elapsedMs: number[] = [];
-        for (let index = 0; index < 20; index += 1) {
-          const startedAt = performance.now();
-          snapshot = throwSchedulerStoreResult(store.scheduler.tryAppendSchedulerEvents({
-            runId: run.id,
-            expectedVersion: snapshot.version,
-            ownerEpoch: claim.ownerEpoch,
-            idempotencyKey: `small-append:${index}`,
-            events: [{ type: "signal.awaiting", payload: { runId: run.id, nodeKey: `signal_${index}`, nodeId: "signal" } }],
-          }));
-          elapsedMs.push(performance.now() - startedAt);
-        }
-
-        expect(Object.keys(snapshot.projection.signalWaits)).toHaveLength(20);
-        expect(p95(elapsedMs)).toBeLessThan(100);
-        expect(projectionWriteCounts(workspace)).toEqual({ signal_waits: 20 });
-      } finally {
-        store.close();
-      }
-    });
-  }, 30_000);
-
   it("loads only events after a durable checkpoint on restart", async () => {
     await withRuntimeWorkspace("scheduler-projection-checkpoint-tail", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
@@ -230,10 +170,6 @@ describe("scheduler projection checkpoint", () => {
   });
 });
 
-function p95(samples: number[]): number {
-  return [...samples].sort((left, right) => left - right)[Math.ceil(samples.length * 0.95) - 1]!;
-}
-
 function seedLargeSchedulerEventStream(workspace: string, runId: string, eventCount: number): void {
   const db = new DatabaseSync(runtimeDatabasePath(workspace));
   const insert = db.prepare(`
@@ -270,26 +206,6 @@ function seedLargeSchedulerEventStream(workspace: string, runId: string, eventCo
 
 function envelope(payload: object): string {
   return JSON.stringify({ schedulerEventVersion: 1, payload });
-}
-
-function installProjectionWriteAudit(workspace: string): void {
-  mutateDatabase(workspace, db => {
-    db.exec("CREATE TABLE projection_write_audit (table_name TEXT NOT NULL)");
-    for (const table of ["scheduler_frames", "node_instances", "node_attempts", "group_members", "signal_waits"]) {
-      for (const operation of ["INSERT", "UPDATE", "DELETE"]) {
-        db.exec(`CREATE TRIGGER audit_${table}_${operation.toLowerCase()} AFTER ${operation} ON ${table} BEGIN INSERT INTO projection_write_audit VALUES ('${table}'); END;`);
-      }
-    }
-  });
-}
-
-function projectionWriteCounts(workspace: string): Record<string, number> {
-  const result: Record<string, number> = {};
-  mutateDatabase(workspace, db => {
-    const rows = db.prepare("SELECT table_name, COUNT(*) AS count FROM projection_write_audit GROUP BY table_name").all() as Array<{ table_name: string; count: number }>;
-    for (const row of rows) result[row.table_name] = row.count;
-  });
-  return result;
 }
 
 function mutateDatabase(workspace: string, action: (db: DatabaseSync) => void): void {

@@ -92,7 +92,6 @@ describe("bound Runtime inspection reads", () => {
 
       expect(listed.isErr() ? listed.error : undefined).toMatchObject({
         type: "runtime-store-repair-required",
-        command: "acpus doctor --fix",
       });
       expect(lifecycleInspector).not.toHaveBeenCalled();
     });

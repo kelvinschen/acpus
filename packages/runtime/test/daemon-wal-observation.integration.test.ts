@@ -100,7 +100,6 @@ describe("daemon WAL-backed observation", () => {
             totalTokens: 24,
           },
         });
-
         await writeFile(agentRelease, "release");
         await waitUntilReal(async () => fileExists(taskReady));
         const progress = frame(await iterator.next());
@@ -192,6 +191,7 @@ function frame(
   if (result.done || result.value.isErr()) throw new Error("Expected a successful daemon stream frame.");
   return result.value.value;
 }
+
 
 async function fileExists(path: string): Promise<boolean> {
   try {

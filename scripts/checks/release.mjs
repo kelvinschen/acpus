@@ -9,6 +9,7 @@ const expectedPublicPackages = new Set([
   "@acpus/agent-executor",
   "acpus",
   "@acpus/core",
+  "@acpus/dsh",
   "@acpus/expression",
   "@acpus/loader",
   "@acpus/runtime",

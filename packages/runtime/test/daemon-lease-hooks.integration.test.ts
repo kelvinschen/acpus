@@ -203,7 +203,7 @@ describe.concurrent("daemon lease hooks", () => {
         heartbeatMs: 10,
         packageVersion: "0.0.0-test",
       })).rejects.toBeInstanceOf(Error);
-      expect(store.getRuntimeDiagnostics().daemon).toBeUndefined();
+      expect(store.getRuntimeDiagnostics().authority).toBeUndefined();
     });
   });
 });

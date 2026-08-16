@@ -32,6 +32,7 @@
     "@changesets/cli": "^2.31.0",
     "@types/node": "^22.20.1",
     "acpus": "workspace:*",
+    "esbuild": "^0.28.1",
     "knip": "^6.26.0",
     "slash": "^3.0.0",
     "typescript": "7.0.2",

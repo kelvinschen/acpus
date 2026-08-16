@@ -29,8 +29,12 @@ export function daemonEndpoint(cwd: string): string {
 }
 
 export function requestDaemonStatus(cwd: string): ResultAsync<DaemonStatus, DaemonClientFailure> {
+  return requestDaemonStatusAtEndpoint(daemonEndpoint(cwd));
+}
+
+export function requestDaemonStatusAtEndpoint(endpoint: string): ResultAsync<DaemonStatus, DaemonClientFailure> {
   const request = { method: "status" } as const;
-  return requestDaemon(cwd, request).andThen(response => daemonResult(request, response, isDaemonStatus));
+  return requestDaemon(endpoint, request).andThen(response => daemonResult(request, response, isDaemonStatus));
 }
 
 /**
@@ -38,8 +42,12 @@ export function requestDaemonStatus(cwd: string): ResultAsync<DaemonStatus, Daem
  * predecessor shape. Everything else remains occupied but unknown to callers.
  */
 export function requestDaemonStatusProbe(cwd: string): ResultAsync<DaemonStatusProbe, DaemonClientFailure> {
+  return requestDaemonStatusProbeAtEndpoint(daemonEndpoint(cwd));
+}
+
+export function requestDaemonStatusProbeAtEndpoint(endpoint: string): ResultAsync<DaemonStatusProbe, DaemonClientFailure> {
   const request = { method: "status" } as const;
-  return requestDaemon(cwd, request).andThen(response => {
+  return requestDaemon(endpoint, request).andThen(response => {
     if (!response.ok) return err({
       type: "rejected" as const,
       code: response.error.code,
@@ -55,7 +63,7 @@ export function requestDaemonControl(
   control: DaemonControlIntent,
 ): ResultAsync<DaemonControlResult, DaemonClientFailure> {
   const request = { method: "control", control } as const;
-  return requestDaemon(cwd, request).andThen(response => daemonResult(
+  return requestDaemon(daemonEndpoint(cwd), request).andThen(response => daemonResult(
     request,
     response,
     value => isDaemonControlResult(value, control.type),
@@ -71,13 +79,21 @@ export function requestDaemonSubmitAndObserve(
 }
 
 export function requestDaemonShutdown(cwd: string): ResultAsync<DaemonShutdownResult, DaemonClientFailure> {
+  return requestDaemonShutdownAtEndpoint(daemonEndpoint(cwd));
+}
+
+export function requestDaemonShutdownAtEndpoint(endpoint: string): ResultAsync<DaemonShutdownResult, DaemonClientFailure> {
   const request = { method: "shutdown" } as const;
-  return requestDaemon(cwd, request).andThen(response => daemonResult(request, response, isDaemonShutdownResult));
+  return requestDaemon(endpoint, request).andThen(response => daemonResult(request, response, isDaemonShutdownResult));
 }
 
 /** The v3 retirement bridge deliberately exposes shutdown and nothing mutable. */
 export function requestPredecessorDaemonShutdown(cwd: string): ResultAsync<DaemonShutdownResult, DaemonClientFailure> {
   return requestDaemonShutdown(cwd);
+}
+
+export function requestPredecessorDaemonShutdownAtEndpoint(endpoint: string): ResultAsync<DaemonShutdownResult, DaemonClientFailure> {
+  return requestDaemonShutdownAtEndpoint(endpoint);
 }
 
 export async function probeDaemonEndpoint(cwd: string): Promise<boolean> {
@@ -103,10 +119,9 @@ function isDefinitivelyUnbound(error: NodeJS.ErrnoException): boolean {
 }
 
 function requestDaemon(
-  cwd: string,
+  endpoint: string,
   request: Exclude<DaemonRequest, { method: "submitAndObserve" }>,
 ): ResultAsync<DaemonResponse, Extract<DaemonClientFailure, { type: "transport" | "protocol" }>> {
-  const endpoint = daemonEndpoint(cwd);
   return new ResultAsync(new Promise(resolveRequest => {
     const socket = connect(endpoint);
     const chunks: Buffer[] = [];

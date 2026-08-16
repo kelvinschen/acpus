@@ -10,7 +10,7 @@ import {
 } from "../artifacts/access.js";
 import { parseArtifactUri } from "../artifacts/reference.js";
 import type { ArtifactRecord } from "../artifacts/types.js";
-import { probeProcessLiveness } from "../process-liveness.js";
+import { probeProcessIdentity } from "../process-liveness.js";
 import {
   canCancelRun,
   retryControlTargets,
@@ -29,7 +29,7 @@ import {
   runtimeReadFailureFromError,
   withRunInspectionSnapshot,
   type RuntimeDiagnostics,
-  type DaemonDiagnostics,
+  type RuntimeAuthorityDiagnostics,
   type RunDetails,
   type RunDeleteFailure, type RunRecord,
   type RuntimeReadFailure,
@@ -151,7 +151,7 @@ export function resolveArtifact(
     try {
       const resolved = tryResolveArtifactRef(
         { kind: "artifact", uri: artifactRef },
-        { cwd, runId: parsed.value.runId, store: session.value.store },
+        { runId: parsed.value.runId, store: session.value.store },
       );
       if (resolved.isErr()) {
         if (resolved.error.type === "artifact-run-mismatch") throw new Error(resolved.error.message);
@@ -176,7 +176,7 @@ export function readArtifact(
     if (session.isErr()) return err(session.error);
     if (!session.value) return ok(undefined);
     try {
-      return ok(readVerifiedArtifact({ cwd, runId, store: session.value.store }, artifactId));
+      return ok(readVerifiedArtifact({ runId, store: session.value.store }, artifactId));
     } catch (error) {
       if (error instanceof ArtifactReadUnavailableError) {
         return err({ type: "runtime-store-unavailable", message: error.message });
@@ -318,7 +318,7 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
     const checks: RuntimeHealthCheck[] = [
       { area: "workspace", status: "ok", message: "Workspace resolved.", details: { cwd } },
       { area: "store", status: "ok", message: "Runtime store opened read-only." },
-      daemonCheck(diagnostics.daemon),
+      runtimeAuthorityCheck(diagnostics.authority),
       {
         area: "runs",
         status: "ok",
@@ -335,7 +335,7 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
         details: { staleRunLeases: diagnostics.leases.stale },
       });
     }
-    const acp = await acpOwnershipCheck(cwd, diagnostics.daemon);
+    const acp = await acpOwnershipCheck(cwd, diagnostics.authority);
     if (acp) checks.push(acp);
     return {
       ok: checks.every(check => check.status !== "fail"),
@@ -371,11 +371,17 @@ function lifecycleHealthFailure(persistence: RuntimePersistence, message: string
   };
 }
 
-async function acpOwnershipCheck(cwd: string, daemon?: DaemonDiagnostics): Promise<RuntimeHealthCheck | undefined> {
+async function acpOwnershipCheck(cwd: string, authority?: RuntimeAuthorityDiagnostics): Promise<RuntimeHealthCheck | undefined> {
   try {
     const ownership = await inspectAcpOwnership({
       workersRoot: resolveRuntimeLayout(cwd).acpWorkersRoot,
-      ...(daemon === undefined ? {} : { daemon: { generation: daemon.generation, ...(daemon.pid === undefined ? {} : { pid: daemon.pid }) } }),
+      ...(authority === undefined ? {} : {
+        owner: {
+          generation: authority.epoch,
+          ...(authority.pid === undefined ? {} : { pid: authority.pid }),
+          ...(authority.processStartToken === undefined ? {} : { startToken: authority.processStartToken }),
+        },
+      }),
     });
     if (ownership.degraded === 0 && ownership.orphaned === 0) return undefined;
     return {
@@ -408,35 +414,40 @@ function artifactNotFound(
   };
 }
 
-function daemonCheck(daemon: DaemonDiagnostics | undefined): RuntimeHealthCheck {
-  if (!daemon) return { area: "daemon", status: "ok", message: "No daemon lease is present." };
-  const heartbeatAgeMs = daemon.heartbeatAt ? Date.now() - Date.parse(daemon.heartbeatAt) : undefined;
-  const idleAgeMs = daemon.idleSinceAt ? Date.now() - Date.parse(daemon.idleSinceAt) : undefined;
-  const processLiveness = daemon.pid === undefined ? undefined : probeProcessLiveness(daemon.pid);
+function runtimeAuthorityCheck(authority: RuntimeAuthorityDiagnostics | undefined): RuntimeHealthCheck {
+  if (!authority) return { area: "daemon", status: "ok", message: "No Runtime authority is present." };
+  const heartbeatAgeMs = authority.heartbeatAt ? Date.now() - Date.parse(authority.heartbeatAt) : undefined;
+  const idleAgeMs = authority.idleSinceAt ? Date.now() - Date.parse(authority.idleSinceAt) : undefined;
+  const processLiveness = authority.pid === undefined
+    ? undefined
+    : probeProcessIdentity({
+      pid: authority.pid,
+      ...(authority.processStartToken === undefined ? {} : { startToken: authority.processStartToken }),
+    });
   const processAlive = processLiveness === undefined || processLiveness === "unknown" ? undefined : processLiveness === "alive";
   const stale = heartbeatAgeMs !== undefined && heartbeatAgeMs > 30_000;
   return {
     area: "daemon",
     status: stale || processAlive === false ? "warn" : "ok",
-    message: stale ? "Daemon heartbeat is stale." : processAlive === false ? "Daemon pid is not alive." : idleAgeMs === undefined ? "Daemon lease is fresh." : "Daemon lease is fresh and idle.",
+    message: stale ? "Runtime authority heartbeat is stale." : processAlive === false ? "Runtime authority pid is not alive." : idleAgeMs === undefined ? "Runtime authority is fresh." : "Runtime authority is fresh and idle.",
     details: {
-      generation: daemon.generation,
-      ...(daemon.pid === undefined ? {} : { pid: daemon.pid }),
+      epoch: authority.epoch,
+      ...(authority.pid === undefined ? {} : { pid: authority.pid }),
       ...(heartbeatAgeMs === undefined ? {} : { heartbeatAgeMs }),
-      ...(daemon.idleSinceAt === undefined ? {} : { idleSinceAt: daemon.idleSinceAt }),
+      ...(authority.idleSinceAt === undefined ? {} : { idleSinceAt: authority.idleSinceAt }),
       ...(idleAgeMs === undefined ? {} : { idleAgeMs }),
-      ...(daemon.idleStopMs === undefined ? {} : { idleStopMs: daemon.idleStopMs }),
+      ...(authority.idleStopMs === undefined ? {} : { idleStopMs: authority.idleStopMs }),
       ...(processAlive === undefined ? {} : { processAlive }),
-      packageVersion: daemon.packageVersion,
-      nodeVersion: daemon.nodeVersion,
-      execPath: daemon.execPath,
+      ...(authority.packageVersion === undefined ? {} : { packageVersion: authority.packageVersion }),
+      ...(authority.nodeVersion === undefined ? {} : { nodeVersion: authority.nodeVersion }),
+      ...(authority.execPath === undefined ? {} : { execPath: authority.execPath }),
     },
   };
 }
 
 function idleStopCheck(diagnostics: RuntimeDiagnostics): RuntimeHealthCheck {
   const { runnable: runnableRuns } = diagnostics.runs;
-  const idleSinceAt = diagnostics.daemon?.idleSinceAt;
+  const idleSinceAt = diagnostics.authority?.idleSinceAt;
   const idleAgeMs = idleSinceAt ? Date.now() - Date.parse(idleSinceAt) : undefined;
   const blockers = [
     runnableRuns > 0 ? "runnable runs" : undefined,
@@ -449,7 +460,7 @@ function idleStopCheck(diagnostics: RuntimeDiagnostics): RuntimeHealthCheck {
       runnableRuns,
       ...(idleSinceAt === undefined ? {} : { idleSinceAt }),
       ...(idleAgeMs === undefined ? {} : { idleAgeMs }),
-      ...(diagnostics.daemon?.idleStopMs === undefined ? {} : { idleStopMs: diagnostics.daemon.idleStopMs }),
+      ...(diagnostics.authority?.idleStopMs === undefined ? {} : { idleStopMs: diagnostics.authority.idleStopMs }),
     },
   };
 }

@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { defineWorkflow, z } from "@acpus/core";
 import type { AgentTurnObservation, AgentTurnProgress, AgentTurnRequest, AgentTurnResult, ManagedAcpExecutor } from "@acpus/agent-executor";
 import { lift, template } from "@acpus/expression";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { createRuntimeNodeExecutor as createRuntimeNodeExecutorProduction, type RuntimeNodeExecutorInput } from "../src/scheduler/node-executor.js";
 import { advanceFrozenRun as advanceFrozenRunProduction, type AdvanceFrozenRunInput } from "../src/scheduler/runtime-runner.js";
@@ -31,17 +31,8 @@ declare global {
 }
 const initialResponseRepairMax = process.env.ACPUS_AGENT_RESPONSE_REPAIR_MAX;
 const testRunClaims = new WeakMap<RuntimeStore, Map<string, RunOwnerClaim>>();
-beforeEach(() => {
-  restoreEnv("ACPUS_AGENT_RESPONSE_REPAIR_MAX", undefined);
-  agentMocks.executeAgentTurn.mockReset();
-  vi.useRealTimers();
-});
-afterEach(() => {
-  restoreEnv("ACPUS_AGENT_RESPONSE_REPAIR_MAX", initialResponseRepairMax);
-});
 function advanceFrozenRun(input: AdvanceFrozenRunInput & { executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult> }) {
-  const { executeAgentTurn, managedAcpExecutor = testManagedAcpExecutor(), ...productionInput } = input;
-  if (executeAgentTurn) agentMocks.executeAgentTurn.mockImplementation(executeAgentTurn);
+  const { executeAgentTurn, managedAcpExecutor = testManagedAcpExecutor(executeAgentTurn), ...productionInput } = input;
   return advanceFrozenRunProduction({ ...productionInput, managedAcpExecutor });
 }
 type TestAgentExecutorOptions = Omit<Parameters<typeof executeAgentNodeProduction>[2], "hostPolicy"> & {
@@ -49,8 +40,7 @@ type TestAgentExecutorOptions = Omit<Parameters<typeof executeAgentNodeProductio
   executeTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
 };
 async function executeAgentNode(node: Parameters<typeof executeAgentNodeProduction>[0], scope: Parameters<typeof executeAgentNodeProduction>[1], options: TestAgentExecutorOptions) {
-  const { executeTurn, hostPolicy = loadAgentHostPolicy(process.env), managedAcpExecutor = testManagedAcpExecutor(), ...productionOptions } = options;
-  if (executeTurn) agentMocks.executeAgentTurn.mockImplementation(executeTurn);
+  const { executeTurn, hostPolicy = loadAgentHostPolicy(process.env), managedAcpExecutor = testManagedAcpExecutor(executeTurn), ...productionOptions } = options;
   const result = !productionOptions.store || !productionOptions.runId
     ? await executeAgentNodeProduction(node, scope, { ...productionOptions, hostPolicy, managedAcpExecutor })
     : await (() => {
@@ -73,8 +63,7 @@ async function executeAgentNode(node: Parameters<typeof executeAgentNodeProducti
 }
 type TestRuntimeNodeExecutorInput = Omit<RuntimeNodeExecutorInput, "agentHostPolicy"> & { agentHostPolicy?: AgentHostPolicy; executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult> };
 function createRuntimeNodeExecutor(input: TestRuntimeNodeExecutorInput) {
-  const { executeAgentTurn, agentHostPolicy = loadAgentHostPolicy(process.env), managedAcpExecutor = testManagedAcpExecutor(), ...productionInput } = input;
-  if (executeAgentTurn) agentMocks.executeAgentTurn.mockImplementation(executeAgentTurn);
+  const { executeAgentTurn, agentHostPolicy = loadAgentHostPolicy(process.env), managedAcpExecutor = testManagedAcpExecutor(executeAgentTurn), ...productionInput } = input;
   const executor = createRuntimeNodeExecutorProduction({ ...productionInput, agentHostPolicy, managedAcpExecutor });
   return {
     execute(context: Parameters<typeof executor.execute>[0]) {
@@ -84,11 +73,24 @@ function createRuntimeNodeExecutor(input: TestRuntimeNodeExecutorInput) {
   };
 }
 
-function testManagedAcpExecutor(): ManagedAcpExecutor {
+function testManagedAcpExecutor(
+  executeTurn: (request: AgentTurnRequest) => Promise<AgentTurnResult> = request => agentMocks.executeAgentTurn(request),
+): ManagedAcpExecutor {
   return {
-    withAttempt: async (_input, use) => use({ runTurn: request => agentMocks.executeAgentTurn(request) }),
+    withAttempt: async (_input, use) => use({ runTurn: executeTurn }),
     shutdown: async () => {},
   };
+}
+
+function useIsolatedAgentNodeEnvironment(): void {
+  beforeEach(() => {
+    restoreEnv("ACPUS_AGENT_RESPONSE_REPAIR_MAX", undefined);
+    agentMocks.executeAgentTurn.mockReset();
+    vi.useRealTimers();
+  });
+  afterEach(() => {
+    restoreEnv("ACPUS_AGENT_RESPONSE_REPAIR_MAX", initialResponseRepairMax);
+  });
 }
 
 function ensureTestAttempt(store: RuntimeStore, runId: string, nodeKey: string, nodeId: string, requestedAttemptId?: string) {
@@ -168,17 +170,25 @@ function ensureTestAttempt(store: RuntimeStore, runId: string, nodeKey: string, 
 }
 
 describe("agent node execution", () => {
-    describe("scheduler-backed progress", () => {
+    describe.concurrent("scheduler-backed progress", () => {
+    beforeAll(() => {
+      restoreEnv("ACPUS_AGENT_RESPONSE_REPAIR_MAX", undefined);
+    });
+    afterAll(() => {
+      restoreEnv("ACPUS_AGENT_RESPONSE_REPAIR_MAX", initialResponseRepairMax);
+    });
+
     it("repairs schema-backed agent output inside one scheduler-visible attempt", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-single-attempt", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
           const store = await openRuntimeStore(workspace);
           const turns: AgentTurnRequest[] = [];
           const attempts: unknown[] = [];
+          let executeTurn!: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
           const managedAcpExecutor: ManagedAcpExecutor = {
             withAttempt: async (input, use) => {
               attempts.push(input);
-              return use({ runTurn: request => agentMocks.executeAgentTurn(request) });
+              return use({ runTurn: executeTurn });
             },
             shutdown: async () => {},
           };
@@ -190,7 +200,7 @@ describe("agent node execution", () => {
               scope: {},
               store,
               managedAcpExecutor,
-              executeAgentTurn: async request => {
+              executeAgentTurn: executeTurn = async request => {
                 turns.push(request);
                 const turnProgress: AgentTurnProgress = {
                   responses: [`turn-${turns.length}-partial`],
@@ -854,6 +864,7 @@ describe("agent node execution", () => {
     });
 
     describe("response conformance and host policy", () => {
+    useIsolatedAgentNodeEnvironment();
     it("does not leak stale scheduler runtime identity into non-scheduler agent execution", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-runtime-env-scrub", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, agentRuntimeContextWorkflow());
@@ -1148,7 +1159,6 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
           const node = prepared.ir.root.nodes.find(node => node.id === "review");
           if (!node || node.kind !== "agent") throw new Error("expected review agent node");
           const invalid = { ...node, run: { ...node.run, prompt: { kind: "literal", value: 42 } } } as typeof node;
-
           const result = await executeAgentNodeProduction(invalid, {}, {
             cwd: workspace,
             agents: prepared.ir.agents,
@@ -1215,6 +1225,10 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
             const node = prepared.ir.root.nodes.find(item => item.id === "review");
             if (!node || node.kind !== "agent") throw new Error("expected review agent node");
             const turns: AgentTurnRequest[] = [];
+            const executeTurn = vi.fn(async (request: AgentTurnRequest) => {
+              turns.push(request);
+              return completedAgentTurn("done");
+            });
 
             await expect(executeAgentNode(node, {
               input: { agentCwd: worktree },
@@ -1227,10 +1241,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               attemptNo: 1,
               agents: prepared.ir.agents,
               store,
-              executeTurn: async request => {
-                turns.push(request);
-                return completedAgentTurn("done");
-              },
+              executeTurn,
             })).resolves.toBe("done");
 
             expect(turns).toHaveLength(1);
@@ -1254,8 +1265,9 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               attemptNo: 1,
               agents: prepared.ir.agents,
               store,
+              executeTurn,
             })).rejects.toMatchObject({ resolution: { type: "evaluation", field: "Agent node 'review' prompt" } });
-            expect(agentMocks.executeAgentTurn).toHaveBeenCalledOnce();
+            expect(executeTurn).toHaveBeenCalledOnce();
           } finally {
             store.close();
           }
@@ -1920,6 +1932,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
     });
 
     describe("session, retry, timeout, and cancellation", () => {
+    useIsolatedAgentNodeEnvironment();
     it("cancels active agent turns on pause and removes unfenced partial artifacts", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-active-pause-artifacts", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());

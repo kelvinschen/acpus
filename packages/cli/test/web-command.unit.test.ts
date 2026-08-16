@@ -190,7 +190,7 @@ function runtimeAuthority() {
     workspaceKey: "workspace-key",
     runtimeAbi: 1,
     layoutVersion: 2,
-    storageVersion: 9,
+    storageVersion: 10,
     authorityId: "authority-a",
     storeBinding: `sha256:${"a".repeat(64)}`,
     leaseGeneration: 1,

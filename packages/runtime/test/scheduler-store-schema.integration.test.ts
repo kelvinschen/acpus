@@ -161,7 +161,6 @@ describe("scheduler store format", () => {
     });
     expect((await listRuns(dir))._unsafeUnwrapErr()).toMatchObject({
       type: "runtime-store-repair-required",
-      command: "acpus doctor --fix",
     });
     await expect(getRuntimeHealth(dir)).resolves.toEqual({
       ok: true,

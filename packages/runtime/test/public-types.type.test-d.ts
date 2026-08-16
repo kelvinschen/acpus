@@ -68,6 +68,9 @@ import type {
   InspectionForensicsView,
   InspectionObservation,
   InspectionRead,
+  InspectionToolActivity,
+  InspectionAgentTelemetry,
+  InspectionTreeAgent,
   InspectionView,
   InspectionViewQuery,
   InspectionVisibility,
@@ -120,6 +123,15 @@ import type {
   WorkflowVisualizationOverlay,
   WorkspaceResolutionFailure,
 } from "@acpus/runtime";
+import {
+  openWorkspaceRuntime,
+  type NamedAcpAgentLaunchRegistry,
+  type NamedAcpAgentLaunchResolver,
+  type WorkspaceRuntime,
+  type WorkspaceRuntimeHostDependencies,
+  type WorkspaceRuntimeLocation,
+  type WorkspaceRuntimeOpenFailure,
+} from "@acpus/runtime/host";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTurnSummary } from "@acpus/agent-executor";
@@ -151,19 +163,35 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
   >();
 
   expectTypeOf<InspectionViewQuery>().toEqualTypeOf<
-    | { kind: "run"; runId: string }
+    | { kind: "run"; runId: string; structure?: "materialized" }
     | { kind: "target"; runId: string; target: string; detail: "summary" | "timeline" | "forensics" }
   >();
   expectTypeOf<ObservableInspectionViewQuery>().toEqualTypeOf<
-    | { kind: "run"; runId: string }
+    | { kind: "run"; runId: string; structure?: "materialized" }
     | { kind: "target"; runId: string; target: string; detail: "summary" | "timeline" }
   >();
   expectTypeOf<ObserveInspectionQuery>().toEqualTypeOf<{
     view: ObservableInspectionViewQuery;
     until: "subject-terminal" | "decision-boundary";
+    updates?: "decision" | "activity";
     signal?: AbortSignal;
   }>();
   expectTypeOf<InspectionRead>().toEqualTypeOf<InspectionView | InspectionCandidates | ArchivedRunInspection>();
+  expectTypeOf<InspectionToolActivity>().toEqualTypeOf<{
+    name: string;
+    title?: string;
+    state: "running" | "completed" | "failed" | "canceled";
+  }>();
+  expectTypeOf<InspectionAgentTelemetry>().toEqualTypeOf<{
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    contextWindow?: { used: number; size: number };
+  }>();
+  expectTypeOf<InspectionTreeAgent>().toEqualTypeOf<{
+    name: string;
+    telemetry?: InspectionAgentTelemetry;
+  }>();
   expectTypeOf<InspectionCandidates>().toEqualTypeOf<{
     kind: "candidates";
     run: { id: string; status: RunStatus };
@@ -211,7 +239,6 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
     | {
         type: "runtime-store-repair-required";
         runId: string;
-        command: "acpus doctor --fix";
         message: string;
       }
     | {
@@ -231,6 +258,33 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
     | { type: "target-ambiguous"; runId: string; target: string; candidates: InspectionCandidates; message: string }
     | { type: "invalid-query"; message: string }
     | { type: "read-failed"; runId: string; message: string }
+  >();
+});
+
+test("@acpus/runtime/host exposes the embeddable Runtime interface", () => {
+  expectTypeOf(openWorkspaceRuntime).toEqualTypeOf<
+    (
+      location: WorkspaceRuntimeLocation,
+      dependencies?: WorkspaceRuntimeHostDependencies,
+    ) => ResultAsync<WorkspaceRuntime, WorkspaceRuntimeOpenFailure>
+  >();
+  expectTypeOf<WorkspaceRuntimeLocation>().toEqualTypeOf<Readonly<{
+    workspace: string;
+    stateRoot: string;
+  }>>();
+  expectTypeOf<WorkspaceRuntimeHostDependencies>().toEqualTypeOf<Readonly<{
+    namedAgentLaunches?: NamedAcpAgentLaunchRegistry;
+  }>>();
+  expectTypeOf<WorkspaceRuntimeOpenFailure>().toEqualTypeOf<
+    | { type: "runtime-store-unsupported" | "runtime-store-unavailable"; message: string }
+    | { type: "runtime-authority-busy"; pid?: number; message: string }
+    | { type: "runtime-configuration-invalid" | "runtime-open-failed"; message: string }
+  >();
+  expectTypeOf<NamedAcpAgentLaunchResolver>().toEqualTypeOf<
+    (input: Readonly<{ model?: string }>) => readonly string[]
+  >();
+  expectTypeOf<WorkspaceRuntime["findAdmission"]>().toEqualTypeOf<
+    (requestId: string) => ResultAsync<RunDetails | undefined, RuntimeReadFailure>
   >();
 });
 
@@ -261,7 +315,6 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf<RuntimeReadFailure>().toEqualTypeOf<
     | {
         type: "runtime-store-repair-required";
-        command: "acpus doctor --fix";
         message: string;
       }
     | { type: "runtime-store-unsupported"; message: string }
@@ -380,7 +433,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     workspaceKey: string;
     runtimeAbi: 1;
     layoutVersion: 2;
-    storageVersion: 9;
+    storageVersion: 10;
     authorityId: string;
     storeBinding: `sha256:${string}`;
     leaseGeneration: number;

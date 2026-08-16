@@ -17,7 +17,7 @@ import {
   type DaemonClientFailure,
   type Sha256Digest,
 } from "@acpus/runtime";
-import { runDaemonTick } from "../src/daemon/tick.js";
+import { runRuntimeTick } from "../src/daemon/tick.js";
 import type { HookJournalEntry } from "../src/hooks/journal.js";
 import { applySchedulerControlIntent } from "../src/scheduler/control.js";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
@@ -343,7 +343,10 @@ describe.concurrent("runtime daemon ticks", () => {
       });
       await shutdown;
 
-      expect(runtimeRows(workspace, "SELECT generation FROM daemon_lease")).toEqual([]);
+      expect(runtimeRows(
+        workspace,
+        "SELECT epoch FROM runtime_authority WHERE released_at IS NULL",
+      )).toEqual([]);
       await loop.shutdown();
     });
   });
@@ -379,7 +382,10 @@ describe.concurrent("runtime daemon ticks", () => {
 
       await shutdown;
 
-      expect(runtimeRows(workspace, "SELECT generation FROM daemon_lease")).toEqual([]);
+      expect(runtimeRows(
+        workspace,
+        "SELECT epoch FROM runtime_authority WHERE released_at IS NULL",
+      )).toEqual([]);
       await expect(requestDaemonStatus(workspace)).rejects.toThrow();
       await loop.shutdown();
     });
@@ -395,12 +401,12 @@ describe.concurrent("runtime daemon ticks", () => {
       });
       try {
         await waitUntil(() => {
-          const row = runtimeRow(workspace, "SELECT idle_since_at, idle_stop_ms FROM daemon_lease") as { idle_since_at: string | null; idle_stop_ms: number | null } | undefined;
+          const row = runtimeRow(workspace, "SELECT idle_since_at, idle_stop_ms FROM runtime_authority") as { idle_since_at: string | null; idle_stop_ms: number | null } | undefined;
           return row !== undefined && row.idle_since_at !== null && row.idle_stop_ms === 60_000;
         });
         const store = await openRuntimeStore(workspace);
         try {
-          expect(store.getRuntimeDiagnostics().daemon).toMatchObject({
+          expect(store.getRuntimeDiagnostics().authority).toMatchObject({
             idleSinceAt: expect.any(String),
             idleStopMs: 60_000,
           });
@@ -470,7 +476,10 @@ describe.concurrent("runtime daemon ticks", () => {
       })).rejects.toThrow();
 
       await expect(readFile(sentinel, "utf8")).resolves.toBe("uncommitted publication");
-      expect(runtimeRows(workspace, "SELECT generation FROM daemon_lease")).toEqual([]);
+      expect(runtimeRows(
+        workspace,
+        "SELECT epoch FROM runtime_authority WHERE released_at IS NULL",
+      )).toEqual([]);
       await expect(requestDaemonStatus(workspace)).rejects.toThrow();
     });
   });
@@ -485,7 +494,7 @@ describe.concurrent("runtime daemon ticks", () => {
         store.writeHookJournal(hookJournalEntry(run.id, "old", "2000-01-01T00:00:00.000Z"));
         store.writeHookJournal(hookJournalEntry(run.id, "fresh", "2099-01-01T00:00:00.000Z"));
 
-        await expect(runDaemonTick(store, { startSession: () => {
+        await expect(runRuntimeTick(store, { startSession: () => {
           throw new Error("no run should start");
         } })).resolves.toMatchObject({ runs: 0 });
 
@@ -504,13 +513,13 @@ describe.concurrent("runtime daemon ticks", () => {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         appendTimedSignalWait(store, run.id, "2099-01-01T00:00:00.000Z");
 
-        expect(store.listDaemonWork(new Date("2026-07-01T00:00:00.000Z"))).toMatchObject({
+        expect(store.listRuntimeWork(new Date("2026-07-01T00:00:00.000Z"))).toMatchObject({
           startableRuns: [],
           idleBlockers: 2,
         });
 
         const started: string[] = [];
-        await expect(runDaemonTick(store, { startSession: runId => {
+        await expect(runRuntimeTick(store, { startSession: runId => {
           started.push(runId);
           return "started";
         } })).resolves.toMatchObject({
@@ -533,7 +542,7 @@ describe.concurrent("runtime daemon ticks", () => {
         appendTimedSignalWait(store, run.id, "2000-01-01T00:00:00.000Z");
 
         const started: string[] = [];
-        await expect(runDaemonTick(store, { startSession: runId => {
+        await expect(runRuntimeTick(store, { startSession: runId => {
           started.push(runId);
           return "started";
         } })).resolves.toMatchObject({
@@ -563,9 +572,9 @@ describe.concurrent("runtime daemon ticks", () => {
 
       const reopened = await openRuntimeStore(workspace);
       try {
-        expect(reopened.listDaemonWork(new Date("2026-07-01T00:00:00.000Z")).startableRuns.map(candidate => candidate.id)).toContain(run.id);
+        expect(reopened.listRuntimeWork(new Date("2026-07-01T00:00:00.000Z")).startableRuns.map(candidate => candidate.id)).toContain(run.id);
         const started: string[] = [];
-        await expect(runDaemonTick(reopened, { startSession: runId => {
+        await expect(runRuntimeTick(reopened, { startSession: runId => {
           started.push(runId);
           return "started";
         } })).resolves.toMatchObject({ runs: 1 });
@@ -606,13 +615,13 @@ describe.concurrent("runtime daemon ticks", () => {
 
       const reopened = await openRuntimeStore(workspace);
       try {
-        expect(reopened.listDaemonWork().startableRuns.map(run => run.id)).toContain(awaiting.run.id);
+        expect(reopened.listRuntimeWork().startableRuns.map(run => run.id)).toContain(awaiting.run.id);
         const recoveryClaim = reopened.scheduler.claimRun(awaiting.run.id, "terminal-group-recovery", 60_000);
         if (!recoveryClaim) throw new Error("failed to claim terminal-group recovery");
         settleFrozenRunTransitions({ store: reopened, runId: awaiting.run.id, ownerEpoch: recoveryClaim.ownerEpoch });
         reopened.scheduler.releaseRun(recoveryClaim);
         expect(reopened.getRun(awaiting.run.id)?.status).toBe("failed");
-        expect(reopened.listDaemonWork().startableRuns.map(run => run.id)).not.toContain(awaiting.run.id);
+        expect(reopened.listRuntimeWork().startableRuns.map(run => run.id)).not.toContain(awaiting.run.id);
       } finally {
         reopened.close();
       }
@@ -641,7 +650,7 @@ describe.concurrent("runtime daemon ticks", () => {
         expect(store.getRun(awaiting.run.id)?.status).toBe("awaiting");
         expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(awaiting.run.id).projection.groupMembers))
           .toEqual(expect.arrayContaining([expect.objectContaining({ status: "completed" })]));
-        expect(store.listDaemonWork().startableRuns.map(run => run.id)).not.toContain(awaiting.run.id);
+        expect(store.listRuntimeWork().startableRuns.map(run => run.id)).not.toContain(awaiting.run.id);
       } finally {
         store.close();
       }
@@ -661,7 +670,7 @@ describe.concurrent("runtime daemon ticks", () => {
 
       const reopened = await openRuntimeStore(workspace);
       try {
-        expect(reopened.listDaemonWork().startableRuns.map(candidate => candidate.id)).toContain(run.id);
+        expect(reopened.listRuntimeWork().startableRuns.map(candidate => candidate.id)).toContain(run.id);
         const claim = reopened.scheduler.claimRun(run.id, "terminal-leaf-recovery", 60_000);
         if (!claim) throw new Error("failed to claim terminal-leaf recovery");
         settleFrozenRunTransitions({ store: reopened, runId: run.id, ownerEpoch: claim.ownerEpoch });
@@ -669,7 +678,7 @@ describe.concurrent("runtime daemon ticks", () => {
         expect(Object.values(throwingSchedulerStore(reopened.scheduler).loadRunSnapshot(run.id).projection.groupMembers))
           .toEqual(expect.arrayContaining([expect.objectContaining({ status: "completed" })]));
         expect(reopened.getRun(run.id)?.status).toBe("awaiting");
-        expect(reopened.listDaemonWork().startableRuns.map(candidate => candidate.id)).not.toContain(run.id);
+        expect(reopened.listRuntimeWork().startableRuns.map(candidate => candidate.id)).not.toContain(run.id);
       } finally {
         reopened.close();
       }
@@ -688,7 +697,7 @@ describe.concurrent("runtime daemon ticks", () => {
       const now = new Date("2026-07-01T00:00:01.000Z");
       const reopened = await openRuntimeStore(workspace);
       try {
-        expect(reopened.listDaemonWork(now).startableRuns.map(candidate => candidate.id)).toContain(run.id);
+        expect(reopened.listRuntimeWork(now).startableRuns.map(candidate => candidate.id)).toContain(run.id);
         const claim = reopened.scheduler.claimRun(run.id, "due-attempt-recovery", 60_000);
         if (!claim) throw new Error("failed to claim due-attempt recovery");
         settleFrozenRunTransitions({ store: reopened, runId: run.id, ownerEpoch: claim.ownerEpoch, now });
@@ -714,9 +723,9 @@ describe.concurrent("runtime daemon ticks", () => {
 
       const reopened = await openRuntimeStore(workspace);
       try {
-        expect(reopened.listDaemonWork().startableRuns.map(candidate => candidate.id)).toContain(run.id);
+        expect(reopened.listRuntimeWork().startableRuns.map(candidate => candidate.id)).toContain(run.id);
         const started: string[] = [];
-        await expect(runDaemonTick(reopened, { startSession: runId => {
+        await expect(runRuntimeTick(reopened, { startSession: runId => {
           started.push(runId);
           return "started";
         } })).resolves.toMatchObject({ runs: 1 });
@@ -735,7 +744,7 @@ describe.concurrent("runtime daemon ticks", () => {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         appendParallelTaskSignalCrash(store, run.id, "ready");
         expect(store.getRun(run.id)?.status).toBe("awaiting");
-        expect(store.listDaemonWork().startableRuns.map(candidate => candidate.id)).not.toContain(run.id);
+        expect(store.listRuntimeWork().startableRuns.map(candidate => candidate.id)).not.toContain(run.id);
       } finally {
         store.close();
       }

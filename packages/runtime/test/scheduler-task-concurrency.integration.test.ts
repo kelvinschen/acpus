@@ -8,7 +8,7 @@ import { openRuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 
-describe("runtime scheduler Task concurrency", () => {
+describe.concurrent("runtime scheduler Task concurrency", () => {
   it("continuously refills Parallel(2) x Fanout(3) from durable Task completions", async () => {
     await withRuntimeWorkspace("scheduler-task-nested-refill", async workspace => {
       const gateDir = join(workspace, "task-gates");
