@@ -1,8 +1,8 @@
 import { admitRunForTest } from "./runtime-store.js";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { basename, join, relative, resolve } from "node:path";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
@@ -17,7 +17,6 @@ import {
   type Sha256Digest,
   type WorkflowSourceFile,
 } from "@acpus/runtime";
-import { prepareWorkflow } from "@acpus/workflow-compiler";
 import { openRuntimeStore, type RuntimeStore } from "../../src/store/store.js";
 import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../../src/runtime-layout.js";
 import { stableJson } from "../../src/stable-json.js";
@@ -25,12 +24,7 @@ import { advanceRuntimeRun } from "./scheduler.js";
 import { throwingSchedulerStore } from "./scheduler-store.js";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
-const runtimeFixtureRoot = join(repoRoot, "packages", "runtime", "test", "fixtures");
 type SnapshotPreparedWorkflow = Extract<PreparedRunWorkflow, { source: { kind: "snapshot" } }>;
-
-function fixturePath(relativePath: string): string {
-  return join(runtimeFixtureRoot, relativePath);
-}
 
 export async function withRuntimeWorkspace<T>(
   name: string,
@@ -85,15 +79,6 @@ async function writeWorkspaceTsconfig(workspace: string): Promise<void> {
 async function linkWorkspaceCore(workspace: string): Promise<void> {
   await mkdir(join(workspace, "packages"), { recursive: true });
   await symlink(join(repoRoot, "packages", "core"), join(workspace, "packages", "core"), "dir");
-}
-
-export async function prepareFixture(workspace: string, relativePath: string): Promise<PreparedRunWorkflow> {
-  const target = join(workspace, basename(relativePath).replace(/\.fixture$/, ".ts"));
-  await copyFile(fixturePath(relativePath), target);
-  return prepareWorkflow({
-    workspaceDir: workspace,
-    source: { kind: "path", entry: target },
-  }) as Promise<PreparedRunWorkflow>;
 }
 
 export async function prepareSyntheticWorkflow(workspace: string, definition: WorkflowDefinition<any, any>, filename = `${definition.config.name}.workflow.ts`): Promise<PreparedRunWorkflow> {

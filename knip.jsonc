@@ -63,6 +63,36 @@
         "test/fixtures/**/*.workflow.ts": ["exports"]
       }
     },
+    "packages/dsh": {
+      "entry": [
+        "test/**/*.{test,test-d}.{ts,tsx}",
+        // The Agent launch resolves this executable by path at runtime.
+        "src/host/dsh-acp-agent-bin.ts!",
+        // TypeScript resolves this import through the generated declaration,
+        // so list the runtime artifact explicitly to check its dependencies.
+        "src/remote/generated.js!"
+      ],
+      "project": [
+        "src/**/*.{ts,tsx}!",
+        "test/**/*.{ts,tsx,mjs}"
+      ],
+      "vitest": false,
+      // The ! suffix limits these exceptions to the production-only strict graph.
+      "ignoreDependencies": [
+        // Public declaration dependency erased from runtime output.
+        "@acpus/expression!",
+        // Type augmentation needed only while compiling the Agent executable.
+        "@deepseek-ai/dsh-agent!",
+        // Loader used only by the workspace source-mode Agent branch.
+        "tsx!"
+      ],
+      "ignoreIssues": {
+        // Canonical generated artifacts intentionally expose one value as
+        // both a named export and the default export.
+        "src/remote/generated.d.ts": ["duplicates"],
+        "src/remote/generated.js": ["duplicates"]
+      }
+    },
     "packages/loader": {
       "entry": ["test/**/*.{test,test-d}.{ts,tsx}"],
       "project": ["src/**/*.ts!", "test/**/*.ts"],

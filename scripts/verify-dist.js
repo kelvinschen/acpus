@@ -41,7 +41,7 @@ try {
   await createConsumer(consumerDirectory, packages);
   await runPnpm([
     "install",
-    "--offline",
+    "--prefer-offline",
     "--ignore-scripts",
     "--no-frozen-lockfile",
     "--reporter=append-only",

@@ -65,6 +65,7 @@ test("the runner stops at the first failed task", async () => {
 
 test("the source graph covers dead code and dependency issues in one Knip command", () => {
   const [command] = resolveCheckPlan(["graph:source"])[0].commands;
+  assert(!command.args.includes("--include-entry-exports"));
   const included = command.args[command.args.indexOf("--include") + 1].split(",");
   assert.deepEqual(included, [
     "files",

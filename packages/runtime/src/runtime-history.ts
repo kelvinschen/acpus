@@ -31,7 +31,7 @@ export type ArchivedRunLookup =
   | { kind: "not-found" }
   | { kind: "unavailable"; message: string };
 
-export async function listRuntimeGenerations(
+async function listRuntimeGenerations(
   cwd: string,
   options: RuntimeLayoutOptions = {},
 ): Promise<RuntimeGenerationSummary[]> {
