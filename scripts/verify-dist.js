@@ -42,7 +42,6 @@ try {
   await runPnpm([
     "install",
     "--prefer-offline",
-    "--ignore-scripts",
     "--no-frozen-lockfile",
     "--reporter=append-only",
   ], consumerDirectory);
@@ -226,6 +225,16 @@ async function createConsumer(consumerDirectory, packages) {
       overrides: { ...externalOverrides, ...tarballs },
       storeDir: pnpmState.storeDir,
       minimumReleaseAge: 0,
+      strictDepBuilds: true,
+      // The all-package consumer includes CLI-only scripts; deny them explicitly so only esbuild runs.
+      allowBuilds: {
+        "@deepseek-ai/dsh-subprocess-local": false,
+        "@google/genai": false,
+        esbuild: true,
+        koffi: false,
+        "node-pty": false,
+        protobufjs: false,
+      },
       trustLockfile: true,
     }, null, 2)}\n`),
     writeFile(join(consumerDirectory, "workflow.ts"), `import { defineWorkflow } from "acpus/core";

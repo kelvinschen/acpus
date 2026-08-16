@@ -519,7 +519,7 @@
 
       ### Fork
 
-      Fork when authored behavior, embedded facts, declared input, Agent mapping, duty, or constraints must change. Omitted workflow/input inherit from the source task. A supplied workflow goes through the same preparation checks as a new run; invalid preparation creates no child. Reuse completed work only when its definition, resolved inputs, outputs, conversation context, and side effects remain valid for the child. Otherwise restart from an earlier returned Target or run fresh.
+      Fork when authored behavior, embedded facts, declared input, Agent mapping, duty, or constraints must change. Explicitly inherit each unchanged workflow/input value and replace only intended values. A replacement workflow goes through the same preparation checks as a new run; invalid preparation creates no child. Reuse completed work only when its definition, resolved inputs, outputs, conversation context, and side effects remain valid for the child. Otherwise restart from an earlier returned Target or run fresh.
 
       ## Artifacts and terminal verification
 

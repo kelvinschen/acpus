@@ -33,14 +33,21 @@ type InspectionTreeEntry = Extract<InspectionRead, { kind: "run" }>["tree"][numb
 
 type ControlAction =
   | { type: "pause" | "resume" }
-  | { type: "cancel" | "retry"; target?: string }
+  | { type: "cancel" | "retry"; scope: "task" }
+  | { type: "cancel" | "retry"; scope: "target"; target: string }
   | { type: "steer"; target: string; instruction: string }
   | { type: "signal"; target: string; payload: DshJsonValue }
   | {
       type: "fork";
-      workflow?: string;
-      input?: DshJsonValue;
-      restartFrom?: string;
+      workflow:
+        | { type: "inherit" }
+        | { type: "replace"; source: string };
+      input:
+        | { type: "inherit" }
+        | { type: "replace"; value: DshJsonValue };
+      restart:
+        | { type: "compatible" }
+        | { type: "target"; target: string };
     };
 
 export function registerSupervisorTools(ctx: Context): void {
@@ -74,7 +81,10 @@ function profilesTool(ctx: Context) {
                   properties: {
                     id: { type: "string", required: true },
                     use: { type: "string", required: true },
-                    model: { type: "string" },
+                    model: {
+                      type: "string",
+                      description: "Optional model override. Omit this field to inherit the Agent default; an empty string is treated as omitted.",
+                    },
                     guidance: { type: "string", required: true },
                   },
                 },
@@ -105,11 +115,19 @@ function tasksTool(ctx: Context) {
   return defineTool({
     name: "acpus_tasks",
     description: "List up to 50 recent delegated tasks with exact selectors and fork ancestry.",
-    parameters: { name: { type: "string" } },
+    parameters: {
+      name: {
+        type: "string",
+        description: "Exact workflow name filter. Omit this field to list all tasks; an empty string is treated as omitted.",
+      },
+    },
     output: output(),
     isConcurrencySafe: () => true,
     async execute(args, exec) {
-      const result = await mode(ctx).tasks(String(initiatingAgent(exec).id), args.name);
+      const result = await mode(ctx).tasks(
+        String(initiatingAgent(exec).id),
+        args.name || undefined,
+      );
       return json({
         tasks: result.tasks.slice(0, 50).map(item => ({
           task: item.task,
@@ -128,7 +146,10 @@ function runTool(ctx: Context) {
     description: "Validate and durably admit an authored Acpus workflow. Authoring failures are returned as structured diagnostics.",
     parameters: {
       workflow: { type: "string", required: true },
-      input: { type: "json" },
+      input: {
+        type: "json",
+        description: "Workflow business input. Omit this field to use an empty object; explicit JSON values including null are preserved.",
+      },
     },
     output: {
       ...output(),
@@ -159,27 +180,39 @@ function inspectTool(ctx: Context) {
     description: "Read one point-in-time snapshot of the latest task by default, or an exact task/target. This does not wait for progress; Signal and terminal states arrive as host notices. Task summaries expose only control-relevant Target selectors.",
     parameters: {
       task: taskParameter(false),
-      target: { type: "string" },
-      timeline: { type: "integer" },
+      target: {
+        type: "string",
+        description: "Exact Target selector. Omit this field to inspect the task summary; an empty string is treated as omitted.",
+      },
+      timeline: {
+        type: "integer",
+        description: "Recent Target timeline entries from 1 to 20. Use only with target; omit this field for summary detail. Zero is treated as omitted.",
+      },
     },
     output: output(),
     isConcurrencySafe: () => true,
     async execute(args, exec) {
-      if (args.timeline !== undefined
-        && (args.target === undefined || args.timeline < 1 || args.timeline > 20)) {
+      const target = args.target || undefined;
+      const timeline = args.timeline || undefined;
+      const requestedTask = args.task as DelegatedTaskSelector | undefined;
+      const task = requestedTask?.name === "" && requestedTask.occurrence === 0
+        ? undefined
+        : requestedTask;
+      if (timeline !== undefined
+        && (target === undefined || timeline < 1 || timeline > 20)) {
         throw failure("timeline requires target and must be from 1 to 20.", "ACPUS_INSPECT_INVALID");
       }
       const selected = await mode(ctx).resolveTask(
         String(initiatingAgent(exec).id),
-        args.task as DelegatedTaskSelector | undefined,
+        task,
       );
-      const result = await selected.runtime.inspect(args.target === undefined
+      const result = await selected.runtime.inspect(target === undefined
         ? { kind: "run", runId: selected.runId }
         : {
             kind: "target",
             runId: selected.runId,
-            target: args.target,
-            detail: args.timeline === undefined ? "summary" : "timeline",
+            target,
+            detail: timeline === undefined ? "summary" : "timeline",
           });
       if (result.isErr()) {
         throw failure(hideRunIdentity(result.error.message, selected.runId), "ACPUS_INSPECT_FAILED");
@@ -187,7 +220,7 @@ function inspectTool(ctx: Context) {
       return json(compactInspection(
         result.value,
         selected.selector,
-        args.timeline,
+        timeline,
       ));
     },
   });
@@ -204,8 +237,20 @@ function controlTool(ctx: Context) {
         oneOf: [
           actionSchema("pause"),
           actionSchema("resume"),
-          actionSchema("cancel", { target: { type: "string" } }),
-          actionSchema("retry", { target: { type: "string" } }),
+          actionSchema("cancel", {
+            scope: { type: "string", const: "task", required: true },
+          }),
+          actionSchema("cancel", {
+            scope: { type: "string", const: "target", required: true },
+            target: { type: "string", required: true },
+          }),
+          actionSchema("retry", {
+            scope: { type: "string", const: "task", required: true },
+          }),
+          actionSchema("retry", {
+            scope: { type: "string", const: "target", required: true },
+            target: { type: "string", required: true },
+          }),
           actionSchema("steer", {
             target: { type: "string", required: true },
             instruction: { type: "string", required: true },
@@ -215,9 +260,36 @@ function controlTool(ctx: Context) {
             payload: { type: "json", required: true },
           }),
           actionSchema("fork", {
-            workflow: { type: "string" },
-            input: { type: "json" },
-            restartFrom: { type: "string" },
+            workflow: {
+              required: true,
+              description: "Inherit the source workflow or replace it with authored TypeScript source.",
+              oneOf: [
+                actionSchema("inherit"),
+                actionSchema("replace", {
+                  source: { type: "string", required: true },
+                }),
+              ],
+            },
+            input: {
+              required: true,
+              description: "Inherit the source input or replace it with an explicit JSON value.",
+              oneOf: [
+                actionSchema("inherit"),
+                actionSchema("replace", {
+                  value: { type: "json", required: true },
+                }),
+              ],
+            },
+            restart: {
+              required: true,
+              description: "Use compatibility-based reuse or restart from one exact source Target.",
+              oneOf: [
+                actionSchema("compatible"),
+                actionSchema("target", {
+                  target: { type: "string", required: true },
+                }),
+              ],
+            },
           }),
         ],
       },
@@ -299,7 +371,10 @@ function artifactTool(ctx: Context) {
           actionSchema("list"),
           actionSchema("read", {
             id: { type: "string", required: true },
-            maxBytes: { type: "integer" },
+            maxBytes: {
+              type: "integer",
+              description: `Maximum bytes from 1 to ${ARTIFACT_READ_LIMIT}. Omit this field for ${ARTIFACT_READ_LIMIT}; zero is treated as omitted.`,
+            },
           }),
         ],
       },
@@ -327,7 +402,7 @@ function artifactTool(ctx: Context) {
           truncated: listed.value.length > ARTIFACT_LIMIT,
         });
       }
-      const maxBytes = action.maxBytes ?? ARTIFACT_READ_LIMIT;
+      const maxBytes = action.maxBytes || ARTIFACT_READ_LIMIT;
       if (maxBytes < 1 || maxBytes > ARTIFACT_READ_LIMIT) {
         throw failure(`maxBytes must be from 1 to ${ARTIFACT_READ_LIMIT}.`, "ACPUS_ARTIFACT_INVALID");
       }
@@ -365,18 +440,24 @@ async function prepareFork(
   prepared?: PreparedWorkflow;
   input?: AcpusJsonValue;
 } | InvalidWorkflow> {
-  if (action.type !== "fork" || action.workflow === undefined) {
+  if (action.type !== "fork") return { status: "ready" };
+  const prepared = action.workflow.type === "replace"
+    ? await prepareAuthoringWorkflow(workspace, action.workflow.source)
+    : undefined;
+  if (prepared?.status === "invalid") return prepared;
+  if (action.input.type === "inherit") {
     return {
       status: "ready",
-      ...(action.type === "fork" && action.input !== undefined
-        ? { input: action.input as AcpusJsonValue }
-        : {}),
+      ...(prepared === undefined ? {} : { prepared: prepared.prepared }),
     };
   }
-  const prepared = await prepareAuthoringWorkflow(workspace, action.workflow);
-  if (prepared.status === "invalid") return prepared;
-  if (action.input === undefined) return { status: "ready", prepared: prepared.prepared };
-  const normalized = normalizeAuthoringInput(prepared.prepared, action.input as AcpusJsonValue);
+  if (prepared === undefined) {
+    return { status: "ready", input: action.input.value as AcpusJsonValue };
+  }
+  const normalized = normalizeAuthoringInput(
+    prepared.prepared,
+    action.input.value as AcpusJsonValue,
+  );
   if (normalized.status === "invalid") return normalized;
   return { status: "ready", prepared: prepared.prepared, input: normalized.input };
 }
@@ -395,7 +476,12 @@ function controlIntent(
       return { requestId, type: action.type, runId };
     case "retry":
     case "cancel":
-      return { requestId, type: action.type, runId, ...(action.target === undefined ? {} : { target: action.target }) };
+      return {
+        requestId,
+        type: action.type,
+        runId,
+        ...(action.scope === "target" ? { target: action.target } : {}),
+      };
     case "steer":
       return { requestId, type: "steer", runId, target: action.target, instruction: action.instruction };
     case "signal":
@@ -405,7 +491,7 @@ function controlIntent(
         requestId,
         type: "fork",
         runId,
-        ...(action.restartFrom === undefined ? {} : { target: action.restartFrom }),
+        ...(action.restart.type === "target" ? { target: action.restart.target } : {}),
         ...(prepared === undefined ? {} : { prepared }),
         ...(input === undefined ? {} : { input }),
       };
@@ -532,10 +618,21 @@ function actionSchema(
 function taskParameter(required: boolean): ParameterPropertySpec {
   const schema: ParameterPropertySpec = {
     type: "object" as const,
+    description: required
+      ? "Exact delegated task selector."
+      : "Exact delegated task selector. Omit this field to select the latest task.",
     additionalProperties: false,
     properties: {
-      name: { type: "string" as const, required: true as const },
-      occurrence: { type: "integer" as const, required: true as const },
+      name: {
+        type: "string" as const,
+        required: true as const,
+        description: "Exact non-empty workflow name.",
+      },
+      occurrence: {
+        type: "integer" as const,
+        required: true as const,
+        description: "Positive task occurrence.",
+      },
     },
   };
   return required ? { ...schema, required: true } : schema;

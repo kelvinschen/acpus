@@ -68,6 +68,18 @@ describe("DSH Agent Profile Store", () => {
     await expect(store.read()).resolves.toEqual([replacement, profile(1)]);
   });
 
+  it("treats an empty optional model as no override", async () => {
+    const { store } = await createStore();
+
+    await expect(store.update({
+      changes: [{
+        operation: "set",
+        profile: { ...profile(0), model: "" },
+      }],
+    })).resolves.toEqual({ status: "applied" });
+    await expect(store.read()).resolves.toEqual([profile(0)]);
+  });
+
   it("accepts exactly 50 Profiles and atomically rejects the 51st", async () => {
     const { store } = await createStore();
     const profiles = Array.from({ length: 50 }, (_, index) => profile(index));

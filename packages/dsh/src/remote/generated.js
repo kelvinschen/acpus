@@ -431,7 +431,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#AwaitSessionActivityRevisionResult',
         schema: _acpus_dsh_acpus_awaitSessionActivityRevision_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":361,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":364,"column":3},
     },
     {
       id: '@acpus/dsh#acpus/cancelSessionTask',
@@ -456,7 +456,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#CancelSessionTaskResult',
         schema: _acpus_dsh_acpus_cancelSessionTask_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":373,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":376,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readActivityDetail',
@@ -481,7 +481,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#ReadActivityDetailResult',
         schema: _acpus_dsh_acpus_readActivityDetail_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":315,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":318,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readAgentProfiles',
@@ -506,7 +506,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#ReadAgentProfilesResult',
         schema: _acpus_dsh_acpus_readAgentProfiles_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":295,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":298,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readSessionActivity',
@@ -531,7 +531,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#SessionActivityProjection',
         schema: _acpus_dsh_acpus_readSessionActivity_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":308,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":311,"column":3},
     },
   ],
 }

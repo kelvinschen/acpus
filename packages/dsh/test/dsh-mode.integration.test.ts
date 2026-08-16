@@ -79,6 +79,41 @@ describe("Acpus mode through a real DSH Loader composition", () => {
     }
   });
 
+  it("preserves explicit null workflow input", async () => {
+    root = await mkdtemp(join(tmpdir(), "acpus-dsh-null-input-"));
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    context = await loadComposition({
+      dshHome: join(root, "dsh-home"),
+      stateDir: join(root, "state"),
+    });
+
+    const submitted = await context.tools.execute({
+      signal: new AbortController().signal,
+      callId: CallId("null-input"),
+      name: "acpus_run",
+      arguments: {
+        workflow: [
+          'import { defineWorkflow, z } from "acpus/core";',
+          'export default defineWorkflow({ name: "dsh-null-input", inputSchema: z.null() }).build(({ input, step }) => {',
+          '  step("accept_null").assert({ condition: true });',
+          "  return { value: input };",
+          "});",
+        ].join("\n"),
+        input: null,
+      },
+      agent: supervisingAgent(context, workspace),
+    });
+
+    expect(submitted).toMatchObject({
+      isError: false,
+      value: {
+        status: "admitted",
+        task: { name: "dsh-null-input", occurrence: 1 },
+      },
+    });
+  });
+
   it("restores parked Signal supervision and durably deduplicates terminal notices", async () => {
     root = await mkdtemp(join(tmpdir(), "acpus-dsh-supervision-"));
     const workspace = join(root, "workspace");

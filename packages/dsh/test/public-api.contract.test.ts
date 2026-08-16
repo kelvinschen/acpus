@@ -117,12 +117,31 @@ describe("@acpus/dsh public contract", () => {
     expect(manifest.exports["./client"].default).toBe("./dist/client.js");
     expect(manifest.exports["./projection"].types).toBe("./dist/remote/types.d.ts");
     expect(manifest.exports["./remote"].default).toBe("./dist/typert.remote-client.js");
-    expect(manifest.peerDependencies["@deepseek-ai/dsh-session"]).toBe("^0.1.0-rc.6");
-    expect(manifest.dependencies).toMatchObject({
+    expect(manifest.dependencies).toEqual({
+      "@acpus/expression": "workspace:*",
+      "@acpus/runtime": "workspace:*",
+      "@acpus/workflow-compiler": "workspace:*",
       "@deepseek-ai/dsh-acp": "0.1.0-rc.6",
+      zod: "^4.4.3",
+    });
+    expect(manifest.peerDependencies).toMatchObject({
+      "@deepseek-ai/dsh-agent-presets": "^0.1.0-rc.6",
+      "@deepseek-ai/dsh-app-boot": "^0.1.0-rc.6",
+      "@deepseek-ai/dsh-base": "^0.1.0-rc.6",
+      "@deepseek-ai/dsh-client-ui-primitives": "^0.1.0-rc.6",
+      "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
+      "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6",
+      react: "^18.2.0",
+      "react-dom": "^18.2.0",
+    });
+    expect(manifest.devDependencies).toMatchObject({
+      "@deepseek-ai/dsh-agent-presets": "0.1.0-rc.6",
       "@deepseek-ai/dsh-app-boot": "0.1.0-rc.6",
       "@deepseek-ai/dsh-base": "0.1.0-rc.6",
       "@deepseek-ai/dsh-client-ui-primitives": "0.1.0-rc.6",
+      "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.6",
+      react: "18.3.1",
+      "react-dom": "18.3.1",
     });
     expect(manifest.files).toContain("acp-agent");
     expect(manifest.files).toContain("README.md");
