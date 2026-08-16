@@ -479,7 +479,7 @@ cancelSessionTask(input: {
 - In an Acpus-preset session, the Client MUST always register a title-adjacent
   non-interactive Acpus × DSH lockup in place of the normal textual preset
   label; hovering the lockup MUST expose the Acpus mode description. It is
-  immediately followed by an `Agent Profiles` action with a member icon,
+  immediately followed by an `Agent Profiles` action with a robot icon,
   including when the catalog has no user-defined Profiles. Opening the action
   MUST read the current global catalog and
   show the immutable built-in `dsh` Profile first, followed by user Profiles in

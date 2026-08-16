@@ -5,11 +5,6 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@deepseek-ai/dsh-client-ui-primitives", () => ({
-  IconUserOutline16: ({ size = 16 }: { size?: number }) =>
-    React.createElement("svg", { height: size, width: size }),
-}));
-
 import {
   AcpusBrandLabel,
   AcpusProfileAction,
@@ -72,7 +67,7 @@ describe("Acpus Agent Profiles header action", () => {
     await renderAction(readAgentProfiles);
     const trigger = button("Agent Profiles");
     expect(trigger).toBeDefined();
-    expect(trigger?.querySelector("svg")).not.toBeNull();
+    expect(trigger?.querySelector("svg.acpus-profile-robot-icon")).not.toBeNull();
     expect(trigger?.getAttribute("aria-haspopup")).toBe("dialog");
 
     await act(async () => trigger?.click());
