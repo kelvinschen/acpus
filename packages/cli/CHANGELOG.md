@@ -1,5 +1,20 @@
 # acpus
 
+## 0.13.7
+
+### Patch Changes
+
+- 1e0e39e: Publish the embedded Workspace Runtime with state-root-isolated automatic store
+  repair, host-neutral Runtime and ACP ownership, and the DeepSeek Harness Acpus
+  Supervisor bundle with a natural-language managed Agent catalog with a built-in DSH Profile
+  backed by package-owned ACP launch, durable admission recovery, controls,
+  notices, bounded live projections, native Client surfaces, session workflow
+  history with explicit readable task selectors, managed preset installation,
+  and packed ACP execution.
+- Updated dependencies [1e0e39e]
+  - @acpus/runtime@0.17.0
+  - @acpus/web@0.3.3
+
 ## 0.13.6
 
 ### Patch Changes

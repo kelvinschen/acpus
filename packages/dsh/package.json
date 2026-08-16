@@ -1,6 +1,6 @@
 {
   "name": "@acpus/dsh",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "type": "module",
   "description": "Acpus Supervisor mode for DeepSeek Harness.",
   "license": "MIT",
