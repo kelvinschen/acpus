@@ -1,5 +1,17 @@
 # @acpus/dsh
 
+## 0.1.0
+
+### Minor Changes
+
+- 3218b23: Make DSH tool omission semantics model-safe, require explicit control and fork scopes, and preserve explicit null run and fork inputs.
+
+### Patch Changes
+
+- d756c29: Use the DSH host dependency seam and document explicit `esbuild` approval so plugin installation activates the profile in one command.
+- Updated dependencies [3218b23]
+  - @acpus/runtime@0.17.1
+
 ## 0.0.2
 
 ### Patch Changes
