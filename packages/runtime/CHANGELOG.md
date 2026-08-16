@@ -1,5 +1,11 @@
 # @acpus/runtime
 
+## 0.17.1
+
+### Patch Changes
+
+- 3218b23: Make DSH tool omission semantics model-safe, require explicit control and fork scopes, and preserve explicit null run and fork inputs.
+
 ## 0.17.0
 
 ### Minor Changes
