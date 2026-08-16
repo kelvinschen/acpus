@@ -32,12 +32,6 @@ export async function expectPreparationFailure(
   throw new Error("expected workflow preparation to fail");
 }
 
-export function workflowSource(name: string): string {
-  return `import { defineWorkflow } from "acpus/core";
-export default defineWorkflow({ name: ${JSON.stringify(name)} }).build(() => ({}));
-`;
-}
-
 export function fixture(relativePath: string): string {
   return join(fixturesRoot, relativePath);
 }

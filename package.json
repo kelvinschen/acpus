@@ -28,12 +28,12 @@
     "clean": "pnpm -r run clean"
   },
   "devDependencies": {
-    "@acpus/runtime": "workspace:*",
     "@changesets/cli": "^2.31.0",
     "@types/node": "^22.20.1",
     "acpus": "workspace:*",
     "esbuild": "^0.28.1",
     "knip": "^6.26.0",
+    "semver": "^7.8.4",
     "slash": "^3.0.0",
     "typescript": "7.0.2",
     "vitest": "^4.1.10"

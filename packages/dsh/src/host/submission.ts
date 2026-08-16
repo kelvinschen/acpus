@@ -10,7 +10,7 @@ import { AcpusOperationError } from "./errors.js";
 import type { RunLink, RunLinkStore } from "./run-links.js";
 import type { ResolvedTaskSelector } from "../task.js";
 
-export type WorkflowDiagnostic = {
+type WorkflowDiagnostic = {
   code: string;
   severity: "error" | "info" | "warning";
   message: string;

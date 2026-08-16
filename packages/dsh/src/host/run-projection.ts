@@ -6,7 +6,7 @@ import type { AdmittedRunLink } from "./run-links.js";
 type InspectionTreeEntry = Extract<InspectionView, { kind: "run" }>["tree"][number];
 type InspectionVisibleState = Extract<InspectionTreeEntry, { type: "item" }>["state"];
 
-export type StoredSignalRequirement = {
+type StoredSignalRequirement = {
   selector: string;
   prompt?: string;
   expected?: string;

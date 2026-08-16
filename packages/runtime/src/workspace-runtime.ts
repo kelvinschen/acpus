@@ -121,7 +121,7 @@ export interface WorkspaceRuntime {
   close(): Promise<void>;
 }
 
-export type WorkspaceRuntimeActivity = {
+type WorkspaceRuntimeActivity = {
   activeSessions: number;
   activeHooks: number;
   activeMutations: boolean;

@@ -11,7 +11,7 @@ import type { AcpOwnershipHealth, AcpOwnershipManifest, ManagedAcpExecutorOption
 
 const MANIFEST_MODE = 0o600;
 
-export type AcpOwnershipInspectionInput = {
+type AcpOwnershipInspectionInput = {
   workersRoot: string;
   owner?: { generation: string | number; pid?: number; startToken?: string };
 };

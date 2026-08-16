@@ -12,7 +12,6 @@ import {
   type RuntimeControlResult,
 } from "../runtime-contracts.js";
 
-export { RUNTIME_ABI_VERSION };
 export type { RuntimeAuthorityIdentity };
 
 export const DAEMON_PROTOCOL_VERSION = 4;

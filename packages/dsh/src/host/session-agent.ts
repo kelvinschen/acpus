@@ -147,7 +147,7 @@ export class ParentSessionAgentAdapter {
   }
 }
 
-export function hasMessage(events: readonly SessionEvent[], messageId: string): boolean {
+function hasMessage(events: readonly SessionEvent[], messageId: string): boolean {
   for (const event of events) {
     if (event.type === "user/message" && event.data.id === messageId) return true;
     if (event.type === "agent/inbox/spliced"

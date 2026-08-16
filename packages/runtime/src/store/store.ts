@@ -273,7 +273,7 @@ type HookDispatchEventRead = {
   events: CommittedRuntimeEventRow[];
 };
 
-export type RuntimeWork = {
+type RuntimeWork = {
   startableRuns: RunRecord[];
   hookDispatchRunIds: string[];
   idleBlockers: number;
@@ -372,7 +372,7 @@ export type FrozenRun = {
   meta: Record<string, string>;
 };
 
-export type ClaimRuntimeAuthorityInput = {
+type ClaimRuntimeAuthorityInput = {
   workspaceRealpath: string;
   ownerId: string;
   pid: number;
@@ -384,7 +384,7 @@ export type ClaimRuntimeAuthorityInput = {
   idleStopMs?: number;
 };
 
-export type RuntimeAuthorityFence = {
+type RuntimeAuthorityFence = {
   workspaceRealpath: string;
   ownerId: string;
   epoch: number;
@@ -395,7 +395,7 @@ type RuntimeAuthorityIdleStateInput = RuntimeAuthorityFence & {
   idleStopMs: number;
 };
 
-export type RuntimeAuthorityLease = {
+type RuntimeAuthorityLease = {
   workspaceRealpath: string;
   ownerId: string;
   epoch: number;

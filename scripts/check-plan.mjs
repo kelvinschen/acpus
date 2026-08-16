@@ -49,7 +49,6 @@ const tasks = new Map([
     commands: [{
       packageBin: ["knip", "knip"],
       args: [
-        "--include-entry-exports",
         "--include",
         sourceGraphIssues,
         "--treat-config-hints-as-errors",
