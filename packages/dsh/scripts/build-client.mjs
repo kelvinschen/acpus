@@ -8,7 +8,6 @@ await build({
   platform: "browser",
   target: "es2022",
   external: [
-    "@deepseek-ai/dsh-client-ui-primitives",
     "react",
     "react/jsx-runtime",
     "react-dom",

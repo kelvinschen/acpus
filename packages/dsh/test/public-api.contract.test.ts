@@ -2,10 +2,6 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("@deepseek-ai/dsh-client-ui-primitives", () => ({
-  IconUserOutline16: () => null,
-}));
-
 import Loader from "@deepseek-ai/cordis-plugin-loader";
 import { scanRoot } from "@deepseek-ai/dsh-agent-presets";
 import AcpusMode, {
@@ -122,7 +118,6 @@ describe("@acpus/dsh public contract", () => {
       "@deepseek-ai/dsh-acp": "0.1.0-rc.6",
       "@deepseek-ai/dsh-app-boot": "0.1.0-rc.6",
       "@deepseek-ai/dsh-base": "0.1.0-rc.6",
-      "@deepseek-ai/dsh-client-ui-primitives": "0.1.0-rc.6",
     });
     expect(manifest.files).toContain("acp-agent");
     expect(manifest.files).toContain("README.md");
