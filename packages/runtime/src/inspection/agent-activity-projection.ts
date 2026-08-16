@@ -5,6 +5,7 @@ import type {
 } from "../observations/log.js";
 import type {
   AgentCurrentActivity,
+  InspectionToolActivity,
   RunInspectionStatus,
 } from "./types.js";
 
@@ -29,6 +30,34 @@ type AgentActivityProjector = (
 export function createAgentActivityProjector(
   observations?: AgentObservationInspectionProjection,
 ): AgentActivityProjector {
+  const { turns, currents } = latestAgentObservations(observations);
+  return subject => projectAgentActivity(
+    subject,
+    subject.attemptId ? turns.get(subject.attemptId) : undefined,
+    subject.attemptId ? currents.get(subject.attemptId) : undefined,
+  );
+}
+
+export function createAgentToolActivityProjector(
+  observations?: AgentObservationInspectionProjection,
+): (attemptId: string | undefined) => {
+  tool: InspectionToolActivity;
+  turn: number;
+} | undefined {
+  const { currents } = latestAgentObservations(observations);
+  return attemptId => {
+    const current = attemptId === undefined ? undefined : currents.get(attemptId);
+    const tool = inspectionToolActivity(current);
+    return current && tool ? { tool, turn: current.turn } : undefined;
+  };
+}
+
+function latestAgentObservations(
+  observations?: AgentObservationInspectionProjection,
+): {
+  turns: Map<string, AgentObservationTurn>;
+  currents: Map<string, AgentObservationCurrent>;
+} {
   const turns = new Map<string, AgentObservationTurn>();
   for (const candidate of observations?.turns ?? []) {
     const selected = turns.get(candidate.attemptId);
@@ -40,11 +69,29 @@ export function createAgentActivityProjector(
     const selected = currents.get(candidate.attemptId);
     if (!selected || candidate.updatedAt > selected.updatedAt) currents.set(candidate.attemptId, candidate);
   }
-  return subject => projectAgentActivity(
-    subject,
-    subject.attemptId ? turns.get(subject.attemptId) : undefined,
-    subject.attemptId ? currents.get(subject.attemptId) : undefined,
-  );
+  return { turns, currents };
+}
+
+function inspectionToolActivity(
+  current: AgentObservationCurrent | undefined,
+): InspectionToolActivity | undefined {
+  const active = current?.tools?.active.at(-1);
+  if (active) return {
+    name: active.name,
+    ...(active.title === undefined ? {} : { title: active.title }),
+    state: "running",
+  };
+  const recent = current?.tools?.recent;
+  if (!recent) return undefined;
+  const presentation = {
+    name: recent.name,
+    ...(recent.title === undefined ? {} : { title: recent.title }),
+  };
+  if (recent.status === "failed") return { ...presentation, state: "failed" };
+  if (recent.status === "cancelled" || recent.status === "canceled") {
+    return { ...presentation, state: "canceled" };
+  }
+  return { ...presentation, state: "completed" };
 }
 
 function projectAgentActivity(

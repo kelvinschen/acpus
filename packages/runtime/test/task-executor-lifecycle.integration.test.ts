@@ -6,7 +6,7 @@ import {
   withTaskExecutorWorkspace,
 } from "./support/task-executor-fixture.js";
 
-describe("task executor lifecycle", () => {
+describe.concurrent("task executor lifecycle", () => {
   it("confines missing cwd and process exit failures to their Task attempts", async () => {
     await withTaskExecutorWorkspace(async ({ workspace, taskOptions }) => {
       const missing = join(workspace, "missing");

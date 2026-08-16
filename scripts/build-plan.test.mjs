@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createBuildRunner } from "./build-plan.mjs";
 
-test("workspace gates parallel Web work on the foundation build", async () => {
+test("workspace starts canonical DSH outputs after the foundation build", async () => {
   const steps = controlledSteps();
   const build = createBuildRunner(steps.run);
   const result = build("workspace");
@@ -12,18 +12,64 @@ test("workspace gates parallel Web work on the foundation build", async () => {
 
   steps.resolve("foundation");
   await turn();
-  assert.deepEqual(steps.started(), ["foundation", "client", "static-viz"]);
+  assert.deepEqual(steps.started(), [
+    "foundation",
+    "client",
+    "dsh-preset",
+    "dsh-remote",
+    "dsh-client",
+    "static-viz",
+  ]);
 
   steps.resolve("static-viz");
   await turn();
-  assert.deepEqual(steps.started(), ["foundation", "client", "static-viz", "typescript"]);
+  assert.deepEqual(steps.started(), [
+    "foundation",
+    "client",
+    "dsh-preset",
+    "dsh-remote",
+    "dsh-client",
+    "static-viz",
+    "typescript",
+  ]);
 
   steps.resolve("typescript");
   await turn();
   assert.equal(settled.value, false);
 
+  steps.resolve("dsh-preset");
+  steps.resolve("dsh-remote");
+  steps.resolve("dsh-client");
   steps.resolve("client");
   await result;
+});
+
+test("workspace awaits DSH outputs and preserves failure order after TypeScript fails", async () => {
+  const remoteFailure = new Error("Remote publication failed");
+  const typescriptFailure = new Error("TypeScript failed");
+  const steps = controlledSteps();
+  const build = createBuildRunner(steps.run);
+  const result = build("workspace");
+  const settled = settlement(result);
+
+  steps.resolve("foundation");
+  await turn();
+  steps.reject("dsh-remote", remoteFailure);
+  steps.resolve("static-viz");
+  await turn();
+  steps.reject("typescript", typescriptFailure);
+  await turn();
+  assert.equal(settled.value, false);
+
+  steps.resolve("client");
+  steps.resolve("dsh-preset");
+  steps.resolve("dsh-client");
+  await assert.rejects(result, error => {
+    assert.equal(error instanceof AggregateError, true);
+    assert.equal(error.message, "Build stages failed: dsh-remote, typescript");
+    assert.deepEqual(error.errors, [remoteFailure, typescriptFailure]);
+    return true;
+  });
 });
 
 test("package uses its TypeScript build without the workspace foundation", async () => {

@@ -23,7 +23,7 @@ export function createTurnResponseCollector() {
       }
       if (event.type === "tool_call") {
         openResponse = undefined;
-        finalCandidate = undefined;
+        if (event.tag !== "tool_call_update") finalCandidate = undefined;
         return;
       }
       if (event.type === "status" && event.tag === "plan") {

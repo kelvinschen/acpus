@@ -290,6 +290,7 @@ function taskOptions(
     attemptNo: 1,
     ownerEpoch: 1,
     store: {
+      runsRoot,
       getRunDirectoryToken: () => ({
         runId,
         runsRoot: captureDirectoryIdentity(runsRoot, "Runtime runs root"),

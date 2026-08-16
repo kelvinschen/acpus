@@ -13,21 +13,26 @@ and operator-facing recovery.
 
 - The package MUST expose `createManagedAcpExecutor`, `recoverAcpOwnership`,
   `inspectAcpOwnership`, `acpxSessionProjectionPath`, and their public
-  managed-attempt, normalized-turn, and ownership types.
+  managed-attempt, host-provided named Agent launch, normalized-turn, and ownership
+  types.
 - `withAttempt` MUST provide one callback-scoped `runTurn` capability and MUST
   clean its worker tree after the callback settles, regardless of the callback
   result.
 - A managed attempt MUST admit at most one active turn at a time.
-- A named Agent's launch MUST match package-pinned Acpx resolution for the
-  attempt's effective working directory and environment.
+- A Host MAY supply immutable named Agent launch resolvers. A command selector
+  MUST take precedence over Host resolvers; a matching resolver MUST take
+  precedence over Acpx; every other named Agent MUST match package-pinned Acpx
+  resolution for the attempt's effective working directory and environment.
+- A Host resolver MUST receive only the attempt's optional effective model and
+  MUST return a structured Agent launch.
 - Structured argv returned by Acpx MUST cross worker startup without being
   rendered back into a command string.
 - Named Agent resolution MUST complete before the executor creates a worker or
   ownership evidence.
 - A managed attempt MUST resolve its named Agent once and reuse that launch for
   every turn; a later attempt MUST resolve against the then-current config.
-- A command selector MUST use its authored command directly and MUST NOT read or
-  validate Acpx configuration.
+- A command selector and a host-resolved named Agent MUST NOT read or validate
+  Acpx configuration.
 - The executor MUST NOT apply any Acpx configuration domain other than
   `agents`.
 - A recoverable Acpx configuration-resolution failure MUST return a
@@ -68,8 +73,10 @@ and operator-facing recovery.
   received to the current response segment.
 - A thought or plan event MUST close the current response segment without
   invalidating the latest final-response candidate.
-- Every tool call or tool update MUST close the current response segment and
-  invalidate every earlier final-response candidate.
+- A tool invocation MUST close the current response segment and invalidate
+  every earlier final-response candidate.
+- A tool lifecycle update MUST close the current response segment without
+  invalidating the latest final-response candidate.
 - Usage, ordinary status, and unknown status events MUST NOT enter or segment
   responses and MUST NOT change the final-response candidate.
 - Empty text deltas MUST NOT create response segments. Non-empty whitespace
@@ -96,6 +103,16 @@ and operator-facing recovery.
 
 ### Activity And Inactivity
 
+- Context-window counters and token usage MUST remain independent optional
+  telemetry: context is the latest reported session-window checkpoint, while
+  token usage describes the current turn and MUST NOT be inferred from context.
+- After a turn settles, an Acpx status containing exactly one newly persisted
+  per-request usage entry MUST replace any live token breakdown with normalized
+  `prompt_response` usage. Missing, unreadable, or ambiguous status usage MUST
+  retain the live breakdown or remain unavailable without changing settlement.
+- Terminal token enrichment MUST accompany the existing turn result and
+  `turn_end` observation without reporting separate ACP activity or emitting an
+  additional usage observation.
 - The executor MUST report ACP activity when it locally dispatches a turn and
   when it receives a public normalized `acpx/runtime` event.
 - A status event with context counters or a token breakdown MUST become a usage
@@ -126,9 +143,9 @@ and operator-facing recovery.
 
 - Before initializing a spawned worker, the executor MUST atomically write an
   active ownership manifest under the supplied workers root.
-- A manifest MUST identify its run, attempt, session, daemon generation, and
-  worker process; it MUST include a process-start token whenever the platform
-  can obtain one.
+- A manifest MUST identify its run, attempt, session, executor-owner
+  generation, and worker process; it MUST include a process-start token
+  whenever the platform can obtain one.
 - Managed-attempt cleanup MUST request turn cancellation and worker close,
   then make one bounded best-effort tree cleanup using TERM, KILL, and a final
   liveness check.
@@ -142,7 +159,7 @@ and operator-facing recovery.
   process-start token still matches; an unverified live PID MUST remain as
   ownership evidence without being signalled.
 - `inspectAcpOwnership` MUST be read-only and report only degraded or orphaned
-  ownership evidence; an active manifest owned by the supplied current daemon
+  ownership evidence; an active manifest owned by the supplied current owner
   MUST not be reported as an orphan.
 
 ## Verification
@@ -152,6 +169,7 @@ and operator-facing recovery.
   bounded cleanup, identity-safe startup recovery, session projection
   persistence, and normalized status classification.
 - `pnpm test:integration packages/agent-executor`: verifies effective Acpx
-  configuration and managed named-Agent startup and failure behavior.
+  configuration, read-only catalog discovery, and managed named-Agent startup
+  and failure behavior.
 - `pnpm test:contract packages/agent-executor` and `pnpm test:type packages/agent-executor`:
   verify the closed worker IPC protocol, exported managed-executor, and normalized result surface.

@@ -1,4 +1,4 @@
-import { mkdir, readdir, symlink } from "node:fs/promises";
+import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -66,6 +66,28 @@ describe("runtime maintenance lock", () => {
         blocker: "runtime users",
       } satisfies Partial<RuntimeLockTimeoutError>);
       expect(clock.now()).toBe(500);
+    });
+  });
+
+  it.skipIf(process.platform !== "linux")("reclaims a holder whose PID was reused", async () => {
+    await withStorageWorkspace("runtime-lock-reused-pid", async workspace => {
+      const layout = resolveRuntimeLayout(workspace);
+      const shared = await acquireRuntimeSharedLock(layout);
+      shared.release();
+      const holders = join(layout.home, "tmp", "runtime-locks", layout.workspaceKey, "holders");
+      await writeFile(join(holders, "stale.json"), `${JSON.stringify({
+        pid: process.pid,
+        startToken: "linux:reused",
+        token: "stale",
+        createdAt: "2026-08-16T00:00:00.000Z",
+      })}\n`);
+
+      const exclusive = await acquireRuntimeExclusiveLock(layout);
+      try {
+        expect(await readdir(holders)).toEqual([]);
+      } finally {
+        await exclusive.release();
+      }
     });
   });
 

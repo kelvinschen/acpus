@@ -86,7 +86,6 @@ describe("artifact access", () => {
     const artifact = record(path, bytes);
 
     const actual = readVerifiedArtifact({
-      cwd: workspace,
       runId,
       store: store(artifact),
     }, artifactId);
@@ -107,7 +106,6 @@ describe("artifact access", () => {
     fileRace.nonRegularDescriptor = true;
 
     expect(() => readVerifiedArtifact({
-      cwd: workspace,
       runId,
       store: store(record(path, bytes)),
     }, artifactId)).toThrow("not a regular file");
@@ -121,7 +119,6 @@ describe("artifact access", () => {
     const tampered = Buffer.from("tampered");
     await writeFile(path, tampered);
     const context = {
-      cwd: workspace,
       runId,
       store: store(record(path, registered)),
     };
@@ -139,7 +136,6 @@ describe("artifact access", () => {
     const bytes = Buffer.from("same bytes");
     await writeFile(path, bytes);
     const context = {
-      cwd: workspace,
       runId,
       store: store(record(path, bytes)),
     };
@@ -169,7 +165,6 @@ describe("artifact access", () => {
       fileRace.phase = phase;
 
       expect(() => readVerifiedArtifact({
-        cwd: workspace,
         runId,
         store: store(record(path, bytes)),
       }, artifactId)).toThrow();
@@ -182,26 +177,22 @@ describe("artifact access", () => {
 
   it("returns tagged failures for malformed, foreign, missing, and unavailable local artifacts", async () => {
     expect(tryBindArtifactRef({ kind: "artifact", uri: "artifact://missing-id" }, {
-      cwd: workspace,
       runId,
       store: store(),
     })._unsafeUnwrapErr().type).toBe("invalid-artifact-ref");
 
     expect(tryBindArtifactRef(ref("run_other", artifactId), {
-      cwd: workspace,
       runId,
       store: store(),
     })._unsafeUnwrapErr().type).toBe("artifact-run-mismatch");
 
     expect(tryBindArtifactRef(ref(runId, artifactId), {
-      cwd: workspace,
       runId,
       store: store(),
     })._unsafeUnwrapErr().type).toBe("artifact-not-found");
 
     const missingPath = join(runDir, "artifacts", "missing.txt");
     expect(tryBindArtifactRef(ref(runId, artifactId), {
-      cwd: workspace,
       runId,
       store: store(record(missingPath)),
     })._unsafeUnwrapErr().type).toBe("artifact-path-invalid");
@@ -209,7 +200,6 @@ describe("artifact access", () => {
     const directoryPath = join(runDir, "artifacts", "directory");
     await mkdir(directoryPath);
     expect(tryBindArtifactRef(ref(runId, artifactId), {
-      cwd: workspace,
       runId,
       store: store(record(directoryPath)),
     })._unsafeUnwrapErr().type).toBe("artifact-path-invalid");
@@ -219,7 +209,6 @@ describe("artifact access", () => {
     await writeFile(targetPath, "input\n");
     await symlink(targetPath, symlinkPath);
     expect(tryBindArtifactRef(ref(runId, artifactId), {
-      cwd: workspace,
       runId,
       store: store(record(symlinkPath)),
     })._unsafeUnwrapErr().type).toBe("artifact-path-invalid");
@@ -228,9 +217,9 @@ describe("artifact access", () => {
   it("propagates store failures and registry path escapes", () => {
     const sentinel = Object.assign(new Error("storage I/O failed"), { code: "EIO" });
     expect(() => tryBindArtifactRef(ref(runId, artifactId), {
-      cwd: workspace,
       runId,
       store: {
+        runsRoot,
         getArtifact: () => {
           throw sentinel;
         },
@@ -239,28 +228,26 @@ describe("artifact access", () => {
     })).toThrow(sentinel);
 
     expect(() => tryBindArtifactRef(ref(runId, artifactId), {
-      cwd: workspace,
       runId,
       store: store(record(join(workspace, "outside.txt"))),
     })).toThrow();
 
     expect(() => tryBindArtifactRef(ref(runId, artifactId), {
-      cwd: workspace,
       runId,
       store: store(record("artifacts/input.txt")),
     })).toThrow("path escapes the run directory");
 
     expect(() => tryBindArtifactRef(ref(runId, artifactId), {
-      cwd: workspace,
       runId,
       store: {
+        runsRoot,
         getArtifact: () => record(join(runDir, "artifacts", "input.txt")),
         getRunDirectoryToken: () => undefined,
       },
     })).toThrow(`Run '${runId}' has no run directory`);
   });
 
-  it("rejects a valid store capability from a different workspace", async () => {
+  it("accepts a store capability bound to an independent Runtime home", async () => {
     const [otherWorkspace, otherRuntimeHome] = await Promise.all([
       mkdtemp(join(tmpdir(), "acpus-artifact-other-workspace-")),
       mkdtemp(join(tmpdir(), "acpus-artifact-other-home-")),
@@ -273,6 +260,7 @@ describe("artifact access", () => {
       await mkdir(join(otherRunDir, "artifacts"), { recursive: true });
       await writeFile(path, "input\n");
       const otherStore: ArtifactAccessContext["store"] = {
+        runsRoot: otherRunsRoot,
         getArtifact: () => record(path),
         getRunDirectoryToken: () => ({
           runId,
@@ -281,11 +269,10 @@ describe("artifact access", () => {
         }),
       };
 
-      expect(() => tryBindArtifactRef(ref(runId, artifactId), {
-        cwd: workspace,
+      expect(tryBindArtifactRef(ref(runId, artifactId), {
         runId,
         store: otherStore,
-      })).toThrow("escapes the runtime runs root");
+      }).isOk()).toBe(true);
     } finally {
       restoreOtherRuntimeHome();
       await Promise.all([
@@ -306,7 +293,6 @@ describe("artifact access", () => {
       await symlink(outsideRunsRoot, runsRoot, "dir");
 
       expect(() => tryBindArtifactRef(ref(runId, artifactId), {
-        cwd: workspace,
         runId,
         store: artifactStore,
       })).toThrow();
@@ -334,6 +320,7 @@ describe("artifact access", () => {
       runDirectory: captureDirectoryIdentity(runDir, `Run directory '${runId}'`),
     };
     return {
+      runsRoot,
       getRunDirectoryToken: () => run,
       getArtifact: (_runId: string, id: string) => id === artifactId ? artifact : undefined,
     };

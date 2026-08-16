@@ -15,7 +15,7 @@ async function markdownFiles(directory) {
   return files;
 }
 
-const files = [path.join(root, "README.md"), path.join(root, "README.zh.md")];
+const files = [path.join(root, "README.md"), path.join(root, "README.en.md")];
 files.push(
   ...(await markdownFiles(path.join(root, "docs"))),
   ...(await markdownFiles(path.join(root, "specs"))),

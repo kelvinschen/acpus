@@ -6,13 +6,14 @@ import {
   PROCESS_TREE_CLEANUP_BUDGET_MS,
   stopProcessTree,
 } from "./process-tree.js";
+import { normalizeAcpExecutorOwner } from "./owner.js";
 import type { AcpOwnershipHealth, AcpOwnershipManifest, ManagedAcpExecutorOptions } from "./types.js";
 
 const MANIFEST_MODE = 0o600;
 
 export type AcpOwnershipInspectionInput = {
   workersRoot: string;
-  daemon?: { generation: string | number; pid?: number };
+  owner?: { generation: string | number; pid?: number; startToken?: string };
 };
 
 type OwnershipManifestFile = {
@@ -23,10 +24,7 @@ type OwnershipManifestFile = {
 /** Reads residual ownership evidence without creating, changing, or signalling anything. */
 export async function inspectAcpOwnership(input: AcpOwnershipInspectionInput): Promise<AcpOwnershipHealth> {
   const manifests = await readOwnershipManifests(input.workersRoot);
-  const current = input.daemon && {
-    pid: input.daemon.pid ?? process.pid,
-    generation: String(input.daemon.generation),
-  };
+  const current = input.owner === undefined ? undefined : await normalizeAcpExecutorOwner(input.owner);
   let degraded = 0;
   let orphaned = 0;
   const records: AcpOwnershipHealth["manifests"] = [];
@@ -36,11 +34,12 @@ export async function inspectAcpOwnership(input: AcpOwnershipInspectionInput): P
       records.push(manifestReference(manifest));
       continue;
     }
-    const belongsToCurrentDaemon = current !== undefined
-      && manifest.daemon.pid === current.pid
-      && manifest.daemon.generation === current.generation;
+    const belongsToCurrentOwner = current !== undefined
+      && manifest.owner.pid === current.pid
+      && manifest.owner.generation === current.generation
+      && (current.startToken === undefined || manifest.owner.startToken === current.startToken);
     const workerLiveness = await matchesProcessStartToken(manifest.worker.pid, manifest.worker.startToken);
-    if (!belongsToCurrentDaemon || workerLiveness === false) {
+    if (!belongsToCurrentOwner || workerLiveness === false) {
       orphaned += 1;
       records.push(manifestReference(manifest));
     }
@@ -48,7 +47,7 @@ export async function inspectAcpOwnership(input: AcpOwnershipInspectionInput): P
   return { degraded, orphaned, manifests: records.slice(0, 12) };
 }
 
-/** Performs the single bounded daemon-startup sweep for the current workspace. */
+/** Performs the single bounded startup sweep for the supplied workers root. */
 export async function recoverAcpOwnership(input: ManagedAcpExecutorOptions): Promise<void> {
   const manifests = await readOwnershipManifestFiles(input.workersRoot);
   const deadline = performance.now() + PROCESS_TREE_CLEANUP_BUDGET_MS;
@@ -140,17 +139,17 @@ async function removeManifest(path: string): Promise<void> {
 function validManifest(value: unknown): value is AcpOwnershipManifest {
   if (!record(value)) return false;
   const manifest = value as Record<string, unknown>;
-  return manifest.schemaVersion === 1
+  return manifest.schemaVersion === 2
     && typeof manifest.workerId === "string"
     && typeof manifest.runId === "string"
     && typeof manifest.attemptId === "string"
     && typeof manifest.sessionName === "string"
-    && daemonIdentity(manifest.daemon)
+    && ownerIdentity(manifest.owner)
     && workerIdentity(manifest.worker)
     && (manifest.state === "active" || manifest.state === "degraded");
 }
 
-function daemonIdentity(value: unknown): value is { pid: number; startToken?: string; generation: string } {
+function ownerIdentity(value: unknown): value is { pid: number; startToken?: string; generation: string } {
   if (!record(value) || !positiveProcessId(value.pid)) return false;
   return typeof value.generation === "string"
     && (value.startToken === undefined || typeof value.startToken === "string");

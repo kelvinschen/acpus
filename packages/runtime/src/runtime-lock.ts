@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
 import { chmod, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { probeProcessLiveness } from "./process-liveness.js";
+import { captureProcessIdentity, probeProcessIdentity } from "./process-liveness.js";
 import type { RuntimeLayout } from "./runtime-layout.js";
 
 const maintenanceWaitMs = 5_000;
@@ -11,6 +11,7 @@ const retryMs = 25;
 
 type LockOwner = {
   pid: number;
+  startToken?: string;
   token: string;
   createdAt: string;
 };
@@ -168,13 +169,16 @@ async function lockIsLive(path: string): Promise<boolean> {
     return true;
   }
   if (!isLockOwner(value)) return true;
-  if (value.pid === process.pid) return true;
-  return probeProcessLiveness(value.pid) !== "dead";
+  return probeProcessIdentity({
+    pid: value.pid,
+    ...(value.startToken === undefined ? {} : { startToken: value.startToken }),
+  }) !== "dead";
 }
 
 function lockOwner(): LockOwner {
+  const identity = captureProcessIdentity();
   return {
-    pid: process.pid,
+    ...identity,
     token: randomUUID(),
     createdAt: new Date().toISOString(),
   };
@@ -187,6 +191,8 @@ function isLockOwner(value: unknown): value is LockOwner {
     && typeof (value as Record<string, unknown>).pid === "number"
     && Number.isSafeInteger((value as Record<string, unknown>).pid)
     && Number((value as Record<string, unknown>).pid) > 0
+    && ((value as Record<string, unknown>).startToken === undefined
+      || typeof (value as Record<string, unknown>).startToken === "string")
     && typeof (value as Record<string, unknown>).token === "string"
     && typeof (value as Record<string, unknown>).createdAt === "string";
 }

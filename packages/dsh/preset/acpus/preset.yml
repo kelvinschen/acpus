@@ -1,0 +1,3 @@
+name: Acpus 模式
+description: 将任务交给支持 ACP 的第三方 Agent，由 Acpus 持久化编排、调度与恢复；DSH 仅负责规划、监督和与你沟通。
+order: 5

@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { createAgentActivityProjector } from "../src/inspection/agent-activity-projection.js";
+import {
+  createAgentActivityProjector,
+  createAgentToolActivityProjector,
+} from "../src/inspection/agent-activity-projection.js";
 import type {
   AgentObservationCurrent,
   AgentObservationInspectionProjection,
@@ -88,6 +91,54 @@ describe("Agent activity projection", () => {
       phase: "settled",
       updatedAt: "2026-08-03T00:00:03.000Z",
     });
+  });
+
+  it("projects only the latest active or recent tool metadata", () => {
+    const active = projection([turn(1)], [current(1, "tool", {
+      tools: {
+        active: [{
+          name: "browser.screenshot",
+          title: "Capture the current page",
+          status: "running",
+          input: { text: "/private/path", originalBytes: 13, truncated: false },
+          updatedAt: "2026-08-03T00:00:02.000Z",
+        }],
+        recent: {
+          name: "terminal.exec",
+          status: "completed",
+          output: { text: "private output", originalBytes: 14, truncated: false },
+          updatedAt: "2026-08-03T00:00:01.000Z",
+        },
+        omittedActive: 0,
+      },
+    })]);
+    const recent = projection([turn(1)], [current(1, "between", {
+      tools: {
+        active: [],
+        recent: {
+          name: "terminal.exec",
+          status: "failed",
+          output: { text: "private output", originalBytes: 14, truncated: false },
+          updatedAt: "2026-08-03T00:00:02.000Z",
+        },
+        omittedActive: 0,
+      },
+    })]);
+
+    expect(createAgentToolActivityProjector(active)("attempt-1")).toEqual({
+      tool: {
+        name: "browser.screenshot",
+        title: "Capture the current page",
+        state: "running",
+      },
+      turn: 1,
+    });
+    expect(createAgentToolActivityProjector(recent)("attempt-1")).toEqual({
+      tool: { name: "terminal.exec", state: "failed" },
+      turn: 1,
+    });
+    expect(JSON.stringify(createAgentToolActivityProjector(active)("attempt-1")))
+      .not.toMatch(/private|input|output|toolCallId/);
   });
 });
 

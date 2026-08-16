@@ -20,7 +20,7 @@ import {
   type DaemonStatus,
   type DaemonSubmitAndObserveInput,
 } from "./protocol.js";
-import { probeProcessLiveness } from "../process-liveness.js";
+import { probeProcessIdentity } from "../process-liveness.js";
 import { isRuntimeStoreBusyError, openSqliteDatabase } from "../storage/database.js";
 import { openExistingWritableRuntimeStore } from "../store/store.js";
 
@@ -352,10 +352,13 @@ async function hasStaleDaemonEvidence(cwd: string): Promise<boolean> {
   const store = await openExistingWritableRuntimeStore(cwd);
   if (!store) return true;
   try {
-    const daemon = store.getRuntimeDiagnostics().daemon;
-    if (!daemon) return true;
-    if (daemon.heartbeatAt && Date.now() - Date.parse(daemon.heartbeatAt) > 5_000) return true;
-    return daemon.pid !== undefined && probeProcessLiveness(daemon.pid) === "dead";
+    const authority = store.getRuntimeDiagnostics().authority;
+    if (!authority) return true;
+    if (authority.heartbeatAt && Date.now() - Date.parse(authority.heartbeatAt) > 5_000) return true;
+    return authority.pid !== undefined && probeProcessIdentity({
+      pid: authority.pid,
+      ...(authority.processStartToken === undefined ? {} : { startToken: authority.processStartToken }),
+    }) === "dead";
   } finally {
     store.close();
   }

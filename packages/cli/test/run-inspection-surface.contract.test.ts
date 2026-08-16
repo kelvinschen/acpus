@@ -111,7 +111,7 @@ describe("inspection text surface", () => {
   it("keeps a repaired turn but omits settled from a terminal Tree pulse", () => {
     const text = formatInspectionView({
       kind: "run",
-      run: { id: "run_1", name: "research", status: "completed" },
+      run: { id: "run_1", name: "research", status: "completed", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:01.000Z" },
       counts: { total: 1, completed: 1 },
       tree: [{
         type: "item",
@@ -236,7 +236,7 @@ describe("inspection text surface", () => {
   it("does not offer Await after the owning run is paused", () => {
     const views: InspectionView[] = [{
       kind: "run",
-      run: { id: "run_1", name: "design", status: "paused" },
+      run: { id: "run_1", name: "design", status: "paused", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:01.000Z" },
       counts: { total: 1, running: 1 },
       tree: [],
     }, {
@@ -445,7 +445,7 @@ describe("inspection text surface", () => {
   it("deduplicates Attention text without removing recovery navigation", () => {
     const run = formatInspectionView({
       kind: "run",
-      run: { id: "run_1", name: "review", status: "failed" },
+      run: { id: "run_1", name: "review", status: "failed", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:01.000Z" },
       counts: { total: 1, failed: 1 },
       tree: [{
         type: "item",
@@ -546,7 +546,7 @@ describe("inspection text surface", () => {
 function runView(): RunInspectionView {
   return {
     kind: "run",
-    run: { id: "run_1", name: "design", status: "running", durationMs: 96_000 },
+    run: { id: "run_1", name: "design", status: "running", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:01:36.000Z", durationMs: 96_000 },
     counts: { total: 3, notStarted: 1, running: 1, completed: 1 },
     tree: [{
       type: "item",
@@ -581,7 +581,7 @@ function agentActivityView(
 ): RunInspectionView {
   return {
     kind: "run",
-    run: { id: "run_1", name: "deep-research", status: "running" },
+    run: { id: "run_1", name: "deep-research", status: "running", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:01.000Z" },
     counts: { total: 1, running: 1 },
     tree: [{
       type: "item",
@@ -616,7 +616,7 @@ function prunedDesignForgeView(): RunInspectionView {
   });
   return {
     kind: "run",
-    run: { id: "run_1", name: "design-forge", status: "completed", durationMs: 2_361_000 },
+    run: { id: "run_1", name: "design-forge", status: "completed", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:39:21.000Z", durationMs: 2_361_000 },
     counts: { total: 18, completed: 18 },
     tree: [{
       type: "item",

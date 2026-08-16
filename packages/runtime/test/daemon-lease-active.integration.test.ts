@@ -278,12 +278,12 @@ describe.concurrent("daemon lease active execution", () => {
       try {
         await waitUntil(async () =>
           await readFile(markerPath, "utf8").catch(() => undefined) === "started");
-        let heartbeatAt = store.getRuntimeDiagnostics().daemon?.heartbeatAt;
+        let heartbeatAt = store.getRuntimeDiagnostics().authority?.heartbeatAt;
         expect(heartbeatAt).toBeDefined();
         for (let count = 0; count < 2; count += 1) {
           const previous = heartbeatAt;
           await waitUntil(() => {
-            const current = store.getRuntimeDiagnostics().daemon?.heartbeatAt;
+            const current = store.getRuntimeDiagnostics().authority?.heartbeatAt;
             if (current === undefined || current === previous) return false;
             heartbeatAt = current;
             return true;

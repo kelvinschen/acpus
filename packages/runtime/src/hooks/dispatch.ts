@@ -122,7 +122,7 @@ function dispatchCommittedHooks(input: HookDispatchInput): Result<HookDispatchPr
         const metadata = input.store.getExecutionMetadata(input.runId);
         const payload = objectValue(row.payload);
         const attemptId = typeof payload?.attemptId === "string" ? payload.attemptId : undefined;
-        const agentPrompts = loadAgentPrompts(input.cwd, input.store, input.runId, metadata, attemptId);
+        const agentPrompts = loadAgentPrompts(input.store, input.runId, metadata, attemptId);
         return buildHookContext({
           row,
           hookEvent,
@@ -278,7 +278,6 @@ function nodeResultFields(
 }
 
 function loadAgentPrompts(
-  cwd: string,
   store: RuntimeStore,
   runId: string,
   rows: ReturnType<RuntimeStore["getExecutionMetadata"]>,
@@ -293,7 +292,7 @@ function loadAgentPrompts(
     const turnArtifact = objectValue(firstTurn?.turnArtifact);
     const artifactId = typeof turnArtifact?.artifactId === "string" ? turnArtifact.artifactId : undefined;
     if (!artifactId) continue;
-    const read = readVerifiedArtifact({ cwd, runId, store }, artifactId);
+    const read = readVerifiedArtifact({ runId, store }, artifactId);
     if (!read) throw new Error(`Agent turn artifact '${artifactId}' is not registered for run '${runId}'.`);
     const artifact = objectValue(JSON.parse(read.bytes.toString("utf8")));
     if (!artifact || typeof artifact.prompt !== "string") {

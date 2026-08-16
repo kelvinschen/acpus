@@ -45,6 +45,7 @@ export async function withTaskExecutorWorkspace<T>(
           attemptNo: 1,
           ownerEpoch: 1,
           store: {
+            runsRoot: dirname(runDir),
             getRunDirectoryToken: () => ({
               runId,
               runsRoot: captureDirectoryIdentity(dirname(runDir), "Runtime runs root"),

@@ -26,4 +26,6 @@ export type {
   ManagedAcpAttemptInput,
   ManagedAcpExecutor,
   ManagedAcpExecutorOptions,
+  NamedAcpAgentLaunchRegistry,
+  NamedAcpAgentLaunchResolver,
 } from "./types.js";

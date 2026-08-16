@@ -448,7 +448,7 @@ function renderAgentPrompt(node: AgentNodeIR, scope: EvaluationScope, options: A
       formatTemplateValue: value => {
         if (!isArtifactRefCandidate(value)) return undefined;
         if (!options.store || !options.runId) throw new Error("Agent ArtifactRef interpolation requires runtime store and run id.");
-        const resolved = tryBindArtifactRef(value, { cwd: options.cwd, runId: options.runId, store: options.store });
+        const resolved = tryBindArtifactRef(value, { runId: options.runId, store: options.store });
         if (resolved.isErr()) throw resolved.error;
         return resolved.value.path;
       },

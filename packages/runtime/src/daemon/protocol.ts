@@ -5,19 +5,17 @@ import type { InspectionObservation } from "../inspection/types.js";
 import { RUNTIME_LAYOUT_VERSION } from "../runtime-layout.js";
 import { RUNTIME_STORAGE_VERSION } from "../storage/database.js";
 import type { RunDetails } from "../store/store.js";
+import {
+  RUNTIME_ABI_VERSION,
+  type RuntimeAuthorityIdentity,
+  type RuntimeControlIntent,
+  type RuntimeControlResult,
+} from "../runtime-contracts.js";
+
+export { RUNTIME_ABI_VERSION };
+export type { RuntimeAuthorityIdentity };
 
 export const DAEMON_PROTOCOL_VERSION = 4;
-export const RUNTIME_ABI_VERSION = 1;
-
-export type RuntimeAuthorityIdentity = {
-  workspaceKey: string;
-  runtimeAbi: typeof RUNTIME_ABI_VERSION;
-  layoutVersion: typeof RUNTIME_LAYOUT_VERSION;
-  storageVersion: typeof RUNTIME_STORAGE_VERSION;
-  authorityId: string;
-  storeBinding: `sha256:${string}`;
-  leaseGeneration: number;
-};
 
 export type DaemonStatus = {
   status: "ok";
@@ -76,37 +74,8 @@ export type DaemonRequest = {
   control: DaemonControlIntent;
 } | DaemonSubmitAndObserveRequest;
 
-export type DaemonControlResult =
-  | { type: "pause"; state: "applied"; run: RunDetails }
-  | { type: "resume"; state: "applied"; run: RunDetails }
-  | { type: "retry"; state: "applied"; run: RunDetails; target?: string }
-  | { type: "cancel"; state: "applied"; run: RunDetails; target?: string }
-  | {
-    type: "steer";
-    state: "applied";
-    run: RunDetails;
-    steerId: string;
-    requestedTarget: string;
-    target: string;
-    fencedAttemptId: string;
-    continuation: "queued";
-  }
-  | { type: "fork"; state: "applied"; sourceRunId: string; run: RunDetails }
-  | {
-    type: "signal";
-    state: "consumed";
-    requestedTarget: string;
-    target: string;
-    validation: { kind: "schema"; schemaSummary: string } | { kind: "raw-string" };
-    run: RunDetails;
-  };
-
-export type DaemonControlIntent =
-  | { requestId: string; type: "pause" | "resume"; runId: string }
-  | { requestId: string; type: "retry" | "cancel"; runId: string; target?: string }
-  | { requestId: string; type: "steer"; runId: string; target: string; instruction: string }
-  | { requestId: string; type: "fork"; runId: string; target?: string; prepared?: PreparedRunWorkflow; input?: JsonValue; agentOverrides?: AgentOverrideMap }
-  | { requestId: string; type: "signal"; runId: string; nodeId: string; payload: JsonValue };
+export type DaemonControlResult = RuntimeControlResult;
+export type DaemonControlIntent = RuntimeControlIntent;
 
 export type DaemonResponse =
   | { ok: true; result: DaemonStatus | DaemonShutdownResult | DaemonControlResult }
@@ -366,23 +335,23 @@ function isRunExecutionState(value: unknown): boolean {
     || !hasExactKeys(
       value,
       ["state", "lastStatus"],
-      ["reason", "daemonHeartbeatAt", "ownerId", "leaseExpiresAt"],
+      ["reason", "runtimeAuthorityHeartbeatAt", "ownerId", "leaseExpiresAt"],
     )
     || typeof value.state !== "string"
     || !["active", "inactive", "stale", "terminal", "unknown"].includes(value.state)
     || !isRunStatus(value.lastStatus)
     || (value.reason !== undefined && (typeof value.reason !== "string" || ![
         "terminal",
-        "daemon_heartbeat_expired",
-        "daemon_pid_dead",
+        "runtime_authority_heartbeat_expired",
+        "runtime_authority_pid_dead",
         "run_lease_expired",
         "run_lease_active",
-        "daemon_alive",
+        "runtime_authority_alive",
         "no_liveness_evidence",
       ].includes(value.reason)))) {
     return false;
   }
-  return [value.daemonHeartbeatAt, value.ownerId, value.leaseExpiresAt]
+  return [value.runtimeAuthorityHeartbeatAt, value.ownerId, value.leaseExpiresAt]
     .every(field => field === undefined || typeof field === "string");
 }
 
@@ -469,10 +438,11 @@ function isInspectionObservation(value: unknown): value is InspectionObservation
       && isObservableInspectionView(value.view);
   }
   if (value.kind === "update") {
-    return hasExactKeys(value, ["kind", "changes"], ["timeline"])
+    return hasExactKeys(value, ["kind", "changes"], ["timeline", "activity"])
       && Array.isArray(value.changes)
       && value.changes.every(isInspectionChange)
-      && (value.timeline === undefined || Array.isArray(value.timeline) && value.timeline.every(isTimelineEntry));
+      && (value.timeline === undefined || Array.isArray(value.timeline) && value.timeline.every(isTimelineEntry))
+      && (value.activity === undefined || value.activity === true);
   }
   return value.kind === "closed"
     && hasExactKeys(value, ["kind", "reason", "view"])
@@ -523,10 +493,12 @@ function isObservableInspectionView(value: unknown): boolean {
 
 function isInspectionRun(value: unknown): boolean {
   if (!isPlainRecord(value)
-    || !hasExactKeys(value, ["id", "name", "status"], ["durationMs", "liveness", "failure", "fork"])
+    || !hasExactKeys(value, ["id", "name", "status", "createdAt", "updatedAt"], ["durationMs", "liveness", "failure", "fork"])
     || typeof value.id !== "string"
     || typeof value.name !== "string"
     || !isRunStatus(value.status)
+    || typeof value.createdAt !== "string"
+    || typeof value.updatedAt !== "string"
     || (value.durationMs !== undefined && !isNonNegativeNumber(value.durationMs))
     || (value.liveness !== undefined && !isStringEnum(value.liveness, ["active", "inactive", "stale", "terminal", "unknown"]))
     || (value.failure !== undefined && !isInspectionFailure(value.failure))) return false;
@@ -587,10 +559,19 @@ function isInspectionProgress(value: unknown): boolean {
 
 function isInspectionPulse(value: unknown): boolean {
   return isPlainRecord(value)
-    && hasExactKeys(value, ["phase"], ["turn", "headline"])
+    && hasExactKeys(value, ["phase"], ["turn", "headline", "tool"])
     && isAgentInspectionPhase(value.phase)
     && (value.turn === undefined || isNonNegativeInteger(value.turn))
-    && (value.headline === undefined || typeof value.headline === "string");
+    && (value.headline === undefined || typeof value.headline === "string")
+    && (value.tool === undefined || isInspectionToolActivity(value.tool));
+}
+
+function isInspectionToolActivity(value: unknown): boolean {
+  return isPlainRecord(value)
+    && hasExactKeys(value, ["name", "state"], ["title"])
+    && typeof value.name === "string"
+    && (value.title === undefined || typeof value.title === "string")
+    && isStringEnum(value.state, ["running", "completed", "failed", "canceled"]);
 }
 
 function isInspectionAttention(value: unknown): boolean {
@@ -676,10 +657,11 @@ function isTimelineEntry(value: unknown): boolean {
 function isInspectionTreeEntry(value: unknown): boolean {
   if (!isPlainRecord(value) || typeof value.type !== "string") return false;
   if (value.type === "item") {
-    return hasExactKeys(value, ["type", "subject", "state", "children"], ["progress", "pulse", "attention"])
+    return hasExactKeys(value, ["type", "subject", "state", "children"], ["progress", "agent", "pulse", "attention"])
       && isInspectionSubject(value.subject)
       && isInspectionVisibleState(value.state)
       && (value.progress === undefined || isInspectionProgress(value.progress))
+      && (value.agent === undefined || isInspectionAgent(value.agent))
       && (value.pulse === undefined || isInspectionPulse(value.pulse))
       && (value.attention === undefined || isInspectionAttention(value.attention))
       && Array.isArray(value.children)
@@ -696,6 +678,26 @@ function isInspectionTreeEntry(value: unknown): boolean {
     && isInspectionVisibleState(value.state)
     && Array.isArray(value.children)
     && value.children.every(entry => isInspectionTreeEntry(entry));
+}
+
+function isInspectionAgent(value: unknown): boolean {
+  return isPlainRecord(value)
+    && hasExactKeys(value, ["name"], ["telemetry"])
+    && typeof value.name === "string"
+    && (value.telemetry === undefined || isInspectionAgentTelemetry(value.telemetry));
+}
+
+function isInspectionAgentTelemetry(value: unknown): boolean {
+  if (!isPlainRecord(value)
+    || !hasExactKeys(value, [], ["inputTokens", "outputTokens", "totalTokens", "contextWindow"])) return false;
+  if (value.inputTokens !== undefined && !isNonNegativeInteger(value.inputTokens)) return false;
+  if (value.outputTokens !== undefined && !isNonNegativeInteger(value.outputTokens)) return false;
+  if (value.totalTokens !== undefined && !isNonNegativeInteger(value.totalTokens)) return false;
+  return value.contextWindow === undefined
+    || isPlainRecord(value.contextWindow)
+      && hasExactKeys(value.contextWindow, ["used", "size"])
+      && isNonNegativeInteger(value.contextWindow.used)
+      && isNonNegativeInteger(value.contextWindow.size);
 }
 
 function isInspectionChange(value: unknown): boolean {

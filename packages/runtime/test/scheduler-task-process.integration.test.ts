@@ -214,7 +214,7 @@ describe.concurrent("runtime scheduler task process", () => {
         const resolved = tryBindArtifactRef({
           kind: "artifact",
           uri: `artifact://${fork.id}/${String(forkArtifact?.id)}`,
-        }, { cwd: workspace, runId: fork.id, store });
+        }, { runId: fork.id, store });
         expect(resolved.isOk()).toBe(true);
         if (resolved.isErr()) throw new Error(resolved.error.message);
         expect(isAbsolute(resolved.value.path)).toBe(true);

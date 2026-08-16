@@ -4,14 +4,14 @@ import { RUNTIME_STORAGE_VERSION } from "../storage/database.js";
 import {
   RUNTIME_ABI_VERSION,
   type RuntimeAuthorityIdentity,
-} from "./protocol.js";
+} from "../runtime-contracts.js";
 
 export function createRuntimeAuthorityIdentity(
   layout: RuntimeLayout,
   leaseGeneration: number,
 ): RuntimeAuthorityIdentity {
   if (layout.generationId === undefined) {
-    throw new Error("A daemon authority requires a published Runtime generation.");
+    throw new Error("Runtime authority requires a published Runtime generation.");
   }
   const binding = createHash("sha256")
     .update(JSON.stringify({

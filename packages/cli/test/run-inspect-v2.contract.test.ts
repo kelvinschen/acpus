@@ -142,7 +142,7 @@ async function runCommand(argv: string[]): Promise<{ exitCode: number; stdout: s
 function runView(): Extract<InspectionView, { kind: "run" }> {
   return {
     kind: "run",
-    run: { id: "run_1", name: "review", status: "running" },
+    run: { id: "run_1", name: "review", status: "running", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:01.000Z" },
     counts: { total: 1, running: 1 },
     tree: [],
   };

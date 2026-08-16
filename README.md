@@ -5,82 +5,96 @@
 <h1 align="center">acpus</h1>
 
 <p align="center">
-  <a href="https://www.npmjs.com/package/acpus"><img src="https://img.shields.io/npm/v/acpus" alt="npm version"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT license"></a>
-  <img src="https://img.shields.io/badge/node-22.18%2B%20%7C%2024%2B-5FA04E" alt="Node.js 22.18+ within 22.x, or Node.js 24+">
+  <a href="https://www.npmjs.com/package/acpus"><img src="https://img.shields.io/npm/v/acpus" alt="npm 版本"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT 许可证"></a>
+  <img src="https://img.shields.io/badge/node-22.18%2B%20%7C%2024%2B-5FA04E" alt="Node.js 22.18+（限 22.x）或 Node.js 24+">
 </p>
 
 <p align="center">
-  <a href="README.zh.md">中文</a>
+  <a href="README.en.md">English</a>
   &nbsp;·&nbsp;
-  <a href="https://kelvinschen.github.io/acpus/">Website</a>
+  <a href="https://kelvinschen.github.io/acpus/">官网</a>
   &nbsp;·&nbsp;
-  <a href="docs/migrate-to-next.md">Migration Guide</a>
+  <a href="docs/migrate-to-next.md">迁移指南</a>
 </p>
 
-<p align="center"><strong>Describe the task. Let one agent orchestrate many.</strong></p>
+<p align="center"><strong>让你的 Agent 以 Dynamic Workflow 编排 ACP Agent</strong></p>
 
-Give an orchestrator agent a task. It designs the workflow with TypeScript, directs any mix of ACP-compatible worker agents, and stays in control as the work unfolds. Acpus provides the durable runtime that checks and executes the graph while tracking its state, artifacts, and results.
+> [!TIP]
+> **使用 DeepSeek Harness？** 安装 [`@acpus/dsh`](packages/dsh/README.md)
+> 后，可以在 DSH 中选择 **Acpus 模式**。
+> [查看插件的安装和使用说明 →](packages/dsh/README.md)
 
-> **Your orchestrator agent owns the workflow.**
->
-> **ACP-compatible worker agents carry it out.**
->
-> **Acpus makes the run durable.**
+Acpus 可以调用任何已配置且支持 ACP 协议的 Agent, 包括但不限于: ***Claude Code*、*Codex*、*OpenCode*、*Pi*、*Kimi*、*Trae***。
 
-## How It Works
+使用 Acpus 时，你的 Agent 根据目标**动态地**生成的 TypeScript Workflow: 通过 `step.agent` 来程序化地调用其他 ACP Agent，通过组织 **串行、并发、条件分支、循环** 等控制结构来实现一个复杂的长程任务。
+
+Acpus 运行时负责调度并持久化每个运行的节点的状态、Artifact 和结果。 一个节点失败后，可以只重试该部分，不必重跑整个任务，已有的运行结果不会丢失。
+
+
+## 什么时候用 Acpus
+
+一个 Agent 能稳定完成的小任务，直接交给一个 Agent 更省事。Acpus 更适合工作量大、容易漏项，或需要独立复核的任务：
+
+- **大型迁移和重构。** 在多个模块中修改同一类代码，逐项运行测试并审查结果，避免漏掉调用点。
+- **调查疑难问题。** 为偶发故障、线上事故或数据异常提出几种可能原因，再用日志、代码和数据逐一验证。
+- **深入研究和事实核查。** 从网页、协作记录或代码库收集材料，核对关键结论，并整理成带来源的报告。
+- **批量处理待办。** 对大量工单、简历、候选方案或历史记录做分类、去重、排序，并复核最重要的结果。
+- **从多个角度评审。** 从用户、投资人、竞争对手、安全或实现风险等角度检查同一个方案，再汇总成一份结论。
+- **把反复纠正变成规则。** 从历史会话和代码审查意见中找出重复问题，整理成规则，再验证这些规则能否防止真实错误。
+
+这些任务通常会持续很多轮，容易漏项或偏离目标，也需要独立复核。Acpus 保存运行状态，方便中途检查，并在失败后继续。
+
+## 工作方式
 
 ```text
-Describe the task
-  → Orchestrator agent orchestrates workers with TypeScript
-  → Acpus checks and runs it while the orchestrator observes
-  → Orchestrator agent reports the outcome to you
+你描述目标
+  → Orchestrator Agent 生成 TypeScript Workflow
+  → Acpus 检查 Workflow，并按依赖和控制流运行节点
+  → Worker Agent 或 Task 执行节点
+  → Acpus 保存状态、Artifact 和结果
+  → Orchestrator Agent 检查运行状态，并处理需要判断的情况
+  → Orchestrator Agent 返回结果
 ```
 
-One orchestrator agent owns the work end to end: it decomposes the task, assigns roles, authors the TypeScript workflow, starts the run, watches its progress, and intervenes through Acpus until the work converges. Worker agents stay focused on the research, implementation, review, or synthesis assigned to their nodes; they do not own the overall plan or run.
+Orchestrator Agent 负责拆分任务、定义节点和依赖、启动 Run，并查看运行状态。
+需要人工判断时，它可以暂停 Run、重试节点、创建新 Run 或请求输入。
 
-Acpus is the durable execution and control boundary. It checks the authored graph, schedules nodes, records state, artifacts, and results, and exposes the controls the orchestrator uses to inspect, steer active Agent work, pause, resume, retry failed work, or fork the run.
+## 快速开始
 
-Simple work should still go directly to one agent. Reach for Acpus when a task needs multiple independent contexts, different agent strengths, local commands or artifacts, human input, or recovery without starting over.
+### 1. 安装 CLI 和 Skill
 
-## Why TypeScript Workflows
-
-- **Agent-authored, human-reviewable.** The orchestration is a real TypeScript module supplied directly or kept as a file.
-- **ACP-native.** Different roles in one workflow can use different ACP-compatible agents without binding the graph to one model product.
-- **Acpus-operated.** Before execution, Acpus checks the authored structure and lowers it to frozen, serializable `WorkflowIR`. During execution, it records durable workspace-local state.
-- **Disposable or reusable.** Run a self-contained one-off module through stdin; keep modular or reusable work at a TypeScript file path.
-
-## Quick Start
-
-### 1. Install the CLI and bundled Skill
+> [!TIP]
+> acpus cli 提供了 bundle skill， agent 会自己根据帮助命令来使用 acpus， 比如你可以和 Agent 说：
+> "使用 acpus cli 工具来启动一个 workflow，判断这个 release 是否可以发布"
 
 ```sh
 npm install -g acpus
-# use bundled skill install
-acpus skill install
-# or use skills cli
-npx skills add kelvinschen/acpus/packages/cli/skills/acpus
+acpus skill install # 可选
 ```
 
-`acpus skill install` can prompt for scope and Agent targets in an interactive terminal. For scripts, pass `--project` or `--global` together with `--agent universal`, `--agent claude`, or `--agent universal,claude`. Install creates the selected roots and writes the Skill to `.agents/skills/acpus` and/or `.claude/skills/acpus` under the project or operating-system home directory. 
-If you don't want to install the acpus skill, it's ok, agent can use `acpus skill read` to get its bundled usage guide without installing it, just add "use acpus" in your prompt.
 
-### 2. Start with the outcome
+### 2. 描述目标
 
 > [!TIP]
-> From a Skill-capable agent, invoke Acpus with the outcome you want:
 >
 > ```text
-> /acpus start a workflow to decide whether this release is ready to ship
+> /acpus 启动一个 Workflow，判断这个 release 是否可以发布
 > ```
->
-> That is enough. The orchestrator decides how to structure, run, and observe
-> the work. You can also choose which worker agents to orchestrate—for example,
-> ask Claude to review and Codex to synthesize the result.
 
-### 3. Review and run the generated TypeScript
+Orchestrator Agent 会选择 Workflow 结构和 Worker Agent。
+你也可以指定角色，例如让 Claude 审查，让 Codex 汇总结果。
 
-This self-contained example uses two ACP-compatible agents for independent reviews and a third role to synthesize them, so it runs directly through a quoted heredoc:
+## 为什么使用 TypeScript Workflow
+
+- **可以审查。** Workflow 是真实的 TypeScript 模块，可以直接查看和修改。
+- **可以混用 Agent。** 同一 Workflow 可以为不同角色配置不同的 ACP-compatible Agent，你可以让 Claude Code 来写代码，让 Codex 来 review。
+- **运行前会检查。** Acpus 会先检查类型和 Workflow 结构，再创建 Run。
+- **源码位置灵活。** 一次性 Workflow 可以从 stdin 传入；需要修改或复用时，可以保存为文件。
+
+## 一个完整示例
+
+下面的 Workflow 并行运行两次审查，再由第三个 Agent 汇总结果。
 
 ```sh
 acpus workflow run --input '{"topic":"release readiness"}' - <<'WORKFLOW'
@@ -139,48 +153,60 @@ export default defineWorkflow({
 WORKFLOW
 ```
 
-`workflow run` submits the durable run and returns a compact receipt. Add `--follow` when this shell should remain attached until terminal status.
+## 运行与控制
 
-### 4. Inspect—or save it for reuse
+> [!TIP]
+> 通常不需要你来执行这些命令。你的 Agent 会帮你检查和运行 Workflow，并查看和控制 Run。
+
+### 检查和运行 Workflow
+
+一次性 Workflow 适合使用带引号的 heredoc。
+如果源码包含本地 Task/helper 模块，或需要继续修改和复用，请保存为 `workflow.ts`。
+临时源码也可以放在项目目录之外。
 
 ```sh
-# Alternative to the heredoc above: save it for local Task/helper modules or planned edits/reuse.
+# 检查 Workflow，但不创建 Run
 acpus workflow check workflow.ts --input '{"topic":"release readiness"}'
+
+# 在终端查看静态工作流树
 acpus workflow viz workflow.ts
+
+# 生成自包含的 HTML 工作流图
 acpus workflow viz workflow.ts --out workflow.html
+
+# 创建 Run
 acpus workflow run workflow.ts --input '{"topic":"release readiness"}'
 
-# Inspect the run admitted by either source form.
+# 查看 Run
 acpus runs inspect <run-id>
 ```
 
-`workflow check` typechecks, compiles, and validates without admitting a run.
-`workflow viz` prints a compact static terminal tree by default; `--out` writes a self-contained HTML graph instead. `workflow run` submits a durable run and prints sparse inspect/follow guidance; `runs inspect` starts with a compact durable status view.
+`workflow check` 会执行类型检查、编译和验证，但不会创建 Run。
+`workflow viz` 默认在终端显示工作流树；`--out` 会生成 HTML 文件。
+`workflow run` 创建 Run，并输出简短的 inspect/follow 提示。
+`runs inspect` 显示 Run 的持久化状态。
 
-Narrow inspection only as far as the next decision requires:
+### 查看和控制 Run
+
+#### 查看状态
 
 ```sh
-# One target: low-token decision summary
-acpus runs inspect <run-id> --target <node-or-attempt>
-
-# Current activity plus recent semantic history
-acpus runs inspect <run-id> --target <node-or-attempt> --timeline
-
-# An exact Agent attempt uses its public occurrence reference
-acpus runs inspect <run-id> --target @<ref>#<attemptNo> --timeline
-
-# Frozen definition, actual invocation, and scheduler-accepted result
+acpus runs inspect <run-id>
+acpus runs inspect <run-id> --forensics
 acpus runs inspect <run-id> --target <node-or-attempt> --forensics
-```
-
-Use `--await-decision` to remain attached until an input, pause, or terminal boundary needs a decision; use `--follow` only to wait for terminal status.
-Inspection is a compact text interface. Forensics is a one-shot, complete-value view and defaults to `root` when `--target` is omitted. Timeline is bounded operational history; settled Agent turn artifacts can reference the run-local acpx session projection when deeper, low-frequency analysis is needed.
-
-### Ordinary Run Controls
-
-```sh
 acpus runs inspect <run-id> --await-decision
 acpus runs inspect <run-id> --follow
+```
+
+`--forensics` 显示冻结的定义、实际调用值和调度器接受的结果。
+省略 `--target` 时，它默认检查 `root`。
+
+`--await-decision` 会等待下一处需要判断的输入、暂停或终态。
+`--follow` 只等待 Run 进入终态。
+
+#### 运行控制
+
+```sh
 acpus runs pause <run-id>
 acpus runs resume <run-id>
 acpus runs retry <run-id> --target <node-or-@ref>
@@ -188,12 +214,55 @@ acpus runs signal <run-id> --target <signal-or-@ref> --payload '{"approved":true
 acpus runs fork <run-id> --workflow workflow.ts
 ```
 
-Steer is exceptional recovery: use it only when a started Agent needs new, in-scope information. It is not a way to hurry a quiet or long-running Agent; see [Runtime Recovery](packages/cli/skills/acpus/references/runtime-recovery.md#recovery-decision).
+`retry` 重试当前 Run 中失败的部分。
+`fork` 创建新 Run。
+新 Run 只会复用与新 Workflow 兼容、且依赖未变化的已完成工作。
 
+## Hook
 
-## Configuring Agents
+通过 Hook 在 Workflow 执行的特定生命周期执行本地命令，例如:
+* 运行启动时和完成后，执行特定的环境准备和清理工作
+* 运行等待 Signal 输入时，发送通知给你
+* 执行到特定类型节点前，记录执行信息到特定日志文件
 
-Acpus uses the pinned `acpx` dependency as the source of truth for named Agent launches. Before each named Agent attempt, it resolves the effective `agents` map from the global `~/.acpx/config.json` and project `.acpxrc.json` files using that attempt's working directory and environment:
+Hook 命令失败或超时不会改变 Workflow 的状态和输出。
+
+项目级 Hook 写在 `.acpus/hooks.json`，对所有项目生效的 Hook 写在 `~/.acpus/hooks.json`。下面的配置会在 Run 等待输入时执行项目中的通知脚本：
+
+```json
+{
+  "run.awaiting": [
+    {
+      "id": "notify-me",
+      "command": "./scripts/notify-acpus.sh",
+      "timeout": "10s"
+    }
+  ]
+}
+```
+
+命令会在 Workflow 的工作目录中运行，并从标准输入收到本次事件的 JSON, Hook 事件的传参包含 Agent Prompt、Task 输入和输出等。
+
+保存后检查配置：
+
+```sh
+acpus hooks validate
+acpus hooks list
+```
+
+Acpus 启动时读取 Hook 配置，修改后的配置会在下次启动时生效。完整的事件列表、筛选方式和输入格式见 [Runtime Hooks 配置](packages/cli/skills/acpus/references/hooks-json.md)。
+
+你也可以让你的 Agent 来配置 Hook。
+
+## 配置 Agent
+
+Acpus 使用锁定版本的 `acpx` 来解析具名 Agent。
+每次启动具名 Agent Attempt 之前，Acpus 会读取两处配置：
+
+- 全局配置：`~/.acpx/config.json`
+- 项目配置：`.acpxrc.json`
+
+Acpus 使用当前 Attempt 的工作目录和环境来解析最终的 `agents` 映射。
 
 ```json
 {
@@ -203,47 +272,80 @@ Acpus uses the pinned `acpx` dependency as the source of truth for named Agent l
 }
 ```
 
-Then reference that name in the workflow with `{ use: "my-agent" }`. Project entries override global entries, configured names can override built-ins, and an explicit `{ command: "..." }` bypasses Acpx configuration entirely. See the pinned Acpx guides for [the `agents` map](https://github.com/openclaw/acpx/blob/v0.13.0/docs/config.md#the-agents-map) and [config-defined agents](https://github.com/openclaw/acpx/blob/v0.13.0/docs/custom-agents.md#3-config-defined-agents).
+在 Workflow 中使用 `{ use: "my-agent" }` 引用该名称。
+项目配置覆盖全局配置。
+已配置的名称可以覆盖内置 Agent。
+显式使用 `{ command: "..." }` 会绕过 Acpx 配置。
 
-Only named Agent launches are reused. Acpus does not apply Acpx `mcpServers`, `auth`, permission defaults, `defaultAgent`, TTL, timeout, or format; Agent login state, provider environment variables, and `ACPX_AUTH_*` variables continue to work through the inherited Agent environment. Acpx validates the complete config before returning its resolved view, so an invalid value in any Acpx config field can still prevent a named attempt from starting.
+更多配置方式见锁定版本 Acpx 的
+[`agents` map](https://github.com/openclaw/acpx/blob/v0.13.0/docs/config.md#the-agents-map)
+和 [config-defined agents](https://github.com/openclaw/acpx/blob/v0.13.0/docs/custom-agents.md#3-config-defined-agents)。
 
-## Core Concepts
+Acpus 只从 Acpx 读取具名 Agent 的启动方式。
+它不会应用 Acpx 的 `mcpServers`、`auth`、权限默认值、`defaultAgent`、TTL、timeout 或 format。
 
-### Execution Building Blocks
+Agent 登录态、服务商环境变量和 `ACPX_AUTH_*` 变量会从 Agent 环境继承。
+Acpx 会先验证完整配置。
+任一字段非法时，具名 Agent Attempt 可能无法启动。
 
-| Element | What it is for |
+## Skill 安装的补充说明
+
+你也可以使用 skills CLI 安装内置 Skill：
+
+```sh
+npx skills add kelvinschen/acpus/packages/cli/skills/acpus
+```
+
+`acpus skill install` 可以在交互式终端中询问安装范围和 Agent 目标。
+脚本调用必须提供 `--project` 或 `--global`。
+同时还要提供 `--agent universal`、`--agent claude` 或 `--agent universal,claude`。
+
+安装命令会创建所需目录。
+它会把 Skill 写入项目目录或操作系统 home 下的 `.agents/skills/acpus` 和/或 `.claude/skills/acpus`。
+
+不安装 Skill 也可以使用 Acpus。
+Agent 可以运行 `acpus skill read` 来读取内置指南。
+在 Prompt 中写明“使用 acpus”即可。
+
+## 核心概念
+
+### 执行单元
+
+| 元素 | 用途 |
 | --- | --- |
-| **Agent** | Open-ended judgment, research, implementation, review, and synthesis through an ACP-compatible agent. |
-| **Task** | Trusted local work such as files, commands, validation, and artifact production, executed in a fresh Node.js process per attempt. |
-| **Signal** | Durable external input that leaves its execution path awaiting until a person or external controller supplies a typed payload. |
-| **Control flow** | `if`, `switch`, `parallel`, `fanout`, and `loop` compose nodes into an inspectable graph; `assert` enforces a condition. |
+| **Agent** | 让 ACP-compatible Agent 执行研究、实现、审查或汇总。 |
+| **Task** |  使用 JS 代码执行文件操作、命令和验证、生成 Artifact。 |
+| **Signal** | 等待用户或外部控制者提交类型化 Payload。等待状态会持久保存。 |
+| **控制流** | `if`、`switch`、`parallel`、`fanout` 和 `loop` 组合节点；`assert` 检查条件。 |
 
-### Durable Model
+### 持久化对象
 
-| Concept | Meaning |
+Acpus 将 Run 状态保存在当前 Workspace。
+
+| 概念 | 含义 |
 | --- | --- |
-| Workflow module | Authored TypeScript supplied through stdin or a file path: definitions, agent roles, nodes, value flow, and outputs. |
-| `WorkflowIR` | The frozen, serializable graph produced after authoring checks and lowering. |
-| Run | One admitted execution with frozen workflow data, input, and agent mapping. |
-| Node | A stable authored unit with runtime attempts and, for dynamic control flow, addressable instances. |
-| Artifact | A durable file registered by a Task or Agent attempt and associated with the run. |
+| Workflow module | 从 stdin 或文件路径提供的 TypeScript 模块。它声明 Agent、节点、值流和输出。 |
+| `WorkflowIR` | Acpus 检查并编译 TypeScript 后生成的冻结、可序列化工作流图。 |
+| Run | 一次已创建的执行。它包含冻结的 Workflow 数据、输入和 Agent 映射。 |
+| Node | Workflow 中稳定的执行单元。每个 Node 在运行时有 Attempt；动态控制流还会生成可寻址实例。 |
+| Artifact | Task 或 Agent Attempt 注册的持久化文件。Artifact 与 Run 关联。 |
 
-## Run It Once—or Keep It
+## 从旧版本迁移
 
-Use a quoted heredoc for a new, self-contained one-off workflow. Otherwise preserve its existing path or create `workflow.ts` by convention; temporary file-backed sources can stay outside the project.
+Acpus 0.5 使用 YAML Workflow Spec，并采用不同的节点模型和 CLI。
+当前版本使用 TypeScript 模块、`Expr` 值流、Agent、Task、Signal、新的控制面和新的持久化 Runtime。
+当前版本不提供兼容层（compatibility shim）。
 
-## Migrate from Acpus 0.5
+[迁移指南](docs/migrate-to-next.md) 说明概念对应关系和重写步骤。
+旧版文档见
+[Acpus 0.5.2 中文 README](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/README.zh.md)。
 
-Acpus 0.5 authored YAML Workflow Specs around a different node model and CLI. Acpus now uses TypeScript modules, `Expr` value flow, Agent / Task / Signal, a new control surface, and a new durable runtime. It intentionally does not add compatibility shims.
+## 文档
 
-Read the [migration guide](docs/migrate-to-next.md) for the mental-model mapping and a practical rewrite path. For the previous product documentation, see the [Acpus 0.5.2 README](https://github.com/kelvinschen/acpus/blob/acpus%400.5.2/README.md).
-
-## Documentation
-
-- [Bundled Acpus Skill](packages/cli/skills/acpus/SKILL.md)
-- [Migration Guide](docs/migrate-to-next.md)
-- [Release Guide](docs/releasing.md)
-- [Specs Index](specs/INDEX.md)
+- [内置 Acpus Skill](packages/cli/skills/acpus/SKILL.md)
+- [迁移指南](docs/migrate-to-next.md)
+- [发布指南](docs/releasing.md)
+- [Specs 索引](specs/INDEX.md)
 - [Core Spec](specs/core-spec.md)
 - [Expression Spec](specs/expression-spec.md)
 - [Workflow Compiler Spec](specs/workflow-compiler-spec.md)
@@ -251,10 +353,11 @@ Read the [migration guide](docs/migrate-to-next.md) for the mental-model mapping
 - [CLI Spec](specs/cli-spec.md)
 - [WebUI Spec](specs/webui-spec.md)
 
-Current behavior lives in `specs/`. Future work lives in `docs/roadmap/`;
-previous releases remain available in tagged repository history.
+当前行为以 `specs/` 为准。
+未来工作放在 `docs/roadmap/`。
+旧版本保留在 Git Tag 历史中。
 
-## Development
+## 开发
 
 ```sh
 pnpm install
@@ -263,6 +366,6 @@ pnpm typecheck
 pnpm test
 ```
 
-## License
+## 许可证
 
 MIT

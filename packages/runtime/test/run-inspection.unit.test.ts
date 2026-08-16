@@ -78,6 +78,18 @@ describe("run inspection projection", () => {
     expect(JSON.stringify(fold)).not.toContain("selector");
   });
 
+  it("keeps every materialized Fanout occurrence instead of repeat-folding", () => {
+    const view = projectInspectionRunView({
+      ir: compositeWorkflow(),
+      run: repeatedAgentRun(3),
+      structure: "materialized",
+    });
+
+    expect(inspectionFolds(view.tree)).toEqual([]);
+    expect(inspectionItems(view.tree).filter(entry => entry.subject.kind === "fanout_item"))
+      .toHaveLength(3);
+  });
+
   it("projects an Agent tree pulse only from the matching retained Observation", () => {
     const run = repeatedAgentRun(1);
     run.dynamic!.nodeInstances[0]!.status = "running";
@@ -110,8 +122,46 @@ describe("run inspection projection", () => {
     expect(agentEntries(tooling.tree)[0]?.pulse).toEqual({
       phase: "tool",
       turn: 1,
-      headline: "Bash running",
+      tool: { name: "Bash", state: "running" },
     });
+  });
+
+  it("projects only the safe authored Agent name into the run tree", () => {
+    const named = projectInspectionRunView({ ir: compositeWorkflow(), run: repeatedAgentRun(1) });
+    const commandIr = compositeWorkflow();
+    commandIr.agents.reviewer = {
+      kind: "agent_command",
+      command: "private-acp-server --token secret",
+      model: "private-model",
+    };
+    const custom = projectInspectionRunView({ ir: commandIr, run: repeatedAgentRun(1) });
+
+    expect(agentEntries(named.tree)[0]?.agent).toEqual({
+      name: "claude",
+      telemetry: {
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 120,
+        contextWindow: { used: 2_000, size: 20_000 },
+      },
+    });
+    expect(agentEntries(custom.tree)[0]?.agent).toMatchObject({ name: "custom" });
+    expect(JSON.stringify(custom.tree)).not.toMatch(/private-acp-server|private-model|secret/);
+  });
+
+  it("identifies an unstarted Agent from the frozen workflow", () => {
+    const ir = singleAgentWorkflow();
+    const run = repeatedAgentRun(0);
+    run.name = ir.name;
+
+    const [agent] = agentEntries(projectInspectionRunView({ ir, run }).tree);
+
+    expect(agent).toMatchObject({
+      subject: { label: "review", kind: "agent" },
+      state: { status: "not_started" },
+      agent: { name: "claude" },
+    });
+    expect(agent?.agent).not.toHaveProperty("telemetry");
   });
 
   it("does not synthesize an Agent pulse from progress or execution metadata without Observations", () => {
@@ -206,7 +256,7 @@ describe("run inspection projection", () => {
     const run = repeatedAgentRun(0);
     run.name = ir.name;
     run.status = "awaiting";
-    run.execution = { state: "inactive", lastStatus: "awaiting", reason: "daemon_alive" };
+    run.execution = { state: "inactive", lastStatus: "awaiting", reason: "runtime_authority_alive" };
     run.dynamic = {
       version: 2,
       progressVersion: 0,
@@ -713,6 +763,21 @@ describe("run inspection projection", () => {
     expect(entries.filter(entry => entry.subject.label === "fallback")).toHaveLength(1);
     expect(JSON.stringify(view.tree)).not.toContain("not_selected");
     expect(entries.some(entry => entry.subject.kind === "branch")).toBe(false);
+
+    const expanded = inspectionItems(projectInspectionRunView({
+      ir,
+      run,
+      structure: "materialized",
+    }).tree);
+    expect(expanded.map(entry => `${entry.subject.kind}:${entry.subject.label}`)).toEqual([
+      "fanout:batch",
+      "fanout_item:item[0]",
+      "if:route",
+      "fanout_item:item[1]",
+      "if:route",
+      "branch:else",
+      "task:fallback",
+    ]);
   });
 
   it("keeps failed Switch cases unmaterialized and orders only persisted Loop rounds", () => {
@@ -947,6 +1012,23 @@ function compositeWorkflow(): WorkflowIR {
   };
 }
 
+function singleAgentWorkflow(): WorkflowIR {
+  return {
+    irVersion: 7,
+    name: "inspection-agent",
+    agents: { reviewer: { kind: "agent_definition", use: "claude", model: "sonnet" } },
+    root: {
+      output: { kind: "object", fields: {} },
+      nodes: [{
+        id: "review",
+        kind: "agent",
+        run: { agent: "reviewer", prompt: { kind: "literal", value: "Review this" } },
+      }],
+    },
+    diagnostics: [],
+  };
+}
+
 function signalWorkflow(outputSchema: SchemaIR): WorkflowIR {
   return {
     irVersion: 7,
@@ -1021,7 +1103,13 @@ function repeatedAgentRun(count: number): RunDetails {
         kind: "agent",
         status: "running",
         context: { used: 2_000, size: 20_000 },
-        tokenUsage: { inputTokens: 100, outputTokens: 20, totalTokens: 120 },
+        tokenUsage: {
+          inputTokens: 100,
+          outputTokens: 20,
+          cachedReadTokens: 30,
+          thoughtTokens: 5,
+          totalTokens: 120,
+        },
         tools: {
           turn: 4,
           totalToolCallCount: 1,

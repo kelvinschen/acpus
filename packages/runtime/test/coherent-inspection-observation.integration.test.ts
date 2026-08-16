@@ -194,10 +194,26 @@ describe("coherent inspection observation boundaries", () => {
           view: { detail: "timeline", current: { kind: "agent", phase: "starting" } },
         });
         const next = iterator.next();
+        const activityController = new AbortController();
+        const activityIterator = observeInspection(workspace, {
+          view: { kind: "run", runId: started.runId },
+          until: "subject-terminal",
+          updates: "activity",
+          signal: activityController.signal,
+        })[Symbol.asyncIterator]();
+        expect(observation(await activityIterator.next())).toMatchObject({ kind: "attached" });
+        const activityNext = activityIterator.next();
         await vi.advanceTimersByTimeAsync(0);
 
         observe(0, { type: "message", channel: "thought", content: "Inspect the evidence." });
         await vi.advanceTimersByTimeAsync(1_000);
+        expect(observation(await activityNext)).toEqual({
+          kind: "update",
+          changes: [],
+          activity: true,
+        });
+        activityController.abort();
+        await expect(activityIterator.next()).resolves.toMatchObject({ done: true });
         let emitted = false;
         void next.then(() => { emitted = true; });
         await Promise.resolve();
@@ -215,6 +231,7 @@ describe("coherent inspection observation boundaries", () => {
           action: "update",
           toolCallId: "tool-1",
           toolName: "Bash",
+          title: "Run focused checks",
           status: "completed",
           rawOutput: "passed",
         });
@@ -232,7 +249,11 @@ describe("coherent inspection observation boundaries", () => {
 
         const runRead = await readInspection(workspace, { kind: "run", runId: started.runId });
         const runView = runRead.isOk() && runRead.value.kind === "run" ? runRead.value : undefined;
-        expect(inspectionTreeItem(runView?.tree ?? [], treeSelector)).not.toHaveProperty("pulse");
+        expect(inspectionTreeItem(runView?.tree ?? [], treeSelector)?.pulse).toEqual({
+          phase: "tool",
+          turn: 1,
+          tool: { name: "Bash", title: "Run focused checks", state: "completed" },
+        });
 
         const summaryRead = await readInspection(workspace, {
           kind: "target", runId: started.runId, target: selector, detail: "summary",

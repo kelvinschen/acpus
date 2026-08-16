@@ -2,7 +2,12 @@ packages:
   - "packages/*"
 
 allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': false
   esbuild: true
+  koffi: true
+  node-pty: true
+  protobufjs: false
 blockExoticSubdeps: true
 minimumReleaseAge: 0
 strictDepBuilds: true

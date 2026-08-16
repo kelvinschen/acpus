@@ -86,6 +86,59 @@ describe("Agent observation turn semantics", () => {
     ]);
   });
 
+  it("keeps ACP tool titles separate from stable tool names", () => {
+    const reducer = createReducer();
+    reducer.initialCurrent(startedAt);
+
+    const placeholder = reducer.observe(observation(0, {
+      type: "tool",
+      action: "call",
+      toolCallId: "web-search",
+      title: "tool call",
+      status: "running",
+    }), false);
+    const refined = reducer.observe(observation(1, {
+      type: "tool",
+      action: "update",
+      toolCallId: "web-search",
+      title: '"ByteDance Doubao AI 100 million users 2024 2025 growth"',
+      kind: "fetch",
+      status: "running",
+      rawInput: { query: "ByteDance Doubao AI 100 million users 2024 2025 growth" },
+    }), false);
+    const summarized = reducer.observe(observation(2, {
+      type: "tool",
+      action: "call",
+      toolCallId: "search-summary",
+      title: "Search something useful",
+      kind: "search",
+      status: "running",
+    }), false);
+    const retained = reducer.observe(observation(3, {
+      type: "tool",
+      action: "update",
+      toolCallId: "search-summary",
+      status: "completed",
+    }), false);
+
+    expect(placeholder.current?.tools?.active[0]).toMatchObject({ name: "Tool" });
+    expect(placeholder.current?.tools?.active[0]).not.toHaveProperty("title");
+    expect(refined.current?.tools?.active[0]).toMatchObject({
+      name: "Fetch",
+      title: '"ByteDance Doubao AI 100 million users 2024 2025 growth"',
+    });
+    expect(summarized.current?.tools?.active.at(-1)).toMatchObject({
+      name: "Search",
+      title: "Search something useful",
+    });
+    const retainedEntry = retained.entries[0];
+    expect(retainedEntry?.kind === "activity" ? retainedEntry.tool : undefined).toMatchObject({
+      name: "Search",
+      title: "Search something useful",
+      status: "completed",
+    });
+  });
+
   it("closes thought and plan segments when the semantic channel changes", () => {
     const reducer = createReducer();
     reducer.initialCurrent(startedAt);

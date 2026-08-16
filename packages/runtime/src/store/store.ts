@@ -23,7 +23,7 @@ import {
 import { requirePersistedDeadline } from "../deadline.js";
 import { AgentObservationLog } from "../observations/log.js";
 import type { HookJournalEntry } from "../hooks/journal.js";
-import { probeProcessLiveness } from "../process-liveness.js";
+import { probeProcessIdentity } from "../process-liveness.js";
 import { stableJsonLine } from "../stable-json.js";
 import { selectNextAdmission } from "../scheduler/admission.js";
 import { resolveOccurrenceRef } from "../scheduler/occurrence-ref.js";
@@ -111,7 +111,6 @@ export type AdmitRunFailure = PreparedRunValidationFailure
 export type RuntimeReadFailure =
   | {
       type: "runtime-store-repair-required";
-      command: "acpus doctor --fix";
       message: string;
     }
   | { type: "runtime-store-unsupported"; message: string }
@@ -204,16 +203,18 @@ export type RunStoreSummary = {
 };
 
 export type RuntimeStore = {
+  readonly runsRoot: string;
   scheduler: SchedulerStorePort;
   observationLog: AgentObservationLog;
   close(): void;
   admitRun(input: AdmitRunInput): ResultAsync<RunRecord, AdmitRunFailure>;
+  lookupAdmission(requestId: string): RunRecord | undefined;
   getFrozenRun(runId: string): FrozenRun | undefined;
-  claimDaemon(input: ClaimDaemonInput): DaemonLease;
-  heartbeatDaemon(input: HeartbeatDaemonInput): boolean;
-  setDaemonIdleState(input: DaemonIdleStateInput): boolean;
-  releaseDaemon(input: HeartbeatDaemonInput): boolean;
-  listDaemonWork(now?: Date): DaemonWork;
+  claimRuntimeAuthority(input: ClaimRuntimeAuthorityInput): Result<RuntimeAuthorityLease, RuntimeAuthorityBusy>;
+  heartbeatRuntimeAuthority(input: RuntimeAuthorityFence): boolean;
+  setRuntimeAuthorityIdleState(input: RuntimeAuthorityIdleStateInput): boolean;
+  releaseRuntimeAuthority(input: RuntimeAuthorityFence): boolean;
+  listRuntimeWork(now?: Date): RuntimeWork;
   forkRun(runId: string, options?: ControlOptions): ResultAsync<ForkRunRecord, ForkRunFailure>;
   cleanupStagedRunDirectories(): Promise<void>;
   deleteRun(runId: string): ResultAsync<RunRecord | undefined, RunDeleteFailure>;
@@ -233,7 +234,7 @@ export type RuntimeStore = {
   getRunDirectoryToken(runId: string): RunDirectoryToken | undefined;
   registerArtifact(input: RegisterArtifactInput): SchedulerStoreResult<void>;
   getArtifact(runId: string, artifactId: string): ArtifactRecord | undefined;
-  listArtifacts(runId: string): ArtifactRecord[];
+  listArtifacts(runId: string, limit?: number): ArtifactRecord[];
   writeExecutionMetadata(input: WriteExecutionMetadataInput): void;
   getExecutionMetadata(runId: string): RunExecutionMetadata[];
   writeNodeProgress(input: WriteNodeProgressInput): void;
@@ -272,7 +273,7 @@ type HookDispatchEventRead = {
   events: CommittedRuntimeEventRow[];
 };
 
-type DaemonWork = {
+export type RuntimeWork = {
   startableRuns: RunRecord[];
   hookDispatchRunIds: string[];
   idleBlockers: number;
@@ -322,14 +323,14 @@ export type RunForkInfo = {
 type RunExecutionState = {
   state: "active" | "inactive" | "stale" | "terminal" | "unknown";
   lastStatus: RunStatus;
-  reason?: "terminal" | "daemon_heartbeat_expired" | "daemon_pid_dead" | "run_lease_expired" | "run_lease_active" | "daemon_alive" | "no_liveness_evidence";
-  daemonHeartbeatAt?: string;
+  reason?: "terminal" | "runtime_authority_heartbeat_expired" | "runtime_authority_pid_dead" | "run_lease_expired" | "run_lease_active" | "runtime_authority_alive" | "no_liveness_evidence";
+  runtimeAuthorityHeartbeatAt?: string;
   ownerId?: string;
   leaseExpiresAt?: string;
 };
 
 export type RuntimeDiagnostics = {
-  daemon?: DaemonDiagnostics;
+  authority?: RuntimeAuthorityDiagnostics;
   runs: {
     total: number;
     pending: number;
@@ -346,17 +347,20 @@ export type RuntimeDiagnostics = {
   };
 };
 
-export type DaemonDiagnostics = {
+export type RuntimeAuthorityDiagnostics = {
   workspaceRealpath: string;
-  generation: number;
+  epoch: number;
+  ownerId: string;
   pid?: number;
+  processStartToken?: string;
   heartbeatAt?: string;
+  releasedAt?: string;
   idleSinceAt?: string;
   idleStopMs?: number;
-  protocolVersion: number;
-  packageVersion: string;
-  nodeVersion: string;
-  execPath: string;
+  protocolVersion?: number;
+  packageVersion?: string;
+  nodeVersion?: string;
+  execPath?: string;
   updatedAt: string;
 };
 
@@ -368,31 +372,41 @@ export type FrozenRun = {
   meta: Record<string, string>;
 };
 
-type ClaimDaemonInput = {
+export type ClaimRuntimeAuthorityInput = {
   workspaceRealpath: string;
+  ownerId: string;
   pid: number;
-  protocolVersion: number;
-  packageVersion: string;
-  nodeVersion: string;
-  execPath: string;
-  idleStopMs: number;
+  processStartToken?: string;
+  protocolVersion?: number;
+  packageVersion?: string;
+  nodeVersion?: string;
+  execPath?: string;
+  idleStopMs?: number;
 };
 
-type HeartbeatDaemonInput = {
+export type RuntimeAuthorityFence = {
   workspaceRealpath: string;
-  generation: number;
+  ownerId: string;
+  epoch: number;
 };
 
-type DaemonIdleStateInput = HeartbeatDaemonInput & {
+type RuntimeAuthorityIdleStateInput = RuntimeAuthorityFence & {
   idleSinceAt?: string;
   idleStopMs: number;
 };
 
-type DaemonLease = {
+export type RuntimeAuthorityLease = {
   workspaceRealpath: string;
-  generation: number;
+  ownerId: string;
+  epoch: number;
   pid: number;
   heartbeatAt: string;
+};
+
+export type RuntimeAuthorityBusy = {
+  type: "runtime-authority-busy";
+  pid?: number;
+  message: string;
 };
 
 type ControlOptions = {
@@ -676,7 +690,6 @@ async function readRuntimeReadManifest(
 function runtimeStoreRepairRequired(message: string): Extract<RuntimeReadFailure, { type: "runtime-store-repair-required" }> {
   return {
     type: "runtime-store-repair-required",
-    command: "acpus doctor --fix",
     message,
   };
 }
@@ -948,6 +961,7 @@ async function reconcileTrash(store: SqliteRuntimeStore, db: DatabaseSync): Prom
 class SqliteRuntimeStore implements RuntimeStore {
   private schedulerPort?: SqliteSchedulerStorePort;
   private observationLogInstance?: AgentObservationLog;
+  private inspectionSnapshotTail: Promise<void> = Promise.resolve();
   private readonly inspectionReadModel: SqliteRuntimeInspectionReadModel;
   private readonly cwd: string;
   private readonly generation: OpenedRuntimeGeneration;
@@ -966,20 +980,34 @@ class SqliteRuntimeStore implements RuntimeStore {
     return this.schedulerStore();
   }
 
+  get runsRoot(): string {
+    return this.layout.runsRoot;
+  }
+
   get observationLog(): AgentObservationLog {
     this.observationLogInstance ??= new AgentObservationLog(this.db);
     return this.observationLogInstance;
   }
 
   async withInspectionSnapshot<T>(read: () => Promise<T>): Promise<T> {
-    this.db.exec("BEGIN");
+    const previous = this.inspectionSnapshotTail;
+    let release!: () => void;
+    this.inspectionSnapshotTail = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    await previous;
     try {
-      const result = await read();
-      this.db.exec("COMMIT");
-      return result;
-    } catch (error) {
-      this.db.exec("ROLLBACK");
-      throw error;
+      this.db.exec("BEGIN");
+      try {
+        const result = await read();
+        this.db.exec("COMMIT");
+        return result;
+      } catch (error) {
+        this.db.exec("ROLLBACK");
+        throw error;
+      }
+    } finally {
+      release();
     }
   }
 
@@ -1130,6 +1158,17 @@ class SqliteRuntimeStore implements RuntimeStore {
     return this.readFrozenRun(runId, true);
   }
 
+  lookupAdmission(requestId: string): RunRecord | undefined {
+    const row = this.db.prepare(`
+      SELECT run_id
+      FROM run_events
+      WHERE idempotency_key = ?
+        AND type = 'run.admitted'
+      LIMIT 1
+    `).get(`admission-request:${requestId}`) as { run_id: string } | undefined;
+    return row ? this.getRunRecord(row.run_id) : undefined;
+  }
+
   private readFrozenRun(runId: string, resolveSource: boolean): FrozenRun | undefined {
     const frozen = this.loadFrozenRun(runId, resolveSource);
     if (!frozen && this.getRunRecord(runId)) throw new Error(`Run '${runId}' has no frozen input.`);
@@ -1156,75 +1195,125 @@ class SqliteRuntimeStore implements RuntimeStore {
     );
   }
 
-  claimDaemon(input: ClaimDaemonInput): DaemonLease {
+  claimRuntimeAuthority(
+    input: ClaimRuntimeAuthorityInput,
+  ): Result<RuntimeAuthorityLease, RuntimeAuthorityBusy> {
     const now = new Date().toISOString();
-    const existing = this.db.prepare(`
-      SELECT generation
-      FROM daemon_lease
-      WHERE workspace_realpath = ?
-    `).get(input.workspaceRealpath) as { generation: number } | undefined;
-    const generation = (existing?.generation ?? 0) + 1;
-    this.db.prepare(`
-      INSERT INTO daemon_lease (
-        workspace_realpath, generation, pid, heartbeat_at,
-        idle_since_at, idle_stop_ms, protocol_version, package_version, node_version, exec_path, updated_at
-      )
-      VALUES (?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(workspace_realpath) DO UPDATE SET
-        generation = excluded.generation,
-        pid = excluded.pid,
-        heartbeat_at = excluded.heartbeat_at,
-        idle_since_at = excluded.idle_since_at,
-        idle_stop_ms = excluded.idle_stop_ms,
-        protocol_version = excluded.protocol_version,
-        package_version = excluded.package_version,
-        node_version = excluded.node_version,
-        exec_path = excluded.exec_path,
-        updated_at = excluded.updated_at
-    `).run(
-      input.workspaceRealpath,
-      generation,
-      input.pid,
-      now,
-      input.idleStopMs,
-      input.protocolVersion,
-      input.packageVersion,
-      input.nodeVersion,
-      input.execPath,
-      now,
-    );
-    return { workspaceRealpath: input.workspaceRealpath, generation, pid: input.pid, heartbeatAt: now };
+    let transactionStarted = false;
+    try {
+      this.db.exec("BEGIN IMMEDIATE");
+      transactionStarted = true;
+      const existing = this.db.prepare(`
+        SELECT epoch, pid, process_start_token, released_at
+        FROM runtime_authority
+        WHERE workspace_realpath = ?
+      `).get(input.workspaceRealpath) as {
+        epoch: number;
+        pid: number | null;
+        process_start_token: string | null;
+        released_at: string | null;
+      } | undefined;
+      if (existing?.released_at === null
+        && (existing.pid === null || probeProcessIdentity({
+          pid: existing.pid,
+          ...(existing.process_start_token === null ? {} : { startToken: existing.process_start_token }),
+        }) !== "dead")) {
+        this.db.exec("ROLLBACK");
+        transactionStarted = false;
+        return err({
+          type: "runtime-authority-busy",
+          ...(existing.pid === null ? {} : { pid: existing.pid }),
+          message: "Workspace Runtime is already owned by a live process.",
+        });
+      }
+      const epoch = (existing?.epoch ?? 0) + 1;
+      this.db.prepare(`
+        INSERT INTO runtime_authority (
+          workspace_realpath, epoch, owner_id, pid, process_start_token, heartbeat_at,
+          released_at, idle_since_at, idle_stop_ms, protocol_version,
+          package_version, node_version, exec_path, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workspace_realpath) DO UPDATE SET
+          epoch = excluded.epoch,
+          owner_id = excluded.owner_id,
+          pid = excluded.pid,
+          process_start_token = excluded.process_start_token,
+          heartbeat_at = excluded.heartbeat_at,
+          released_at = NULL,
+          idle_since_at = NULL,
+          idle_stop_ms = excluded.idle_stop_ms,
+          protocol_version = excluded.protocol_version,
+          package_version = excluded.package_version,
+          node_version = excluded.node_version,
+          exec_path = excluded.exec_path,
+          updated_at = excluded.updated_at
+      `).run(
+        input.workspaceRealpath,
+        epoch,
+        input.ownerId,
+        input.pid,
+        input.processStartToken ?? null,
+        now,
+        input.idleStopMs ?? null,
+        input.protocolVersion ?? null,
+        input.packageVersion ?? null,
+        input.nodeVersion ?? null,
+        input.execPath ?? null,
+        now,
+      );
+      this.db.exec("COMMIT");
+      transactionStarted = false;
+      return ok({
+        workspaceRealpath: input.workspaceRealpath,
+        ownerId: input.ownerId,
+        epoch,
+        pid: input.pid,
+        heartbeatAt: now,
+      });
+    } catch (error) {
+      throw rollbackDatabaseTransaction(this.db, transactionStarted, error);
+    }
   }
 
-  heartbeatDaemon(input: HeartbeatDaemonInput): boolean {
+  heartbeatRuntimeAuthority(input: RuntimeAuthorityFence): boolean {
     const now = new Date().toISOString();
     const result = this.db.prepare(`
-      UPDATE daemon_lease
+      UPDATE runtime_authority
       SET heartbeat_at = ?, updated_at = ?
-      WHERE workspace_realpath = ? AND generation = ?
-    `).run(now, now, input.workspaceRealpath, input.generation);
+      WHERE workspace_realpath = ? AND owner_id = ? AND epoch = ? AND released_at IS NULL
+    `).run(now, now, input.workspaceRealpath, input.ownerId, input.epoch);
     return result.changes === 1;
   }
 
-  setDaemonIdleState(input: DaemonIdleStateInput): boolean {
+  setRuntimeAuthorityIdleState(input: RuntimeAuthorityIdleStateInput): boolean {
     const now = new Date().toISOString();
     const result = this.db.prepare(`
-      UPDATE daemon_lease
+      UPDATE runtime_authority
       SET idle_since_at = ?, idle_stop_ms = ?, updated_at = ?
-      WHERE workspace_realpath = ? AND generation = ?
-    `).run(input.idleSinceAt ?? null, input.idleStopMs, now, input.workspaceRealpath, input.generation);
+      WHERE workspace_realpath = ? AND owner_id = ? AND epoch = ? AND released_at IS NULL
+    `).run(
+      input.idleSinceAt ?? null,
+      input.idleStopMs,
+      now,
+      input.workspaceRealpath,
+      input.ownerId,
+      input.epoch,
+    );
     return result.changes === 1;
   }
 
-  releaseDaemon(input: HeartbeatDaemonInput): boolean {
+  releaseRuntimeAuthority(input: RuntimeAuthorityFence): boolean {
+    const now = new Date().toISOString();
     const result = this.db.prepare(`
-      DELETE FROM daemon_lease
-      WHERE workspace_realpath = ? AND generation = ?
-    `).run(input.workspaceRealpath, input.generation);
+      UPDATE runtime_authority
+      SET released_at = ?, updated_at = ?
+      WHERE workspace_realpath = ? AND owner_id = ? AND epoch = ? AND released_at IS NULL
+    `).run(now, now, input.workspaceRealpath, input.ownerId, input.epoch);
     return result.changes === 1;
   }
 
-  listDaemonWork(now: Date = new Date()): DaemonWork {
+  listRuntimeWork(now: Date = new Date()): RuntimeWork {
     const nowIso = now.toISOString();
     const timedWaits = this.db.prepare("SELECT run_id, node_key, deadline_at FROM signal_waits WHERE status = 'awaiting' AND deadline_at IS NOT NULL")
       .all() as Array<{ run_id: string; node_key: string; deadline_at: string }>;
@@ -2106,10 +2195,14 @@ class SqliteRuntimeStore implements RuntimeStore {
     return this.artifactRecord(row, this.artifactRoot(runId));
   }
 
-  listArtifacts(runId: string): ArtifactRecord[] {
-    const rows = this.db.prepare(
-      "SELECT id, run_id, node_key, attempt, media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? ORDER BY created_at ASC, id ASC"
-    ).all(runId) as ArtifactRow[];
+  listArtifacts(runId: string, limit?: number): ArtifactRecord[] {
+    const rows = limit === undefined
+      ? this.db.prepare(
+          "SELECT id, run_id, node_key, attempt, media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? ORDER BY created_at ASC, id ASC",
+        ).all(runId) as ArtifactRow[]
+      : this.db.prepare(
+          "SELECT id, run_id, node_key, attempt, media_type, digest, size, relative_path FROM artifacts WHERE run_id = ? ORDER BY created_at ASC, id ASC LIMIT ?",
+        ).all(runId, limit) as ArtifactRow[];
     if (rows.length === 0) return [];
     const root = this.artifactRoot(runId);
     return rows.map(row => this.artifactRecord(row, root));
@@ -2301,12 +2394,13 @@ class SqliteRuntimeStore implements RuntimeStore {
   private getRunExecutionState(run: RunRecord): RunExecutionState {
     if (run.status === "completed" || run.status === "failed" || run.status === "canceled") return { state: "terminal", lastStatus: run.status, reason: "terminal" };
     const now = Date.now();
-    const daemon = this.db.prepare(`
-      SELECT pid, heartbeat_at
-      FROM daemon_lease
+    const authority = this.db.prepare(`
+      SELECT pid, process_start_token, heartbeat_at
+      FROM runtime_authority
+      WHERE released_at IS NULL
       ORDER BY updated_at DESC
       LIMIT 1
-    `).get() as { pid: number | null; heartbeat_at: string | null } | undefined;
+    `).get() as { pid: number | null; process_start_token: string | null; heartbeat_at: string | null } | undefined;
     const lease = this.db.prepare(`
       SELECT owner_id, lease_expires_at
       FROM run_leases
@@ -2314,18 +2408,23 @@ class SqliteRuntimeStore implements RuntimeStore {
       ORDER BY claimed_at DESC
       LIMIT 1
     `).get(run.id) as { owner_id: string; lease_expires_at: string } | undefined;
-    if (daemon?.heartbeat_at && now - Date.parse(daemon.heartbeat_at) > 5_000) {
-      return { state: "stale", lastStatus: run.status, reason: "daemon_heartbeat_expired", daemonHeartbeatAt: daemon.heartbeat_at, ...(lease ? { ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at } : {}) };
+    if (authority?.heartbeat_at && now - Date.parse(authority.heartbeat_at) > 5_000) {
+      return { state: "stale", lastStatus: run.status, reason: "runtime_authority_heartbeat_expired", runtimeAuthorityHeartbeatAt: authority.heartbeat_at, ...(lease ? { ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at } : {}) };
     }
-    const processLiveness = daemon?.pid === null || daemon?.pid === undefined ? undefined : probeProcessLiveness(daemon.pid);
+    const processLiveness = authority?.pid === null || authority?.pid === undefined
+      ? undefined
+      : probeProcessIdentity({
+        pid: authority.pid,
+        ...(authority.process_start_token === null ? {} : { startToken: authority.process_start_token }),
+      });
     if (processLiveness === "dead") {
-      return { state: "stale", lastStatus: run.status, reason: "daemon_pid_dead", ...(daemon?.heartbeat_at ? { daemonHeartbeatAt: daemon.heartbeat_at } : {}), ...(lease ? { ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at } : {}) };
+      return { state: "stale", lastStatus: run.status, reason: "runtime_authority_pid_dead", ...(authority?.heartbeat_at ? { runtimeAuthorityHeartbeatAt: authority.heartbeat_at } : {}), ...(lease ? { ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at } : {}) };
     }
     if (lease && Date.parse(lease.lease_expires_at) <= now) {
-      return { state: "stale", lastStatus: run.status, reason: "run_lease_expired", ...(daemon?.heartbeat_at ? { daemonHeartbeatAt: daemon.heartbeat_at } : {}), ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at };
+      return { state: "stale", lastStatus: run.status, reason: "run_lease_expired", ...(authority?.heartbeat_at ? { runtimeAuthorityHeartbeatAt: authority.heartbeat_at } : {}), ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at };
     }
-    if (lease) return { state: "active", lastStatus: run.status, reason: "run_lease_active", ...(daemon?.heartbeat_at ? { daemonHeartbeatAt: daemon.heartbeat_at } : {}), ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at };
-    if (daemon?.heartbeat_at || processLiveness === "alive") return { state: "inactive", lastStatus: run.status, reason: "daemon_alive", ...(daemon?.heartbeat_at ? { daemonHeartbeatAt: daemon.heartbeat_at } : {}) };
+    if (lease) return { state: "active", lastStatus: run.status, reason: "run_lease_active", ...(authority?.heartbeat_at ? { runtimeAuthorityHeartbeatAt: authority.heartbeat_at } : {}), ownerId: lease.owner_id, leaseExpiresAt: lease.lease_expires_at };
+    if (authority?.heartbeat_at || processLiveness === "alive") return { state: "inactive", lastStatus: run.status, reason: "runtime_authority_alive", ...(authority?.heartbeat_at ? { runtimeAuthorityHeartbeatAt: authority.heartbeat_at } : {}) };
     if (processLiveness === "unknown") return { state: "unknown", lastStatus: run.status };
     return { state: "inactive", lastStatus: run.status, reason: "no_liveness_evidence" };
   }
@@ -2369,22 +2468,27 @@ class SqliteRuntimeStore implements RuntimeStore {
 
   getRuntimeDiagnostics(): RuntimeDiagnostics {
     const now = new Date().toISOString();
-    const daemon = this.db.prepare(`
-      SELECT workspace_realpath, generation, pid, heartbeat_at, idle_since_at, idle_stop_ms, protocol_version, package_version, node_version, exec_path, updated_at
-      FROM daemon_lease
+    const authority = this.db.prepare(`
+      SELECT workspace_realpath, epoch, owner_id, pid, process_start_token, heartbeat_at, released_at,
+        idle_since_at, idle_stop_ms, protocol_version, package_version, node_version, exec_path, updated_at
+      FROM runtime_authority
+      WHERE released_at IS NULL
       ORDER BY updated_at DESC
       LIMIT 1
     `).get() as {
       workspace_realpath: string;
-      generation: number;
+      epoch: number;
+      owner_id: string;
       pid: number | null;
+      process_start_token: string | null;
       heartbeat_at: string | null;
+      released_at: string | null;
       idle_since_at: string | null;
       idle_stop_ms: number | null;
-      protocol_version: number;
-      package_version: string;
-      node_version: string;
-      exec_path: string;
+      protocol_version: number | null;
+      package_version: string | null;
+      node_version: string | null;
+      exec_path: string | null;
       updated_at: string;
     } | undefined;
     const runs = this.db.prepare(`
@@ -2405,19 +2509,22 @@ class SqliteRuntimeStore implements RuntimeStore {
       WHERE released_at IS NULL AND lease_expires_at <= ?
     `).get(now) as CountRow;
     return {
-      ...(daemon ? {
-        daemon: {
-          workspaceRealpath: daemon.workspace_realpath,
-          generation: daemon.generation,
-          ...(daemon.pid === null ? {} : { pid: daemon.pid }),
-          ...(daemon.heartbeat_at === null ? {} : { heartbeatAt: daemon.heartbeat_at }),
-          ...(daemon.idle_since_at === null ? {} : { idleSinceAt: daemon.idle_since_at }),
-          ...(daemon.idle_stop_ms === null ? {} : { idleStopMs: daemon.idle_stop_ms }),
-          protocolVersion: daemon.protocol_version,
-          packageVersion: daemon.package_version,
-          nodeVersion: daemon.node_version,
-          execPath: daemon.exec_path,
-          updatedAt: daemon.updated_at,
+      ...(authority ? {
+        authority: {
+          workspaceRealpath: authority.workspace_realpath,
+          epoch: authority.epoch,
+          ownerId: authority.owner_id,
+          ...(authority.pid === null ? {} : { pid: authority.pid }),
+          ...(authority.process_start_token === null ? {} : { processStartToken: authority.process_start_token }),
+          ...(authority.heartbeat_at === null ? {} : { heartbeatAt: authority.heartbeat_at }),
+          ...(authority.released_at === null ? {} : { releasedAt: authority.released_at }),
+          ...(authority.idle_since_at === null ? {} : { idleSinceAt: authority.idle_since_at }),
+          ...(authority.idle_stop_ms === null ? {} : { idleStopMs: authority.idle_stop_ms }),
+          ...(authority.protocol_version === null ? {} : { protocolVersion: authority.protocol_version }),
+          ...(authority.package_version === null ? {} : { packageVersion: authority.package_version }),
+          ...(authority.node_version === null ? {} : { nodeVersion: authority.node_version }),
+          ...(authority.exec_path === null ? {} : { execPath: authority.exec_path }),
+          updatedAt: authority.updated_at,
         },
       } : {}),
       runs: {

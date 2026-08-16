@@ -30,13 +30,45 @@ describe("turn response collection", () => {
     expect(responses.complete()).toEqual({ responses: ["first", "second"], finalResponse: "second" });
   });
 
-  it("invalidates every response before a tool call or update", () => {
-    expect(collect(output("before"), tool(), output("after")).complete()).toEqual({
+  it("invalidates every response before a tool invocation", () => {
+    expect(collect(output("before"), tool({ tag: "tool_call" }), output("after")).complete()).toEqual({
       responses: ["before", "after"],
       finalResponse: "after",
     });
-    expect(collect(output("before"), tool({ tag: "tool_call_update", toolCallId: "known", status: "completed" })).complete()).toEqual({
+    expect(collect(output("before"), tool({ tag: "tool_call" })).complete()).toEqual({
       responses: ["before"],
+      finalResponse: "",
+    });
+    expect(collect(output("before"), tool()).complete()).toEqual({
+      responses: ["before"],
+      finalResponse: "",
+    });
+  });
+
+  it("preserves the latest response candidate across tool updates", () => {
+    const invocation = tool({ tag: "tool_call", toolCallId: "known", status: "in_progress" });
+    const completion = tool({ tag: "tool_call_update", toolCallId: "known", status: "completed" });
+
+    expect(collect(invocation, output("final"), completion).complete()).toEqual({
+      responses: ["final"],
+      finalResponse: "final",
+    });
+    expect(collect(output("candidate"), completion).complete()).toEqual({
+      responses: ["candidate"],
+      finalResponse: "candidate",
+    });
+  });
+
+  it("lets output after a tool update become the newer response candidate", () => {
+    const invocation = tool({ tag: "tool_call", toolCallId: "known", status: "in_progress" });
+    const completion = tool({ tag: "tool_call_update", toolCallId: "known", status: "completed" });
+
+    expect(collect(invocation, output("progress"), completion, output("final")).complete()).toEqual({
+      responses: ["progress", "final"],
+      finalResponse: "final",
+    });
+    expect(collect(invocation, output("candidate"), tool({ tag: "tool_call", toolCallId: "next" }), completion).complete()).toEqual({
+      responses: ["candidate"],
       finalResponse: "",
     });
   });

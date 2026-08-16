@@ -260,6 +260,7 @@ function sourcePackageResolverImport(): string {
   const entries = [
     ["@acpus/loader", new URL("../../../loader/src/index.ts", import.meta.url).href],
     ["@acpus/core", new URL("../../../core/src/index.ts", import.meta.url).href],
+    ["@acpus/core/content-identity", new URL("../../../core/src/content-identity.ts", import.meta.url).href],
     ["@acpus/core/runtime", new URL("../../../core/src/runtime.ts", import.meta.url).href],
     ["@acpus/expression", new URL("../../../expression/src/index.ts", import.meta.url).href],
     ["@acpus/expression/evaluator", new URL("../../../expression/src/evaluator.ts", import.meta.url).href],

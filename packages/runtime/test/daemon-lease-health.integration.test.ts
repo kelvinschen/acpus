@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { getRuntimeHealth } from "../src/index.js";
+import { captureProcessIdentity } from "../src/process-liveness.js";
 import type { RuntimeStore } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, signalWorkflow } from "./support/runtime-fixtures.js";
 import { withDaemonLeaseWorkspace } from "./support/daemon-lease-fixture.js";
@@ -12,11 +13,14 @@ type StoreWithDb = RuntimeStore & {
   };
 };
 
-describe("daemon lease health", () => {
-  it("records daemon generations while heartbeat and release stay generation-fenced", async () => {
+describe("Runtime authority health", () => {
+  it("rejects a live owner and keeps heartbeat and release epoch-fenced", async () => {
     await withDaemonLeaseWorkspace(async ({ dir, store }) => {
+      const identity = captureProcessIdentity();
       const base = {
         workspaceRealpath: dir,
+        pid: identity.pid,
+        ...(identity.startToken === undefined ? {} : { processStartToken: identity.startToken }),
         protocolVersion: 1,
         packageVersion: "0.0.0-test",
         nodeVersion: process.version,
@@ -24,28 +28,97 @@ describe("daemon lease health", () => {
         idleStopMs: 30_000,
       };
 
-      const first = store.claimDaemon({ ...base, pid: 100 });
-      expect(first).toMatchObject({ workspaceRealpath: dir, generation: 1, pid: 100 });
-      const second = store.claimDaemon({ ...base, pid: 102 });
-      expect(second).toMatchObject({ generation: 2, pid: 102 });
-      expect(store.heartbeatDaemon({
+      const first = store.claimRuntimeAuthority({
+        ...base,
+        ownerId: "owner-1",
+      })._unsafeUnwrap();
+      expect(first).toMatchObject({ workspaceRealpath: dir, epoch: 1, pid: process.pid });
+      expect(store.claimRuntimeAuthority({
+        ...base,
+        ownerId: "owner-2",
+      })._unsafeUnwrapErr()).toMatchObject({
+        type: "runtime-authority-busy",
+        pid: process.pid,
+      });
+      expect(store.heartbeatRuntimeAuthority({
         workspaceRealpath: dir,
-        generation: first.generation,
-      })).toBe(false);
-      expect(store.heartbeatDaemon({
-        workspaceRealpath: dir,
-        generation: second.generation,
+        ownerId: first.ownerId,
+        epoch: first.epoch,
       })).toBe(true);
-      expect(store.releaseDaemon({
+      expect(store.heartbeatRuntimeAuthority({
         workspaceRealpath: dir,
-        generation: first.generation,
+        ownerId: "owner-2",
+        epoch: first.epoch,
       })).toBe(false);
-      expect(store.releaseDaemon({
+      expect(store.releaseRuntimeAuthority({
         workspaceRealpath: dir,
-        generation: second.generation,
+        ownerId: "owner-2",
+        epoch: first.epoch,
+      })).toBe(false);
+      expect(store.releaseRuntimeAuthority({
+        workspaceRealpath: dir,
+        ownerId: first.ownerId,
+        epoch: first.epoch,
       })).toBe(true);
-      const third = store.claimDaemon({ ...base, pid: 103 });
-      expect(third).toMatchObject({ generation: 1, pid: 103 });
+      const second = store.claimRuntimeAuthority({
+        ...base,
+        ownerId: "owner-2",
+        pid: process.pid,
+      })._unsafeUnwrap();
+      expect(second).toMatchObject({ epoch: 2, ownerId: "owner-2" });
+    });
+  });
+
+  it.skipIf(process.platform !== "linux")("reclaims authority after PID reuse", async () => {
+    await withDaemonLeaseWorkspace(async ({ dir, store }) => {
+      const identity = captureProcessIdentity();
+      if (identity.startToken === undefined) throw new Error("Expected a Linux process start token.");
+      const base = {
+        workspaceRealpath: dir,
+        pid: identity.pid,
+        protocolVersion: 1,
+        packageVersion: "0.0.0-test",
+        nodeVersion: process.version,
+        execPath: process.execPath,
+        idleStopMs: 30_000,
+      };
+      store.claimRuntimeAuthority({
+        ...base,
+        ownerId: "stale-owner",
+        processStartToken: `${identity.startToken}:reused`,
+      })._unsafeUnwrap();
+
+      const claimed = store.claimRuntimeAuthority({
+        ...base,
+        ownerId: "current-owner",
+        processStartToken: identity.startToken,
+      })._unsafeUnwrap();
+
+      expect(claimed).toMatchObject({ epoch: 2, ownerId: "current-owner" });
+    });
+  });
+
+  it("does not replace authority when its process token cannot be verified", async () => {
+    await withDaemonLeaseWorkspace(async ({ dir, store }) => {
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+      try {
+        const base = {
+          workspaceRealpath: dir,
+          pid: Number.MAX_SAFE_INTEGER,
+          processStartToken: "unreadable",
+          protocolVersion: 1,
+          packageVersion: "0.0.0-test",
+          nodeVersion: process.version,
+          execPath: process.execPath,
+          idleStopMs: 30_000,
+        };
+        store.claimRuntimeAuthority({ ...base, ownerId: "unknown-owner" })._unsafeUnwrap();
+
+        expect(store.claimRuntimeAuthority({ ...base, ownerId: "replacement-owner" }).isErr())
+          .toBe(true);
+      } finally {
+        kill.mockRestore();
+      }
     });
   });
 
@@ -54,16 +127,17 @@ describe("daemon lease health", () => {
       const prepared = await prepareSyntheticWorkflow(dir, signalWorkflow());
       const admitted = (await store.admitRun({ prepared, cwd: dir, input: {} }))
         ._unsafeUnwrap();
-      const daemon = store.claimDaemon({
+      const authority = store.claimRuntimeAuthority({
         workspaceRealpath: dir,
+        ownerId: "execution-owner",
         pid: 123,
         protocolVersion: 1,
         packageVersion: "0.0.0-test",
         nodeVersion: process.version,
         execPath: process.execPath,
         idleStopMs: 30_000,
-      });
-      const nowMs = Date.parse(daemon.heartbeatAt);
+      })._unsafeUnwrap();
+      const nowMs = Date.parse(authority.heartbeatAt);
       const now = vi.spyOn(Date, "now").mockReturnValue(nowMs);
       const kill = vi.spyOn(process, "kill");
       const db = (store as StoreWithDb).db;
@@ -72,17 +146,17 @@ describe("daemon lease health", () => {
         kill.mockImplementation(() => {
           throw Object.assign(new Error("missing"), { code: "ESRCH" });
         });
-        db.prepare("UPDATE daemon_lease SET heartbeat_at = ?")
+        db.prepare("UPDATE runtime_authority SET heartbeat_at = ?")
           .run(new Date(nowMs - 5_001).toISOString());
         expect(store.getRun(admitted.id)?.execution).toMatchObject({
           state: "stale",
-          reason: "daemon_heartbeat_expired",
+          reason: "runtime_authority_heartbeat_expired",
         });
 
-        db.prepare("UPDATE daemon_lease SET heartbeat_at = ?").run(daemon.heartbeatAt);
+        db.prepare("UPDATE runtime_authority SET heartbeat_at = ?").run(authority.heartbeatAt);
         expect(store.getRun(admitted.id)?.execution).toMatchObject({
           state: "stale",
-          reason: "daemon_pid_dead",
+          reason: "runtime_authority_pid_dead",
         });
 
         kill.mockImplementation(() => {
@@ -101,20 +175,20 @@ describe("daemon lease health", () => {
         });
         store.scheduler.releaseRun(expired);
 
-        db.prepare("UPDATE daemon_lease SET heartbeat_at = ?").run(daemon.heartbeatAt);
+        db.prepare("UPDATE runtime_authority SET heartbeat_at = ?").run(authority.heartbeatAt);
         expect(store.getRun(admitted.id)?.execution).toMatchObject({
           state: "inactive",
-          reason: "daemon_alive",
+          reason: "runtime_authority_alive",
         });
 
-        db.prepare("UPDATE daemon_lease SET heartbeat_at = NULL").run();
+        db.prepare("UPDATE runtime_authority SET heartbeat_at = NULL").run();
         expect(store.getRun(admitted.id)?.execution)
           .toEqual({ state: "unknown", lastStatus: "pending" });
 
         kill.mockImplementation(() => true);
         expect(store.getRun(admitted.id)?.execution).toMatchObject({
           state: "inactive",
-          reason: "daemon_alive",
+          reason: "runtime_authority_alive",
         });
       } finally {
         kill.mockRestore();
@@ -125,16 +199,17 @@ describe("daemon lease health", () => {
 
   it("maps process liveness explicitly in doctor output", async () => {
     await withDaemonLeaseWorkspace(async ({ dir, store }) => {
-      const daemon = store.claimDaemon({
+      const authority = store.claimRuntimeAuthority({
         workspaceRealpath: dir,
+        ownerId: "doctor-owner",
         pid: 123,
         protocolVersion: 1,
         packageVersion: "0.0.0-test",
         nodeVersion: process.version,
         execPath: process.execPath,
         idleStopMs: 30_000,
-      });
-      const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse(daemon.heartbeatAt));
+      })._unsafeUnwrap();
+      const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse(authority.heartbeatAt));
       const kill = vi.spyOn(process, "kill");
       const daemonCheck = async () =>
         (await getRuntimeHealth(dir)).checks.find(check => check.area === "daemon")!;

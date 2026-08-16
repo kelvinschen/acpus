@@ -1,0 +1,12 @@
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    complete: true
+    includeRuntimeContext: false
+    text: |-
+{{ACPUS_SUPERVISOR_KNOWLEDGE}}
+
+      {{acpus_agents}}
+
+- id: acpus-supervisor
+  name: '@acpus/dsh/supervisor'

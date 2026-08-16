@@ -16,7 +16,11 @@ import {
   requestDaemonSubmitAndObserve,
 } from "../src/daemon/client.js";
 import { sameRuntimeAuthority } from "../src/daemon/authority.js";
-import type { DaemonRunStreamFrame, RuntimeAuthorityIdentity } from "../src/daemon/protocol.js";
+import {
+  isDaemonRunStreamFrame,
+  type DaemonRunStreamFrame,
+  type RuntimeAuthorityIdentity,
+} from "../src/daemon/protocol.js";
 import { startDaemonServer } from "../src/daemon/server.js";
 import { ensureRuntimeLayout, resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
 import {
@@ -33,6 +37,33 @@ afterEach(async () => {
 });
 
 describe("daemon socket server", () => {
+  it("accepts bounded tool titles in inspection pulse frames", () => {
+    expect(isDaemonRunStreamFrame({
+      kind: "observation",
+      observation: {
+        kind: "closed",
+        reason: "subject-terminal",
+        view: {
+          ...runInspectionView(),
+          tree: [{
+            type: "item",
+            subject: { label: "Research", kind: "agent" },
+            state: { status: "completed" },
+            pulse: {
+              phase: "tool",
+              tool: {
+                name: "Search",
+                title: "Search something useful",
+                state: "completed",
+              },
+            },
+            children: [],
+          }],
+        },
+      },
+    })).toBe(true);
+  });
+
   it.skipIf(process.platform === "win32")("binds a private Unix socket inside a private directory", async () => {
     const workspace = await testWorkspace("acpus-daemon-socket-mode-");
     const endpoint = daemonEndpoint(workspace);
@@ -332,19 +363,20 @@ describe("daemon socket server", () => {
     const workspace = await testWorkspace("acpus-daemon-socket-unknown-pid-");
     const endpoint = daemonEndpoint(workspace);
     const store = await openRuntimeStore(workspace);
-    const daemon = store.claimDaemon({
+    const authority = store.claimRuntimeAuthority({
       workspaceRealpath: workspace,
+      ownerId: "unknown-pid-owner",
       pid: 123,
       protocolVersion: 1,
       packageVersion: "test",
       nodeVersion: process.version,
       execPath: process.execPath,
       idleStopMs: 30_000,
-    });
+    })._unsafeUnwrap();
     store.close();
     await mkdir(dirname(endpoint), { recursive: true });
     await writeFile(endpoint, "occupied");
-    const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse(daemon.heartbeatAt));
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse(authority.heartbeatAt));
     const kill = vi.spyOn(process, "kill").mockImplementation(() => {
       throw Object.assign(new Error("access denied"), { code: "EACCES" });
     });
@@ -431,7 +463,7 @@ describe("daemon socket server", () => {
       { ...current, workspaceKey: "c".repeat(32) },
       { ...current, runtimeAbi: 2 },
       { ...current, layoutVersion: 3 },
-      { ...current, storageVersion: 10 },
+      { ...current, storageVersion: 11 },
       { ...current, authorityId: "00000000-0000-4000-8000-000000000002" },
       { ...current, storeBinding: `sha256:${"c".repeat(64)}` },
       { ...current, leaseGeneration: 2 },
@@ -632,6 +664,24 @@ describe("daemon socket server", () => {
     } finally {
       await closeRawResponseServer(futureServer);
       await rm(futureWorkspace, { recursive: true, force: true });
+    }
+
+    const futureAbiWorkspace = await testWorkspace("acpus-daemon-status-future-abi-");
+    const futureAbiServer = await startRawResponseServer(futureAbiWorkspace, {
+      ok: true,
+      result: {
+        ...daemonStatus(),
+        authority: { ...runtimeAuthority(), runtimeAbi: 2 },
+      },
+    });
+    try {
+      await expect(requestDaemonStatusProbe(futureAbiWorkspace)).resolves.toEqual(ok({
+        kind: "unknown",
+        protocolVersion: 4,
+      }));
+    } finally {
+      await closeRawResponseServer(futureAbiServer);
+      await rm(futureAbiWorkspace, { recursive: true, force: true });
     }
   });
 
@@ -900,7 +950,7 @@ function runtimeAuthority(): RuntimeAuthorityIdentity {
     workspaceKey: "a".repeat(32),
     runtimeAbi: 1,
     layoutVersion: 2,
-    storageVersion: 9,
+    storageVersion: 10,
     authorityId: "00000000-0000-4000-8000-000000000001",
     storeBinding: `sha256:${"b".repeat(64)}`,
     leaseGeneration: 1,
@@ -950,6 +1000,8 @@ function runInspectionView() {
       id: "run_1",
       name: "test",
       status: "completed" as const,
+      createdAt: "2026-01-01T00:00:00.000Z",
+      updatedAt: "2026-01-01T00:00:01.000Z",
       liveness: "terminal" as const,
     },
     counts: { total: 1, completed: 1 },

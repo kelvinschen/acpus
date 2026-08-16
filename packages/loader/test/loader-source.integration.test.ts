@@ -14,7 +14,7 @@ const coreEntry = new URL("../../core/src/index.ts", import.meta.url).href;
 const loaderEntry = pathToFileURL(fileURLToPath(new URL("../src/index.ts", import.meta.url))).href;
 const tsxImport = import.meta.resolve("tsx");
 
-describe("authoring loader source mode", () => {
+describe.concurrent("authoring loader source mode", () => {
   it("imports a clean TypeScript task module through official facades without user config", async () => {
     const cwd = await mkdtemp(join(tmpdir(), "acpus-loader-"));
     try {

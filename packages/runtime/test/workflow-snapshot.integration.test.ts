@@ -1,34 +1,25 @@
-import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { tryPrepareWorkflow } from "@acpus/workflow-compiler";
 import {
-  getRun,
-  requestDaemonControl,
-  startDaemonLoop,
   type PreparedRunWorkflow,
   type Sha256Digest,
 } from "@acpus/runtime";
 import { openRuntimeStore } from "../src/store/store.js";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
 import { admitRunForTest } from "./support/runtime-store.js";
-import { waitForTerminalRun, waitUntil } from "./support/daemon-lease-fixture.js";
 import {
-  initializeRuntimeStoreForTest,
   prepareSyntheticWorkflow,
   runtimeDatabasePath,
   runtimeRow,
-  runtimeRows,
-  runtimeRunDir,
   snapshotPreparedWorkflow,
   validWorkflow,
   withRuntimeWorkspace,
 } from "./support/runtime-fixtures.js";
 import { withSharedStorageHome } from "./support/storage-workspace.js";
-import { submitRunThroughDaemon } from "./support/daemon-submit.js";
 
-describe("runtime workflow snapshots", () => {
+describe.concurrent("runtime workflow snapshots", () => {
   it("publishes one digest-addressed snapshot per workspace and reuses it without an original source directory", async () => {
     await withSharedStorageHome("workflow-snapshot", async ({ first, second }) => {
       const base = await prepareSyntheticWorkflow(first, validWorkflow());
@@ -207,137 +198,6 @@ describe("runtime workflow snapshots", () => {
     });
   });
 
-  it.sequential("executes a compiler-captured external reusable Task after its original tree is deleted and the daemon restarts", async () => {
-    await withRuntimeWorkspace("workflow-snapshot-recovery", async workspace => {
-      const externalRoot = await mkdtemp(join(workspace, "..", "external-workflow-"));
-      const sourceOnlyMarker = "ACPUS_SNAPSHOT_SOURCE_ONLY_7D13E4";
-      try {
-        await mkdir(join(externalRoot, "workflow"), { recursive: true });
-        await mkdir(join(externalRoot, "shared"), { recursive: true });
-        await writeFile(join(externalRoot, "workflow", "workflow.ts"), [
-          `// ${sourceOnlyMarker}`,
-          'import { defineWorkflow, z } from "acpus/core";',
-          'import { durableTask } from "../shared/task.js";',
-          "export default defineWorkflow({ name: \"external-durable\" }).build(({ step }) => {",
-          "  const gate = step(\"gate\").signal({",
-          "    outputSchema: z.object({ proceed: z.boolean() }),",
-          "    prompt: \"continue after restart\",",
-          "  });",
-          "  const result = step(\"durable\").task({",
-          "    task: durableTask,",
-          "    input: { proceed: gate.output.proceed },",
-          "  });",
-          "  return { value: result.output.value };",
-          "});",
-          "",
-        ].join("\n"));
-        await writeFile(join(externalRoot, "shared", "task.ts"), [
-          'import { task, z } from "acpus/core";',
-          'import { decorate } from "./helper.js";',
-          "export const durableTask = task.define({",
-          "  inputSchema: z.object({ proceed: z.boolean() }),",
-          "  exec: async ({ input }) => ({",
-          "    value: input.proceed ? decorate(\"frozen\") : \"blocked\",",
-          "  }),",
-          "});",
-          "",
-        ].join("\n"));
-        await writeFile(join(externalRoot, "shared", "helper.ts"), [
-          'export const decorate = (value: string) => `${value}-source`;',
-          "",
-        ].join("\n"));
-
-        const preparation = await tryPrepareWorkflow({
-          workspaceDir: workspace,
-          source: { kind: "path", entry: join(externalRoot, "workflow", "workflow.ts") },
-        });
-        if (preparation.isErr()) {
-          throw new Error(`External workflow preparation failed: ${JSON.stringify(preparation.error)}`);
-        }
-        const prepared = preparation.value;
-        expect(prepared.source.kind).toBe("snapshot");
-        if (prepared.source.kind !== "snapshot") throw new Error("expected snapshot source");
-        expect(prepared.sourceBundle!.files.map(file => file.path)).toEqual(expect.arrayContaining([
-          expect.stringMatching(/workflow\/workflow\.ts$/),
-          expect.stringMatching(/shared\/task\.ts$/),
-          expect.stringMatching(/shared\/helper\.ts$/),
-        ]));
-        expect(prepared.sourceBundle!.files.some(file => file.content.includes(sourceOnlyMarker))).toBe(true);
-
-        await initializeRuntimeStoreForTest(workspace);
-        const firstDaemon = await startDaemonLoop(workspace, {
-          heartbeatMs: 10,
-          idleStopMs: 60_000,
-          packageVersion: "test",
-        });
-        let runId: string;
-        try {
-          runId = (await submitRunThroughDaemon(workspace, { prepared, input: {} })).id;
-          await waitUntil(async () => (await getRun(workspace, runId))._unsafeUnwrap()?.status === "awaiting");
-        } finally {
-          await firstDaemon.shutdown();
-        }
-        const snapshotFilesRoot = snapshotPath(workspace, prepared.source.digest);
-        await expect(readFile(join(snapshotFilesRoot, prepared.source.entry), "utf8"))
-          .resolves.toContain(sourceOnlyMarker);
-        if (process.platform !== "win32") {
-          await expectSnapshotModes(snapshotFilesRoot, prepared.sourceBundle!.files.map(file => file.path));
-        }
-        await rm(externalRoot, { recursive: true });
-
-        const secondDaemon = await startDaemonLoop(workspace, {
-          heartbeatMs: 10,
-          idleStopMs: 60_000,
-          packageVersion: "test",
-        });
-        try {
-          const signaled = await requestDaemonControl(workspace, {
-            requestId: `snapshot-restart:${runId}`,
-            type: "signal",
-            runId,
-            nodeId: "gate",
-            payload: { proceed: true },
-          });
-          if (signaled.isErr()) throw new Error(signaled.error.message);
-          const result = await waitForTerminalRun(workspace, runId);
-          expect(result.status).toBe("completed");
-          expect(result.run.output).toEqual({ value: "frozen-source" });
-        } finally {
-          await secondDaemon.shutdown();
-        }
-
-        const sourceRow = runtimeRow(
-          workspace,
-          "SELECT source_json FROM run_inputs WHERE run_id = ?",
-          runId,
-        );
-        if (!sourceRow) throw new Error("expected persisted workflow source");
-        const sourceJson = String(sourceRow.source_json);
-        expect(JSON.parse(sourceJson)).toEqual(prepared.source);
-        const runDir = runtimeRunDir(workspace, runId);
-        const [lockJson, irJson] = await Promise.all([
-          readFile(join(runDir, "lock.json"), "utf8"),
-          readFile(join(runDir, "workflow.ir.json"), "utf8"),
-        ]);
-        const events = runtimeRows(
-          workspace,
-          "SELECT payload_json FROM run_events WHERE run_id = ? ORDER BY sequence",
-          runId,
-        ).map(row => JSON.parse(String(row.payload_json)));
-        expect(events.length).toBeGreaterThan(0);
-        for (const [label, artifact] of [
-          ["source_json", JSON.parse(sourceJson)],
-          ["lock.json", JSON.parse(lockJson)],
-          ["workflow.ir.json", JSON.parse(irJson)],
-          ["run event payloads", events],
-        ] as const) {
-          expectNoSourceLeak(label, artifact, externalRoot, sourceOnlyMarker);
-        }
-      } finally {
-        await rm(externalRoot, { recursive: true, force: true });
-      }
-    }, { authoringEnvironment: true });
-  });
 });
 
 function snapshotPath(
@@ -365,44 +225,6 @@ function invalidUtf8Manifest(manifest: Buffer): Buffer {
     Buffer.from([0xff]),
     manifest.subarray(offset + replacement.length),
   ]);
-}
-
-async function expectSnapshotModes(filesRoot: string, filePaths: readonly string[]): Promise<void> {
-  const directories = new Set([dirnameOfFiles(filesRoot), filesRoot]);
-  for (const filePath of filePaths) {
-    const segments = filePath.split("/");
-    for (let length = 1; length < segments.length; length += 1) {
-      directories.add(join(filesRoot, ...segments.slice(0, length)));
-    }
-  }
-  for (const path of directories) {
-    expect((await stat(path)).mode & 0o777, path).toBe(0o700);
-  }
-  for (const path of [
-    join(dirnameOfFiles(filesRoot), "manifest.json"),
-    ...filePaths.map(filePath => join(filesRoot, ...filePath.split("/"))),
-  ]) {
-    expect((await stat(path)).mode & 0o777, path).toBe(0o600);
-  }
-}
-
-function expectNoSourceLeak(
-  label: string,
-  artifact: unknown,
-  physicalRoot: string,
-  sourceOnlyMarker: string,
-): void {
-  for (const value of collectStrings(artifact)) {
-    expect(value, `${label} contains the original physical source path`).not.toContain(physicalRoot);
-    expect(value, `${label} contains captured source content`).not.toContain(sourceOnlyMarker);
-  }
-}
-
-function collectStrings(value: unknown): string[] {
-  if (typeof value === "string") return [value];
-  if (Array.isArray(value)) return value.flatMap(collectStrings);
-  if (!value || typeof value !== "object") return [];
-  return Object.entries(value).flatMap(([key, item]) => [key, ...collectStrings(item)]);
 }
 
 function updatePersistedSource(

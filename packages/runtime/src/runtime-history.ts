@@ -2,10 +2,12 @@ import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import {
   isGenerationId,
-  resolveRuntimeLayout,
+  resolveRuntimeLayoutAtWorkspace,
   resolveRuntimeWorkspaceLayout,
   runtimeLayoutForGeneration,
   validateRuntimeLayoutBoundary,
+  type RuntimeLayout,
+  type RuntimeLayoutOptions,
 } from "./runtime-layout.js";
 import {
   H1_RUN_INDEX_STORAGE_VERSION,
@@ -29,12 +31,21 @@ export type ArchivedRunLookup =
   | { kind: "not-found" }
   | { kind: "unavailable"; message: string };
 
-export async function listRuntimeGenerations(cwd: string): Promise<RuntimeGenerationSummary[]> {
-  const workspace = resolveRuntimeWorkspaceLayout(cwd);
+export async function listRuntimeGenerations(
+  cwd: string,
+  options: RuntimeLayoutOptions = {},
+): Promise<RuntimeGenerationSummary[]> {
+  const workspace = resolveRuntimeWorkspaceLayout(cwd, options);
+  return listRuntimeGenerationsAtLayout(workspace);
+}
+
+export async function listRuntimeGenerationsAtLayout(
+  workspace: RuntimeLayout,
+): Promise<RuntimeGenerationSummary[]> {
   await validateRuntimeLayoutBoundary(workspace);
   let activeGenerationId: string | undefined;
   try {
-    activeGenerationId = resolveRuntimeLayout(cwd).generationId;
+    activeGenerationId = resolveRuntimeLayoutAtWorkspace(workspace).generationId;
   } catch {
     activeGenerationId = undefined;
   }

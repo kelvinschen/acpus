@@ -12,16 +12,22 @@ const projects = {
   loader: [],
   "workflow-compiler": ["core", "expression", "loader"],
   runtime: ["agent-executor", "core", "expression", "loader"],
+  dsh: ["agent-executor", "core", "expression", "loader", "runtime", "workflow-compiler"],
   web: ["core", "expression", "runtime", "workflow-compiler"],
   cli: ["core", "expression", "loader", "runtime", "tasks", "web", "workflow-compiler"],
 };
 const foundation = ["agent-executor", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime"];
-const allProjects = [...foundation, "web", "cli"];
+const allProjects = ["agent-executor", "dsh", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime", "web", "cli"];
 const expectedPnpmWorkspace = `packages:
   - "packages/*"
 
 allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': false
   esbuild: true
+  koffi: true
+  node-pty: true
+  protobufjs: false
 blockExoticSubdeps: true
 minimumReleaseAge: 0
 strictDepBuilds: true
@@ -77,6 +83,10 @@ for (const [name, dependencies] of Object.entries(projects)) {
         lib: ["ES2022", "DOM", "DOM.Iterable"],
         jsx: "react-jsx",
       } : {}),
+      ...(name === "dsh" ? {
+        jsx: "react-jsx",
+        lib: ["ES2022", "DOM"],
+      } : {}),
     },
     `${name} development compiler overrides`,
   );
@@ -91,6 +101,15 @@ for (const [name, dependencies] of Object.entries(projects)) {
   if (name === "web") {
     equal(manifest.scripts?.build, "node ../../scripts/build.mjs package", "web build script");
     equal(manifest.scripts?.clean, "rm -rf dist .static-viz-build tsconfig.build.tsbuildinfo", "web clean script");
+  } else if (name === "dsh") {
+    equal(
+      manifest.scripts?.build,
+      "node scripts/generate-supervisor-preset.mjs && tsc -b tsconfig.build.json && node scripts/remote-artifacts.mjs publish && node scripts/build-client.mjs",
+      "dsh build script",
+    );
+    equal(manifest.scripts?.["remote:generate"], "node scripts/remote-artifacts.mjs generate", "dsh Remote generation script");
+    equal(manifest.scripts?.["remote:check"], "node scripts/remote-artifacts.mjs check", "dsh Remote check script");
+    equal(manifest.scripts?.clean, "rm -rf dist tsconfig.build.tsbuildinfo", "dsh clean script");
   } else {
     equal(manifest.scripts?.build, "tsc -b tsconfig.build.json", `${name} build script`);
     equal(manifest.scripts?.clean, "rm -rf dist tsconfig.build.tsbuildinfo", `${name} clean script`);
@@ -129,6 +148,7 @@ for (const path of [
   "scripts/checks/docs.mjs",
   "scripts/checks/release.mjs",
   "scripts/checks/toolchain.mjs",
+  "packages/dsh/scripts/remote-artifacts.mjs",
 ]) {
   assert(await exists(path), `${path} MUST exist`);
 }

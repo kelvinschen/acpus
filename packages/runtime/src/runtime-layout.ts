@@ -97,6 +97,10 @@ export type RuntimeLayoutDependencies = {
   now(): Date;
 };
 
+export type RuntimeLayoutOptions = Partial<RuntimeLayoutDependencies> & {
+  runtimeHome?: string;
+};
+
 const defaultDependencies: RuntimeLayoutDependencies = {
   homedir,
   tmpdir,
@@ -111,9 +115,13 @@ const privateDirectoryMode = 0o700;
 
 export function resolveRuntimeLayout(
   cwd: string,
-  overrides: Partial<RuntimeLayoutDependencies> = {},
+  options: RuntimeLayoutOptions = {},
 ): RuntimeLayout {
-  const workspace = resolveRuntimeWorkspaceLayout(cwd, overrides);
+  const workspace = resolveRuntimeWorkspaceLayout(cwd, options);
+  return resolveRuntimeLayoutAtWorkspace(workspace);
+}
+
+export function resolveRuntimeLayoutAtWorkspace(workspace: RuntimeLayout): RuntimeLayout {
   const manifest = readWorkspaceManifestSync(workspace.manifestPath);
   return manifest?.manifestVersion === RUNTIME_LAYOUT_VERSION
     ? runtimeLayoutForGeneration(workspace, manifest.activeGenerationId)
@@ -122,14 +130,17 @@ export function resolveRuntimeLayout(
 
 export function resolveRuntimeWorkspaceLayout(
   cwd: string,
-  overrides: Partial<RuntimeLayoutDependencies> = {},
+  options: RuntimeLayoutOptions = {},
 ): RuntimeLayout {
+  const { runtimeHome, ...overrides } = options;
   const dependencies = { ...defaultDependencies, ...overrides };
   const canonicalPath = dependencies.realpath(resolve(cwd));
   const stats = dependencies.stat(canonicalPath);
   if (!stats.isDirectory()) throw new Error(`Runtime workspace '${canonicalPath}' is not a directory.`);
   const key = workspaceKey(canonicalPath, dependencies.platform);
-  const home = runtimeHomeOverrides.get(canonicalPath)?.at(-1)?.home ?? join(dependencies.homedir(), ".acpus");
+  const home = runtimeHome === undefined
+    ? runtimeHomeOverrides.get(canonicalPath)?.at(-1)?.home ?? join(dependencies.homedir(), ".acpus")
+    : resolve(runtimeHome);
   return workspaceLayout({
     canonicalPath,
     key,
@@ -182,11 +193,22 @@ export function isGenerationId(value: string): boolean {
 
 export function ensureRuntimeLayout(
   cwd: string,
-  overrides: Partial<RuntimeLayoutDependencies> = {},
+  options: RuntimeLayoutOptions = {},
 ): ResultAsync<RuntimeLayout, RuntimeLayoutFailure> {
   return ResultAsync.fromPromise(
-    ensureRuntimeLayoutValue(cwd, overrides),
+    ensureRuntimeLayoutValue(cwd, options),
     error => runtimeLayoutFailure(error, cwd),
+  );
+}
+
+export function ensureRuntimeLayoutAtWorkspace(
+  workspace: RuntimeLayout,
+  options: RuntimeLayoutOptions = {},
+): ResultAsync<RuntimeLayout, RuntimeLayoutFailure> {
+  const { runtimeHome: _runtimeHome, ...overrides } = options;
+  return ResultAsync.fromPromise(
+    ensureRuntimeLayoutAtWorkspaceValue(workspace, { ...defaultDependencies, ...overrides }),
+    error => runtimeLayoutFailure(error, workspace.canonicalPath),
   );
 }
 
@@ -272,21 +294,29 @@ export function runAcpStateRoot(layout: RuntimeLayout, runId: string): string {
 
 async function ensureRuntimeLayoutValue(
   cwd: string,
-  overrides: Partial<RuntimeLayoutDependencies>,
+  options: RuntimeLayoutOptions,
 ): Promise<RuntimeLayout> {
+  const { runtimeHome: _runtimeHome, ...overrides } = options;
   let workspace: RuntimeLayout;
   try {
-    workspace = resolveRuntimeWorkspaceLayout(cwd, overrides);
+    workspace = resolveRuntimeWorkspaceLayout(cwd, options);
   } catch (error) {
     throw operationFailure("resolve-workspace", resolve(cwd), error);
   }
+  return ensureRuntimeLayoutAtWorkspaceValue(workspace, { ...defaultDependencies, ...overrides });
+}
+
+async function ensureRuntimeLayoutAtWorkspaceValue(
+  workspace: RuntimeLayout,
+  dependencies: RuntimeLayoutDependencies,
+): Promise<RuntimeLayout> {
   for (const path of [workspace.home, join(workspace.home, "workspaces"), workspace.workspaceRoot]) {
     await ensurePrivateDirectory(path, workspace.platform);
   }
   const read = await readWorkspaceManifest(workspace.manifestPath);
   let layout: RuntimeLayout;
   if (read === undefined) {
-    layout = await initializeFreshLayout(workspace, { ...defaultDependencies, ...overrides });
+    layout = await initializeFreshLayout(workspace, dependencies);
   } else {
     const validated = validateWorkspaceManifest(read, workspace);
     if (validated.isErr()) throw manifestFailure(validated.error);

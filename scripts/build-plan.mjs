@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+const dshRoot = join(root, "packages", "dsh");
 const webRoot = join(root, "packages", "web");
 const typescriptCli = packageBin(createRequire(join(root, "package.json")), "typescript", "tsc");
 const viteCli = packageBin(createRequire(join(webRoot, "package.json")), "vite", "vite");
@@ -19,6 +20,24 @@ const staticVisualization = {
   file: process.execPath,
   args: [join(webRoot, "scripts", "build-static-viz.mjs")],
   cwd: webRoot,
+};
+const dshPreset = {
+  stage: "dsh-preset",
+  file: process.execPath,
+  args: [join(dshRoot, "scripts", "generate-supervisor-preset.mjs")],
+  cwd: dshRoot,
+};
+const dshRemote = {
+  stage: "dsh-remote",
+  file: process.execPath,
+  args: [join(dshRoot, "scripts", "remote-artifacts.mjs"), "publish"],
+  cwd: dshRoot,
+};
+const dshClient = {
+  stage: "dsh-client",
+  file: process.execPath,
+  args: [join(dshRoot, "scripts", "build-client.mjs")],
+  cwd: dshRoot,
 };
 const profiles = {
   workspace: {
@@ -55,13 +74,36 @@ export function createBuildRunner(runStep) {
     }
 
     const clientResult = start(runStep, client);
+    const dshPresetResult = plan.foundation === undefined
+      ? Promise.resolve({ ok: true, stage: dshPreset.stage })
+      : start(runStep, dshPreset);
+    const dshRemoteResult = plan.foundation === undefined
+      ? Promise.resolve({ ok: true, stage: dshRemote.stage })
+      : start(runStep, dshRemote);
+    const dshClientResult = plan.foundation === undefined
+      ? Promise.resolve({ ok: true, stage: dshClient.stage })
+      : start(runStep, dshClient);
     const staticVisualizationResult = await start(runStep, staticVisualization);
     if (!staticVisualizationResult.ok) {
-      return throwFailures([await clientResult, staticVisualizationResult]);
+      return throwFailures([
+        await clientResult,
+        await dshPresetResult,
+        await dshRemoteResult,
+        await dshClientResult,
+        staticVisualizationResult,
+      ]);
     }
 
-    const typescriptResult = start(runStep, plan.typescript);
-    throwFailures(await Promise.all([clientResult, typescriptResult]));
+    const typescriptResult = await start(runStep, plan.typescript);
+    throwFailures([
+      ...await Promise.all([
+        clientResult,
+        dshPresetResult,
+        dshRemoteResult,
+        dshClientResult,
+      ]),
+      typescriptResult,
+    ]);
   };
 }
 

@@ -1,0 +1,3 @@
+# Package-owned empty root. The launcher applies the dsh-base bundle as an
+# overlay, then mounts the ACP transport after the standard tree settles.
+[]

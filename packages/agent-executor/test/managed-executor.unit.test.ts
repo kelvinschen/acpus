@@ -23,13 +23,17 @@ describe("ACP ownership inspection", () => {
     const workers = join(root, "workers");
     await mkdir(workers);
     await writeFile(join(workers, "acp_worker_dea0.json"), JSON.stringify(manifest({ state: "degraded" })));
-    await writeFile(join(workers, "acp_worker_0a0b.json"), JSON.stringify(manifest({ workerId: "acp_worker_0a0b", state: "active", daemon: { pid: 99_999_999, startToken: "pid:99999999", generation: "old" } })));
-    await writeFile(join(workers, "acp_worker_ac71.json"), JSON.stringify(manifest({ workerId: "acp_worker_ac71", state: "active", daemon: { pid: process.pid, startToken: "pid:ignored", generation: "current" }, worker: { pid: process.pid, startToken: "pid:ignored" } })));
+    await writeFile(join(workers, "acp_worker_0a0b.json"), JSON.stringify(manifest({ workerId: "acp_worker_0a0b", state: "active", owner: { pid: 99_999_999, startToken: "pid:99999999", generation: "old" } })));
+    await writeFile(join(workers, "acp_worker_ac71.json"), JSON.stringify(manifest({ workerId: "acp_worker_ac71", state: "active", owner: { pid: process.pid, startToken: "owner-current", generation: "current" }, worker: { pid: process.pid } })));
 
-    const health = await inspectAcpOwnership({ workersRoot: workers, daemon: { pid: process.pid, generation: "current" } });
+    const health = await inspectAcpOwnership({ workersRoot: workers, owner: { pid: process.pid, startToken: "owner-current", generation: "current" } });
 
-    expect(health).toMatchObject({ degraded: 1, orphaned: 2 });
-    expect(health.manifests).toHaveLength(3);
+    expect(health).toMatchObject({ degraded: 1, orphaned: 1 });
+    expect(health.manifests).toHaveLength(2);
+
+    const replaced = await inspectAcpOwnership({ workersRoot: workers, owner: { pid: process.pid, startToken: "owner-replaced", generation: "current" } });
+    expect(replaced).toMatchObject({ degraded: 1, orphaned: 2 });
+    expect(replaced.manifests).toHaveLength(3);
   });
 
   it("owns and releases an initialized worker without starting a provider", async () => {
@@ -40,7 +44,7 @@ describe("ACP ownership inspection", () => {
     const executor = await createManagedAcpExecutor({
       workersRoot: workers,
       sessionStateDirectoryForRun: runId => join(root, "runs", runId),
-      daemon: { generation: "test" },
+      owner: { generation: "test" },
     });
 
     const value = await executor.withAttempt({
@@ -51,7 +55,17 @@ describe("ACP ownership inspection", () => {
       env: {},
       agent: { kind: "command", command: "unused-acp" },
       permissionMode: "deny-all",
-    }, async () => "settled");
+    }, async () => {
+      const names = await readdir(workers);
+      expect(names).toHaveLength(1);
+      const persisted = JSON.parse(await readFile(join(workers, names[0]!), "utf8")) as Record<string, unknown>;
+      expect(persisted).toMatchObject({
+        schemaVersion: 2,
+        owner: { pid: process.pid, generation: "test" },
+      });
+      expect(persisted).not.toHaveProperty("daemon");
+      return "settled";
+    });
 
     expect(value).toBe("settled");
     expect(await readdir(workers)).toEqual([]);
@@ -64,7 +78,7 @@ describe("ACP ownership inspection", () => {
     const executor = await createManagedAcpExecutor({
       workersRoot: workers,
       sessionStateDirectoryForRun: runId => join(root, "runs", runId),
-      daemon: { generation: "test" },
+      owner: { generation: "test" },
     });
     const failure = new Error("caller failed");
 
@@ -88,7 +102,7 @@ describe("ACP ownership inspection", () => {
     const executor = await createManagedAcpExecutor({
       workersRoot: workers,
       sessionStateDirectoryForRun: runId => join(root, "runs", runId),
-      daemon: { generation: "test" },
+      owner: { generation: "test" },
     });
     const attempt = executor.withAttempt({
       runId: "run",
@@ -130,7 +144,7 @@ describe("ACP ownership inspection", () => {
     await recoverAcpOwnership({
       workersRoot: workers,
       sessionStateDirectoryForRun: runId => join(root, "runs", runId),
-      daemon: { generation: "current" },
+      owner: { generation: "current" },
     });
 
     expect(await childAlive(child)).toBe(true);
@@ -153,7 +167,7 @@ describe("ACP ownership inspection", () => {
     await recoverAcpOwnership({
       workersRoot: workers,
       sessionStateDirectoryForRun: runId => join(root, "runs", runId),
-      daemon: { generation: "current" },
+      owner: { generation: "current" },
     });
 
     expect(await childAlive(child)).toBe(false);
@@ -164,16 +178,16 @@ describe("ACP ownership inspection", () => {
 function manifest(overrides: Partial<{
   workerId: string;
   state: "active" | "degraded";
-  daemon: { pid: number; startToken?: string; generation: string };
+  owner: { pid: number; startToken?: string; generation: string };
   worker: { pid: number; startToken?: string };
 }> = {}) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     workerId: "acp_worker_dea0",
     runId: "run",
     attemptId: "attempt",
     sessionName: "session",
-    daemon: { pid: process.pid, startToken: "pid:ignored", generation: "current" },
+    owner: { pid: process.pid, startToken: "pid:ignored", generation: "current" },
     worker: { pid: process.pid, startToken: "pid:ignored" },
     state: "active" as const,
     createdAt: "2026-07-30T00:00:00.000Z",

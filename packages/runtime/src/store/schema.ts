@@ -48,17 +48,20 @@ export function validateRuntimeDatabase(db: DatabaseSync, path: string): void {
 
 export function initializeRuntimeSchema(db: DatabaseSync): void {
   db.exec(`
-    CREATE TABLE IF NOT EXISTS daemon_lease (
+    CREATE TABLE IF NOT EXISTS runtime_authority (
       workspace_realpath TEXT PRIMARY KEY,
-      generation INTEGER NOT NULL,
+      epoch INTEGER NOT NULL,
+      owner_id TEXT,
       pid INTEGER,
+      process_start_token TEXT,
       heartbeat_at TEXT,
+      released_at TEXT,
       idle_since_at TEXT,
       idle_stop_ms INTEGER,
-      protocol_version INTEGER NOT NULL,
-      package_version TEXT NOT NULL,
-      node_version TEXT NOT NULL,
-      exec_path TEXT NOT NULL,
+      protocol_version INTEGER,
+      package_version TEXT,
+      node_version TEXT,
+      exec_path TEXT,
       updated_at TEXT NOT NULL
     );
 

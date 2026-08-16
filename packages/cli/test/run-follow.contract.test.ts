@@ -347,7 +347,7 @@ describe("inspection observation transcript", () => {
 function runningView(): Extract<InspectionView, { kind: "run" }> {
   return {
     kind: "run",
-    run: { id: "run_1", name: "design", status: "running", durationMs: 76_000 },
+    run: { id: "run_1", name: "design", status: "running", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:01:16.000Z", durationMs: 76_000 },
     counts: { total: 1, running: 1 },
     tree: [{
       type: "item",
@@ -361,7 +361,7 @@ function runningView(): Extract<InspectionView, { kind: "run" }> {
 function completedView(): Extract<InspectionView, { kind: "run" }> {
   return {
     ...runningView(),
-    run: { id: "run_1", name: "design", status: "completed", durationMs: 500_000 },
+    run: { id: "run_1", name: "design", status: "completed", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:08:20.000Z", durationMs: 500_000 },
     counts: { total: 1, completed: 1 },
     tree: [{
       type: "item",
@@ -376,7 +376,7 @@ function completedView(): Extract<InspectionView, { kind: "run" }> {
 function awaitingView(): Extract<InspectionView, { kind: "run" }> {
   return {
     kind: "run",
-    run: { id: "run_1", name: "design", status: "running" },
+    run: { id: "run_1", name: "design", status: "running", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:01.000Z" },
     counts: { total: 1, awaiting: 1 },
     tree: [{
       type: "item",

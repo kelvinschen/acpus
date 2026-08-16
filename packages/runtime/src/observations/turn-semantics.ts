@@ -43,6 +43,7 @@ export type AgentObservationExcerpt = {
 export type AgentObservationToolActivity = {
   toolCallId?: string;
   name: string;
+  title?: string;
   status?: string;
   input?: AgentObservationExcerpt;
   output?: AgentObservationExcerpt;
@@ -383,9 +384,11 @@ function mergeTool(
     : [currentToolBytes, currentToolBytes];
   const status = event.status ?? previous?.status;
   const toolCallId = event.toolCallId ?? previous?.toolCallId;
+  const title = observationToolTitle(event, previous);
   return {
     ...(toolCallId ? { toolCallId } : {}),
-    name: visibleToolName(event.toolName ?? event.title ?? event.kind ?? previous?.name ?? "tool"),
+    name: observationToolName(event, previous),
+    ...(title === undefined ? {} : { title }),
     ...(status ? { status: visible(status, 64) } : {}),
     ...(inputText === undefined
       ? previous?.input ? { input: previous.input } : {}
@@ -397,6 +400,41 @@ function mergeTool(
     updatedAt: event.observedAt,
     ...(terminalToolStatuses.has(status ?? "") ? { finishedAt: event.observedAt } : {}),
   };
+}
+
+const toolKindNames: Readonly<Record<string, string>> = {
+  read: "Read",
+  edit: "Edit",
+  delete: "Delete",
+  move: "Move",
+  search: "Search",
+  execute: "Execute",
+  think: "Think",
+  fetch: "Fetch",
+  switch_mode: "Switch mode",
+};
+
+const genericToolNames = new Set(["tool", "tool call", "unknown tool"]);
+
+function observationToolName(
+  event: Extract<AgentObservationEvent, { type: "tool" }>,
+  previous: AgentObservationToolActivity | undefined,
+): string {
+  const explicit = event.toolName === undefined ? undefined : visibleToolName(event.toolName);
+  if (explicit && !genericToolNames.has(explicit.toLowerCase())) return explicit;
+  const prior = previous?.name;
+  if (prior && !genericToolNames.has(prior.toLowerCase())) return prior;
+  const kind = event.kind === undefined ? undefined : toolKindNames[event.kind];
+  if (kind !== undefined) return kind;
+  return "Tool";
+}
+
+function observationToolTitle(
+  event: Extract<AgentObservationEvent, { type: "tool" }>,
+  previous: AgentObservationToolActivity | undefined,
+): string | undefined {
+  const title = event.title === undefined ? undefined : visibleToolName(event.title);
+  return title && !genericToolNames.has(title.toLowerCase()) ? title : previous?.title;
 }
 
 function toolEntry(

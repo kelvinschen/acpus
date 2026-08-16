@@ -1,8 +1,7 @@
 import { lstat, readFile } from "node:fs/promises";
-import { RUNTIME_STORAGE_VERSION } from "./database.js";
 import { writePrivateJsonAtomically } from "./private-json.js";
 
-export const H1_RUN_INDEX_STORAGE_VERSION = RUNTIME_STORAGE_VERSION;
+export const H1_RUN_INDEX_STORAGE_VERSION = 9;
 
 export type RuntimeGenerationMetadata = {
   schemaVersion: 1;

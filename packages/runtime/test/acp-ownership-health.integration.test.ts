@@ -15,12 +15,12 @@ describe("ACP ownership Doctor projection", () => {
       await mkdir(layout.acpWorkersRoot, { recursive: true });
       const path = join(layout.acpWorkersRoot, "acp_worker_dea0.json");
       await writeFile(path, JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         workerId: "acp_worker_dea0",
         runId: "run_1",
         attemptId: "attempt_1",
         sessionName: "session",
-        daemon: { pid: 99_999_999, startToken: "pid:99999999", generation: "old" },
+        owner: { pid: 99_999_999, startToken: "pid:99999999", generation: "old" },
         worker: { pid: 99_999_999, startToken: "pid:99999999" },
         state: "degraded",
         createdAt: "2026-07-30T00:00:00.000Z",

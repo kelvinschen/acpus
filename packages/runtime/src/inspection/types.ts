@@ -107,6 +107,7 @@ export type AgentInspectionState = {
 
 export type AgentDecisionState = {
   key: string;
+  backend?: { kind: "use"; name: string } | { kind: "command" };
 };
 
 type RunInspectionScopeState =
@@ -363,6 +364,7 @@ export type RunInspectionExcerpt = {
 type RunInspectionToolActivity = {
   toolCallId?: string;
   name: string;
+  title?: string;
   status?: string;
   input?: RunInspectionExcerpt;
   output?: RunInspectionExcerpt;
@@ -545,7 +547,7 @@ export type RunInspectionError =
 // surface. Narrow Inspector/Web documents above share only ambiguity results.
 
 export type InspectionViewQuery =
-  | { kind: "run"; runId: string }
+  | { kind: "run"; runId: string; structure?: "materialized" }
   | {
       kind: "target";
       runId: string;
@@ -554,7 +556,7 @@ export type InspectionViewQuery =
     };
 
 export type ObservableInspectionViewQuery =
-  | { kind: "run"; runId: string }
+  | { kind: "run"; runId: string; structure?: "materialized" }
   | {
       kind: "target";
       runId: string;
@@ -565,6 +567,7 @@ export type ObservableInspectionViewQuery =
 export type ObserveInspectionQuery = {
   view: ObservableInspectionViewQuery;
   until: "subject-terminal" | "decision-boundary";
+  updates?: "decision" | "activity";
   signal?: AbortSignal;
 };
 
@@ -618,6 +621,8 @@ export type InspectionRun = {
   id: string;
   name: string;
   status: RunStatus;
+  createdAt: string;
+  updatedAt: string;
   durationMs?: number;
   liveness?: "active" | "inactive" | "stale" | "terminal" | "unknown";
   failure?: InspectionFailure;
@@ -825,10 +830,32 @@ export type ForensicsResult =
 
 type InspectionTreeSubject = InspectionSubject;
 
+export type InspectionToolActivity = {
+  name: string;
+  title?: string;
+  state: "running" | "completed" | "failed" | "canceled";
+};
+
+export type InspectionAgentTelemetry = {
+  inputTokens?: number;
+  outputTokens?: number;
+  totalTokens?: number;
+  contextWindow?: {
+    used: number;
+    size: number;
+  };
+};
+
+export type InspectionTreeAgent = {
+  name: string;
+  telemetry?: InspectionAgentTelemetry;
+};
+
 export type InspectionPulse = {
   phase: RunInspectionPulse["phase"];
   turn?: number;
   headline?: string;
+  tool?: InspectionToolActivity;
 };
 
 export type InspectionAttention =
@@ -918,6 +945,7 @@ export type InspectionTreeEntry =
       subject: InspectionTreeSubject;
       state: InspectionVisibleState;
       progress?: InspectionProgress;
+      agent?: InspectionTreeAgent;
       pulse?: InspectionPulse;
       attention?: InspectionAttention;
       children: InspectionTreeEntry[];
@@ -1002,7 +1030,12 @@ export type InspectionChange = {
 
 export type InspectionObservation =
   | { kind: "attached"; view: InspectionView }
-  | { kind: "update"; changes: InspectionChange[]; timeline?: TimelineEntry[] }
+  | {
+      kind: "update";
+      changes: InspectionChange[];
+      timeline?: TimelineEntry[];
+      activity?: true;
+    }
   | {
       kind: "closed";
       reason: "subject-terminal" | "awaiting-input" | "paused";
@@ -1031,7 +1064,6 @@ export type InspectionError =
 export type RuntimeStoreRepairRequiredInspectionError = {
   type: "runtime-store-repair-required";
   runId: string;
-  command: "acpus doctor --fix";
   message: string;
 };
 

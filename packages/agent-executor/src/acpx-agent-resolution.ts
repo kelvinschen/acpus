@@ -3,7 +3,11 @@ import { access } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createAgentRegistry, type AcpAgentRegistry } from "acpx/runtime";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
-import type { AgentSelector } from "./types.js";
+import type {
+  AcpAgentLaunch,
+  AgentSelector,
+  NamedAcpAgentLaunchRegistry,
+} from "./types.js";
 
 const CONFIG_SHOW_TIMEOUT_MS = 5_000;
 const CONFIG_SHOW_MAX_BUFFER_BYTES = 1024 * 1024;
@@ -29,6 +33,29 @@ export function resolveAcpxAgentLaunch(input: {
   env: NodeJS.ProcessEnv;
 }): ResultAsync<AcpxAgentLaunch, AcpxAgentResolutionFailure> {
   return new ResultAsync(resolveAcpxAgentLaunchValue(input));
+}
+
+export function resolveAcpAgentLaunch(input: {
+  agent: AgentSelector;
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  model?: string;
+  namedAgentLaunches?: NamedAcpAgentLaunchRegistry;
+}): ResultAsync<AcpAgentLaunch, AcpxAgentResolutionFailure> {
+  if (input.agent.kind === "command") {
+    return new ResultAsync(Promise.resolve(ok(input.agent.command)));
+  }
+  const resolver = input.namedAgentLaunches !== undefined
+    && Object.hasOwn(input.namedAgentLaunches, input.agent.name)
+    ? input.namedAgentLaunches[input.agent.name]
+    : undefined;
+  if (resolver !== undefined) {
+    const launch = resolver({
+      ...(input.model === undefined ? {} : { model: input.model }),
+    });
+    return new ResultAsync(Promise.resolve(ok([...launch])));
+  }
+  return resolveAcpxAgentLaunch(input);
 }
 
 export function parseAcpxAgentOverrides(stdout: string): Record<string, AcpxAgentLaunch> {

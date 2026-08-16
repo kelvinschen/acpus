@@ -11,27 +11,28 @@ import {
 import { join } from "node:path";
 import { err, ok, ResultAsync } from "neverthrow";
 import {
-  requestDaemonShutdown,
-  requestDaemonStatus,
-  requestDaemonStatusProbe,
-  requestPredecessorDaemonShutdown,
+  requestDaemonShutdownAtEndpoint,
+  requestDaemonStatusAtEndpoint,
+  requestDaemonStatusProbeAtEndpoint,
+  requestPredecessorDaemonShutdownAtEndpoint,
 } from "./daemon/client.js";
-import { probeProcessLiveness } from "./process-liveness.js";
+import { probeProcessIdentity } from "./process-liveness.js";
 import {
   RUNTIME_LAYOUT_VERSION,
-  ensureRuntimeLayout,
+  ensureRuntimeLayoutAtWorkspace,
   isGenerationId,
   isWorkspaceManifest,
-  resolveRuntimeLayout,
+  resolveRuntimeLayoutAtWorkspace,
   resolveRuntimeWorkspaceLayout,
   runtimeLayoutForGeneration,
   validateRuntimeLayoutBoundary,
   validateWorkspaceManifest,
   type RuntimeLayout,
+  type RuntimeLayoutOptions,
   type WorkspaceManifest,
 } from "./runtime-layout.js";
 import {
-  listRuntimeGenerations,
+  listRuntimeGenerationsAtLayout,
   type RuntimeGenerationSummary,
 } from "./runtime-history.js";
 import { acquireRuntimeExclusiveLock, RuntimeLockTimeoutError } from "./runtime-lock.js";
@@ -51,6 +52,7 @@ import {
   type RuntimeGenerationState,
 } from "./storage/generation.js";
 import {
+  H1_RUN_INDEX_STORAGE_VERSION,
   readGenerationMetadataForRecovery,
   writeGenerationMetadata,
   writeRunIndex,
@@ -61,8 +63,13 @@ import { writePrivateJsonAtomically } from "./storage/private-json.js";
 const transitionSchemaVersion = 1;
 const runtimeOfflineWaitMs = 30_000;
 
+type RuntimeStoreTarget = Readonly<{
+  workspace: RuntimeLayout;
+  options: RuntimeLayoutOptions;
+}>;
+
 type RuntimeStoreBlocker = {
-  type: "daemon" | "run-lease" | "acp-ownership" | "activity-unproven";
+  type: "runtime-authority" | "run-lease" | "acp-ownership" | "activity-unproven";
   message: string;
 };
 
@@ -129,7 +136,7 @@ export type RuntimeStoreOfflineFailure = {
 class RuntimeGenerationActiveError extends Error {
   constructor(
     readonly path: string,
-    readonly blocker: "run lease" | "daemon" | "ACP ownership",
+    readonly blocker: "run lease" | "runtime authority" | "ACP ownership",
   ) {
     super(`Runtime generation '${path}' has an active ${blocker} and cannot be sealed.`);
     this.name = "RuntimeGenerationActiveError";
@@ -141,6 +148,17 @@ class RuntimeStoreUnreadableError extends Error {
     super(message);
     this.name = "RuntimeStoreUnreadableError";
   }
+}
+
+function resolveRuntimeStoreTarget(
+  cwd: string,
+  options: RuntimeLayoutOptions = {},
+): RuntimeStoreTarget {
+  const workspace = resolveRuntimeWorkspaceLayout(cwd, options);
+  return {
+    workspace,
+    options: { ...options, runtimeHome: workspace.home },
+  };
 }
 
 async function assertRuntimeGenerationSealSafe(layout: RuntimeLayout): Promise<void> {
@@ -159,7 +177,7 @@ async function assertRuntimeGenerationSealSafe(layout: RuntimeLayout): Promise<v
   try {
     const tables = new Set((database.prepare(`
       SELECT name FROM sqlite_schema
-      WHERE type = 'table' AND name IN ('daemon_lease', 'run_leases')
+      WHERE type = 'table' AND name IN ('runtime_authority', 'run_leases')
     `).all() as Array<{ name: string }>).map(row => row.name));
     if (tables.has("run_leases")) {
       const active = database.prepare(`
@@ -169,15 +187,19 @@ async function assertRuntimeGenerationSealSafe(layout: RuntimeLayout): Promise<v
       `).get(new Date().toISOString()) as { count: number };
       if (active.count > 0) throw new RuntimeGenerationActiveError(layout.runtimeRoot, "run lease");
     }
-    if (tables.has("daemon_lease")) {
-      const daemon = database.prepare(`
-        SELECT pid
-        FROM daemon_lease
+    if (tables.has("runtime_authority")) {
+      const authority = database.prepare(`
+        SELECT pid, process_start_token
+        FROM runtime_authority
+        WHERE released_at IS NULL
         ORDER BY updated_at DESC
         LIMIT 1
-      `).get() as { pid: number | null } | undefined;
-      if (daemon?.pid && probeProcessLiveness(daemon.pid) !== "dead") {
-        throw new RuntimeGenerationActiveError(layout.runtimeRoot, "daemon");
+      `).get() as { pid: number | null; process_start_token: string | null } | undefined;
+      if (authority?.pid && probeProcessIdentity({
+        pid: authority.pid,
+        ...(authority.process_start_token === null ? {} : { startToken: authority.process_start_token }),
+      }) !== "dead") {
+        throw new RuntimeGenerationActiveError(layout.runtimeRoot, "runtime authority");
       }
     }
   } catch (error) {
@@ -231,7 +253,14 @@ export function inspectRuntimeStore(
 export function repairRuntimeStore(
   cwd: string,
 ): ResultAsync<{ changed: boolean }, RuntimeStoreFailure> {
-  return ResultAsync.fromPromise(repairRuntimeStoreValue(cwd), error => ({
+  return repairRuntimeStoreInternal(cwd);
+}
+
+export function repairRuntimeStoreInternal(
+  cwd: string,
+  options: RuntimeLayoutOptions = {},
+): ResultAsync<{ changed: boolean }, RuntimeStoreFailure> {
+  return ResultAsync.fromPromise(repairRuntimeStoreValue(cwd, options), error => ({
     type: error instanceof RuntimeStoreBusyError || error instanceof RuntimeDatabaseProbeChangedError ? "busy"
       : error instanceof RuntimeStoreUnreadableError ? "unreadable"
         : error instanceof RuntimeStoreUnsupportedError ? "unsupported"
@@ -250,9 +279,10 @@ export function repairRuntimeStore(
 
 export function inspectRuntimeStoreInternal(
   cwd: string,
+  options: RuntimeLayoutOptions = {},
 ): ResultAsync<RuntimeStoreAssessment, RuntimeStoreInspectFailure> {
   return ResultAsync.fromPromise(
-    inspectRuntimeStoreValue(cwd),
+    inspectRuntimeStoreValue(cwd, options),
     error => ({
       type: "inspect-failed",
       reason: error instanceof RuntimeDatabaseProbeChangedError ? "busy"
@@ -263,12 +293,17 @@ export function inspectRuntimeStoreInternal(
   );
 }
 
-export async function initializeRuntimeStoreIfAbsent(cwd: string): Promise<void> {
-  const workspace = resolveRuntimeWorkspaceLayout(cwd);
+export async function initializeRuntimeStoreIfAbsent(
+  cwd: string,
+  options: RuntimeLayoutOptions = {},
+): Promise<void> {
+  const target = resolveRuntimeStoreTarget(cwd, options);
+  const workspace = target.workspace;
+  await ensurePrivateDirectory(workspace.home, workspace.platform);
   const lock = await acquireRuntimeExclusiveLock(workspace);
   try {
-    const assessment = await inspectRuntimeStoreValue(cwd);
-    if (assessment.current.state === "absent") await initializeCurrentStore(cwd);
+    const assessment = await inspectRuntimeStoreAtTarget(target);
+    if (assessment.current.state === "absent") await initializeCurrentStore(target);
   } finally {
     await lock.release();
   }
@@ -289,18 +324,19 @@ export function awaitRuntimeStoreOffline(
 }
 
 async function awaitRuntimeStoreOfflineValue(cwd: string): Promise<void> {
-  const status = await requestDaemonStatus(cwd);
-  if (status.isOk()) throw new RuntimeStoreBusyError("Runtime store has a live daemon.");
+  const target = resolveRuntimeStoreTarget(cwd);
+  const status = await requestDaemonStatusAtEndpoint(target.workspace.daemonEndpoint);
+  if (status.isOk()) throw new RuntimeStoreBusyError("Runtime store has a live Runtime authority.");
   if (status.error.type !== "transport"
     || status.error.reason !== "not-found" && status.error.reason !== "refused") {
     throw new Error(`Runtime daemon activity cannot be proven offline: ${status.error.message}`);
   }
-  const workspace = resolveRuntimeWorkspaceLayout(cwd);
+  const workspace = target.workspace;
   const lock = await acquireOfflineExclusiveLock(workspace);
   try {
     let layout: RuntimeLayout;
     try {
-      layout = resolveRuntimeLayout(cwd);
+      layout = resolveRuntimeLayoutAtWorkspace(workspace);
     } catch (error) {
       if (!await pathExists(workspace.workspaceRoot)) return;
       throw error;
@@ -328,10 +364,14 @@ async function acquireOfflineExclusiveLock(layout: RuntimeLayout) {
   }
 }
 
-async function repairRuntimeStoreValue(cwd: string): Promise<{ changed: boolean }> {
+async function repairRuntimeStoreValue(
+  cwd: string,
+  options: RuntimeLayoutOptions,
+): Promise<{ changed: boolean }> {
+  const target = resolveRuntimeStoreTarget(cwd, options);
   let first: RuntimeStoreAssessment | undefined;
   try {
-    first = await inspectRuntimeStoreValue(cwd);
+    first = await inspectRuntimeStoreAtTarget(target);
   } catch (error) {
     // An online WAL probe is only a no-op/unsupported preflight. If it races a
     // writer, retire the daemon and make the authoritative decision offline.
@@ -339,21 +379,34 @@ async function repairRuntimeStoreValue(cwd: string): Promise<{ changed: boolean 
   }
   if (first?.current.state === "absent" || first?.current.state === "ready") return { changed: false };
   if (first?.current.state === "unsupported") throw new RuntimeStoreUnsupportedError(first.current.detail);
-  await stopDaemonGracefully(cwd);
-  const workspace = resolveRuntimeWorkspaceLayout(cwd);
+  await stopDaemonGracefully(target.workspace);
+  const workspace = target.workspace;
   let lock;
   try {
     lock = await acquireRuntimeExclusiveLock(workspace);
   } catch (error) {
-    if (error instanceof RuntimeLockTimeoutError) throw new RuntimeStoreBusyError(error.message);
+    if (error instanceof RuntimeLockTimeoutError) {
+      try {
+        const latest = await inspectRuntimeStoreAtTarget(target);
+        if (latest.current.state === "absent" || latest.current.state === "ready") {
+          return { changed: false };
+        }
+        if (latest.current.state === "unsupported") {
+          throw new RuntimeStoreUnsupportedError(latest.current.detail);
+        }
+      } catch (latestError) {
+        if (latestError instanceof RuntimeStoreUnsupportedError) throw latestError;
+      }
+      throw new RuntimeStoreBusyError(error.message);
+    }
     throw error;
   }
 
   try {
-    const checked = await inspectRuntimeStoreValue(cwd);
+    const checked = await inspectRuntimeStoreAtTarget(target);
     if (checked.current.state === "absent" || checked.current.state === "ready") return { changed: false };
     if (checked.current.state === "unsupported") throw new RuntimeStoreUnsupportedError(checked.current.detail);
-    const resolved = await resolveWalUnderLock(cwd, checked);
+    const resolved = await resolveWalUnderLock(workspace, checked);
     if (resolved.blockers.length > 0) {
       throw new RuntimeStoreBusyError(resolved.blockers.map(blocker => blocker.message).join(" "));
     }
@@ -364,14 +417,14 @@ async function repairRuntimeStoreValue(cwd: string): Promise<{ changed: boolean 
       await ensurePrivateDirectory(path, workspace.platform);
     }
     const existingJournal = await readTransitionJournal(workspace.transitionJournalPath);
-    if (existingJournal) return await resumeTransition(cwd, workspace, existingJournal);
+    if (existingJournal) return await resumeTransition(target, existingJournal);
     if (assessment.transition.type === "initialize" && assessment.current.state !== "absent") {
-      return await initializeCurrentStore(cwd);
+      return await initializeCurrentStore(target);
     }
     if (assessment.transition.type === "none") throw new Error("Runtime store does not need repair.");
     const journal = await createTransitionJournal(workspace, assessment);
     await writePrivateJsonAtomically(workspace.transitionJournalPath, journal);
-    return await resumeTransition(cwd, workspace, journal);
+    return await resumeTransition(target, journal);
   } finally {
     await lock.release();
   }
@@ -381,7 +434,7 @@ class RuntimeStoreBusyError extends Error {}
 class RuntimeStoreUnsupportedError extends Error {}
 
 async function resolveWalUnderLock(
-  cwd: string,
+  workspace: RuntimeLayout,
   assessment: RuntimeStoreAssessment,
 ): Promise<{ assessment: RuntimeStoreAssessment; blockers: RuntimeStoreBlocker[] }> {
   const wal = assessment.blockers.filter(blocker => blocker.type === "activity-unproven"
@@ -392,7 +445,6 @@ async function resolveWalUnderLock(
     return { assessment, blockers: assessment.blockers };
   }
   try {
-    const workspace = resolveRuntimeWorkspaceLayout(cwd);
     const layout = activityLayout(workspace, assessment.current);
     await assertRuntimeGenerationSealSafe(layout);
     if (!canReassessCrashWal(assessment)) return { assessment, blockers: [] };
@@ -408,7 +460,9 @@ async function resolveWalUnderLock(
       return {
         assessment,
         blockers: [{
-          type: error.blocker === "run lease" ? "run-lease" : error.blocker === "daemon" ? "daemon" : "acp-ownership",
+          type: error.blocker === "run lease"
+            ? "run-lease"
+            : error.blocker === "runtime authority" ? "runtime-authority" : "acp-ownership",
           message: error.message,
         }],
       };
@@ -426,14 +480,23 @@ function canReassessCrashWal(assessment: RuntimeStoreAssessment): boolean {
       && blocker.message.includes("write-ahead log"));
 }
 
-async function inspectRuntimeStoreValue(cwd: string): Promise<RuntimeStoreAssessment> {
-  const workspace = resolveRuntimeWorkspaceLayout(cwd);
+async function inspectRuntimeStoreValue(
+  cwd: string,
+  options: RuntimeLayoutOptions = {},
+): Promise<RuntimeStoreAssessment> {
+  return inspectRuntimeStoreAtTarget(resolveRuntimeStoreTarget(cwd, options));
+}
+
+async function inspectRuntimeStoreAtTarget(
+  target: RuntimeStoreTarget,
+): Promise<RuntimeStoreAssessment> {
+  const workspace = target.workspace;
   await validateRuntimeLayoutBoundary(workspace);
   const journal = await readTransitionJournal(workspace.transitionJournalPath);
   let generations: RuntimeGenerationSummary[] = [];
   let generationFailure: string | undefined;
   try {
-    generations = await listRuntimeGenerations(cwd);
+    generations = await listRuntimeGenerationsAtLayout(workspace);
   } catch (error) {
     generationFailure = errorMessage(error);
   }
@@ -496,7 +559,7 @@ async function inspectRuntimeStoreValue(cwd: string): Promise<RuntimeStoreAssess
       } else if (validation.value.manifestVersion === 1) {
         ({ current, transition } = await inspectLegacyStore(workspace));
       } else {
-        ({ current, transition } = await inspectGenerationStore(cwd));
+        ({ current, transition } = await inspectGenerationStore(workspace));
       }
     }
   }
@@ -522,7 +585,7 @@ async function inspectRuntimeStoreValue(cwd: string): Promise<RuntimeStoreAssess
     const incompatible = await inspectJournalSourceCompatibility(workspace, journal);
     if (incompatible) ({ current, transition } = incompatible);
   } else if (current.state === "recovery-required") {
-    const incompatible = await inspectRecoverySourceCompatibility(cwd, workspace, generations);
+    const incompatible = await inspectRecoverySourceCompatibility(workspace, generations);
     if (incompatible) ({ current, transition } = incompatible);
   }
   if (transition.type !== "none" && current.state !== "absent") {
@@ -599,11 +662,11 @@ async function inspectLegacyStore(
 }
 
 async function inspectGenerationStore(
-  cwd: string,
+  workspace: RuntimeLayout,
 ): Promise<{ current: RuntimeStoreCurrent; transition: RuntimeStoreTransition }> {
   let layout: RuntimeLayout;
   try {
-    layout = resolveRuntimeLayout(cwd);
+    layout = resolveRuntimeLayoutAtWorkspace(workspace);
   } catch (error) {
     return {
       current: { state: "recovery-required", layoutVersion: 2, detail: errorMessage(error) },
@@ -726,13 +789,12 @@ async function inspectGenerationStore(
 }
 
 async function inspectRecoverySourceCompatibility(
-  cwd: string,
   workspace: RuntimeLayout,
   generations: RuntimeGenerationSummary[],
 ): Promise<{ current: RuntimeStoreCurrent; transition: RuntimeStoreTransition } | undefined> {
   const generationIds = new Set<string>();
   try {
-    const published = resolveRuntimeLayout(cwd).generationId;
+    const published = resolveRuntimeLayoutAtWorkspace(workspace).generationId;
     if (published) generationIds.add(published);
   } catch {
     // An invalid pointer is represented by the partial generation catalog below.
@@ -925,10 +987,10 @@ async function createTransitionJournal(
 }
 
 async function resumeTransition(
-  cwd: string,
-  workspace: RuntimeLayout,
+  target: RuntimeStoreTarget,
   journal: RuntimeStoreTransitionJournal,
 ): Promise<{ changed: boolean }> {
+  const workspace = target.workspace;
   await ensurePrivateDirectory(workspace.generationsRoot, workspace.platform);
   for (const source of journal.sources) {
     await sealTransitionSource(workspace, journal, source);
@@ -979,13 +1041,16 @@ async function resumeTransition(
     activeGenerationId: journal.nextGenerationId,
   };
   await writePrivateJsonAtomically(workspace.manifestPath, manifest);
-  await validatePublishedRuntimeGeneration(cwd, journal.nextGenerationId);
+  await validatePublishedRuntimeGeneration(workspace, journal.nextGenerationId);
   await rm(workspace.transitionJournalPath);
   return { changed: true };
 }
 
-async function validatePublishedRuntimeGeneration(cwd: string, expectedGenerationId: string): Promise<void> {
-  const published = await inspectGenerationStore(cwd);
+async function validatePublishedRuntimeGeneration(
+  workspace: RuntimeLayout,
+  expectedGenerationId: string,
+): Promise<void> {
+  const published = await inspectGenerationStore(workspace);
   if (published.current.state !== "ready"
     || published.current.generationId !== expectedGenerationId
     || published.transition.type !== "none") {
@@ -1036,7 +1101,7 @@ async function sealTransitionSource(
   await assertRegularDirectory(destination.runtimeRoot, "Runtime generation");
 
   const generationState = await safeGenerationState(destination);
-  const runs = source.storageVersion === RUNTIME_STORAGE_VERSION && generationState === "complete"
+  const runs = source.storageVersion === H1_RUN_INDEX_STORAGE_VERSION && generationState === "complete"
     ? await extractPortableRunIndex(destination)
     : undefined;
   const metadataExists = await pathExists(destination.generationMetadataPath);
@@ -1062,13 +1127,13 @@ async function sealTransitionSource(
 }
 
 async function initializeCurrentStore(
-  cwd: string,
+  target: RuntimeStoreTarget,
 ): Promise<{ changed: boolean }> {
-  const ensured = await ensureRuntimeLayout(cwd);
+  const ensured = await ensureRuntimeLayoutAtWorkspace(target.workspace, target.options);
   if (ensured.isErr()) throw new Error(ensured.error.message);
   const store = await openRuntimeStoreAtLayout(ensured.value, { lock: false, prevalidated: true });
   store.close();
-  const after = await inspectRuntimeStoreValue(cwd);
+  const after = await inspectRuntimeStoreAtTarget(target);
   if (after.current.state !== "ready") throw new Error("Initialized runtime generation did not become ready.");
   return { changed: true };
 }
@@ -1076,11 +1141,11 @@ async function initializeCurrentStore(
 async function inspectActivityBlockers(layout: RuntimeLayout): Promise<RuntimeStoreBlocker[]> {
   const blockers: RuntimeStoreBlocker[] = [];
   try {
-    const daemonStatus = await requestDaemonStatus(layout.canonicalPath);
+    const daemonStatus = await requestDaemonStatusAtEndpoint(layout.daemonEndpoint);
     if (daemonStatus.isOk()) {
       blockers.push({
-        type: "daemon",
-        message: "Runtime store has a live daemon.",
+        type: "runtime-authority",
+        message: "Runtime store has a live Runtime authority.",
       });
     } else if (daemonStatus.error.type !== "transport"
       || daemonStatus.error.reason !== "not-found" && daemonStatus.error.reason !== "refused") {
@@ -1125,7 +1190,7 @@ async function inspectActivityBlockers(layout: RuntimeLayout): Promise<RuntimeSt
     try {
       const tables = new Set((database.prepare(`
         SELECT name FROM sqlite_schema
-        WHERE type = 'table' AND name IN ('daemon_lease', 'run_leases')
+        WHERE type = 'table' AND name IN ('runtime_authority', 'run_leases')
       `).all() as Array<{ name: unknown }>).map(row => String(row.name)));
       if (tables.has("run_leases")) {
         const active = database.prepare(`
@@ -1138,16 +1203,23 @@ async function inspectActivityBlockers(layout: RuntimeLayout): Promise<RuntimeSt
           message: "Runtime store has an active run lease.",
         });
       }
-      if (tables.has("daemon_lease")) {
-        const daemon = database.prepare(`
-          SELECT pid FROM daemon_lease ORDER BY updated_at DESC LIMIT 1
-        `).get() as { pid: unknown } | undefined;
-        const pid = Number(daemon?.pid);
-        if (!blockers.some(blocker => blocker.type === "daemon")
-          && Number.isSafeInteger(pid) && pid > 0 && probeProcessLiveness(pid) !== "dead") {
+      if (tables.has("runtime_authority")) {
+        const authority = database.prepare(`
+          SELECT pid, process_start_token FROM runtime_authority
+          WHERE released_at IS NULL
+          ORDER BY updated_at DESC LIMIT 1
+        `).get() as { pid: unknown; process_start_token: unknown } | undefined;
+        const pid = Number(authority?.pid);
+        if (!blockers.some(blocker => blocker.type === "runtime-authority")
+          && Number.isSafeInteger(pid) && pid > 0 && probeProcessIdentity({
+            pid,
+            ...(typeof authority?.process_start_token === "string"
+              ? { startToken: authority.process_start_token }
+              : {}),
+          }) !== "dead") {
           blockers.push({
-            type: "daemon",
-            message: "Runtime store has an active daemon.",
+            type: "runtime-authority",
+            message: "Runtime store has an active Runtime authority.",
           });
         }
       }
@@ -1164,9 +1236,10 @@ async function inspectActivityBlockers(layout: RuntimeLayout): Promise<RuntimeSt
 }
 
 async function stopDaemonGracefully(
-  cwd: string,
+  workspace: RuntimeLayout,
 ): Promise<void> {
-  const status = await requestDaemonStatusProbe(cwd);
+  const endpoint = workspace.daemonEndpoint;
+  const status = await requestDaemonStatusProbeAtEndpoint(endpoint);
   if (status.isErr()) {
     if (status.error.type === "transport"
       && (status.error.reason === "not-found" || status.error.reason === "refused")) return;
@@ -1176,12 +1249,12 @@ async function stopDaemonGracefully(
     throw new RuntimeStoreBusyError("The live daemon is not compatible with this version of Acpus and was left unchanged.");
   }
   const shutdown = await (status.value.kind === "predecessor"
-    ? requestPredecessorDaemonShutdown(cwd)
-    : requestDaemonShutdown(cwd));
+    ? requestPredecessorDaemonShutdownAtEndpoint(endpoint)
+    : requestDaemonShutdownAtEndpoint(endpoint));
   if (shutdown.isErr()) throw new RuntimeStoreBusyError(shutdown.error.message);
   const deadline = Date.now() + 30_000;
   while (Date.now() < deadline) {
-    const polled = await requestDaemonStatusProbe(cwd);
+    const polled = await requestDaemonStatusProbeAtEndpoint(endpoint);
     if (polled.isErr() && polled.error.type === "transport"
       && (polled.error.reason === "not-found" || polled.error.reason === "refused")) return;
     await new Promise(resolve => setTimeout(resolve, 100));
@@ -1212,7 +1285,7 @@ async function extractPortableRunIndex(
     const application = database.prepare("PRAGMA application_id").get() as { application_id: unknown };
     const version = database.prepare("PRAGMA user_version").get() as { user_version: unknown };
     if (Number(application.application_id) !== RUNTIME_APPLICATION_ID
-      || Number(version.user_version) !== RUNTIME_STORAGE_VERSION) return undefined;
+      || Number(version.user_version) !== H1_RUN_INDEX_STORAGE_VERSION) return undefined;
     const columns = new Set((database.prepare("PRAGMA table_info(runs)").all() as Array<{ name: unknown }>)
       .map(column => String(column.name)));
     if (!["id", "name", "status", "created_at", "updated_at"].every(column => columns.has(column))) return undefined;
