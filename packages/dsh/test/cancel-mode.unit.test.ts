@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { errAsync, okAsync } from "neverthrow";
 import { AcpusMode } from "../src/host/mode.js";
 
 describe("Acpus Tray cancellation", () => {
@@ -18,13 +19,16 @@ describe("Acpus Tray cancellation", () => {
       parentSessionId: "session-1",
       generation: run.generation,
     }));
-    const open = vi.fn(async (workspace: string) => ({ workspace, runtime: { workspace } }));
+    const open = vi.fn((link: { workspace: string }) => okAsync({
+      workspace: link.workspace,
+      runtime: { workspace: link.workspace },
+    }));
     Object.assign(mode, {
       links: {
         readSession: vi.fn(async () => ({ sessionId: "session-1", revision: 1, runs })),
         listLinks: vi.fn(async () => links),
       },
-      runtimes: { open },
+      supervision: { openLinkedRuntime: open },
     });
 
     await expect(mode.resolveTask("session-1"))
@@ -33,8 +37,8 @@ describe("Acpus Tray cancellation", () => {
       .resolves.toMatchObject({ runId: "run-1", workspace: "/one" });
     await expect(mode.resolveTask("session-1", { name: "audit", occurrence: 1 }))
       .resolves.toMatchObject({ runId: "run-3", workspace: "/three" });
-    expect(open).toHaveBeenCalledWith("/one");
-    expect(open).toHaveBeenCalledWith("/three");
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ workspace: "/one" }));
+    expect(open).toHaveBeenCalledWith(expect.objectContaining({ workspace: "/three" }));
   });
 
   it("does not control an unavailable generation", async () => {
@@ -73,6 +77,65 @@ describe("Acpus Tray cancellation", () => {
     });
     expect(reconcileRun).toHaveBeenCalledOnce();
     expect(scheduleNoticeDelivery).toHaveBeenCalledWith("session-1");
+  });
+
+  it("keeps an unavailable pending cancel while reconciling later controls", async () => {
+    const mode = Object.create(AcpusMode.prototype) as AcpusMode;
+    const links = [1, 2].map(generation => ({
+      workspace: `/workspace-${generation}`,
+      admissionRequestId: `admission-${generation}`,
+      runId: `run-${generation}`,
+      workflowName: `task-${generation}`,
+      occurrence: 1,
+      parentSessionId: "session-1",
+      generation,
+    }));
+    const controls = links.map(link => ({
+      id: `control-${link.generation}`,
+      requestId: `request-${link.generation}`,
+      actor: "model" as const,
+      parentSessionId: link.parentSessionId,
+      generation: link.generation,
+      workspace: link.workspace,
+      runId: link.runId,
+      status: "pending" as const,
+    }));
+    const settleCancel = vi.fn(async () => undefined);
+    const reconcileRun = vi.fn(async () => undefined);
+    const scheduleNoticeDelivery = vi.fn();
+    const runtimeControl = vi.fn(() => okAsync({ type: "cancel", state: "applied", run: {} }));
+    Object.assign(mode, {
+      links: {
+        pendingControls: vi.fn(async () => controls),
+        listLinks: vi.fn(async () => links),
+        readSession: vi.fn(async () => ({ sessionId: "session-1", revision: 1, runs: [] })),
+        settleCancel,
+      },
+      supervision: {
+        whenReady: vi.fn(async () => undefined),
+        openLinkedRuntime: vi.fn((link: { generation: number; workspace: string }) =>
+          link.generation === 1
+            ? errAsync({
+                type: "workspace-unavailable" as const,
+                workspace: link.workspace,
+                message: "missing",
+              })
+            : okAsync({ workspace: link.workspace, runtime: { control: runtimeControl } })),
+        reconcileRun,
+        scheduleNoticeDelivery,
+      },
+    });
+
+    await (mode as unknown as { reconcilePendingCancels(): Promise<void> })
+      .reconcilePendingCancels();
+
+    expect(settleCancel).toHaveBeenCalledTimes(1);
+    expect(settleCancel).toHaveBeenCalledWith(expect.objectContaining({
+      controlId: "control-2",
+      outcome: "applied",
+    }));
+    expect(reconcileRun).toHaveBeenCalledWith(links[1]);
+    expect(scheduleNoticeDelivery).toHaveBeenCalledWith();
   });
 });
 
@@ -120,6 +183,10 @@ function modeStub(overrides: {
       })),
     },
     supervision: {
+      openLinkedRuntime: vi.fn(() => okAsync({
+        workspace: "/workspace",
+        runtime: { control: overrides.control ?? vi.fn() },
+      })),
       reconcileRun: overrides.reconcileRun ?? vi.fn(async () => undefined),
       scheduleNoticeDelivery: overrides.scheduleNoticeDelivery ?? vi.fn(),
     },

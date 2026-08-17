@@ -16,19 +16,29 @@ const sourceRoot = resolve(packageRoot, "src/remote");
 const outputRoot = resolve(packageRoot, "dist");
 const artifacts = [
   {
+    source: "generated.host.js",
+    output: "typert.host.js",
+    generated: "hostJs",
+  },
+  {
+    source: "generated.host.d.ts",
+    output: "typert.host.d.ts",
+    generated: "hostDts",
+  },
+  {
     source: "generated.js",
     output: "typert.remote-client.js",
-    generated: "js",
+    generated: "remoteJs",
   },
   {
     source: "generated.d.ts",
     output: "typert.remote-client.d.ts",
-    generated: "dts",
+    generated: "remoteDts",
   },
   {
     source: "generated.d.ts.map",
     output: "typert.remote-client.d.ts.map",
-    generated: "dtsMap",
+    generated: "remoteDtsMap",
   },
 ];
 
@@ -74,8 +84,8 @@ async function writeArtifacts(generated) {
     changed.push(artifact.source);
   }
   console.log(changed.length === 0
-    ? "DSH Remote artifacts are current."
-    : `Updated DSH Remote artifacts: ${changed.join(", ")}`);
+    ? "DSH Typert artifacts are current."
+    : `Updated DSH Typert artifacts: ${changed.join(", ")}`);
 }
 
 async function checkArtifacts(generated) {
@@ -85,11 +95,11 @@ async function checkArtifacts(generated) {
     if (content !== generated[artifact.generated]) stale.push(artifact.source);
   }
   if (stale.length === 0) {
-    console.log("DSH Remote artifacts are current.");
+    console.log("DSH Typert artifacts are current.");
     return;
   }
   console.error([
-    `DSH Remote artifacts are stale: ${stale.join(", ")}`,
+    `DSH Typert artifacts are stale: ${stale.join(", ")}`,
     "Run `pnpm --filter @acpus/dsh remote:generate` and commit the result.",
   ].join("\n"));
   process.exitCode = 1;
@@ -200,12 +210,13 @@ async function generateArtifacts() {
         `@acpus/dsh declared no generated Remote methods (${String(model?.invocations.length ?? 0)} invocations).`,
       );
     }
+    const temporaryPath = relative(workspace, temporaryRoot);
     return {
-      ...generated.remote,
-      js: generated.remote.js.replaceAll(
-        relative(workspace, temporaryRoot),
-        "packages/dsh",
-      ),
+      hostJs: generated.js.replaceAll(temporaryPath, "packages/dsh"),
+      hostDts: generated.dts,
+      remoteJs: generated.remote.js.replaceAll(temporaryPath, "packages/dsh"),
+      remoteDts: generated.remote.dts,
+      remoteDtsMap: generated.remote.dtsMap,
     };
   } finally {
     await rm(temporaryRoot, { recursive: true, force: true });
@@ -219,7 +230,7 @@ async function readCanonical(artifact) {
   } catch (error) {
     if (error?.code !== "ENOENT") throw error;
     throw new Error(
-      `Missing DSH Remote artifact src/remote/${artifact.source}. Run \`pnpm --filter @acpus/dsh remote:generate\`.`,
+      `Missing DSH Typert artifact src/remote/${artifact.source}. Run \`pnpm --filter @acpus/dsh remote:generate\`.`,
       { cause: error },
     );
   }

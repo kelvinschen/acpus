@@ -26,13 +26,17 @@ Acpus 模式把 DSH 设为 Supervisor。Supervisor 负责理解目标、设计 W
 
 ## 安装
 
-`@acpus/dsh` 要求兼容的 DSH `^0.1.0-rc.6` 宿主。把插件安装到要使用的 DSH profile，并只授权 Acpus Loader 使用的 `esbuild` 构建脚本：
+`@acpus/dsh` 要求兼容的 DSH `^0.1.0-rc.6` 宿主。把插件安装到要使用的 DSH profile (由于 pnpm 的限制，所以需要增加额外参数)：
+
+如果你用的是 pnpm 10+:
 
 ```sh
 dsh plugin --profile web add --allow-build=esbuild @acpus/dsh
 ```
 
-这是 pnpm 10/11 的显式供应链授权；授权会持久化到目标 profile，安装成功后 DSH 会在同一命令中完成 bundle 激活。
+否则:
+```sh
+dsh plugin --profile web add -w @acpus/dsh
 ```
 
 安装完成后，如果不生效，可以通过以下方式验证 profile 的合成配置：
@@ -101,13 +105,13 @@ ${DSH_HOME:-$HOME/.dsh}/.acpus-dsh/agent-profiles.json
 
 ## 开发
 
-修改 Host 的 `@Remote` 方法、参数或返回类型后，重新生成并提交 Client contract：
+修改 Host 的 `@Remote` 方法、参数或返回类型后，重新生成并提交同源的 Host Typert 与 Client Remote contract：
 
 ```sh
 pnpm --filter @acpus/dsh remote:generate
 ```
 
-普通 `pnpm build` 只发布已提交的生成物；`pnpm check` 会拒绝过期的 Remote contract。
+普通 `pnpm build` 只发布已提交的生成物；`pnpm check` 会拒绝过期的 Typert contract。
 
 ## 卸载
 

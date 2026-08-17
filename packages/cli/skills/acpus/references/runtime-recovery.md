@@ -25,6 +25,8 @@ Agent failures preserve Acpus origin/code separately from their upstream acpx ca
 
 For `RUNTIME_UPDATE_BLOCKED`, leave the old daemon and its runs untouched, wait for current work to finish, then retry. For `RUNTIME_AUTHORITY_LOST`, the admitted run remains durable; continue with `acpus runs inspect <run-id> --follow`.
 
+For `ACPUS_WORKSPACE_UNAVAILABLE`, restore the exact original workspace path, then repeat the same operation. Do not rebind the task or submit a replacement.
+
 ## Phase-based fixes
 
 | Symptom | Likely phase | Fix |

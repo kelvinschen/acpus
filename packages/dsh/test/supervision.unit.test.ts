@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { errAsync, okAsync } from "neverthrow";
 import type { RunLink, SupervisorStateStore } from "../src/host/run-links.js";
 import { projectStoredRun } from "../src/host/run-projection.js";
 import { AcpusSupervision } from "../src/host/supervision.js";
@@ -117,6 +118,67 @@ describe("process-owned Acpus supervision", () => {
 
     expect(admit).toHaveBeenCalledWith("admission-1", expect.objectContaining({ id: "run-1", name: "Example" }));
     expect(runtime.observeInspection).not.toHaveBeenCalled();
+    await supervision.dispose();
+  });
+
+  it("does not reopen the workspace for retained terminal history", async () => {
+    const admitted = admittedLink();
+    const store = storeStub([admitted]);
+    store.readSession.mockResolvedValue({
+      sessionId: admitted.parentSessionId,
+      revision: 1,
+      runs: [projectStoredRun(admitted, runView("completed"))],
+    });
+    store.listReconciliationLinks.mockResolvedValue([]);
+    const open = vi.fn(async () => {
+      throw new Error("workspace is missing");
+    });
+    const report = vi.fn();
+    const supervision = new AcpusSupervision({
+      runtimes: { open } as never,
+      store,
+      admit: vi.fn(),
+      report,
+    });
+
+    supervision.start();
+    await supervision.whenReady();
+
+    expect(open).not.toHaveBeenCalled();
+    expect(report).not.toHaveBeenCalled();
+    await supervision.dispose();
+  });
+
+  it("degrades a non-terminal task when its workspace is unavailable", async () => {
+    const admitted = admittedLink();
+    const store = storeStub([admitted]);
+    store.setRunUnavailable.mockResolvedValue({ revision: 2, changed: true });
+    const report = vi.fn();
+    const supervision = new AcpusSupervision({
+      runtimes: {
+        open: vi.fn(() => errAsync({
+          type: "workspace-unavailable" as const,
+          workspace: admitted.workspace,
+          message: "Restore the original path and retry.",
+        })),
+      } as never,
+      store,
+      admit: vi.fn(),
+      report,
+    });
+
+    supervision.start();
+    await supervision.whenReady();
+
+    expect(store.setRunUnavailable).toHaveBeenCalledWith({
+      link: admitted,
+      unavailable: {
+        reason: "workspace-unavailable",
+        detail: "Restore the original path and retry.",
+        detectedAt: expect.any(String),
+      },
+    });
+    expect(report).not.toHaveBeenCalled();
     await supervision.dispose();
   });
 
@@ -334,6 +396,7 @@ function link(): RunLink {
 function storeStub(links: RunLink[]) {
   return {
     listLinks: vi.fn(async () => links),
+    listReconciliationLinks: vi.fn(async () => links),
     readSession: vi.fn(async sessionId => ({
       sessionId,
       revision: 0,
@@ -345,6 +408,7 @@ function storeStub(links: RunLink[]) {
       noticeInserted: false,
       wakeWaiters: true,
     })),
+    setRunUnavailable: vi.fn(async () => ({ revision: 0, changed: false })),
     pendingNotices: vi.fn(async () => []),
     markNoticeDelivered: vi.fn(async () => undefined),
     prepareCancel: vi.fn(),
@@ -352,8 +416,10 @@ function storeStub(links: RunLink[]) {
     pendingControls: vi.fn(async () => []),
   } satisfies SupervisorStateStore as SupervisorStateStore & {
     listLinks: ReturnType<typeof vi.fn>;
+    listReconciliationLinks: ReturnType<typeof vi.fn>;
     readSession: ReturnType<typeof vi.fn>;
     commitObservation: ReturnType<typeof vi.fn>;
+    setRunUnavailable: ReturnType<typeof vi.fn>;
   };
 }
 
@@ -368,7 +434,7 @@ function admittedLink(): RunLink & { runId: string; workflowName: string; occurr
 
 function pool(runtime: ReturnType<typeof runtimeStub>) {
   return {
-    open: vi.fn(async () => ({ workspace: "/workspace", runtime })),
+    open: vi.fn(() => okAsync({ workspace: "/workspace", runtime })),
   } as never;
 }
 

@@ -3,6 +3,7 @@ import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"
 import { dirname } from "node:path";
 import { AcpusOperationError } from "./errors.js";
 import {
+  isTerminalProjection,
   preserveActivityStarts,
   type StoredRunProjection,
 } from "./run-projection.js";
@@ -86,10 +87,20 @@ export type CommitResult = {
   wakeWaiters: boolean;
 };
 
+export type AvailabilityCommitResult = {
+  revision: number;
+  changed: boolean;
+};
+
 export interface SupervisorStateStore {
   listLinks(): Promise<RunLink[]>;
+  listReconciliationLinks(): Promise<RunLink[]>;
   readSession(sessionId: string): Promise<StoredSessionProjection>;
   commitObservation(input: ObservationCommit): Promise<CommitResult>;
+  setRunUnavailable(input: {
+    link: RunLink;
+    unavailable?: NonNullable<StoredRunProjection["unavailable"]>;
+  }): Promise<AvailabilityCommitResult>;
   pendingNotices(): Promise<StoredNotice[]>;
   markNoticeDelivered(noticeId: string): Promise<void>;
   prepareCancel(input: {
@@ -137,6 +148,16 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
 
   async listLinks(): Promise<RunLink[]> {
     return this.read(() => structuredClone([...this.state.links]));
+  }
+
+  async listReconciliationLinks(): Promise<RunLink[]> {
+    return this.read(() => structuredClone(this.state.links.filter(link => {
+      if (link.runId === undefined) return true;
+      const projection = this.state.sessions
+        .find(session => session.sessionId === link.parentSessionId)
+        ?.runs.find(run => run.runId === link.runId);
+      return projection === undefined || !isTerminalProjection(projection);
+    })));
   }
 
   async readLink(
@@ -230,6 +251,42 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
         noticeInserted,
         wakeWaiters: projectionChanged,
       };
+    });
+  }
+
+  async setRunUnavailable(input: {
+    link: RunLink;
+    unavailable?: NonNullable<StoredRunProjection["unavailable"]>;
+  }): Promise<AvailabilityCommitResult> {
+    return this.mutate(async () => {
+      if (input.link.runId === undefined) return { revision: 0, changed: false };
+      const session = this.state.sessions.find(
+        candidate => candidate.sessionId === input.link.parentSessionId,
+      );
+      const projection = session?.runs.find(run => run.runId === input.link.runId);
+      if (session === undefined || projection === undefined || isTerminalProjection(projection)) {
+        return { revision: session?.revision ?? 0, changed: false };
+      }
+      const sameUnavailable = input.unavailable === undefined
+        ? projection.unavailable === undefined
+        : projection.unavailable?.reason === input.unavailable.reason;
+      if (sameUnavailable) return { revision: session.revision, changed: false };
+
+      const next = input.unavailable === undefined
+        ? withoutUnavailable(projection)
+        : { ...projection, unavailable: input.unavailable };
+      const previous = this.state;
+      const revision = session.revision + 1;
+      this.state = {
+        ...this.state,
+        sessions: replaceSession(this.state.sessions, {
+          ...session,
+          revision,
+          runs: replaceProjection(session.runs, next),
+        }),
+      };
+      await this.flushState(previous);
+      return { revision, changed: true };
     });
   }
 
@@ -638,8 +695,24 @@ function isStoredRunProjection(value: unknown): value is StoredRunProjection {
     && typeof projection.updatedAt === "string"
     && Array.isArray(projection.activity)
     && projection.activity.every(isStoredActivityNode)
+    && (projection.unavailable === undefined || isStoredUnavailable(projection.unavailable))
     && !!projection.counts
     && typeof projection.counts === "object";
+}
+
+function isStoredUnavailable(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const unavailable = value as Record<string, unknown>;
+  return [
+    "workspace-unavailable",
+    "runtime-authority-busy",
+    "runtime-store-unavailable",
+    "runtime-store-unsupported",
+    "runtime-configuration-invalid",
+    "runtime-open-failed",
+  ].includes(String(unavailable.reason))
+    && typeof unavailable.detail === "string"
+    && typeof unavailable.detectedAt === "string";
 }
 
 function isStoredActivityNode(value: unknown): boolean {
@@ -764,6 +837,11 @@ function replaceProjection(
   return projections.some(candidate => candidate.runId === projection.runId)
     ? projections.map(candidate => candidate.runId === projection.runId ? projection : candidate)
     : [...projections, projection];
+}
+
+function withoutUnavailable(projection: StoredRunProjection): StoredRunProjection {
+  const { unavailable: _unavailable, ...available } = projection;
+  return available;
 }
 
 function sameValue(left: unknown, right: unknown): boolean {

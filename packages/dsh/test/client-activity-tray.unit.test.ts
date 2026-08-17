@@ -78,13 +78,28 @@ describe("Acpus activity tray interactions", () => {
     acpus.dispose();
   });
 
+  it("shows retained activity as unavailable without offering a recovery action", async () => {
+    const acpus = await renderTray(true);
+
+    expect(container.querySelector(".acpus-activity-tray")?.getAttribute("data-status"))
+      .toBe("running");
+    expect(container.querySelector(".acpus-activity-tray")?.getAttribute("data-availability"))
+      .toBe("unavailable");
+    expect(container.querySelector(".acpus-availability")?.textContent).toContain("工作目录不可用");
+    expect(container.querySelector(".acpus-availability")?.textContent).toContain("/missing/workspace");
+    expect(container.querySelector(".acpus-tray-total-time")?.textContent).toBe("总耗时 00:02");
+    expect(button("Cancel")).toBeUndefined();
+    expect(button("重新检查")).toBeUndefined();
+    acpus.dispose();
+  });
+
 });
 
-async function renderTray(): Promise<AcpusClientState> {
+async function renderTray(unavailable = false): Promise<AcpusClientState> {
   vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-08-14T00:00:05.000Z"));
   const acpus = new AcpusClientState({} as AcpusRemote);
   vi.spyOn(acpus, "watchSession").mockReturnValue(() => {});
-  acpus.projections.set(projection());
+  acpus.projections.set(projection(unavailable));
 
   await act(async () => root.render(React.createElement(AcpusActivityTray, {
     acpus,
@@ -101,7 +116,7 @@ function button(label: string): HTMLButtonElement | undefined {
     .find(candidate => candidate.textContent?.trim() === label);
 }
 
-function projection(): {
+function projection(unavailable = false): {
   sessions: Record<string, SessionActivityProjection>;
   connections: Record<string, { status: "connected"; synchronizedAt: number }>;
   selections: Record<string, undefined>;
@@ -119,17 +134,33 @@ function projection(): {
     canceled: 0,
   };
   const startedAt = "2026-08-14T00:00:00.000Z";
+  const availability = unavailable
+    ? {
+        status: "unavailable" as const,
+        reason: "workspace-unavailable" as const,
+        workspace: "/missing/workspace",
+        detail: "Restore the original path and retry.",
+        detectedAt: "2026-08-14T00:00:02.000Z",
+      }
+    : { status: "available" as const };
   return {
     sessions: {
       "session-1": {
         sessionId: "session-1",
         revision: 1,
-        tasks: [{ task: selector, status: "running", counts, startedAt }],
+        tasks: [{
+          task: selector,
+          status: "running",
+          availability,
+          counts,
+          startedAt,
+        }],
         tasksTruncated: false,
         task: {
           selector,
           generation: 1,
           status: "running",
+          availability,
           counts,
           startedAt,
           tree: [{

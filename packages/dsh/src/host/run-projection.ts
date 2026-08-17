@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import type { InspectionCounts, InspectionView } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AdmittedRunLink } from "./run-links.js";
+import type { RuntimePoolOpenFailure } from "./runtime-pool.js";
 
 type InspectionTreeEntry = Extract<InspectionView, { kind: "run" }>["tree"][number];
 type InspectionVisibleState = Extract<InspectionTreeEntry, { type: "item" }>["state"];
@@ -57,6 +58,11 @@ export type StoredRunProjection = {
   createdAt: string;
   updatedAt: string;
   activity: StoredActivityNode[];
+  unavailable?: {
+    reason: RuntimePoolOpenFailure["type"];
+    detail: string;
+    detectedAt: string;
+  };
   failure?: {
     origin: string;
     code?: string;

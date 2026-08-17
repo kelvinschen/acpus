@@ -7,7 +7,7 @@ import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { InspectionForensicsView } from "@acpus/runtime";
 import type { WorkspaceRuntime } from "@acpus/runtime/host";
-import { AcpusOperationError } from "./errors.js";
+import { AcpusOperationError, runtimePoolOperationError } from "./errors.js";
 import {
   AgentProfileStore,
   effectiveAgentProfiles,
@@ -145,7 +145,9 @@ export class AcpusMode extends TypertRemoteService {
 
   async run(request: AcpusRunRequest): Promise<AcpusRunReceipt | InvalidWorkflow> {
     await this.supervision.whenReady();
-    const { workspace, runtime } = await this.runtimes.open(request.workspace);
+    const opened = await this.runtimes.open(request.workspace);
+    if (opened.isErr()) throw runtimePoolOperationError(opened.error);
+    const { workspace, runtime } = opened.value;
     const admissionRequestId = admissionId(request.sessionId, request.toolCallId);
     const identity = {
       workspace,
@@ -196,7 +198,9 @@ export class AcpusMode extends TypertRemoteService {
 
   async runtime(workspace: string): Promise<WorkspaceRuntime> {
     await this.supervision.whenReady();
-    return (await this.runtimes.open(workspace)).runtime;
+    const opened = await this.runtimes.open(workspace);
+    if (opened.isErr()) throw runtimePoolOperationError(opened.error);
+    return opened.value.runtime;
   }
 
   agentProfiles(): Promise<AgentProfile[]> {
@@ -260,11 +264,12 @@ export class AcpusMode extends TypertRemoteService {
         "ACPUS_TASK_NOT_FOUND",
       );
     }
-    const runtime = (await this.runtimes.open(link.workspace)).runtime;
+    const opened = await this.supervision.openLinkedRuntime(link);
+    if (opened.isErr()) throw runtimePoolOperationError(opened.error);
     return {
       runId: link.runId,
       workspace: link.workspace,
-      runtime,
+      runtime: opened.value.runtime,
       generation: link.generation,
       selector: { name: link.workflowName, occurrence: link.occurrence },
       link,
@@ -329,7 +334,13 @@ export class AcpusMode extends TypertRemoteService {
       return { status: "rejected", reason: "node-unavailable" };
     }
     try {
-      const runtime = (await this.runtimes.open(task.workspace)).runtime;
+      const link = (await this.links.listLinks()).find(candidate =>
+        candidate.parentSessionId === input.sessionId
+        && candidate.generation === input.generation);
+      if (!isAdmittedLink(link)) return { status: "rejected", reason: "task-unavailable" };
+      const opened = await this.supervision.openLinkedRuntime(link);
+      if (opened.isErr()) return { status: "rejected", reason: "temporarily-unavailable" };
+      const runtime = opened.value.runtime;
       const inspected = await runtime.inspect({
         kind: "target",
         runId: task.runId,
@@ -424,7 +435,18 @@ export class AcpusMode extends TypertRemoteService {
     control: Awaited<ReturnType<RunLinkStore["pendingControls"]>>[number],
     link: AdmittedRunLink,
   ): Promise<CancelSessionTaskResult> {
-    const runtime = (await this.runtimes.open(link.workspace)).runtime;
+    const opened = await this.supervision.openLinkedRuntime(link);
+    if (opened.isErr()) {
+      return {
+        status: "rejected",
+        reason: "temporarily-unavailable",
+        projection: await this.projections.readSessionActivity(control.parentSessionId, {
+          name: link.workflowName,
+          occurrence: link.occurrence,
+        }),
+      };
+    }
+    const runtime = opened.value.runtime;
     const result = await runtime.control({
       type: "cancel",
       runId: link.runId,
@@ -469,17 +491,31 @@ export class AcpusMode extends TypertRemoteService {
   private async reconcilePendingCancels(): Promise<void> {
     await this.supervision.whenReady();
     for (const control of await this.links.pendingControls()) {
-      const link = (await this.links.listLinks()).find(candidate =>
-        candidate.parentSessionId === control.parentSessionId
-        && candidate.generation === control.generation
-        && candidate.runId === control.runId);
-      if (link?.runId === undefined) continue;
-      if (control.actor === "user") {
+      try {
+        const link = (await this.links.listLinks()).find(candidate =>
+          candidate.parentSessionId === control.parentSessionId
+          && candidate.generation === control.generation
+          && candidate.runId === control.runId);
         if (!isAdmittedLink(link)) continue;
-        await this.applyUserCancel(control, link);
-      } else {
-        const runtime = (await this.runtimes.open(link.workspace)).runtime;
-        const result = await runtime.control({
+        const projection = (await this.links.readSession(control.parentSessionId)).runs
+          .find(run => run.runId === control.runId);
+        if (projection !== undefined
+          && ["completed", "failed", "canceled"].includes(projection.status)) {
+          await this.links.settleCancel({
+            controlId: control.id,
+            outcome: "rejected",
+            taskStatus: projection.status,
+            reason: "already-terminal",
+          });
+          continue;
+        }
+        if (control.actor === "user") {
+          await this.applyUserCancel(control, link);
+          continue;
+        }
+        const opened = await this.supervision.openLinkedRuntime(link);
+        if (opened.isErr()) continue;
+        const result = await opened.value.runtime.control({
           type: "cancel",
           runId: link.runId,
           requestId: control.requestId,
@@ -496,7 +532,9 @@ export class AcpusMode extends TypertRemoteService {
               }
             : {}),
         });
-        await this.supervision.reconcileRun(link as typeof link & { runId: string });
+        await this.supervision.reconcileRun(link);
+      } catch (error) {
+        console.error(`[acpus/dsh] cancel reconciliation for ${control.runId}:`, error);
       }
     }
     this.supervision.scheduleNoticeDelivery();
