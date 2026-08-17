@@ -1,5 +1,11 @@
 # @acpus/dsh
 
+## 0.1.1
+
+### Patch Changes
+
+- fab4a61: Publish the generated Host Typert contribution so DSH RPC discovery remains reliable across separate protocol module instances.
+
 ## 0.1.0
 
 ### Minor Changes
