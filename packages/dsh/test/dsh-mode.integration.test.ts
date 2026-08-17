@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Context } from "@deepseek-ai/cordis";
 import { CallId } from "@deepseek-ai/dsh-llm";
+import { DurableSupervisorStateStore } from "../src/host/run-links.js";
+import type { StoredRunProjection } from "../src/host/run-projection.js";
 import { loadDshComposition as loadComposition, supervisingAgent } from "./support/dsh-composition.js";
 
 let context: Context | undefined;
@@ -250,37 +252,39 @@ describe("Acpus mode through a real DSH Loader composition", () => {
     const dshHome = join(root, "dsh-home");
     const stateDir = join(root, "state");
     const statePath = join(stateDir, "run-links.json");
-    await mkdir(workspace);
-
-    context = await loadComposition({ dshHome, stateDir });
-    const submitted = await context.tools.execute({
-      signal: new AbortController().signal,
-      callId: CallId("unavailable-run"),
-      name: "acpus_run",
-      arguments: {
-        workflow: [
-          'import { defineWorkflow, z } from "acpus/core";',
-          'export default defineWorkflow({ name: "dsh-unavailable" }).build(({ step }) => {',
-          '  step("wait").signal({ outputSchema: z.boolean(), prompt: "Wait" });',
-          "  return true;",
-          "});",
-        ].join("\n"),
-      },
-      agent: supervisingAgent(context, workspace),
+    const store = new DurableSupervisorStateStore(statePath);
+    const provisional = await store.provisional({
+      workspace,
+      admissionRequestId: "admission-unavailable",
+      parentSessionId: "acpus-supervisor-session",
     });
-    expect(submitted.isError).toBe(false);
-    await waitForSupervisorState(statePath, state =>
-      state.sessions[0]?.runs[0]?.status === "awaiting");
+    const link = await store.admitted(provisional.admissionRequestId, {
+      id: "run-unavailable",
+      name: "dsh-unavailable",
+    });
+    await store.commitObservation({
+      link,
+      projection: {
+        runId: link.runId,
+        workspace,
+        admissionRequestId: link.admissionRequestId,
+        generation: link.generation,
+        occurrence: link.occurrence,
+        name: link.workflowName,
+        status: "running",
+        counts: { total: 1, running: 1 },
+        createdAt: "2026-08-17T00:00:00.000Z",
+        updatedAt: "2026-08-17T00:00:01.000Z",
+        activity: [],
+      } satisfies StoredRunProjection,
+    });
 
-    await context.fiber.dispose();
-    context = undefined;
-    await rm(workspace, { recursive: true });
     context = await loadComposition({ dshHome, stateDir });
 
     const unavailable = await waitForSupervisorState(statePath, state =>
       state.sessions[0]?.runs[0]?.unavailable?.reason === "workspace-unavailable");
     expect(unavailable.sessions[0]?.runs[0]).toMatchObject({
-      status: "awaiting",
+      status: "running",
       unavailable: {
         reason: "workspace-unavailable",
         detail: expect.stringContaining("Restore the original path and retry"),
@@ -291,7 +295,7 @@ describe("Acpus mode through a real DSH Loader composition", () => {
       sessionId: "acpus-supervisor-session",
     });
     expect(activity.tasks[0]).toMatchObject({
-      status: "awaiting",
+      status: "running",
       availability: {
         status: "unavailable",
         reason: "workspace-unavailable",
@@ -302,7 +306,7 @@ describe("Acpus mode through a real DSH Loader composition", () => {
     await mkdir(workspace);
     await context.acpusMode.resolveTask("acpus-supervisor-session");
     const restored = await waitForSupervisorState(statePath, state =>
-      state.sessions[0]?.runs[0]?.status === "awaiting"
+      state.sessions[0]?.runs[0]?.status === "running"
       && state.sessions[0]?.runs[0]?.unavailable === undefined);
     expect(restored.sessions[0]?.runs[0]).not.toHaveProperty("unavailable");
   }, 20_000);

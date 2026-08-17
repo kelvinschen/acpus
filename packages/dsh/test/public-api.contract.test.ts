@@ -19,6 +19,7 @@ import * as client from "@acpus/dsh/client";
 import type * as projection from "@acpus/dsh/projection";
 import remote from "@acpus/dsh/remote";
 import * as supervisor from "@acpus/dsh/supervisor";
+import * as typert from "@acpus/dsh/typert";
 
 const packageRoot = new URL("../", import.meta.url);
 
@@ -54,6 +55,24 @@ describe("@acpus/dsh public contract", () => {
     expect(remote.descriptors.find(descriptor =>
       descriptor.method === "awaitSessionActivityRevision"
     )?.cancellation).toEqual({ parameter: "signal" });
+    const hostTypert = typert.TYPERT as {
+      package: string;
+      face: string;
+      invocations: Array<{
+        method: string;
+        result: { mode: string };
+      }>;
+    };
+    expect(hostTypert).toMatchObject({
+      package: "@acpus/dsh",
+      face: "host",
+    });
+    expect(hostTypert.invocations.map(invocation => invocation.method).sort()).toEqual(
+      remote.descriptors.map(descriptor => descriptor.method).sort(),
+    );
+    expect(hostTypert.invocations.find(invocation =>
+      invocation.method === "readSessionActivity"
+    )?.result.mode).toBe("strict");
     expect(null as projection.SessionActivityProjection | null).toBeNull();
   });
 
@@ -117,6 +136,10 @@ describe("@acpus/dsh public contract", () => {
     expect(manifest.exports["./client"].default).toBe("./dist/client.js");
     expect(manifest.exports["./projection"].types).toBe("./dist/remote/types.d.ts");
     expect(manifest.exports["./remote"].default).toBe("./dist/typert.remote-client.js");
+    expect(manifest.exports["./typert"]).toEqual({
+      types: "./dist/typert.host.d.ts",
+      default: "./dist/typert.host.js",
+    });
     expect(manifest.dependencies).toEqual({
       "@acpus/expression": "workspace:*",
       "@acpus/runtime": "workspace:*",

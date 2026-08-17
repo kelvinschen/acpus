@@ -27,6 +27,10 @@
       "types": "./dist/typert.remote-client.d.ts",
       "default": "./dist/typert.remote-client.js"
     },
+    "./typert": {
+      "types": "./dist/typert.host.d.ts",
+      "default": "./dist/typert.host.js"
+    },
     "./projection": {
       "development": "./src/remote/types.ts",
       "types": "./dist/remote/types.d.ts",
