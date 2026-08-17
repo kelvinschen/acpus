@@ -573,6 +573,7 @@ function taskProjection(
     tasks: [{
       task: { name: label, occurrence: 1 },
       status,
+      availability: { status: "available" },
       counts: counts(status),
       startedAt: "2026-08-14T00:00:00.000Z",
       ...(status === "completed" ? { finishedAt: "2026-08-14T00:01:00.000Z" } : {}),
@@ -582,6 +583,7 @@ function taskProjection(
       selector: { name: label, occurrence: 1 },
       generation: revision,
       status,
+      availability: { status: "available" },
       counts: counts(status),
       startedAt: "2026-08-14T00:00:00.000Z",
       ...(status === "completed" ? { finishedAt: "2026-08-14T00:01:00.000Z" } : {}),

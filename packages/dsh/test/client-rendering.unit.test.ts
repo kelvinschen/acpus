@@ -320,6 +320,7 @@ function taskSummary(
   return {
     task: { name, occurrence },
     status: "completed",
+    availability: { status: "available" },
     counts: {
       total: 1,
       notStarted: 0,
@@ -344,6 +345,7 @@ function activityTask(
     selector: { name: "review", occurrence: 1 },
     generation: 1,
     status,
+    availability: { status: "available" },
     counts: {
       total: tree.length,
       notStarted: 0,

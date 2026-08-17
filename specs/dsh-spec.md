@@ -49,7 +49,11 @@ and exposes bounded live projections to its Client contribution.
 - The integration MUST derive idempotent admission identity from the DSH
   session and task, persist a provisional private run link before admission,
   and record the admitted run id afterward. Those identities MUST remain
-  private to the Host, Runtime, and durable supervisor state.
+  private to the Host, Runtime, and durable supervisor state. When submission
+  reports an admitted or unknown outcome, the Host MUST first reconcile the
+  same admission identity. An unknown outcome MAY be replayed once only with
+  the identical identity and payload; an unresolved outcome MUST retain the
+  provisional link and surface `ACPUS_ADMISSION_OUTCOME_UNKNOWN`.
 - The integration MUST register the immutable package-owned named Agent `dsh`
   ahead of Acpx resolution. It MUST launch the package-owned DSH ACP server
   directly, without a shell, `pnpm`, user Acpx configuration, or the `acpus`
@@ -126,14 +130,24 @@ and exposes bounded live projections to its Client contribution.
   parent-session, admission, run identity, frozen workflow name, stable
   one-based same-name occurrence, optional fork source generation, every
   semantic run projection, a monotonic per-session task generation and
-  projection revision;
+  projection revision, and an optional typed Runtime-unavailability fact for a
+  retained non-terminal projection;
   pending controls; and pending or delivered attention. It MUST NOT persist live Runtime observers, Agents,
   processes, or `Result` values.
 - Host disposal MUST begin Supervisor-observer cancellation and Workspace Runtime cleanup concurrently so process signal shutdown immediately reaches managed ACP workers. Structured cancellation reasons crossing the inspection boundary MUST surface as errors with a stable human-readable message.
 - The Host MUST own at most one observation task for each linked non-terminal
-  run. Startup MUST inspect every persisted run before observing it, publish
-  the authoritative projection, attempt pending notice delivery, and observe
-  only a run that is active, unpaused, and not awaiting input.
+  run. Startup MUST reconcile provisional links and admitted links without a
+  terminal projection, while retained terminal history MUST NOT require its
+  workspace to open. A known workspace or Runtime open failure MUST preserve
+  the last run status, publish typed unavailability without a Supervisor
+  notice, and isolate that link from other startup work. Successful same-path
+  open MUST clear unavailability. Repeating the same typed failure MUST retain
+  its original safe detail and detection time without increasing the session
+  revision. Terminal projections MUST NOT record unavailability. The Host MUST
+  NOT scan for or rebind another workspace. An available non-terminal run MUST
+  publish its authoritative
+  projection, attempt pending notice delivery, and be observed only while
+  active, unpaused, and not awaiting input.
 - A semantic projection change MUST atomically replace the stored projection,
   increment its session revision, and enqueue any newly derived notice before
   projection waiters or notice side effects run. A semantic no-op MUST NOT
@@ -225,6 +239,22 @@ type RunCounts = {
   canceled: number;
 };
 
+type AcpusTaskAvailability =
+  | { status: "available" }
+  | {
+      status: "unavailable";
+      reason:
+        | "workspace-unavailable"
+        | "runtime-authority-busy"
+        | "runtime-store-unavailable"
+        | "runtime-store-unsupported"
+        | "runtime-configuration-invalid"
+        | "runtime-open-failed";
+      workspace: string;
+      detail: string;
+      detectedAt: string;
+    };
+
 type ActivityNode = {
   activityId: string;
   label: string;
@@ -256,6 +286,7 @@ type DelegatedTaskActivity = {
   selector: { name: string; occurrence: number };
   generation: number;
   status: AcpusRunStatus;
+  availability: AcpusTaskAvailability;
   counts: RunCounts;
   startedAt: string;
   finishedAt?: string;
@@ -285,6 +316,7 @@ type ActivityHoverDetail =
 type DelegatedTaskSummary = {
   task: { name: string; occurrence: number };
   status: AcpusRunStatus;
+  availability: AcpusTaskAvailability;
   counts: RunCounts;
   startedAt: string;
   finishedAt?: string;
@@ -342,6 +374,8 @@ cancelSessionTask(input: {
   a selection it MUST select the newest task. It MUST omit Runtime run ids,
   admission identities, generation from summaries, workspace identity,
   internal node keys or selectors, Agent thought or response bodies, and provider data.
+  The sole workspace exception is an unavailable task's `availability.workspace`,
+  which MUST identify the exact original path the user can restore.
   Every node MUST carry a stable opaque 128-bit identifier scoped to its run
   occurrence; it MUST NOT be rendered, exposed to model tools, or permit
   recovery of Runtime identity.
@@ -362,7 +396,10 @@ cancelSessionTask(input: {
   deterministic Runtime request id MUST be durable before control. Applied or
   confirmably rejected outcomes MUST be durable before attention delivery;
   delivery failure MUST NOT roll back cancellation or block the Remote result.
-  Startup MUST replay pending user cancellation with the same request id.
+  Startup MUST reconcile pending controls independently. It MUST replay a
+  pending user cancellation with the same request id, retain it when the
+  linked Runtime is unavailable, and settle it without opening the workspace
+  when the retained projection is already terminal.
 - A user cancellation MUST suppress the same task's generic canceled notice.
   A model-issued `acpus_control` cancellation MUST likewise suppress duplicate
   terminal attention because its tool result is already model-visible, but it
@@ -415,6 +452,13 @@ cancelSessionTask(input: {
   choices MUST survive projection and history switching for that session, run,
   and node during the page lifetime. The tree MUST scroll independently above
   `min(52vh, 560px)` without moving Header, history, connection, or Cancel.
+- When a non-terminal task is unavailable, the Tray MUST retain its last run
+  status and tree, prioritize the availability state, show the exact original
+  workspace and safe detail, freeze elapsed time at detection, and disable
+  Runtime-dependent controls and Hover reads. History switching MUST remain
+  available. The Client MUST NOT add a recovery button, background probe, path
+  scan, or model wake; the next related Host operation or Host restart is the
+  recovery trigger.
 - Hovering an Agent or started Task row for 700 ms MUST begin loading its detail and MUST
   mount an interactive plugin-owned body portal only when a complete detail is
   available. The mounted Card MUST remain beside its trigger row using its

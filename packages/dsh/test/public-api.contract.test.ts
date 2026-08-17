@@ -122,6 +122,7 @@ describe("@acpus/dsh public contract", () => {
       "@acpus/runtime": "workspace:*",
       "@acpus/workflow-compiler": "workspace:*",
       "@deepseek-ai/dsh-acp": "0.1.0-rc.6",
+      neverthrow: "^8.2.0",
       zod: "^4.4.3",
     });
     expect(manifest.peerDependencies).toMatchObject({
@@ -300,6 +301,7 @@ describe("@acpus/dsh public contract", () => {
         selector: { name: "review", occurrence: 1 },
         generation: 1,
         status: "running",
+        availability: { status: "available" },
         counts: {
           total: 1,
           notStarted: 0,

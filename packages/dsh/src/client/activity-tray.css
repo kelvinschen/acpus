@@ -126,6 +126,25 @@
   font: 750 8px/1 inherit;
 }
 
+.acpus-availability {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 3px 8px;
+  padding: 7px 12px;
+  color: #8a5b0b;
+  background: color-mix(in srgb, var(--acpus-amber) 7%, var(--acpus-bg));
+  border-top: 1px solid color-mix(in srgb, var(--acpus-amber) 22%, var(--acpus-line));
+  font-size: 10px;
+}
+.acpus-availability strong { font-weight: 680; }
+.acpus-availability > span:last-child { grid-column: 1 / -1; }
+.acpus-availability-workspace {
+  overflow: hidden;
+  color: var(--acpus-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .acpus-task-history {
   max-height: 250px;
   overflow: auto;
@@ -226,6 +245,7 @@
 .acpus-activity-state.is-completed { color: var(--acpus-green); }
 .acpus-activity-state.is-failed { color: var(--acpus-red); }
 .acpus-activity-state.is-waiting { color: var(--acpus-amber); }
+.acpus-activity-state.is-unavailable { color: var(--acpus-amber); }
 .acpus-activity-state.is-signal { color: var(--acpus-amber); }
 .acpus-activity-state.is-neutral::before { content: "—"; color: var(--acpus-neutral); font-weight: 750; }
 .acpus-activity-state.is-canceled { color: var(--acpus-neutral); }

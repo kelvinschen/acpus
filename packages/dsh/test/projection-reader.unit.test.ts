@@ -39,6 +39,11 @@ describe("Acpus session activity reader", () => {
   it("publishes the complete current activity tree without private identity", async () => {
     const older = storedRun("run-old", "2026-08-14T00:00:00.000Z");
     const current = storedRun("run-current", "2026-08-14T00:00:01.000Z", {
+      unavailable: {
+        reason: "workspace-unavailable",
+        detail: "Restore the original path and retry.",
+        detectedAt: "2026-08-14T00:00:02.000Z",
+      },
       activity: Array.from({ length: 202 }, (_, index) => ({
         key: `private-${index}`,
         activityId: String(index).padStart(32, "0"),
@@ -70,6 +75,13 @@ describe("Acpus session activity reader", () => {
 
     expect(projection).toMatchObject({ sessionId: "session-1", revision: 7 });
     expect(projection.task?.tree).toHaveLength(202);
+    expect(projection.task?.availability).toEqual({
+      status: "unavailable",
+      reason: "workspace-unavailable",
+      workspace: "/workspace",
+      detail: "Restore the original path and retry.",
+      detectedAt: "2026-08-14T00:00:02.000Z",
+    });
     expect(projection.task).not.toHaveProperty("runId");
     expect(projection.task).not.toHaveProperty("name");
     expect(projection.tasks[0]).not.toHaveProperty("runId");

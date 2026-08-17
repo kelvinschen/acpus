@@ -2,7 +2,12 @@ import type {
   InspectionView,
 } from "@acpus/runtime";
 import type { WorkspaceRuntime } from "@acpus/runtime/host";
+import type { Result } from "neverthrow";
 import type { RuntimePool } from "./runtime-pool.js";
+import type {
+  OpenedWorkspaceRuntime,
+  RuntimePoolOpenFailure,
+} from "./runtime-pool.js";
 import {
   type AdmittedRunLink,
   type RunLink,
@@ -82,6 +87,27 @@ export class AcpusSupervision {
     return pending;
   }
 
+  async openLinkedRuntime(
+    link: RunLink,
+  ): Promise<Result<OpenedWorkspaceRuntime, RuntimePoolOpenFailure>> {
+    const opened = await this.options.runtimes.open(link.workspace);
+    const unavailable = opened.isErr()
+      ? {
+          reason: opened.error.type,
+          detail: opened.error.message,
+          detectedAt: new Date().toISOString(),
+        }
+      : undefined;
+    const committed = await this.options.store.setRunUnavailable({
+      link,
+      ...(unavailable === undefined ? {} : { unavailable }),
+    });
+    if (committed.changed) {
+      this.wakeSession(this.activityWaiters, link.parentSessionId, committed.revision);
+    }
+    return opened;
+  }
+
   async waitForActivityRevision(
     sessionId: string,
     afterRevision: number,
@@ -154,7 +180,7 @@ export class AcpusSupervision {
   }
 
   private async startupReconciliation(): Promise<void> {
-    const links = await this.options.store.listLinks();
+    const links = await this.options.store.listReconciliationLinks();
     await Promise.all(links.map(async link => {
       try {
         await this.reconcileStartupLink(link);
@@ -172,7 +198,9 @@ export class AcpusSupervision {
       await this.reconcileRun(link);
       return;
     }
-    const runtime = (await this.options.runtimes.open(link.workspace)).runtime;
+    const opened = await this.openLinkedRuntime(link);
+    if (opened.isErr()) return;
+    const runtime = opened.value.runtime;
     const admission = await runtime.findAdmission(link.admissionRequestId);
     if (admission.isErr()) throw new Error(admission.error.message);
     if (admission.value === undefined) return;
@@ -183,7 +211,9 @@ export class AcpusSupervision {
 
   private async reconcile(link: AdmittedRunLink): Promise<void> {
     if (this.disposed) return;
-    const runtime = (await this.options.runtimes.open(link.workspace)).runtime;
+    const opened = await this.openLinkedRuntime(link);
+    if (opened.isErr()) return;
+    const runtime = opened.value.runtime;
     if (this.disposed) return;
     const projection = await this.readProjection(runtime, link);
     await this.commit(link, projection);

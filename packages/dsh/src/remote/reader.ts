@@ -6,6 +6,7 @@ import {
   LONG_POLL_MS,
   TASK_HISTORY_LIMIT,
   type AcpusTasksResult,
+  type AcpusTaskAvailability,
   type ActivityNode,
   type AwaitSessionActivityRevisionResult,
   type DelegatedTaskActivity,
@@ -110,6 +111,7 @@ function taskActivity(stored: StoredRunProjection): DelegatedTaskActivity {
     selector: { name: stored.name, occurrence: stored.occurrence },
     generation: stored.generation,
     status: stored.status,
+    availability: taskAvailability(stored),
     counts: normalizeCounts(stored.counts),
     startedAt: stored.createdAt,
     ...(terminal ? { finishedAt: stored.updatedAt } : {}),
@@ -134,6 +136,7 @@ function summarize(
     return {
       task: { name: run.name, occurrence: run.occurrence },
       status: run.status,
+      availability: taskAvailability(run),
       counts: normalizeCounts(run.counts),
       startedAt: run.createdAt,
       ...(terminal ? { finishedAt: run.updatedAt } : {}),
@@ -142,6 +145,15 @@ function summarize(
         : { forkedFrom: { name: source.name, occurrence: source.occurrence } }),
     };
   });
+}
+
+function taskAvailability(stored: StoredRunProjection): AcpusTaskAvailability {
+  if (stored.unavailable === undefined) return { status: "available" };
+  return {
+    status: "unavailable",
+    ...stored.unavailable,
+    workspace: stored.workspace,
+  };
 }
 
 function projectNodes(

@@ -86,18 +86,43 @@ export async function submitPreparedWorkflow(input: {
   if (existing !== undefined) return existing;
 
   input.signal?.throwIfAborted();
-  const submitted = await input.runtime.submit({
+  const submission = {
     requestId: input.admissionRequestId,
     prepared: input.prepared,
     input: input.normalizedInput,
-  });
+  };
+  let submitted = await input.runtime.submit(submission);
   if (submitted.isErr()) {
-    throw new AcpusOperationError(submitted.error.message, `ACPUS_${submitted.error.code}`);
+    if (submitted.error.outcome === "not-admitted") {
+      throw new AcpusOperationError(submitted.error.message, `ACPUS_${submitted.error.code}`);
+    }
+    let recovered = await input.runtime.findAdmission(input.admissionRequestId);
+    if (recovered.isOk()
+      && recovered.value === undefined
+      && submitted.error.outcome === "unknown") {
+      submitted = await input.runtime.submit(submission);
+      if (submitted.isOk()) return persistReceipt(input, submitted.value);
+      recovered = await input.runtime.findAdmission(input.admissionRequestId);
+    }
+    if (recovered.isOk() && recovered.value !== undefined) {
+      return persistReceipt(input, recovered.value);
+    }
+    throw new AcpusOperationError(
+      "Acpus could not confirm the durable admission outcome. Keep the original workspace and retry after Runtime recovery; do not submit a replacement task.",
+      "ACPUS_ADMISSION_OUTCOME_UNKNOWN",
+    );
   }
-  const admitted = await input.links.admitted(input.admissionRequestId, submitted.value);
+  return persistReceipt(input, submitted.value);
+}
+
+async function persistReceipt(
+  input: { admissionRequestId: string; links: RunLinkStore },
+  run: { id: string; name: string },
+): Promise<AcpusRunReceipt> {
+  const admitted = await input.links.admitted(input.admissionRequestId, run);
   return {
     status: "admitted",
-    runId: submitted.value.id,
+    runId: run.id,
     task: { name: admitted.workflowName, occurrence: admitted.occurrence },
   };
 }

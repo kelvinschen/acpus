@@ -87,6 +87,15 @@ const _acpus_dsh_acpus_cancelSessionTask_result$schema = z.union([z.object({
   'occurrence': z.number(),
 }),
   'status': z.union([z.literal("pending"), z.literal("running"), z.literal("awaiting"), z.literal("paused"), z.literal("completed"), z.literal("failed"), z.literal("canceled")]),
+  'availability': z.union([z.object({
+  'status': z.literal("available"),
+}), z.object({
+  'status': z.literal("unavailable"),
+  'reason': z.union([z.literal("workspace-unavailable"), z.literal("runtime-authority-busy"), z.literal("runtime-store-unavailable"), z.literal("runtime-store-unsupported"), z.literal("runtime-configuration-invalid"), z.literal("runtime-open-failed")]),
+  'workspace': z.string(),
+  'detail': z.string(),
+  'detectedAt': z.string(),
+})]),
   'counts': z.object({
   'total': z.number(),
   'notStarted': z.number(),
@@ -113,6 +122,15 @@ const _acpus_dsh_acpus_cancelSessionTask_result$schema = z.union([z.object({
 }),
   'generation': z.number(),
   'status': z.union([z.literal("pending"), z.literal("running"), z.literal("awaiting"), z.literal("paused"), z.literal("completed"), z.literal("failed"), z.literal("canceled")]),
+  'availability': z.union([z.object({
+  'status': z.literal("available"),
+}), z.object({
+  'status': z.literal("unavailable"),
+  'reason': z.union([z.literal("workspace-unavailable"), z.literal("runtime-authority-busy"), z.literal("runtime-store-unavailable"), z.literal("runtime-store-unsupported"), z.literal("runtime-configuration-invalid"), z.literal("runtime-open-failed")]),
+  'workspace': z.string(),
+  'detail': z.string(),
+  'detectedAt': z.string(),
+})]),
   'counts': z.object({
   'total': z.number(),
   'notStarted': z.number(),
@@ -172,6 +190,15 @@ const _acpus_dsh_acpus_cancelSessionTask_result$schema = z.union([z.object({
   'occurrence': z.number(),
 }),
   'status': z.union([z.literal("pending"), z.literal("running"), z.literal("awaiting"), z.literal("paused"), z.literal("completed"), z.literal("failed"), z.literal("canceled")]),
+  'availability': z.union([z.object({
+  'status': z.literal("available"),
+}), z.object({
+  'status': z.literal("unavailable"),
+  'reason': z.union([z.literal("workspace-unavailable"), z.literal("runtime-authority-busy"), z.literal("runtime-store-unavailable"), z.literal("runtime-store-unsupported"), z.literal("runtime-configuration-invalid"), z.literal("runtime-open-failed")]),
+  'workspace': z.string(),
+  'detail': z.string(),
+  'detectedAt': z.string(),
+})]),
   'counts': z.object({
   'total': z.number(),
   'notStarted': z.number(),
@@ -198,6 +225,15 @@ const _acpus_dsh_acpus_cancelSessionTask_result$schema = z.union([z.object({
 }),
   'generation': z.number(),
   'status': z.union([z.literal("pending"), z.literal("running"), z.literal("awaiting"), z.literal("paused"), z.literal("completed"), z.literal("failed"), z.literal("canceled")]),
+  'availability': z.union([z.object({
+  'status': z.literal("available"),
+}), z.object({
+  'status': z.literal("unavailable"),
+  'reason': z.union([z.literal("workspace-unavailable"), z.literal("runtime-authority-busy"), z.literal("runtime-store-unavailable"), z.literal("runtime-store-unsupported"), z.literal("runtime-configuration-invalid"), z.literal("runtime-open-failed")]),
+  'workspace': z.string(),
+  'detail': z.string(),
+  'detectedAt': z.string(),
+})]),
   'counts': z.object({
   'total': z.number(),
   'notStarted': z.number(),
@@ -330,6 +366,15 @@ const _acpus_dsh_acpus_readSessionActivity_result$schema = z.object({
   'occurrence': z.number(),
 }),
   'status': z.union([z.literal("pending"), z.literal("running"), z.literal("awaiting"), z.literal("paused"), z.literal("completed"), z.literal("failed"), z.literal("canceled")]),
+  'availability': z.union([z.object({
+  'status': z.literal("available"),
+}), z.object({
+  'status': z.literal("unavailable"),
+  'reason': z.union([z.literal("workspace-unavailable"), z.literal("runtime-authority-busy"), z.literal("runtime-store-unavailable"), z.literal("runtime-store-unsupported"), z.literal("runtime-configuration-invalid"), z.literal("runtime-open-failed")]),
+  'workspace': z.string(),
+  'detail': z.string(),
+  'detectedAt': z.string(),
+})]),
   'counts': z.object({
   'total': z.number(),
   'notStarted': z.number(),
@@ -356,6 +401,15 @@ const _acpus_dsh_acpus_readSessionActivity_result$schema = z.object({
 }),
   'generation': z.number(),
   'status': z.union([z.literal("pending"), z.literal("running"), z.literal("awaiting"), z.literal("paused"), z.literal("completed"), z.literal("failed"), z.literal("canceled")]),
+  'availability': z.union([z.object({
+  'status': z.literal("available"),
+}), z.object({
+  'status': z.literal("unavailable"),
+  'reason': z.union([z.literal("workspace-unavailable"), z.literal("runtime-authority-busy"), z.literal("runtime-store-unavailable"), z.literal("runtime-store-unsupported"), z.literal("runtime-configuration-invalid"), z.literal("runtime-open-failed")]),
+  'workspace': z.string(),
+  'detail': z.string(),
+  'detectedAt': z.string(),
+})]),
   'counts': z.object({
   'total': z.number(),
   'notStarted': z.number(),
@@ -431,7 +485,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#AwaitSessionActivityRevisionResult',
         schema: _acpus_dsh_acpus_awaitSessionActivityRevision_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":364,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":375,"column":3},
     },
     {
       id: '@acpus/dsh#acpus/cancelSessionTask',
@@ -456,7 +510,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#CancelSessionTaskResult',
         schema: _acpus_dsh_acpus_cancelSessionTask_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":376,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":387,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readActivityDetail',
@@ -481,7 +535,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#ReadActivityDetailResult',
         schema: _acpus_dsh_acpus_readActivityDetail_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":318,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":323,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readAgentProfiles',
@@ -506,7 +560,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#ReadAgentProfilesResult',
         schema: _acpus_dsh_acpus_readAgentProfiles_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":298,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":303,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readSessionActivity',
@@ -531,7 +585,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#SessionActivityProjection',
         schema: _acpus_dsh_acpus_readSessionActivity_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":311,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":316,"column":3},
     },
   ],
 }

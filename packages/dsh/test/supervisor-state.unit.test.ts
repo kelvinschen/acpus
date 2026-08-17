@@ -126,6 +126,49 @@ describe("durable supervisor state", () => {
     });
   });
 
+  it("tracks non-terminal availability without reopening terminal history", async () => {
+    root = await mkdtemp(join(tmpdir(), "acpus-dsh-state-"));
+    const store = new DurableSupervisorStateStore(join(root, "state.json"));
+    const admitted = await admittedLink(store, "session-1", "run-1");
+    await store.commitObservation({ link: admitted, projection: storedProjection() });
+
+    await expect(store.setRunUnavailable({
+      link: admitted,
+      unavailable: {
+        reason: "workspace-unavailable",
+        detail: "Restore the original path.",
+        detectedAt: "2026-08-17T00:00:00.000Z",
+      },
+    })).resolves.toEqual({ revision: 2, changed: true });
+    await expect(store.setRunUnavailable({
+      link: admitted,
+      unavailable: {
+        reason: "workspace-unavailable",
+        detail: "A later probe returned the same reason.",
+        detectedAt: "2026-08-17T00:01:00.000Z",
+      },
+    })).resolves.toEqual({ revision: 2, changed: false });
+    expect((await store.readSession("session-1")).runs[0]?.unavailable).toEqual({
+      reason: "workspace-unavailable",
+      detail: "Restore the original path.",
+      detectedAt: "2026-08-17T00:00:00.000Z",
+    });
+
+    await expect(store.setRunUnavailable({ link: admitted })).resolves.toEqual({
+      revision: 3,
+      changed: true,
+    });
+    await store.commitObservation({
+      link: admitted,
+      projection: storedProjection({
+        status: "completed",
+        updatedAt: "2026-08-17T00:02:00.000Z",
+      }),
+    });
+
+    expect(await store.listReconciliationLinks()).toEqual([]);
+  });
+
   it("keeps independent monotonic revisions per parent session", async () => {
     root = await mkdtemp(join(tmpdir(), "acpus-dsh-state-"));
     const store = new DurableSupervisorStateStore(join(root, "state.json"));

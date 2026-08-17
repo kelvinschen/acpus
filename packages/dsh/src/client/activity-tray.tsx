@@ -15,6 +15,7 @@ import type {
   ActivityNode,
   ActivityNodeStatus,
   AgentActivity,
+  AcpusTaskAvailability,
   DelegatedTaskSummary,
   DelegatedTaskActivity,
   HoverResult,
@@ -57,11 +58,18 @@ export function AcpusActivityTray({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [, refreshTree] = useState(0);
   const disconnected = connection?.status === "disconnected";
-  const now = useClock(task !== undefined && (!terminalTask(task.status) || disconnected));
+  const unavailable = task?.availability.status === "unavailable"
+    ? task.availability
+    : undefined;
+  const now = useClock(task !== undefined
+    && unavailable === undefined
+    && (!terminalTask(task.status) || disconnected));
   const connectionPhase = sessionConnectionPhase(connection, now);
-  const observedNow = disconnected
-    ? connection.synchronizedAt ?? connection.disconnectedAt
-    : now;
+  const observedNow = unavailable !== undefined
+    ? Date.parse(unavailable.detectedAt)
+    : disconnected
+      ? connection.synchronizedAt ?? connection.disconnectedAt
+      : now;
 
   useEffect(
     () => enabled ? acpus.watchSession(sessionId) : undefined,
@@ -79,8 +87,12 @@ export function AcpusActivityTray({
   }, [cancelState, disconnected]);
 
   if (task === undefined) return null;
-  const summary = activitySummary(task);
-  const uncertain = disconnected && !terminalTask(task.status);
+  const summary = unavailable === undefined
+    ? activitySummary(task)
+    : availabilitySummary(unavailable);
+  const uncertain = unavailable === undefined
+    && disconnected
+    && !terminalTask(task.status);
   const totalDuration = formatObservedDuration(
     taskDuration(task, observedNow),
     uncertain,
@@ -94,7 +106,8 @@ export function AcpusActivityTray({
     acpus.setActivityExpanded(sessionId, next);
     setExpanded(next);
   };
-  const cancelable = ["pending", "running", "awaiting", "paused"].includes(task.status);
+  const cancelable = unavailable === undefined
+    && ["pending", "running", "awaiting", "paused"].includes(task.status);
   const confirmCancel = async () => {
     setCancelState("canceling");
     try {
@@ -110,6 +123,7 @@ export function AcpusActivityTray({
       className="acpus-activity-tray"
       data-acpus-activity-tray=""
       data-status={task.status}
+      data-availability={task.availability.status}
     >
       <div className="acpus-tray-header">
         <button
@@ -158,6 +172,15 @@ export function AcpusActivityTray({
           </button>
         )}
       </div>
+      {unavailable !== undefined && (
+        <div className="acpus-availability" role="status">
+          <strong>{availabilityLabel(unavailable.reason)}</strong>
+          <span className="acpus-availability-workspace" title={unavailable.workspace}>
+            {unavailable.workspace}
+          </span>
+          <span>{unavailable.detail}</span>
+        </div>
+      )}
       {projection !== undefined && (
         <CollapsibleRegion expanded={historyOpen} className="acpus-history-reveal">
           <TaskHistory
@@ -207,7 +230,7 @@ export function AcpusActivityTray({
                 sessionId={sessionId}
                 generation={task.generation}
                 revision={projection?.revision ?? 0}
-                connected={connected}
+                connected={connected && unavailable === undefined}
                 visible={expanded}
                 now={observedNow}
                 uncertain={uncertain}
@@ -280,7 +303,7 @@ function TaskHistory({
             key={`${summary.task.name}:${summary.task.occurrence}`}
             onClick={() => onSelect(summary.task)}
           >
-            <ActivityStateIcon state={loading ? "running" : summaryTone(summary.status)} />
+            <ActivityStateIcon state={loading ? "running" : summaryTone(summary)} />
             <span className="acpus-history-name">
               {summary.task.name}
               {(duplicates.get(summary.task.name) ?? 0) > 1 || summary.task.occurrence > 1
@@ -292,7 +315,13 @@ function TaskHistory({
                 Fork of {summary.forkedFrom.name} · {summary.forkedFrom.occurrence}
               </span>
             )}
-            <span className="acpus-history-status">{loading ? "Loading…" : summary.status}</span>
+            <span className="acpus-history-status">
+              {loading
+                ? "Loading…"
+                : summary.availability.status === "unavailable"
+                  ? "unavailable"
+                  : summary.status}
+            </span>
           </button>
         );
       })}
@@ -387,7 +416,9 @@ function ConnectionStatus({
   );
 }
 
-function summaryTone(status: DelegatedTaskSummary["status"]): ActivityState {
+function summaryTone(summary: DelegatedTaskSummary): ActivityState {
+  if (summary.availability.status === "unavailable") return "unavailable";
+  const status = summary.status;
   if (status === "completed") return "completed";
   if (status === "failed") return "failed";
   if (status === "awaiting" || status === "paused") return "waiting";
@@ -397,6 +428,25 @@ function summaryTone(status: DelegatedTaskSummary["status"]): ActivityState {
 
 export function AcpusInternalToolView(): null {
   return null;
+}
+
+function availabilitySummary(
+  availability: Extract<AcpusTaskAvailability, { status: "unavailable" }>,
+): { title: string; tone: ActivityState; agent?: string } {
+  return {
+    title: availabilityLabel(availability.reason),
+    tone: "unavailable",
+  };
+}
+
+function availabilityLabel(
+  reason: Extract<AcpusTaskAvailability, { status: "unavailable" }>["reason"],
+): string {
+  if (reason === "workspace-unavailable") return "工作目录不可用";
+  if (reason === "runtime-authority-busy") return "运行时正被其他实例占用";
+  if (reason === "runtime-store-unsupported") return "运行时存储版本不受支持";
+  if (reason === "runtime-configuration-invalid") return "运行时配置无效";
+  return "运行时不可用";
 }
 
 export function activitySummary(
@@ -918,7 +968,7 @@ function AgentIdentity({ name }: { name: string }) {
   );
 }
 
-type ActivityState = "running" | "completed" | "failed" | "waiting" | "signal" | "neutral" | "canceled";
+type ActivityState = "running" | "completed" | "failed" | "waiting" | "signal" | "neutral" | "canceled" | "unavailable";
 
 type AgentActivityPresentation = {
   kind: "tool" | "phase";
@@ -1033,12 +1083,12 @@ function AgentTelemetry({ telemetry }: { telemetry: TelemetryPresentation }) {
 }
 
 export function ActivityStateIcon({ state }: { state: ActivityState }) {
-  if (["completed", "failed", "waiting", "canceled"].includes(state)) {
+  if (["completed", "failed", "waiting", "canceled", "unavailable"].includes(state)) {
     const icon = state === "completed"
       ? "circle-check"
       : state === "failed"
         ? "circle-x"
-        : state === "waiting"
+        : state === "waiting" || state === "unavailable"
           ? "circle-ellipsis"
           : "ban";
     return (

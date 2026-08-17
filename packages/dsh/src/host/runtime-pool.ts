@@ -3,14 +3,30 @@ import {
   openWorkspaceRuntime,
   type WorkspaceRuntime,
   type WorkspaceRuntimeHostDependencies,
+  type WorkspaceRuntimeOpenFailure,
 } from "@acpus/runtime/host";
-import {
-  AcpusOperationError,
-  WorkspaceRuntimeUnavailableError,
-} from "./errors.js";
+import { err, ok, ResultAsync, type Result } from "neverthrow";
+import { AcpusOperationError } from "./errors.js";
+
+export type RuntimePoolOpenFailure =
+  | {
+      type: "workspace-unavailable";
+      workspace: string;
+      message: string;
+      cause?: unknown;
+    }
+  | WorkspaceRuntimeOpenFailure;
+
+export type OpenedWorkspaceRuntime = {
+  workspace: string;
+  runtime: WorkspaceRuntime;
+};
 
 export class RuntimePool {
-  private readonly runtimes = new Map<string, Promise<WorkspaceRuntime>>();
+  private readonly runtimes = new Map<
+    string,
+    Promise<Result<WorkspaceRuntime, WorkspaceRuntimeOpenFailure>>
+  >();
   private closed = false;
 
   constructor(
@@ -18,22 +34,29 @@ export class RuntimePool {
     private readonly dependencies: WorkspaceRuntimeHostDependencies = {},
   ) {}
 
-  async open(workspace: string): Promise<{ workspace: string; runtime: WorkspaceRuntime }> {
+  open(workspace: string): ResultAsync<OpenedWorkspaceRuntime, RuntimePoolOpenFailure> {
     if (this.closed) {
       throw new AcpusOperationError(
         "Acpus Runtime pool is closed.",
         "ACPUS_RUNTIME_CLOSED",
       );
     }
+    return new ResultAsync(this.openResult(workspace));
+  }
+
+  private async openResult(
+    workspace: string,
+  ): Promise<Result<OpenedWorkspaceRuntime, RuntimePoolOpenFailure>> {
     let canonicalWorkspace: string;
     try {
       canonicalWorkspace = await realpath(workspace);
     } catch (error) {
-      throw new AcpusOperationError(
-        `Acpus workspace '${workspace}' is unavailable.`,
-        "ACPUS_WORKSPACE_UNAVAILABLE",
-        { cause: error },
-      );
+      return err({
+        type: "workspace-unavailable",
+        workspace,
+        message: `Acpus workspace '${workspace}' is unavailable. Restore the original path and retry.`,
+        cause: error,
+      });
     }
     if (this.closed) {
       throw new AcpusOperationError(
@@ -43,33 +66,45 @@ export class RuntimePool {
     }
     let pending = this.runtimes.get(canonicalWorkspace);
     if (pending === undefined) {
-      pending = (async () => {
-        const result = await openWorkspaceRuntime({
+      const opening = (async (): Promise<Result<WorkspaceRuntime, WorkspaceRuntimeOpenFailure>> => {
+        return openWorkspaceRuntime({
           workspace: canonicalWorkspace,
           stateRoot: this.stateRoot,
         }, this.dependencies);
-        if (result.isErr()) {
-          this.runtimes.delete(canonicalWorkspace);
-          throw new WorkspaceRuntimeUnavailableError(result.error);
-        }
-        return result.value;
       })();
-      this.runtimes.set(canonicalWorkspace, pending);
+      pending = opening;
+      this.runtimes.set(canonicalWorkspace, opening);
+      void opening.then(
+        opened => {
+          if (opened.isErr() && this.runtimes.get(canonicalWorkspace) === opening) {
+            this.runtimes.delete(canonicalWorkspace);
+          }
+        },
+        () => {
+          if (this.runtimes.get(canonicalWorkspace) === opening) {
+            this.runtimes.delete(canonicalWorkspace);
+          }
+        },
+      );
     }
-    const runtime = await pending;
+    const opened = await pending;
+    if (opened.isErr()) return err(opened.error);
     if (this.closed) {
       throw new AcpusOperationError(
         "Acpus Runtime pool closed while the workspace was opening.",
         "ACPUS_RUNTIME_CLOSED",
       );
     }
-    return { workspace: canonicalWorkspace, runtime };
+    return ok({ workspace: canonicalWorkspace, runtime: opened.value });
   }
 
   async close(): Promise<void> {
     this.closed = true;
     const settled = await Promise.allSettled(
-      [...this.runtimes.values()].map(async pending => (await pending).close()),
+      [...this.runtimes.values()].map(async pending => {
+        const opened = await pending;
+        if (opened.isOk()) await opened.value.close();
+      }),
     );
     this.runtimes.clear();
     const failures = settled

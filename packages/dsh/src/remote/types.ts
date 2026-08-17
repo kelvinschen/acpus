@@ -94,10 +94,27 @@ export type RunCounts = {
   canceled: number;
 };
 
+export type AcpusTaskAvailability =
+  | { status: "available" }
+  | {
+      status: "unavailable";
+      reason:
+        | "workspace-unavailable"
+        | "runtime-authority-busy"
+        | "runtime-store-unavailable"
+        | "runtime-store-unsupported"
+        | "runtime-configuration-invalid"
+        | "runtime-open-failed";
+      workspace: string;
+      detail: string;
+      detectedAt: string;
+    };
+
 export type DelegatedTaskActivity = {
   selector: ResolvedTaskSelector;
   generation: number;
   status: AcpusRunStatus;
+  availability: AcpusTaskAvailability;
   counts: RunCounts;
   startedAt: string;
   finishedAt?: string;
@@ -156,6 +173,7 @@ export type ReadActivityDetailRequest = {
 export type DelegatedTaskSummary = {
   task: ResolvedTaskSelector;
   status: AcpusRunStatus;
+  availability: AcpusTaskAvailability;
   counts: RunCounts;
   startedAt: string;
   finishedAt?: string;
