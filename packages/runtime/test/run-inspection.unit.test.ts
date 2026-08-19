@@ -228,7 +228,7 @@ describe("run inspection projection", () => {
     run.fork = { sourceRunId: "source-run", target: "review~private-key" };
     run.dynamic!.nodeInstances[0]!.status = "failed";
     run.dynamic!.nodeInstances[0]!.error = {
-      upstream: { source: "acpx", data: { secret: "never-expose" } },
+      upstream: { source: "acp", data: { secret: "never-expose" } },
     };
 
     const view = projectInspectionRunView({ ir: compositeWorkflow(), run });

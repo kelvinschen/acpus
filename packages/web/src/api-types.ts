@@ -56,7 +56,7 @@ export type NodeInspectionFailure = {
   code?: string;
   message: string;
   upstream?: {
-    source: "acpx";
+    source: "acp";
     operation?: string;
     exitCode?: number;
     code?: string;

@@ -1483,9 +1483,9 @@ function detailedFailure(node: NodeIR | undefined, error: unknown, statusReason?
     origin,
     ...(code ? { code } : {}),
     message: string(value?.message) ?? string(value?.reason) ?? (typeof error === "string" ? error : "Target failed."),
-    ...(upstream?.source === "acpx" ? {
+    ...(upstream?.source === "acp" ? {
       upstream: {
-        source: "acpx",
+        source: "acp",
         ...(upstreamOperation ? { operation: upstreamOperation } : {}),
         ...(upstreamExitCode === undefined ? {} : { exitCode: upstreamExitCode }),
         ...(upstreamCode ? { code: upstreamCode } : {}),

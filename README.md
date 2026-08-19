@@ -256,13 +256,15 @@ Acpus 启动时读取 Hook 配置，修改后的配置会在下次启动时生�
 
 ## 配置 Agent
 
-Acpus 使用锁定版本的 `acpx` 来解析具名 Agent。
-每次启动具名 Agent Attempt 之前，Acpus 会读取两处配置：
+Acpus 通过 `@acpus/acp` 使用稳定的 ACP v1 会话接口。对于 Workflow 中的
+`{ use: "name" }`，每个 Agent Attempt 按以下优先级解析具名的结构化 `argv` 启动项：
 
-- 全局配置：`~/.acpx/config.json`
-- 项目配置：`.acpxrc.json`
+1. Host 提供的具名启动项
+2. Attempt 有效工作目录中的 `.acpus/agents.json`
+3. `~/.acpus/agents.json`
+4. Acpus 内置 Agent 目录
 
-Acpus 使用当前 Attempt 的工作目录和环境来解析最终的 `agents` 映射。
+在有效工作目录中创建 `.acpus/agents.json` 即可添加或覆盖 Agent：
 
 ```json
 {
@@ -272,21 +274,13 @@ Acpus 使用当前 Attempt 的工作目录和环境来解析最终的 `agents` �
 }
 ```
 
-在 Workflow 中使用 `{ use: "my-agent" }` 引用该名称。
-项目配置覆盖全局配置。
-已配置的名称可以覆盖内置 Agent。
-显式使用 `{ command: "..." }` 会绕过 Acpx 配置。
+`argv` 首项是可执行程序，其余每项都是一个独立参数。项目配置覆盖同名全局配置；
+配置无效或所有来源都没有该名称时，Attempt 会以配置错误失败。显式
+`{ command: "..." }` 会绕过上述具名解析。
 
-更多配置方式见锁定版本 Acpx 的
-[`agents` map](https://github.com/openclaw/acpx/blob/v0.13.0/docs/config.md#the-agents-map)
-和 [config-defined agents](https://github.com/openclaw/acpx/blob/v0.13.0/docs/custom-agents.md#3-config-defined-agents)。
-
-Acpus 只从 Acpx 读取具名 Agent 的启动方式。
-它不会应用 Acpx 的 `mcpServers`、`auth`、权限默认值、`defaultAgent`、TTL、timeout 或 format。
-
-Agent 登录态、服务商环境变量和 `ACPX_AUTH_*` 变量会从 Agent 环境继承。
-Acpx 会先验证完整配置。
-任一字段非法时，具名 Agent Attempt 可能无法启动。
+Workflow Agent profile 还可声明 `model` 和字符串到字符串的 `config` 选项，例如
+`{ use: "my-agent", model: "model-id", config: { reasoning_effort: "high" } }`。
+Acpus 将它们作为 ACP 会话的期望 model 和 options 应用，并在恢复会话时重放。
 
 ## Skill 安装的补充说明
 
@@ -343,6 +337,8 @@ Acpus 0.5 使用 YAML Workflow Spec，并采用不同的节点模型和 CLI。
 ## 文档
 
 - [内置 Acpus Skill](packages/cli/skills/acpus/SKILL.md)
+- [ACP Session Runtime 架构](docs/acp-session-runtime.md)
+- [ACP Session Supervisor 重构 Roadmap](docs/roadmap/acp-session-supervisor-redesign.md)
 - [迁移指南](docs/migrate-to-next.md)
 - [发布指南](docs/releasing.md)
 - [Specs 索引](specs/INDEX.md)

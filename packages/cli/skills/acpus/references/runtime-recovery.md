@@ -17,11 +17,11 @@ acpus runs inspect <run-id> --target <nodeId|@ref|@ref#attemptNo>
 acpus runs inspect <run-id> --target <resolved-target> --timeline
 ```
 
-For exact settled-turn prompt/response data and the run-local acpx session projection, see [Agent Records](agent-records.md). Summary and Timeline expose bounded semantic activity and visible observation gaps.
+For exact settled-turn prompt/response data and the run-local ACP session projection, see [Agent Records](agent-records.md). Summary and Timeline expose bounded semantic activity and visible observation gaps.
 
 Only when diagnosis requires comparing the frozen definition, actual invocation, and accepted result, read [Forensics](advanced-cli-operations.md#forensics). Do not use it for ordinary monitoring or proof of activity.
 
-Agent failures preserve Acpus origin/code separately from their upstream acpx cause. Do not infer an authentication, model, or quota category from error wording.
+Agent failures preserve Acpus origin/code separately from their upstream Agent or provider cause. Do not infer an authentication, model, or quota category from error wording.
 
 For `RUNTIME_UPDATE_BLOCKED`, leave the old daemon and its runs untouched, wait for current work to finish, then retry. For `RUNTIME_AUTHORITY_LOST`, the admitted run remains durable; continue with `acpus runs inspect <run-id> --follow`.
 

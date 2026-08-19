@@ -1,88 +1,57 @@
-import type { AcpRuntimeEvent } from "acpx/runtime";
+import type { AcpEvent } from "@acpus/acp";
 import type { AgentJsonValue, AgentObservationEvent } from "./types.js";
 
-const activityOnlyStatusTags = new Set([
-  "available_commands_update",
-  "current_mode_update",
-  "config_option_update",
-  "session_info_update",
-]);
-
-const clientOperationMethods = new Set([
-  "fs/read_text_file",
-  "fs/write_text_file",
-  "terminal/create",
-  "terminal/output",
-  "terminal/wait_for_exit",
-  "terminal/kill",
-  "terminal/release",
-]);
-
-const clientOperationStatuses = new Set(["running", "completed", "failed"]);
-
 export function observationEventFromRuntime(
-  event: AcpRuntimeEvent,
+  event: AcpEvent,
   sequence: number,
   observedAt: string,
   elapsedMs: number,
 ): AgentObservationEvent | undefined {
   const base = { schemaVersion: 1 as const, sequence, observedAt, elapsedMs };
-  if (event.type === "text_delta") {
+  if (event.type === "message") {
     return {
       ...base,
       type: "message",
-      channel: event.stream === "thought" ? "thought" : "assistant",
-      content: event.text,
-      ...(event.tag === undefined ? {} : { tag: event.tag }),
+      channel: event.channel,
+      content: toAgentJsonValue(event.content),
     };
   }
-  if (event.type === "status") {
-    const context = event.used === undefined || event.size === undefined ? undefined : { used: event.used, size: event.size };
-    const tokenUsage = event.breakdown;
-    if (context !== undefined || tokenUsage !== undefined) {
-      return {
-        ...base,
-        type: "usage",
-        ...(context === undefined ? {} : { context: toAgentJsonValue(context) }),
-        ...(tokenUsage === undefined ? {} : { tokenUsage: toAgentJsonValue(tokenUsage) }),
-      };
-    }
-    if (event.tag === "plan") return { ...base, type: "plan", value: event.text };
-    if (event.tag !== undefined
-      && (event.tag === "usage_update" || activityOnlyStatusTags.has(event.tag))) return;
-    if (event.tag === undefined && activityOnlyUntaggedStatus(event.text)) return;
-    return {
-      ...base,
-      type: "unknown",
-      ...(event.tag === undefined ? {} : { tag: event.tag }),
-      value: event.text,
-    };
-  }
-  if (event.type === "tool_call") {
+  if (event.type === "tool") {
     return {
       ...base,
       type: "tool",
-      action: event.status === undefined ? "call" : "update",
-      ...(event.toolCallId === undefined ? {} : { toolCallId: event.toolCallId }),
+      action: event.action,
+      toolCallId: event.toolCallId,
       ...(event.title === undefined ? {} : { title: event.title }),
+      ...(event.name === undefined ? {} : { toolName: event.name }),
       ...(event.kind === undefined ? {} : { kind: event.kind }),
       ...(event.status === undefined ? {} : { status: event.status }),
-      ...(event.rawInput === undefined ? {} : { rawInput: toAgentJsonValue(event.rawInput) }),
-      ...(event.rawOutput === undefined ? {} : { rawOutput: toAgentJsonValue(event.rawOutput) }),
+      ...(event.input === undefined ? {} : { rawInput: toAgentJsonValue(event.input) }),
+      ...(event.output === undefined ? {} : { rawOutput: toAgentJsonValue(event.output) }),
       ...(event.content === undefined ? {} : { content: toAgentJsonValue(event.content) }),
       ...(event.locations === undefined ? {} : { locations: toAgentJsonValue(event.locations) }),
     };
   }
+  if (event.type === "usage") {
+    return {
+      ...base,
+      type: "usage",
+      ...(event.context === undefined ? {} : { context: toAgentJsonValue(event.context) }),
+      ...(event.tokens === undefined ? {} : { tokenUsage: toAgentJsonValue(event.tokens) }),
+    };
+  }
+  if (event.type === "plan") {
+    return { ...base, type: "plan", value: toAgentJsonValue(event.value) };
+  }
+  if (event.type === "unknown") {
+    return {
+      ...base,
+      type: "unknown",
+      tag: event.name,
+      value: toAgentJsonValue(event.value),
+    };
+  }
   return undefined;
-}
-
-function activityOnlyUntaggedStatus(text: string): boolean {
-  if (text === "session resumed") return true;
-  const [method, status] = text.split(/\s+/, 2);
-  return method !== undefined
-    && status !== undefined
-    && clientOperationMethods.has(method)
-    && clientOperationStatuses.has(status);
 }
 
 export function toAgentJsonValue(value: unknown): AgentJsonValue {

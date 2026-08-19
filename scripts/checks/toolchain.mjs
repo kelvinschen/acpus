@@ -5,7 +5,8 @@ import { isDeepStrictEqual } from "node:util";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const projects = {
-  "agent-executor": [],
+  acp: [],
+  "agent-executor": ["acp"],
   expression: [],
   core: ["expression"],
   tasks: ["core"],
@@ -16,8 +17,8 @@ const projects = {
   web: ["core", "expression", "runtime", "workflow-compiler"],
   cli: ["core", "expression", "loader", "runtime", "tasks", "web", "workflow-compiler"],
 };
-const foundation = ["agent-executor", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime"];
-const allProjects = ["agent-executor", "dsh", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime", "web", "cli"];
+const foundation = ["acp", "agent-executor", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime"];
+const allProjects = ["acp", "agent-executor", "dsh", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime", "web", "cli"];
 const expectedPnpmWorkspace = `packages:
   - "packages/*"
 

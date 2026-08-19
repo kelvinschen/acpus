@@ -34,7 +34,7 @@ also be automated.
 Changesets publishes through pnpm's native publish client. The publish job sets
 `PNPM_CONFIG_PROVENANCE=true` and verifies both that setting and the repository's
 pinned pnpm version before invoking Changesets. After the first stable publish
-following a pnpm migration, verify all nine public packages on npm have the
+following a pnpm migration, verify all ten public packages on npm have the
 expected version, `latest` dist-tag, and provenance attestation, then verify the
 matching Git tags and GitHub Releases. There is no separate canary workflow.
 

@@ -127,7 +127,7 @@ Task `timeout` aborts and terminates the whole attempt; `execution.defaultComman
 
 Use `sessionKey` only to continue a conversation across loop rounds or steps; omit it otherwise. Give each conversation a distinct, stable, non-empty, run-local key. Fork treats each key atomically: it reuses the complete source conversation or reruns every occurrence in a fresh child session.
 
-Occurrences sharing a key must use the same Agent backend, effective model, and `config`; Acpus does not detect conflicts. See [Acpx Agents](acpx-agents.md#acp-agent-config) for configuration.
+Occurrences sharing a key must use the same Agent backend, effective model, and `config`; Acpus does not detect conflicts. See [ACP Agents](acp-agents.md#acp-agent-config) for configuration.
 
 In a fix/review loop, give only the fixer a key so each review starts fresh:
 

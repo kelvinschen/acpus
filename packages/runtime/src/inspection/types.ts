@@ -66,7 +66,7 @@ type RunInspectionFailure = {
   code?: string;
   message: string;
   upstream?: {
-    source: "acpx";
+    source: "acp";
     operation?: string;
     exitCode?: number;
     code?: string;

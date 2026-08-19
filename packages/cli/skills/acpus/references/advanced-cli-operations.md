@@ -23,7 +23,7 @@ Start with the Summary path in [CLI Operations](cli-operations.md).
 - A repeated authored target returns every occurrence in stable path order; choose one candidate `@ref` before following or inspecting its details.
 - Candidate Select commands preserve Timeline or Forensics detail. Timeline always shows its fixed recent window.
 - `--follow` waits until the fixed subject is terminal. `--await-decision` waits until that subject needs external input, is paused, or is terminal.
-- For settled turn artifacts or the run-local acpx session projection, see [Agent Records](agent-records.md).
+- For settled turn artifacts or the run-local ACP session projection, see [Agent Records](agent-records.md).
 
 ### Forensics
 

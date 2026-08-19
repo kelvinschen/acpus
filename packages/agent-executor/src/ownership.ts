@@ -81,7 +81,7 @@ export async function finishAcpOwnership(
     return;
   }
   const degraded = withCleanup(manifest, reason);
-  await writeAcpOwnershipManifest(path, degraded).catch(() => {});
+  await writeAcpOwnershipManifest(path, degraded);
   try {
     options.onDegraded?.(degraded);
   } catch {

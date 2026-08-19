@@ -1,48 +1,32 @@
-import type { AcpRuntimeEvent } from "acpx/runtime";
+import type { AcpEvent } from "@acpus/acp";
 import { describe, expect, it } from "vitest";
 import { observationEventFromRuntime } from "../src/runtime-event.js";
 
 const observedAt = "2026-07-31T00:00:00.000Z";
-const clientOperationMethods = [
-  "fs/read_text_file",
-  "fs/write_text_file",
-  "terminal/create",
-  "terminal/output",
-  "terminal/wait_for_exit",
-  "terminal/kill",
-  "terminal/release",
-] as const;
-const clientOperationStatuses = ["running", "completed", "failed"] as const;
-const clientOperationEvents = clientOperationMethods.flatMap(method =>
-  clientOperationStatuses.map(status => ({
-    type: "status" as const,
-    text: `${method} ${status} ordinary operation detail`,
-  })));
 
-describe("ACP runtime event projection", () => {
+describe("ACP event projection", () => {
   it.each([
-    { type: "status", text: "available commands updated", tag: "available_commands_update" },
-    { type: "status", text: "mode updated", tag: "current_mode_update" },
-    { type: "status", text: "config updated", tag: "config_option_update" },
-    { type: "status", text: "session updated", tag: "session_info_update" },
-    { type: "status", text: "session resumed" },
-    { type: "status", text: "usage updated", tag: "usage_update" },
-  ] satisfies AcpRuntimeEvent[])("omits normal status from observations: $text", event => {
-    expect(observationEventFromRuntime(event, 1, observedAt, 10)).toBeUndefined();
-  });
-
-  it.each(clientOperationEvents)("omits known client operation status: $text", event => {
+    { type: "session", update: "available_commands", value: { commands: [] } },
+    { type: "session", update: "current_mode", value: { mode: "code" } },
+    { type: "session", update: "configuration", value: { option: "model" } },
+    { type: "session", update: "info", value: { title: "session" } },
+    { type: "activity", operation: "fs/read_text_file" },
+    { type: "activity", operation: "fs/write_text_file" },
+    { type: "activity", operation: "terminal/create" },
+    { type: "activity", operation: "terminal/output" },
+    { type: "activity", operation: "terminal/wait_for_exit" },
+    { type: "activity", operation: "terminal/kill" },
+    { type: "activity", operation: "terminal/release" },
+  ] satisfies AcpEvent[])("omits $type events from persisted observations", event => {
     expect(observationEventFromRuntime(event, 1, observedAt, 10)).toBeUndefined();
   });
 
   it.each([
-    "session reconnect fallback: backend session missing",
-    "unparsed provider warning",
-    "fs/read_text_file pending ordinary operation detail",
-    "fs/delete completed ordinary operation detail",
-  ])("retains unknown untagged status: %s", text => {
+    { channel: "assistant" as const, content: { type: "text", text: "answer" } },
+    { channel: "thought" as const, content: ["inspect", { next: true }] },
+  ])("projects $channel message content", ({ channel, content }) => {
     expect(observationEventFromRuntime(
-      { type: "status", text },
+      { type: "message", channel, content, messageId: "message-1" },
       2,
       observedAt,
       20,
@@ -51,14 +35,27 @@ describe("ACP runtime event projection", () => {
       sequence: 2,
       observedAt,
       elapsedMs: 20,
-      type: "unknown",
-      value: text,
+      type: "message",
+      channel,
+      content,
     });
   });
 
-  it("projects plan status without degrading it", () => {
+  it("projects owned tool fields onto the observation vocabulary", () => {
     expect(observationEventFromRuntime(
-      { type: "status", text: "plan: inspect then edit", tag: "plan" },
+      {
+        type: "tool",
+        action: "call",
+        toolCallId: "tool-1",
+        title: "Read file",
+        name: "read_file",
+        kind: "read",
+        status: "in_progress",
+        input: { path: "README.md" },
+        output: { bytes: 12 },
+        content: [{ type: "text", text: "contents" }],
+        locations: [{ path: "README.md", line: 1 }],
+      },
       3,
       observedAt,
       30,
@@ -67,14 +64,23 @@ describe("ACP runtime event projection", () => {
       sequence: 3,
       observedAt,
       elapsedMs: 30,
-      type: "plan",
-      value: "plan: inspect then edit",
+      type: "tool",
+      action: "call",
+      toolCallId: "tool-1",
+      title: "Read file",
+      toolName: "read_file",
+      kind: "read",
+      status: "in_progress",
+      rawInput: { path: "README.md" },
+      rawOutput: { bytes: 12 },
+      content: [{ type: "text", text: "contents" }],
+      locations: [{ path: "README.md", line: 1 }],
     });
   });
 
-  it("projects reported usage", () => {
+  it("preserves explicit tool lifecycle actions with minimal metadata", () => {
     expect(observationEventFromRuntime(
-      { type: "status", text: "usage updated", tag: "usage_update", used: 12, size: 100 },
+      { type: "tool", action: "update", toolCallId: "tool-2" },
       4,
       observedAt,
       40,
@@ -83,42 +89,81 @@ describe("ACP runtime event projection", () => {
       sequence: 4,
       observedAt,
       elapsedMs: 40,
-      type: "usage",
-      context: { used: 12, size: 100 },
+      type: "tool",
+      action: "update",
+      toolCallId: "tool-2",
     });
   });
 
-  it("projects a breakdown without context-window counters", () => {
-    expect(observationEventFromRuntime(
-      {
-        type: "status",
-        text: "usage updated",
-        tag: "usage_update",
-        breakdown: { inputTokens: 20, outputTokens: 5, cachedReadTokens: 8 },
-      },
-      5,
-      observedAt,
-      50,
-    )).toEqual({
+  it.each([
+    {
+      event: { type: "usage", context: { used: 12, size: 100 } } as const,
+      expected: { context: { used: 12, size: 100 } },
+    },
+    {
+      event: {
+        type: "usage",
+        tokens: { inputTokens: 20, outputTokens: 5, cachedReadTokens: 8 },
+      } as const,
+      expected: { tokenUsage: { inputTokens: 20, outputTokens: 5, cachedReadTokens: 8 } },
+    },
+  ])("projects independent usage telemetry: $expected", ({ event, expected }) => {
+    expect(observationEventFromRuntime(event, 5, observedAt, 50)).toEqual({
       schemaVersion: 1,
       sequence: 5,
       observedAt,
       elapsedMs: 50,
       type: "usage",
-      tokenUsage: { inputTokens: 20, outputTokens: 5, cachedReadTokens: 8 },
+      ...expected,
     });
   });
 
-  it("retains a genuinely unknown status tag", () => {
+  it("keeps a usage event observable when only unsupported cost telemetry is present", () => {
     expect(observationEventFromRuntime(
-      { type: "status", text: "new provider state", tag: "future_status" },
+      { type: "usage", cost: { amount: 0.01, currency: "USD" } },
       6,
       observedAt,
       60,
-    )).toEqual(expect.objectContaining({
+    )).toEqual({
+      schemaVersion: 1,
+      sequence: 6,
+      observedAt,
+      elapsedMs: 60,
+      type: "usage",
+    });
+  });
+
+  it("projects structured plans without degrading them", () => {
+    const value = [{ content: "inspect then edit", priority: "high", status: "pending" }];
+    expect(observationEventFromRuntime(
+      { type: "plan", value },
+      7,
+      observedAt,
+      70,
+    )).toEqual({
+      schemaVersion: 1,
+      sequence: 7,
+      observedAt,
+      elapsedMs: 70,
+      type: "plan",
+      value,
+    });
+  });
+
+  it("retains unknown event identity and value", () => {
+    expect(observationEventFromRuntime(
+      { type: "unknown", name: "provider_extension", value: { state: "new" } },
+      8,
+      observedAt,
+      80,
+    )).toEqual({
+      schemaVersion: 1,
+      sequence: 8,
+      observedAt,
+      elapsedMs: 80,
       type: "unknown",
-      tag: "future_status",
-      value: "new provider state",
-    }));
+      tag: "provider_extension",
+      value: { state: "new" },
+    });
   });
 });

@@ -101,7 +101,7 @@ Leaf nodes use the enclosing `step` dispatcher:
 const review = step("review").agent({
   // `timeout`: leave unset unless the user or workflow explicitly requires a hard elapsed deadline
   // `sessionKey`: only set for when reusing context across occurrences, such as loop rounds or different steps; otherwise omit it
-  agent: agents.worker, // read `acpx-agents.md` before choosing agent backends/models.
+  agent: agents.worker, // read `acp-agents.md` before choosing agent backends/models.
   prompt: template`Review ${input.topic}.`,
 });
 

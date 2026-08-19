@@ -6,13 +6,13 @@ import {
 } from "../src/worker-protocol.js";
 
 const parentBase = {
-  protocolVersion: 4,
+  protocolVersion: 6,
   workerId: "worker",
   attemptId: "attempt",
 };
 
 const childBase = {
-  protocolVersion: 4,
+  protocolVersion: 6,
   workerId: "worker",
   attemptId: "attempt",
 };
@@ -21,25 +21,19 @@ function initialize() {
   return {
     ...parentBase,
     type: "initialize",
+    recordId: "session-record",
     sessionStateDirectory: "/tmp/sessions",
     cwd: "/tmp/workspace",
     env: { HOME: "/tmp/home" },
-    agent: { kind: "named", name: "configured" },
-    resolvedLaunch: "configured-acp --stdio",
+    resolvedLaunch: { kind: "command", command: "configured-acp --stdio" },
     permissionMode: "approve-all",
   };
 }
 
 function runTurnRequest() {
   return {
-    agent: { kind: "command", command: "agent --stdio" },
     prompt: "Review this change.",
-    cwd: "/tmp/workspace",
-    env: { HOME: "/tmp/home", OPTIONAL: undefined },
-    sessionName: "review",
-    permissionMode: "approve-reads",
-    model: "model",
-    config: { effort: "high" },
+    configuration: { effort: "high" },
     timeoutMs: 1_000,
   };
 }
@@ -75,7 +69,7 @@ function summary() {
       }],
     },
     cwd: "/tmp/workspace",
-    acpxRecordId: "record-1",
+    sessionProjectionPath: "sessions/record-1.json",
   };
 }
 
@@ -186,18 +180,17 @@ function turnResult(result: unknown) {
 }
 
 describe("ACP worker protocol", () => {
-  it("exposes protocol version 4", () => {
-    expect(ACP_WORKER_PROTOCOL_VERSION).toBe(4);
+  it("exposes protocol version 6", () => {
+    expect(ACP_WORKER_PROTOCOL_VERSION).toBe(6);
   });
 
   it.each([
-    { name: "initialize with a named selector and command launch", value: initialize() },
+    { name: "initialize with a command launch", value: initialize() },
     {
-      name: "initialize with a command selector and structured launch",
+      name: "initialize with a named argv launch and model",
       value: {
         ...initialize(),
-        agent: { kind: "command", command: "configured acp --stdio" },
-        resolvedLaunch: ["configured acp", "--stdio"],
+        resolvedLaunch: { kind: "argv", argv: ["configured acp", "--stdio"], name: "configured" },
         model: "model",
       },
     },
@@ -209,27 +202,45 @@ describe("ACP worker protocol", () => {
   });
 
   it.each([
-    { name: "an unsupported parent protocol version", value: { ...initialize(), protocolVersion: 3 } },
+    { name: "an unsupported parent protocol version", value: { ...initialize(), protocolVersion: 999 } },
     { name: "an extra parent field", value: { ...initialize(), private: true } },
-    { name: "an extra named-selector field", value: { ...initialize(), agent: { kind: "named", name: "configured", command: "other" } } },
-    { name: "an extra command-selector field", value: { ...initialize(), agent: { kind: "command", command: "agent", name: "other" } } },
-    { name: "an empty resolved command", value: { ...initialize(), resolvedLaunch: "" } },
-    { name: "an empty resolved argv", value: { ...initialize(), resolvedLaunch: [] } },
-    { name: "an empty first resolved argv item", value: { ...initialize(), resolvedLaunch: [""] } },
+    { name: "an extra command launch field", value: { ...initialize(), resolvedLaunch: { kind: "command", command: "agent", argv: ["agent"] } } },
+    { name: "an extra argv launch field", value: { ...initialize(), resolvedLaunch: { kind: "argv", argv: ["agent"], command: "agent" } } },
+    { name: "an empty resolved command", value: { ...initialize(), resolvedLaunch: { kind: "command", command: " " } } },
+    { name: "an empty resolved argv", value: { ...initialize(), resolvedLaunch: { kind: "argv", argv: [] } } },
+    { name: "an empty first resolved argv item", value: { ...initialize(), resolvedLaunch: { kind: "argv", argv: [""] } } },
+    { name: "a legacy scalar launch", value: { ...initialize(), resolvedLaunch: "agent --stdio" } },
     { name: "a missing resolved launch", value: { ...initialize(), resolvedLaunch: undefined } },
+    { name: "a missing record id", value: { ...initialize(), recordId: undefined } },
     { name: "an invalid environment value", value: { ...initialize(), env: { HOME: 42 } } },
     { name: "an empty run-turn request", value: runTurn({}) },
     { name: "an extra run-turn request field", value: runTurn({ ...runTurnRequest(), signal: "unexpected" }) },
-    { name: "an invalid run-turn config value", value: runTurn({ ...runTurnRequest(), config: { effort: 1 } }) },
+    { name: "an attempt field in the run-turn request", value: runTurn({ ...runTurnRequest(), cwd: "/tmp/workspace" }) },
+    { name: "an invalid run-turn configuration value", value: runTurn({ ...runTurnRequest(), configuration: { effort: 1 } }) },
+    { name: "a negative run-turn timeout", value: runTurn({ ...runTurnRequest(), timeoutMs: -1 }) },
     { name: "an extra abort-turn field", value: { ...parentBase, type: "abort-turn", turnId: "turn", reason: "timeout", private: true } },
   ])("rejects $name", ({ value }) => {
     expect(isAcpWorkerParentMessage(value)).toBe(false);
   });
 
   it.each([
+    { name: "open-started", value: { ...childBase, type: "open-started" } },
     { name: "ready", value: { ...childBase, type: "ready" } },
     { name: "acp-activity", value: { ...childBase, type: "acp-activity", turnId: "turn", observedAt: "2026-08-01T00:00:00.000Z" } },
-    { name: "worker-failure", value: { ...childBase, type: "worker-failure", message: "failed" } },
+    {
+      name: "worker-failure",
+      value: {
+        ...childBase,
+        type: "worker-failure",
+        failure: {
+          kind: "config",
+          origin: "provider",
+          retryable: false,
+          message: "configuration rejected",
+          upstream: { source: "acp", operation: "open_session", origin: "configuration" },
+        },
+      },
+    },
     { name: "closed", value: { ...childBase, type: "closed" } },
   ])("accepts the $name child variant", ({ value }) => {
     expect(isAcpWorkerChildMessage(value)).toBe(true);
@@ -320,7 +331,7 @@ describe("ACP worker protocol", () => {
           retryable: true,
           message: "inactive",
           evidence: { failAfterMs: 1_000, silentForMs: 1_001, silenceStartedAt: "2026-08-01T00:00:00.000Z" },
-          upstream: { source: "acpx", operation: "prompt", code: "EXIT", origin: "provider" },
+          upstream: { source: "acp", operation: "run_turn", code: -32_603, origin: "provider" },
         },
       },
     },
@@ -332,9 +343,30 @@ describe("ACP worker protocol", () => {
     expect(isAcpWorkerChildMessage(turnResult(result))).toBe(true);
   });
 
+  it.each(["open_session", "configure_session", "run_turn"] as const)(
+    "accepts the %s failure upstream operation",
+    operation => {
+      expect(isAcpWorkerChildMessage(turnResult({
+        ...resultBase(),
+        status: "failed",
+        failure: {
+          kind: operation === "configure_session" ? "config" : "provider_exit",
+          message: "failed",
+          upstream: { source: "acp", operation },
+        },
+      }))).toBe(true);
+    },
+  );
+
   it.each([
-    { name: "an unsupported child protocol version", value: { ...childBase, type: "ready", protocolVersion: 3 } },
+    { name: "an unsupported child protocol version", value: { ...childBase, type: "open-started", protocolVersion: 999 } },
+    { name: "an extra open-started field", value: { ...childBase, type: "open-started", private: true } },
+    { name: "an open-started message without an attempt id", value: { protocolVersion: 6, workerId: "worker", type: "open-started" } },
     { name: "an extra child field", value: { ...childBase, type: "ready", private: true } },
+    { name: "a legacy worker-failure message", value: { ...childBase, type: "worker-failure", message: "failed" } },
+    { name: "an invalid worker failure", value: { ...childBase, type: "worker-failure", failure: { kind: "unknown", message: "failed" } } },
+    { name: "an extra worker-failure field", value: { ...childBase, type: "worker-failure", failure: { kind: "worker_lost", message: "failed" }, private: true } },
+    { name: "an extra worker failure field", value: { ...childBase, type: "worker-failure", failure: { kind: "worker_lost", message: "failed", private: true } } },
     { name: "a missing completed response", value: turnResult({ ...resultBase(), status: "completed" }) },
     {
       name: "a failed-only field on completed",
@@ -358,7 +390,15 @@ describe("ACP worker protocol", () => {
     },
     {
       name: "an extra failure upstream field",
-      value: turnResult({ ...resultBase(), status: "failed", failure: { kind: "provider_exit", message: "failed", upstream: { source: "acpx", operation: "prompt", private: true } } }),
+      value: turnResult({ ...resultBase(), status: "failed", failure: { kind: "provider_exit", message: "failed", upstream: { source: "acp", operation: "run_turn", private: true } } }),
+    },
+    {
+      name: "an unsupported failure upstream source",
+      value: turnResult({ ...resultBase(), status: "failed", failure: { kind: "provider_exit", message: "failed", upstream: { source: "acpx", operation: "run_turn" } } }),
+    },
+    {
+      name: "an unsupported failure upstream operation",
+      value: turnResult({ ...resultBase(), status: "failed", failure: { kind: "provider_exit", message: "failed", upstream: { source: "acp", operation: "prompt" } } }),
     },
     {
       name: "an extra terminal result field",

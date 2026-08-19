@@ -198,7 +198,7 @@ describe("resolved inspection target state", () => {
     });
   });
 
-  it("retains complete acpx failure evidence for the narrow node read", () => {
+  it("retains complete ACP failure evidence for the narrow node read", () => {
     const ir = agentWorkflow();
     const run = singleNodeRun("review", "review~1");
     run.dynamic!.nodeInstances[0]!.status = "failed";
@@ -208,8 +208,8 @@ describe("resolved inspection target state", () => {
       code: "provider_exit",
       message: "Provider configuration failed.",
       upstream: {
-        source: "acpx",
-        operation: "sessions.ensure",
+        source: "acp",
+        operation: "open_session",
         exitCode: 1,
         code: "RUNTIME",
         origin: "cli",
@@ -225,8 +225,8 @@ describe("resolved inspection target state", () => {
       code: "provider_exit",
       message: "Provider configuration failed.",
       upstream: {
-        source: "acpx",
-        operation: "sessions.ensure",
+        source: "acp",
+        operation: "open_session",
         exitCode: 1,
         code: "RUNTIME",
         origin: "cli",

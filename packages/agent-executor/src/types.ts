@@ -1,10 +1,12 @@
+import type { AcpLaunch } from "@acpus/acp";
+
 export type AgentPermissionMode = "approve-reads" | "approve-all" | "deny-all";
 
 export type AgentSelector =
   | { kind: "named"; name: string }
   | { kind: "command"; command: string };
 
-export type AcpAgentLaunch = string | string[];
+export type AcpAgentLaunch = AcpLaunch;
 
 export type NamedAcpAgentLaunchResolver = (input: Readonly<{
   model?: string;
@@ -35,9 +37,9 @@ export type AgentBackendFailure = {
     silenceStartedAt: string;
   };
   upstream?: {
-    source: "acpx";
-    operation: "sessions.ensure" | "session.set_config_option" | "prompt";
-    code?: string;
+    source: "acp";
+    operation: "open_session" | "configure_session" | "run_turn";
+    code?: string | number;
     origin?: string;
   };
 };
@@ -96,7 +98,7 @@ export type AgentTurnSummary = {
   tokenUsage?: AgentTokenUsageSummary;
   tools: AgentToolsSummary;
   cwd?: string;
-  acpxRecordId?: string;
+  sessionProjectionPath?: string;
 };
 
 export type AgentTurnProgress = {
@@ -197,6 +199,7 @@ export type ManagedAcpAttemptInput = {
   agent: AgentSelector;
   permissionMode: AgentPermissionMode;
   model?: string;
+  signal?: AbortSignal;
   inactivityFailAfterMs?: number;
   onAcpActivity?: (observedAt: string) => void;
 };

@@ -139,7 +139,7 @@ describe("node inspection projection", () => {
           code: "provider_exit",
           message: "Provider rejected the request.",
           upstream: {
-            source: "acpx",
+            source: "acp",
             operation: "turn",
             exitCode: 7,
             code: "E_PROVIDER",
@@ -199,7 +199,7 @@ describe("node inspection projection", () => {
         code: "provider_exit",
         message: "Provider rejected the request.",
         upstream: {
-          source: "acpx",
+          source: "acp",
           operation: "turn",
           exitCode: 7,
           code: "E_PROVIDER",

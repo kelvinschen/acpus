@@ -185,7 +185,7 @@ function isNodeInspectionFailure(value: unknown): value is NodeInspectionFailure
   const upstream = value.upstream;
   if (!isRecord(upstream)
     || !hasOnlyKeys(upstream, ["source", "operation", "exitCode", "code", "origin", "protocol", "data"])
-    || upstream.source !== "acpx"
+    || upstream.source !== "acp"
     || !isOptionalString(upstream.operation)
     || !isOptionalNumber(upstream.exitCode)
     || !isOptionalString(upstream.code)

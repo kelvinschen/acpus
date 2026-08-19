@@ -2,66 +2,76 @@
 
 ## Purpose
 
-`@acpus/agent-executor` owns one isolated `acpx/runtime` worker tree for each
-Runtime Agent attempt. It exposes normalized turn results and process-ownership
-evidence; [Runtime](runtime-spec.md) owns durable attempts, session identity,
+`@acpus/agent-executor` owns named Agent launch resolution and one isolated
+worker tree for each Runtime Agent attempt. It exposes normalized turn results,
+semantic observations, inactivity policy, and process-ownership evidence while
+delegating protocol sessions and persistence to [ACP](acp-spec.md).
+[Runtime](runtime-spec.md) owns durable attempts, run-local session identity,
 and operator-facing recovery.
 
 ## Requirements
 
-### Public Boundary
+### Named Agent Resolution
 
-- The package MUST expose `createManagedAcpExecutor`, `recoverAcpOwnership`,
-  `inspectAcpOwnership`, `acpxSessionProjectionPath`, and their public
-  managed-attempt, host-provided named Agent launch, normalized-turn, and ownership
-  types.
-- `withAttempt` MUST provide one callback-scoped `runTurn` capability and MUST
-  clean its worker tree after the callback settles, regardless of the callback
-  result.
-- A managed attempt MUST admit at most one active turn at a time.
-- A Host MAY supply immutable named Agent launch resolvers. A command selector
-  MUST take precedence over Host resolvers; a matching resolver MUST take
-  precedence over Acpx; every other named Agent MUST match package-pinned Acpx
-  resolution for the attempt's effective working directory and environment.
-- A Host resolver MUST receive only the attempt's optional effective model and
-  MUST return a structured Agent launch.
-- Structured argv returned by Acpx MUST cross worker startup without being
-  rendered back into a command string.
+- A command selector MUST bypass Host launches, Agent configuration, and the
+  built-in catalog.
+- For a named selector, an own-property match in the immutable Host registry
+  MUST take precedence over project Agent configuration, global Agent
+  configuration, and the package-owned built-in catalog, in that order.
+- Host registry keys MUST use trimmed lowercase Agent names. A Host resolver
+  MUST receive only the attempt's optional effective model and MUST return a
+  structured argv launch.
+- Acpus Agent configuration MUST be read from the effective working
+  directory's `.acpus/agents.json` and the effective home directory's
+  `.acpus/agents.json` when a home is available.
+- Each Agent configuration file MUST be the closed `{ agents: { ... } }`
+  object, and each entry MUST be the closed `{ argv: [...] }` object with a
+  non-empty executable. Names MUST match after trimming and lowercasing;
+  normalized collisions MUST fail validation.
+- Every present configuration file MUST be validated completely before
+  selection. A missing file MUST contribute no entries; malformed JSON, an
+  invalid entry, or a read failure MUST return a non-retryable `agent-config`
+  failure naming the path.
+- A project entry MUST override a same-named global entry, and either configured
+  entry MUST override the same built-in name.
+- The package MUST own a built-in catalog of structured argv launches.
+- An unknown named Agent MUST return a non-retryable `agent-config` failure.
 - Named Agent resolution MUST complete before the executor creates a worker or
   ownership evidence.
 - A managed attempt MUST resolve its named Agent once and reuse that launch for
-  every turn; a later attempt MUST resolve against the then-current config.
-- A command selector and a host-resolved named Agent MUST NOT read or validate
-  Acpx configuration.
-- The executor MUST NOT apply any Acpx configuration domain other than
-  `agents`.
-- A recoverable Acpx configuration-resolution failure MUST return a
-  non-retryable runtime `config` failure without creating ownership evidence.
-- An unavailable or incompatible package-pinned Acpx resolver MUST surface as a
-  system failure.
-- The executor MUST NOT expose or persist the full resolved Acpx configuration.
-- A worker MUST use the `acpx/runtime` API with the supplied persistent session
-  directory; turns in one managed attempt MUST reuse that worker and session.
-- `acpxSessionProjectionPath` MUST map an acpx record id to
-  `sessions/<encodeURIComponent(acpx-record-id)>.json` relative to the supplied
-  session-state directory.
-- The worker MUST supply an Acpus-owned `AcpSessionStore` adapter to
-  `acpx/runtime`.
-- The adapter MUST persist the acpx session projection at the path returned by
-  `acpxSessionProjectionPath`.
-- The adapter MUST load that projection for later workers that resume the same
-  session.
-- The adapter MUST preserve structured Agent argv in the session projection.
-- Before saving, the adapter MUST preserve the acpx-projected User and Agent
-  messages, including Text, Thinking, tool calls, and each tool result's compact
-  `content`; it MUST omit each tool result's optional `output`.
-- Because Acpus does not persist the acpx raw event stream, the saved session
-  projection MUST use an empty `event_log.active_path`, omit
-  `event_log.last_write_at`, and set `event_log.last_write_error` to an explicit
-  explanation instead of naming a nonexistent stream file.
+  every turn; a later attempt MUST resolve against the then-current Host
+  registry and Agent configuration.
+- The executor MUST NOT persist the resolved Agent configuration or launch.
+
+### Managed Attempts And Turns
+
+- The package MUST expose `createManagedAcpExecutor`, `recoverAcpOwnership`,
+  `inspectAcpOwnership`, and their public managed-attempt, normalized-turn, and
+  ownership types.
+- `withAttempt` MUST provide one callback-scoped `runTurn` capability and MUST
+  clean its worker tree after the callback settles, regardless of the callback
+  result.
+- A managed attempt MUST accept an optional cancellation signal that remains
+  authoritative through named Agent resolution, worker and ACP session startup,
+  and every turn. Cancellation MUST prevent late resolution, readiness, or turn
+  results from making the attempt usable or successful.
+- A managed attempt MUST admit at most one active turn at a time.
+- Worker IPC MUST distinguish bootstrap acknowledgement from ACP session
+  readiness. Bootstrap acknowledgement MUST prove only that the owned worker
+  accepted initialization and began session open; session readiness MUST be
+  reported only after `openAcpSession` succeeds, and bootstrap acknowledgement
+  alone MUST NOT make the managed attempt usable.
+- The executor MAY apply a short package-owned watchdog only to owned-worker IPC
+  bootstrap. It MUST NOT use that watchdog as a deadline for named Agent
+  resolution, ACP session open, or session readiness.
+- A worker MUST use one [ACP session](acp-spec.md#public-session-boundary) with
+  the supplied persistent state directory and record identity; turns in one
+  managed attempt MUST reuse that session.
 - `runTurn` MUST return the public normalized result union and MUST deliver
   normalized progress and observation callbacks without letting callback
   failures change turn settlement.
+- A turn summary MUST carry the ACP state-root-relative
+  `sessionProjectionPath` when a projection exists.
 - The managed executor MUST reject child IPC messages with an unsupported
   version or malformed discriminant-specific payload. A turn result MUST carry
   string response segments, shared summary and timing data, and exactly the
@@ -69,89 +79,60 @@ and operator-facing recovery.
   `finalResponse`.
 - Each turn MUST start with an empty response collector that is not shared with
   any earlier repair, retry, resumed, or steering turn.
-- The response collector MUST append each non-thought `text_delta` exactly as
-  received to the current response segment.
-- A thought or plan event MUST close the current response segment without
+- Consecutive non-empty assistant text updates MUST append exactly as received
+  to the current response segment, preserving non-empty whitespace.
+- A thought or plan MUST close the current response segment without
   invalidating the latest final-response candidate.
-- A tool invocation MUST close the current response segment and invalidate
-  every earlier final-response candidate.
-- A tool lifecycle update MUST close the current response segment without
-  invalidating the latest final-response candidate.
-- Usage, ordinary status, and unknown status events MUST NOT enter or segment
-  responses and MUST NOT change the final-response candidate.
-- Empty text deltas MUST NOT create response segments. Non-empty whitespace
-  MUST be preserved as response text.
+- A tool call MUST close the segment and invalidate every earlier
+  final-response candidate; a tool update MUST close the segment without
+  invalidating that candidate.
+- Usage, session, client-activity, and unknown events MUST NOT enter or segment
+  responses or change the final-response candidate.
 - Response collection MUST depend only on normalized event order and MUST NOT
-  use provider names or response-text heuristics.
-- Turn progress MUST expose the ordered response segments observed so far; its
-  final segment MAY still be growing.
-- Every progress and result response array MUST be detached from the mutable
-  collector state.
-- A completed turn MUST expose `finalResponse` as its latest valid
-  final-response candidate.
-- A completed turn without a valid final-response candidate MUST expose an
-  empty `finalResponse` instead of falling back to an earlier response.
-- A failed or cancelled turn MUST retain its observed response segments and
-  MUST NOT expose `finalResponse`.
-- A rejected static session option MUST return a `config` failure with upstream
-  operation `session.set_config_option`.
-- The executor MUST not expose raw ACP transport capture or raw provider wire
-  output as a public request or result field.
-- A named `claude` worker MUST default `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1`
-  only when the caller did not set it; command-backed workers MUST not receive
-  that default by name matching.
+  use Agent or provider identity or response-text heuristics.
+- Turn progress MUST expose detached ordered response segments observed so far;
+  its final segment MAY still be growing.
+- A completed turn MUST expose `finalResponse` as its latest valid candidate, or
+  an empty string when no candidate remains. A failed or cancelled turn MUST
+  retain observed response segments and MUST NOT expose `finalResponse`.
+- The executor MUST NOT expose raw ACP transport or raw provider output as a
+  public request or result field.
 
 ### Activity And Inactivity
 
 - Context-window counters and token usage MUST remain independent optional
-  telemetry: context is the latest reported session-window checkpoint, while
-  token usage describes the current turn and MUST NOT be inferred from context.
-- After a turn settles, an Acpx status containing exactly one newly persisted
-  per-request usage entry MUST replace any live token breakdown with normalized
-  `prompt_response` usage. Missing, unreadable, or ambiguous status usage MUST
-  retain the live breakdown or remain unavailable without changing settlement.
-- Terminal token enrichment MUST accompany the existing turn result and
-  `turn_end` observation without reporting separate ACP activity or emitting an
-  additional usage observation.
-- The executor MUST report ACP activity when it locally dispatches a turn and
-  when it receives a public normalized `acpx/runtime` event.
-- A status event with context counters or a token breakdown MUST become a usage
-  observation.
-- A `plan` status MUST become a plan observation.
-- An empty `usage_update`, `available_commands_update`, `current_mode_update`,
-  `config_option_update`, or `session_info_update` status MUST count as ACP
-  activity without becoming a persisted observation.
-- An untagged status whose complete text is `session resumed` MUST count as ACP
-  activity without becoming a persisted observation.
-- An untagged status whose first two whitespace-delimited fields are a known
-  client-operation method and one of `running`, `completed`, or `failed` MUST
-  count as ACP activity without becoming a persisted observation. The known
-  methods are `fs/read_text_file`, `fs/write_text_file`, `terminal/create`,
-  `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, and
-  `terminal/release`.
-- Any other status without usage counters or a token breakdown MUST remain an
-  unknown observation so Runtime can report genuinely unsupported provider
-  semantics as degraded.
+  telemetry: context is the latest session-window checkpoint, while token usage
+  describes the current turn and MUST NOT be inferred from context.
+- Terminal usage reported by the ACP session result MUST replace the live
+  current-turn token breakdown without changing settlement or emitting another
+  usage observation.
+- The executor MUST report ACP activity when it dispatches a turn and whenever
+  it receives a public ACP event.
+- Message, thought, tool, usage, plan, and unknown events MUST become their
+  normalized observations. Session and client-activity events MUST count as
+  activity without becoming persisted semantic observations.
 - An optional `inactivityFailAfterMs` MUST reset on each reported activity.
-- When that interval elapses, the executor MUST cancel the active turn and
-  return a retryable `inactivity_stale` runtime failure with its silence
-  duration and configured interval as evidence.
+  When it elapses, the executor MUST cancel the active turn and return a
+  retryable `inactivity_stale` failure with its silence duration and configured
+  interval as evidence.
 - Activity reporting MUST not claim receipt of an unexposed transport frame or
-  provider-side execution confirmation.
+  Agent-side execution confirmation.
 
 ### Ownership And Cleanup
 
+- `shutdown()` MUST first stop admitting new managed attempts and request every
+  resolving, starting, ready, or active attempt to stop. It MUST issue those
+  stop requests before awaiting attempt or cleanup settlement.
 - Before initializing a spawned worker, the executor MUST atomically write an
   active ownership manifest under the supplied workers root.
 - A manifest MUST identify its run, attempt, session, executor-owner
   generation, and worker process; it MUST include a process-start token
   whenever the platform can obtain one.
-- Managed-attempt cleanup MUST request turn cancellation and worker close,
+- Managed-attempt cleanup MUST request turn cancellation and session close,
   then make one bounded best-effort tree cleanup using TERM, KILL, and a final
   liveness check.
 - Cleanup MUST delete a manifest only after the worker tree is no longer live.
-- When cleanup cannot establish that the tree is gone, the executor MUST retain
-  a degraded manifest rather than report a clean result.
+  When cleanup cannot establish that result, it MUST retain a degraded manifest.
 - `recoverAcpOwnership` MUST perform only a bounded startup sweep of the
   supplied workspace workers root; it MUST not start a background reaper or
   scan other workspaces.
@@ -159,17 +140,17 @@ and operator-facing recovery.
   process-start token still matches; an unverified live PID MUST remain as
   ownership evidence without being signalled.
 - `inspectAcpOwnership` MUST be read-only and report only degraded or orphaned
-  ownership evidence; an active manifest owned by the supplied current owner
-  MUST not be reported as an orphan.
+  ownership evidence; a manifest owned by the supplied executor owner and
+  generation MUST not be reported as an orphan.
 
 ## Verification
 
-- `pnpm test:unit packages/agent-executor`: verifies named Agent resolution,
-  command bypass, response collection, managed-worker lifecycle,
-  bounded cleanup, identity-safe startup recovery, session projection
-  persistence, and normalized status classification.
-- `pnpm test:integration packages/agent-executor`: verifies effective Acpx
-  configuration, read-only catalog discovery, and managed named-Agent startup
-  and failure behavior.
-- `pnpm test:contract packages/agent-executor` and `pnpm test:type packages/agent-executor`:
-  verify the closed worker IPC protocol, exported managed-executor, and normalized result surface.
+- `pnpm --filter @acpus/agent-executor typecheck`: verifies the public managed
+  executor and ACP type boundary.
+- `pnpm test:unit packages/agent-executor`: verifies Agent resolution, response
+  collection, event normalization, inactivity, and ownership lifecycle.
+- `pnpm test:integration packages/agent-executor`: verifies Host, project,
+  global, built-in, and command-backed Agent startup and failure behavior.
+- `pnpm test:contract packages/agent-executor` and
+  `pnpm test:type packages/agent-executor`: verify the closed worker IPC and
+  exported managed-executor surface.

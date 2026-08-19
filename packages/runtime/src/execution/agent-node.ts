@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { sha256Digest } from "@acpus/core/content-identity";
 import type { AgentDefinitionIR, AgentNodeIR, WorkflowIR } from "@acpus/core/ir";
 import {
-  acpxSessionProjectionPath,
   type AgentBackendFailure,
   type AgentTurnRequest,
   type AgentTurnResult,
@@ -49,7 +48,7 @@ export type AgentNodeFailure =
     }
   | {
       origin: "runtime";
-      code: "invalid_agent_response_repair_max" | "agent_acpx_config_resolution_failed" | "agent_acp_inactivity_stale" | "agent_acp_worker_lost";
+      code: "invalid_agent_response_repair_max" | "agent_config_resolution_failed" | "agent_acp_inactivity_stale" | "agent_acp_worker_lost";
       message: string;
       retryable?: boolean;
       evidence?: AgentBackendFailure["evidence"];
@@ -107,7 +106,7 @@ type AgentTurnArtifactBase = {
   timing: AgentTurnTiming;
   prompt: string;
   responses: string[];
-  summary: AgentTurnSummary;
+  summary: Omit<AgentTurnSummary, "sessionProjectionPath">;
 };
 
 export type AgentTurnArtifact = AgentTurnArtifactBase & (
@@ -119,7 +118,6 @@ export type AgentTurnArtifact = AgentTurnArtifactBase & (
 type AgentTurnSummaryProjection = Pick<AgentTurnSummary, "eventCount" | "availability" | "stopReason" | "context" | "tokenUsage"> & {
   tools: { totalToolCallCount: number };
   cwd?: string;
-  acpxRecordId?: string;
 };
 
 type AgentArtifactRef = {
@@ -247,12 +245,16 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
       agent: agentSelector(definition),
       permissionMode: turnBase.permissionMode,
       ...(effectiveModel === undefined ? {} : { model: effectiveModel }),
+      ...(options.signal === undefined ? {} : { signal: options.signal }),
       ...(options.hostPolicy.inactivityFailAfterMs === undefined ? {} : { inactivityFailAfterMs: options.hostPolicy.inactivityFailAfterMs }),
       onAcpActivity: observedAt => activeProgress?.recordAcpActivity(observedAt),
     }, async attempt => {
       for (let turn = 0; turn <= maxRepairTurns; turn += 1) {
         const remaining = remainingTimeout(deadline, node.id);
         if (remaining.isErr()) return finishFailure(remaining.error);
+        if (options.signal?.aborted) {
+          return finishFailure(abortedTurnFailure());
+        }
         if (turn === 0) {
           writeAgentInvocationMetadata(node, options, {
             prompt,
@@ -373,7 +375,7 @@ function agentNodeFailure(failure: AgentBackendFailure): AgentNodeFailure {
   if (failure.kind === "config" && failure.origin === "runtime") {
     return {
       origin: "runtime",
-      code: "agent_acpx_config_resolution_failed",
+      code: "agent_config_resolution_failed",
       message: failure.message,
       ...(failure.retryable === undefined ? {} : { retryable: failure.retryable }),
     };
@@ -427,10 +429,10 @@ function resolutionFailure(error: ResolutionError): AgentAttemptFailure {
   return { type: "resolution", error, message: error.message };
 }
 
-function abortedTurnFailure(result: AgentTurnResult): AgentAttemptFailure {
+function abortedTurnFailure(result?: AgentTurnResult): AgentAttemptFailure {
   return {
     type: "cancelled",
-    message: result.status === "cancelled" ? result.message : "Agent turn was aborted.",
+    message: result?.status === "cancelled" ? result.message : "Agent turn was aborted.",
   };
 }
 
@@ -512,6 +514,7 @@ async function writeAgentTurnArtifacts(
 ): Promise<AgentTurnRecord> {
   const base = agentTurnRecord(turn, result);
   if (!options.store || !options.runId) return base;
+  const { sessionProjectionPath, ...summary } = result.summary;
   const turnArtifact: AgentTurnArtifact = {
     schemaVersion: 2,
     runId: options.runId,
@@ -521,13 +524,13 @@ async function writeAgentTurnArtifacts(
     turn,
     agentKey: node.run.agent,
     sessionName: request.sessionName,
-    ...(result.summary.acpxRecordId === undefined
+    ...(sessionProjectionPath === undefined
       ? {}
-      : { sessionProjectionPath: `acp/${acpxSessionProjectionPath(result.summary.acpxRecordId)}` }),
+      : { sessionProjectionPath: `acp/${sessionProjectionPath}` }),
     timing: result.timing,
     prompt: request.prompt,
     responses: [...result.responses],
-    summary: result.summary,
+    summary,
     ...(result.status === "completed"
       ? { status: result.status, finalResponse: result.finalResponse }
       : result.status === "failed"
@@ -561,7 +564,6 @@ function summaryProjection(summary: AgentTurnSummary): AgentTurnSummaryProjectio
     tokenUsage: summary.tokenUsage,
     tools: { totalToolCallCount: summary.tools.totalToolCallCount },
     cwd: summary.cwd,
-    acpxRecordId: summary.acpxRecordId,
   }) as AgentTurnSummaryProjection;
 }
 

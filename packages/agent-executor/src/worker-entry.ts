@@ -1,51 +1,48 @@
-import { createHash, randomUUID } from "node:crypto";
 import {
-  createAcpRuntime,
-  createAgentRegistry,
-  type AcpRuntime,
-  type AcpRuntimeEvent,
-  type AcpRuntimeHandle,
-  type AcpRuntimeTurnResult,
-  type AcpRuntimeUsageBreakdown,
-} from "acpx/runtime";
+  openAcpSession,
+  type AcpEvent,
+  type AcpSession,
+  type AcpSessionConfiguration,
+  type AcpTurnResult,
+} from "@acpus/acp";
 import type {
   AgentBackendFailure,
   AgentJsonValue,
   AgentObservationEvent,
   AgentToolCallSummary,
   AgentTurnProgress,
-  AgentTurnRequest,
   AgentTurnResult,
   AgentTurnSummary,
 } from "./types.js";
 import { observationEventFromRuntime, toAgentJsonValue } from "./runtime-event.js";
-import { createAcpusSessionStore } from "./session-store.js";
 import { createTurnResponseCollector } from "./turn-responses.js";
-import { failureFromAcpRuntime, type AcpRuntimeOperation } from "./worker-failure.js";
+import { failureFromAcpError } from "./worker-failure.js";
 import {
   ACP_WORKER_PROTOCOL_VERSION,
   isAcpWorkerParentMessage,
   type AcpWorkerChildMessage,
   type AcpWorkerParentMessage,
+  type AcpWorkerTurnRequest,
 } from "./worker-protocol.js";
 
-type InitializedWorker = {
+const INHERIT_PROCESS_GROUP_ENV = "ACPUS_INTERNAL_ACP_INHERIT_PROCESS_GROUP";
+
+type WorkerIdentity = {
   workerId: string;
   attemptId: string;
+};
+
+type InitializedWorker = WorkerIdentity & {
   cwd: string;
-  agentName: string;
   model?: string;
-  runtime: AcpRuntime;
+  session: AcpSession;
 };
 
 type ActiveTurn = {
   turnId: string;
   controller: AbortController;
-  cancel: () => Promise<void>;
   abortReason?: "aborted" | "timeout" | "inactivity";
 };
-
-type WorkerTurnRequest = Omit<AgentTurnRequest, "signal" | "onProgress" | "onObservation">;
 
 type TurnAccumulator = {
   startedAt: string;
@@ -56,17 +53,20 @@ type TurnAccumulator = {
   tokenUsage?: AgentTurnSummary["tokenUsage"];
   tools: Map<string, AgentToolCallSummary>;
   eventCount: number;
-  acpxRecordId?: string;
+  sessionProjectionPath: string;
 };
 
+let identity: WorkerIdentity | undefined;
 let initialized: InitializedWorker | undefined;
-let handle: AcpRuntimeHandle | undefined;
+let openingController: AbortController | undefined;
+let opening: Promise<void> | undefined;
 let active: ActiveTurn | undefined;
 let closing = false;
+let closingPromise: Promise<void> | undefined;
 
 process.on("message", raw => {
   if (!isAcpWorkerParentMessage(raw)) return;
-  void receive(raw).catch(error => fail(error));
+  void receive(raw).catch(error => fail(workerLostFailure(error)));
 });
 
 process.once("disconnect", () => {
@@ -75,26 +75,19 @@ process.once("disconnect", () => {
 
 async function receive(message: AcpWorkerParentMessage): Promise<void> {
   if (message.type === "initialize") {
-    if (initialized) throw new Error("ACP worker received duplicate initialization.");
-    applyEnvironment(message.env);
-    if (message.agent.kind === "named" && message.agent.name === "claude" && process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS === undefined) {
-      process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS = "1";
-    }
-    const agentName = workerAgentName(message.agent);
-    initialized = {
-      workerId: message.workerId,
-      attemptId: message.attemptId,
-      cwd: message.cwd,
-      agentName,
-      ...(message.model === undefined ? {} : { model: message.model }),
-      runtime: createAcpRuntime({
-        cwd: message.cwd,
-        sessionStore: createAcpusSessionStore(message.sessionStateDirectory),
-        agentRegistry: createAgentRegistry({ overrides: { [agentName]: message.resolvedLaunch } }),
-        permissionMode: message.permissionMode,
-      }),
-    };
-    send({ type: "ready", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: message.workerId, attemptId: message.attemptId });
+    if (identity) throw new Error("ACP worker received duplicate initialization.");
+    identity = { workerId: message.workerId, attemptId: message.attemptId };
+    openingController = new AbortController();
+    send({ type: "open-started", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, ...identity });
+    opening = openWorker(message, openingController.signal);
+    await opening;
+    opening = undefined;
+    openingController = undefined;
+    if (!initialized && !closing) await failAndClose();
+    return;
+  }
+  if (message.type === "close-attempt") {
+    await closeWorker(message.reason);
     return;
   }
 
@@ -108,104 +101,102 @@ async function receive(message: AcpWorkerParentMessage): Promise<void> {
     if (active?.turnId !== message.turnId) return;
     active.abortReason = message.reason;
     active.controller.abort();
-    await active.cancel().catch(() => {});
     return;
   }
-  await closeWorker(message.reason);
+}
+
+async function openWorker(
+  message: Extract<AcpWorkerParentMessage, { type: "initialize" }>,
+  signal: AbortSignal,
+): Promise<void> {
+  const opened = await openAcpSession({
+    recordId: message.recordId,
+    stateDirectory: message.sessionStateDirectory,
+    launch: message.resolvedLaunch,
+    cwd: message.cwd,
+    env: {
+      ...message.env,
+      ...(process.env[INHERIT_PROCESS_GROUP_ENV] === undefined
+        ? {}
+        : { [INHERIT_PROCESS_GROUP_ENV]: process.env[INHERIT_PROCESS_GROUP_ENV] }),
+    },
+    permissionMode: message.permissionMode,
+    signal,
+  });
+  if (opened.isErr()) {
+    if (!closing) sendFailure(failureFromAcpError(opened.error));
+    return;
+  }
+  initialized = {
+    ...identityOfMessage(message),
+    cwd: message.cwd,
+    ...(message.model === undefined ? {} : { model: message.model }),
+    session: opened.value,
+  };
+  if (!closing) {
+    send({ type: "ready", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, ...identityOfMessage(message) });
+  }
 }
 
 async function runTurn(
   state: InitializedWorker,
   turnId: string,
-  request: Omit<AgentTurnRequest, "signal" | "onProgress" | "onObservation">,
+  request: AcpWorkerTurnRequest,
 ): Promise<void> {
-  const accumulator = createAccumulator();
-  let operation: AcpRuntimeOperation = "sessions.ensure";
+  const accumulator = createAccumulator(state.session.projectionPath);
+  const controller = new AbortController();
+  active = { turnId, controller };
+  emitActivity(state, turnId);
   try {
-    handle ??= await state.runtime.ensureSession({
-      sessionKey: request.sessionName,
-      agent: state.agentName,
-      mode: "persistent",
-      cwd: state.cwd,
-      ...(state.model === undefined ? {} : { sessionOptions: { model: state.model } }),
-    });
-    if (handle.acpxRecordId !== undefined) accumulator.acpxRecordId = handle.acpxRecordId;
-    for (const [key, value] of Object.entries(request.config ?? {}).filter(([key]) => key !== "model").sort(([left], [right]) => left.localeCompare(right))) {
-      operation = "session.set_config_option";
-      await state.runtime.setConfigOption?.({ handle, key, value });
-    }
-
-    const usageBefore = await readPerRequestUsage(state.runtime, handle);
-    operation = "prompt";
-    const controller = new AbortController();
-    const turn = state.runtime.startTurn({
-      handle,
-      text: request.prompt,
-      mode: "prompt",
-      requestId: randomUUID(),
-      ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
+    const configuration = turnConfiguration(state, request);
+    const terminal = await state.session.runTurn({
+      prompt: request.prompt,
+      ...(configuration === undefined ? {} : { configuration }),
       signal: controller.signal,
+      onEvent: event => emitRuntimeEvent(state, turnId, accumulator, event),
     });
-    active = {
-      turnId,
-      controller,
-      cancel: () => turn.cancel({ reason: "acpus attempt cleanup" }),
-    };
-    emitActivity(state, turnId);
-    for await (const event of turn.events) emitRuntimeEvent(state, turnId, accumulator, event);
-    const terminal = await turn.result;
-    await applyPromptResponseUsage(state.runtime, handle, usageBefore, accumulator);
-    const result = terminalResult(accumulator, terminal, active?.abortReason);
+    const result = terminal.isErr()
+      ? resultFromFailure(accumulator, terminal.error, active?.abortReason)
+      : resultFromTerminal(accumulator, terminal.value, active?.abortReason);
     emitTurnEnd(state, turnId, accumulator, result);
-    send({ type: "turn-result", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: state.workerId, attemptId: state.attemptId, turnId, result });
+    send({ type: "turn-result", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, ...identityOf(state), turnId, result });
   } catch (error) {
-    const result = failedResult(accumulator, failureFromAcpRuntime(error, operation));
-    emitTurnEnd(state, turnId, accumulator, result);
-    send({ type: "turn-result", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: state.workerId, attemptId: state.attemptId, turnId, result });
+    fail(workerLostFailure(error));
   } finally {
-    active = undefined;
+    if (active?.turnId === turnId) active = undefined;
   }
 }
 
-async function readPerRequestUsage(
-  runtime: AcpRuntime,
-  runtimeHandle: AcpRuntimeHandle,
-): Promise<Map<string, AcpRuntimeUsageBreakdown> | undefined> {
-  if (!runtime.getStatus) return undefined;
-  try {
-    const status = await runtime.getStatus({ handle: runtimeHandle });
-    return new Map(Object.entries(status.usage?.perRequest ?? {}));
-  } catch {
-    return undefined;
-  }
+function turnConfiguration(
+  state: InitializedWorker,
+  request: AcpWorkerTurnRequest,
+): AcpSessionConfiguration | undefined {
+  if (state.model === undefined && request.configuration === undefined) return undefined;
+  return {
+    ...(state.model === undefined ? {} : { model: state.model }),
+    ...(request.configuration === undefined ? {} : { options: request.configuration }),
+  };
 }
 
-async function applyPromptResponseUsage(
-  runtime: AcpRuntime,
-  runtimeHandle: AcpRuntimeHandle,
-  before: Map<string, AcpRuntimeUsageBreakdown> | undefined,
+function emitRuntimeEvent(
+  state: InitializedWorker,
+  turnId: string,
   accumulator: TurnAccumulator,
-): Promise<void> {
-  if (before === undefined) return;
-  const after = await readPerRequestUsage(runtime, runtimeHandle);
-  if (after === undefined) return;
-  const additions = [...after].filter(([id]) => !before.has(id));
-  if (additions.length !== 1) return;
-  accumulator.tokenUsage = { source: "prompt_response", ...additions[0]![1] };
-}
-
-function emitRuntimeEvent(state: InitializedWorker, turnId: string, accumulator: TurnAccumulator, event: AcpRuntimeEvent): void {
+  event: AcpEvent,
+): void {
   const observedAt = new Date().toISOString();
   const elapsedMs = elapsed(accumulator);
   accumulator.eventCount += 1;
   updateAccumulator(accumulator, event, observedAt);
   const projected = observationEventFromRuntime(event, accumulator.sequence++, observedAt, elapsedMs);
   if (projected) {
-    const observation = {
-      event: projected,
-      progress: progress(accumulator, observedAt),
-    };
-    send({ type: "turn-observation", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: state.workerId, attemptId: state.attemptId, turnId, observation });
+    send({
+      type: "turn-observation",
+      protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
+      ...identityOf(state),
+      turnId,
+      observation: { event: projected, progress: progress(accumulator, observedAt) },
+    });
   }
   emitActivity(state, turnId, observedAt);
 }
@@ -226,75 +217,65 @@ function emitTurnEnd(state: InitializedWorker, turnId: string, accumulator: Turn
   send({
     type: "turn-observation",
     protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
-    workerId: state.workerId,
-    attemptId: state.attemptId,
+    ...identityOf(state),
     turnId,
     observation: { event, progress: progress(accumulator, observedAt) },
   });
 }
 
-function updateAccumulator(accumulator: TurnAccumulator, event: AcpRuntimeEvent, observedAt: string): void {
+function updateAccumulator(accumulator: TurnAccumulator, event: AcpEvent, observedAt: string): void {
   accumulator.responses.observe(event);
-  if (event.type === "text_delta") return;
-  if (event.type === "status") {
-    if (event.used !== undefined && event.size !== undefined) {
-      accumulator.context = { used: event.used, size: event.size, updatedAt: observedAt };
-    }
-    if (event.breakdown) {
-      accumulator.tokenUsage = {
-        source: "usage_update",
-        ...event.breakdown,
-      };
-    }
+  if (event.type === "usage") {
+    if (event.context) accumulator.context = { ...event.context, updatedAt: observedAt };
+    if (event.tokens) accumulator.tokenUsage = { source: "usage_update", ...event.tokens };
     return;
   }
-  if (event.type !== "tool_call") return;
-  const id = event.toolCallId ?? `tool-${accumulator.eventCount}`;
-  const previous = accumulator.tools.get(id);
-  const startedAt = previous?.startedAt ?? observedAt;
-  accumulator.tools.set(id, {
-    toolCallId: id,
-    ...(event.title === undefined ? {} : { title: event.title }),
-    ...(event.kind === undefined ? {} : { kind: event.kind }),
-    ...(event.status === undefined ? {} : { status: event.status }),
-    ...(event.rawInput === undefined ? {} : { input: preview(event.rawInput) }),
-    startedAt,
+  if (event.type !== "tool") return;
+  const previous = accumulator.tools.get(event.toolCallId);
+  const status = event.status ?? previous?.status;
+  accumulator.tools.set(event.toolCallId, {
+    toolCallId: event.toolCallId,
+    ...optionalValue("title", event.title ?? previous?.title),
+    ...optionalValue("toolName", event.name ?? previous?.toolName),
+    ...optionalValue("kind", event.kind ?? previous?.kind),
+    ...optionalValue("status", status),
+    ...(event.input === undefined
+      ? optionalValue("input", previous?.input)
+      : { input: preview(event.input) }),
+    startedAt: previous?.startedAt ?? observedAt,
     updatedAt: observedAt,
-    ...(terminalToolStatus(event.status) ? { completedAt: observedAt } : {}),
+    ...(terminalToolStatus(status)
+      ? { completedAt: previous?.completedAt ?? observedAt }
+      : {}),
   });
 }
 
-function terminalResult(
+function resultFromFailure(
   accumulator: TurnAccumulator,
-  terminal: AcpRuntimeTurnResult,
-  abortReason: ActiveTurn["abortReason"],
-): AgentTurnResult {
-  return terminalResultFromRuntime(accumulator, terminal, abortReason);
-}
-
-function terminalResultFromRuntime(
-  accumulator: TurnAccumulator,
-  terminal: AcpRuntimeTurnResult,
+  error: Parameters<typeof failureFromAcpError>[0],
   abortReason: ActiveTurn["abortReason"],
 ): AgentTurnResult {
   if (abortReason === "inactivity") return staleResult(accumulator);
-  if (abortReason === "timeout") return failedResult(accumulator, { kind: "timeout", origin: "runtime", message: "Agent turn exceeded its authored timeout." });
+  if (abortReason === "timeout") return failedResult(accumulator, timeoutFailure());
+  if (abortReason === "aborted") return cancelledResult(accumulator, "Agent turn was aborted.");
+  return failedResult(accumulator, failureFromAcpError(error));
+}
+
+function resultFromTerminal(
+  accumulator: TurnAccumulator,
+  terminal: AcpTurnResult,
+  abortReason: ActiveTurn["abortReason"],
+): AgentTurnResult {
+  if (terminal.usage) accumulator.tokenUsage = { source: "prompt_response", ...terminal.usage };
+  if (abortReason === "inactivity") return staleResult(accumulator);
+  if (abortReason === "timeout") return failedResult(accumulator, timeoutFailure());
   if (abortReason === "aborted" || terminal.status === "cancelled") {
-    return cancelledResult(accumulator, "Agent turn was aborted.", terminal.status === "cancelled" ? terminal.stopReason : undefined);
-  }
-  if (terminal.status === "failed") {
-    return failedResult(accumulator, {
-      kind: terminal.error?.code === "ACP_TURN_FAILED" ? "provider_exit" : "spawn",
-      origin: "provider",
-      message: terminal.error?.message ?? "ACP agent turn failed.",
-      ...(terminal.error?.retryable === undefined ? {} : { retryable: terminal.error.retryable }),
-      ...(terminal.error?.code === undefined ? {} : { upstream: { source: "acpx", operation: "prompt", code: terminal.error.code } }),
-    });
+    return cancelledResult(accumulator, "Agent turn was aborted.", terminal.stopReason);
   }
   return completedResult(accumulator, terminal.stopReason);
 }
 
-function createAccumulator(): TurnAccumulator {
+function createAccumulator(sessionProjectionPath: string): TurnAccumulator {
   return {
     startedAt: new Date().toISOString(),
     startedAtMonotonic: performance.now(),
@@ -302,7 +283,7 @@ function createAccumulator(): TurnAccumulator {
     responses: createTurnResponseCollector(),
     tools: new Map(),
     eventCount: 0,
-    ...(handle?.acpxRecordId === undefined ? {} : { acpxRecordId: handle.acpxRecordId }),
+    sessionProjectionPath,
   };
 }
 
@@ -327,14 +308,27 @@ function cancelledResult(accumulator: TurnAccumulator, message: string, stopReas
   };
 }
 
-function failedResult(accumulator: TurnAccumulator, failure: AgentBackendFailure, stopReason?: string): AgentTurnResult {
+function failedResult(accumulator: TurnAccumulator, failure: AgentBackendFailure): AgentTurnResult {
   return {
     status: "failed",
     failure,
     responses: accumulator.responses.snapshot(),
     stderr: "",
-    summary: summary(accumulator, stopReason),
+    summary: summary(accumulator),
     timing: timing(accumulator),
+  };
+}
+
+function timeoutFailure(): AgentBackendFailure {
+  return { kind: "timeout", origin: "runtime", message: "Agent turn exceeded its authored timeout." };
+}
+
+function workerLostFailure(error: unknown): AgentBackendFailure {
+  return {
+    kind: "worker_lost",
+    origin: "runtime",
+    retryable: true,
+    message: error instanceof Error ? error.message : String(error),
   };
 }
 
@@ -350,7 +344,7 @@ function staleResult(accumulator: TurnAccumulator): AgentTurnResult {
       silentForMs,
       silenceStartedAt: accumulator.startedAt,
     },
-  }, undefined);
+  });
 }
 
 function progress(accumulator: TurnAccumulator, updatedAt: string): AgentTurnProgress {
@@ -369,7 +363,7 @@ function summary(accumulator: TurnAccumulator, stopReason?: string): AgentTurnSu
     ...(accumulator.tokenUsage === undefined ? {} : { tokenUsage: accumulator.tokenUsage }),
     tools: { totalToolCallCount: accumulator.tools.size, calls: [...accumulator.tools.values()] },
     ...(initialized?.cwd === undefined ? {} : { cwd: initialized.cwd }),
-    ...(accumulator.acpxRecordId === undefined ? {} : { acpxRecordId: accumulator.acpxRecordId }),
+    sessionProjectionPath: accumulator.sessionProjectionPath,
   };
 }
 
@@ -383,27 +377,36 @@ function elapsed(accumulator: TurnAccumulator): number {
 }
 
 function emitActivity(state: InitializedWorker, turnId: string, observedAt = new Date().toISOString()): void {
-  send({ type: "acp-activity", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: state.workerId, attemptId: state.attemptId, turnId, observedAt });
+  send({ type: "acp-activity", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, ...identityOf(state), turnId, observedAt });
 }
 
 async function closeWorker(reason: string): Promise<void> {
-  if (closing) return;
+  if (closingPromise !== undefined) return closingPromise;
   closing = true;
-  active?.controller.abort();
-  await active?.cancel().catch(() => {});
-  if (initialized && handle) {
-    await initialized.runtime.cancel({ handle, reason }).catch(() => {});
-    await initialized.runtime.close({ handle, reason, discardPersistentState: false }).catch(() => {});
-  }
-  if (initialized) send({ type: "closed", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: initialized.workerId, attemptId: initialized.attemptId });
-  process.disconnect?.();
-  process.exit(process.exitCode ?? 0);
+  closingPromise = (async () => {
+    openingController?.abort();
+    active?.controller.abort();
+    await opening?.catch(() => undefined);
+    if (initialized) await initialized.session.close(reason).then(() => undefined);
+    if (identity) send({ type: "closed", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, ...identity });
+    process.disconnect?.();
+    process.exit(process.exitCode ?? 0);
+  })();
+  return closingPromise;
 }
 
-function fail(error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
-  if (initialized) send({ type: "worker-failure", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: initialized.workerId, attemptId: initialized.attemptId, message });
+function sendFailure(failure: AgentBackendFailure): void {
+  if (identity) send({ type: "worker-failure", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, ...identity, failure });
   process.exitCode = 1;
+}
+
+async function failAndClose(): Promise<void> {
+  process.exitCode = 1;
+  await closeWorker("worker failure");
+}
+
+function fail(failure: AgentBackendFailure): void {
+  sendFailure(failure);
   void closeWorker("worker failure");
 }
 
@@ -419,20 +422,22 @@ function requireInitialized(message: AcpWorkerParentMessage): InitializedWorker 
   return initialized;
 }
 
-function applyEnvironment(env: Record<string, string | undefined>): void {
-  for (const [key, value] of Object.entries(env)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
+function identityOf(state: InitializedWorker): WorkerIdentity {
+  return { workerId: state.workerId, attemptId: state.attemptId };
 }
 
-function workerAgentName(agent: WorkerTurnRequest["agent"]): string {
-  if (agent.kind === "named") return agent.name;
-  return `acpus-command-${createHash("sha256").update(agent.command).digest("hex").slice(0, 16)}`;
+function identityOfMessage(
+  message: Pick<AcpWorkerParentMessage, "workerId" | "attemptId">,
+): WorkerIdentity {
+  return { workerId: message.workerId, attemptId: message.attemptId };
 }
 
 function terminalToolStatus(status: string | undefined): boolean {
   return status === "completed" || status === "failed" || status === "cancelled";
+}
+
+function optionalValue<Key extends string, Value>(key: Key, value: Value | undefined): { [K in Key]?: Value } {
+  return value === undefined ? {} : { [key]: value } as { [K in Key]: Value };
 }
 
 function preview(value: unknown) {
@@ -440,6 +445,6 @@ function preview(value: unknown) {
   const originalBytes = Buffer.byteLength(rendered, "utf8");
   const limit = 4 * 1024;
   if (originalBytes <= limit) return { preview: rendered, truncated: false, originalBytes, headBytes: originalBytes };
-  const preview = Buffer.from(rendered, "utf8").subarray(0, limit).toString("utf8");
-  return { preview, truncated: true, originalBytes, headBytes: Buffer.byteLength(preview, "utf8") };
+  const content = Buffer.from(rendered, "utf8").subarray(0, limit).toString("utf8");
+  return { preview: content, truncated: true, originalBytes, headBytes: Buffer.byteLength(content, "utf8") };
 }

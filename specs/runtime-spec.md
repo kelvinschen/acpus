@@ -2,7 +2,7 @@
 
 ## Purpose
 
-`@acpus/runtime` owns workspace-scoped durable runs in private user-level shards, frozen workflow execution, controls, inspection, pruning, an embeddable Workspace Runtime, and the local daemon Adapter. Prepared workflow data comes from the [Workflow Compiler](workflow-compiler-spec.md); IR/value semantics come from [Core](core-spec.md) and [Expression](expression-spec.md); authoring modules load through the [Loader](loader-spec.md); Agent turns delegate to the [Agent Executor](agent-executor-spec.md); side-effect observation delegates to [Runtime Hooks](hooks-spec.md).
+`@acpus/runtime` owns workspace-scoped durable runs in private user-level shards, frozen workflow execution, controls, inspection, pruning, an embeddable Workspace Runtime, and the local daemon Adapter. Prepared workflow data comes from the [Workflow Compiler](workflow-compiler-spec.md); IR/value semantics come from [Core](core-spec.md) and [Expression](expression-spec.md); authoring modules load through the [Loader](loader-spec.md); Agent turns delegate to the [Agent Executor](agent-executor-spec.md), which uses [ACP](acp-spec.md); side-effect observation delegates to [Runtime Hooks](hooks-spec.md).
 
 ## Requirements
 
@@ -178,8 +178,8 @@ type PruneReport = {
 - A ready or awaiting Signal instance MUST NOT count toward the run-wide logical leaf cap.
 - A Signal instance MUST NOT acquire an owner-local physical executor slot.
 - The logical run-wide leaf cap MUST count every durable attempt whose status is `started`.
-- The current owner MUST limit its physical leaf count to executor invocations that it has launched and that have not settled.
-- The scheduler MUST start a Task or Agent leaf only while both the logical run-wide cap and the current owner's physical leaf cap have capacity.
+- Each active `RunExecution` owner epoch MUST limit its physical leaf count to executor invocations that it has launched and that have not settled.
+- The scheduler MUST start a Task or Agent leaf only while both the logical run-wide cap and the claiming `RunExecution` owner epoch's physical leaf cap have capacity.
 - The daemon ceiling MUST remain owner configuration rather than frozen IR or a persisted scheduler fact.
 - The production run-execution seam MUST be `createRuntimeRunScheduler(...).start({runId,ownerId})`.
 - `start({runId,ownerId})` MUST return a `RunExecution` exposing `ownerEpoch`, `result`, `wake()`, and `stop()`.
@@ -249,7 +249,7 @@ type PruneReport = {
 - Task output MUST be normalized immediately before child-process IPC and again at durable result commit; the parent node-executor layer MUST NOT add another cloning or normalization pass.
 - Recoverable Task attempt failure MUST contain only `failed`, `cancelled`, or `timed_out` status plus a complete display message; cwd, errno, exit code, signal, and bounded process output details MUST be folded into that message when applicable.
 - A Task return value MUST persist through durable scheduler state without creating run-local files unless the Task calls `artifact.write(...)`.
-- Attempt deadlines MUST be persisted once; Task and Agent executors consume remaining budgets without re-evaluating authored timeout expressions.
+- Attempt deadlines MUST be persisted once before executor invocation and remain authoritative through the complete Task or Agent lifecycle, including named Agent resolution, worker and ACP session startup, and every turn. Executors MUST consume the one remaining budget without re-evaluating or restarting authored timeout expressions.
 - Timeout and cancellation MUST remain authoritative across startup/result races, reject late output/artifacts, propagate Task `abortSignal`, and terminate the isolated process tree after bounded cooperative cleanup.
 - An attempt result commit MUST match an attempt that is still `started`, its `attemptId`, and its active `ownerEpoch`.
 - An exact attempt-result idempotency replay by the original still-active owner MAY return the current snapshot without creating a new result commit.
@@ -276,22 +276,24 @@ type PruneReport = {
 
 - Agent execution MUST render frozen prompt, cwd, env, permission, session, model, and static Agent `config` values, resolving a directly interpolated ArtifactRef to its verified absolute path.
 - Runtime MUST call the [Agent Executor](agent-executor-spec.md) through one managed attempt for normalized ACP execution and progress; Runtime MUST not parse raw ACP transport for decisions, summaries, or progress.
-- Runtime MUST translate each effective named or command Agent definition into the corresponding [Agent Executor](agent-executor-spec.md) request variant; absent permission defaults to `approve-all`.
+- Runtime MUST translate each effective named or command Agent definition into the corresponding managed-executor request variant; absent permission defaults to `approve-all`.
 - Static Agent `config` is a frozen string-to-string desired ACP option map for a reusable Agent profile; it is not an ACP `configOptions` snapshot or cross-session mutable state and MUST NOT contain secrets.
-- The effective model MUST be `config.model ?? model`; `config.model` uses the Agent Executor model path rather than the generic config-option loop.
+- The effective model MUST be `config.model ?? model`; `config.model` uses the ACP session model path rather than the generic config-option loop.
 - Runtime MUST pass `config` only on an initial normal Agent turn; response-repair, plain-continuation, and steering turns MUST omit it.
 - After resolving an Agent attempt's initial prompt, cwd, Acpus-managed env, permission, session, model, config, and deadline, Runtime MUST persist one `agent_invocation` metadata record before the first provider request.
 - `agent_invocation` MUST contain the final prompt sent on that attempt's first request, including output-schema instructions.
 - `agent_invocation` MUST classify prompt origin as `authored`, `steering`, or `continuation`.
 - `agent_invocation` env MUST contain only frozen profile env plus resolved node env.
 - `agent_invocation` MUST NOT contain inherited host env or Runtime-injected `ACPUS_RUNTIME_*` values.
-- `agent_invocation` MUST omit internal session names, provider/acpx identity, later repair turns, partial responses, tools, usage, and artifacts.
+- `agent_invocation` MUST omit internal session names, provider identity, ACP
+  record identity, backend session identity, later repair turns, partial
+  responses, tools, usage, and artifacts.
 - Failure to persist `agent_invocation` MUST reject the execution boundary before provider dispatch.
 - Overrides MUST allow only `use`, `command`, `model`, `permissionMode`, `config`, `cwd`, and `env`; an override `config` replaces the complete inherited map, including with `{}`, and identity replacement clears inherited model/config while preserving permission.
 - Session identity MUST be run-local and deterministic from explicit non-empty `sessionKey` or dynamic `nodeKey`; repair/retry/resume/steering turns reuse it according to continuation policy.
-- The effective acpx record id MUST be `acpus-` followed by the unpadded base64url encoding of the first 16 bytes of SHA-256 over the canonical JSON identity `{ runId, key }` for an explicit session key or `{ runId, nodeKey }` otherwise.
+- The effective ACP record id MUST be `acpus-` followed by the unpadded base64url encoding of the first 16 bytes of SHA-256 over the canonical JSON identity `{ runId, key }` for an explicit session key or `{ runId, nodeKey }` otherwise.
 - Runtime MUST persist an Agent session below that run's private `acp/sessions/` tree and MUST not retain an ACP worker process after a paused, failed, completed, or canceled Agent attempt.
-- Runtime MUST serialize Agent executor admission by effective session identity within one run.
+- Runtime MUST serialize managed Agent admission by effective session identity within one run.
 - Runtime MUST NOT admit a steering replacement until the superseded executor using that session has settled.
 - Steering replacement settlement gating MUST include draining the superseded executor.
 - Nodes that explicitly share one `sessionKey` MUST resolve to the same effective Agent backend, model, and config; Runtime does not validate that compatibility constraint.
@@ -331,7 +333,7 @@ type PruneReport = {
 - Agent output-processing metadata MUST record whether accepted or schema-rejected JSON was parsed directly or locally repaired.
 - Agent output-processing metadata MUST NOT embed raw output.
 - The daemon MUST capture `ACPUS_AGENT_RESPONSE_REPAIR_MAX` at startup, default additional repair turns to two, accept canonical non-negative safe integers, and expose invalid configuration as `invalid_agent_response_repair_max` before provider invocation.
-- Response repair MUST remain inside one scheduler-visible attempt, reuse the acpx session, avoid generic config-option reapplication, and never process backend failures as output failures.
+- Response repair MUST remain inside one scheduler-visible attempt, reuse the ACP session, avoid generic config-option reapplication, and never process backend failures as output failures.
 - Runtime MUST execute every response-repair turn in the same managed ACP worker as its initial turn; retry, resume, and steering start a new managed worker against the persisted session.
 - A response-repair prompt MUST request a complete replacement Tagged JSON frame.
 - A response-repair prompt MUST repeat the Tagged JSON output contract.
@@ -341,14 +343,14 @@ type PruneReport = {
 - A settled Agent turn whose attempt still owns result/artifact/progress writes MUST register `artifacts/<nodeKey>/attempt-<n>/<attempt-id>/agent/turn-<NNN>.json` using schema version 2 and containing identities, exact prompt, ordered responses, normalized summary/timing, status, and structured terminal detail.
 - A completed turn artifact MUST contain `finalResponse`.
 - A failed or cancelled turn artifact MUST NOT contain `finalResponse`.
-- When the normalized summary identifies an acpx record, that turn artifact MUST contain the run-relative `sessionProjectionPath` `acp/sessions/<percent-encoded-acpx-record-id>.json`; it MUST reference rather than embed the session projection.
-- The session projection is session-wide and mutable across turns. It MUST NOT be treated as an exact per-event log or as a source for precise event timing, tool-update ordering, latency, or concurrency analysis.
+- When the normalized summary contains `sessionProjectionPath`, that turn artifact MUST prefix it with `acp/` and store the resulting run-relative path only as its top-level `sessionProjectionPath`, such as `acp/sessions/<percent-encoded-record-id>.json`; its embedded summary and turn metadata MUST omit `sessionProjectionPath`, and the artifact MUST reference rather than embed the [ACP session projection](acp-spec.md#session-projection).
+- The ACP session projection is session-wide and mutable across turns. It MUST NOT be treated as an exact per-event log or as a source for precise event timing, tool-update ordering, latency, or concurrency analysis.
 - A fenced Agent turn MUST NOT register a new ordinary turn or stderr artifact after the fence.
 - Turn metadata MUST reference a registered canonical artifact when one exists and otherwise retain only its bounded summary and terminal disposition; non-empty stderr for a writable attempt uses a separate artifact.
 - The daemon MUST accept an optional `ACPUS_AGENT_ACP_INACTIVITY_FAIL_AFTER_MS` at startup; it MUST be a canonical positive decimal integer no greater than the native timer limit or daemon startup MUST fail with `invalid-agent-acp-inactivity-fail-after-ms`.
 - When configured ACP inactivity elapses, Runtime MUST settle the Agent attempt as the retryable runtime failure `agent_acp_inactivity_stale` and retain the reported silence evidence in the durable failure.
-- Runtime MUST map a named Agent's Acpx configuration failure to the
-  non-retryable runtime diagnostic `agent_acpx_config_resolution_failed`.
+- Runtime MUST map a named Agent configuration failure to the non-retryable
+  runtime diagnostic `agent_config_resolution_failed`.
 - A recognized Agent failure MUST write terminal progress/metadata once; if that write also fails, the rejection MUST retain both the recognized failure and persistence failure.
 - Node progress MUST remain latest-state observation outside scheduler decisions, clear on new attempts, use typed bounded channels, and advance an independent progress version.
 - Running Agent progress MUST periodically persist a local ACP activity timestamp and MUST clear it when that turn settles.
@@ -425,7 +427,7 @@ type PruneReport = {
 - Workspace Runtime startup MUST atomically claim the workspace's one durable `runtime_authority` row before recovery or scheduling. A live unreleased owner MUST return the typed `runtime-authority-busy` failure without replacing that owner. Authority persistence and errors MUST NOT classify or name the embedding product.
 - When the platform can obtain a process-start token, Runtime authority and workspace-lock liveness MUST require that token to match; a reused PID MUST NOT retain ownership. An unavailable token MUST preserve conservative PID-based ownership.
 - Runtime authority epochs MUST increase across release and reacquisition. Heartbeat, idle-state update, and release MUST be fenced by workspace, owner id, and epoch; release MUST retain the row's epoch history.
-- Workspace Runtime owns store readiness, Runtime authority heartbeat, ACP ownership recovery, managed-executor construction and closure, run sessions, admission, scheduler ticks, observation, and orderly shutdown. Orderly shutdown MUST request run-session stop and managed-executor cleanup concurrently, await their settlement before releasing Runtime authority or closing storage, and MUST NOT leave execution promises accessing a closed store.
+- Workspace Runtime owns store readiness, Runtime authority heartbeat, ACP ownership recovery, managed-executor construction and closure, run sessions, admission, scheduler ticks, observation, and orderly shutdown. Orderly shutdown MUST request run-session stop and managed-executor cleanup before awaiting either, await both before releasing Runtime authority or closing storage, and MUST NOT leave execution promises accessing a closed store.
 - `findAdmission(requestId)` MUST read the durable admission selected by `admission-request:<requestId>` from the Runtime's bound store, return the same `RunDetails` receipt as `submit`, and return local absence as `undefined`.
 - The daemon MUST be an Adapter over one Workspace Runtime. It owns socket binding and cleanup, wire protocol translation, active-connection accounting, idle-stop and process policy, but MUST NOT independently own scheduling, execution sessions, ACP recovery, or store reads used to serve Runtime operations.
 
@@ -479,7 +481,7 @@ type DaemonSteerControlResult = {
 - Admission-side rollover failure MUST retain intent and source data and return `RUNTIME_STORE_REPAIR_FAILED`. Pause, resume, retry, cancel, signal, steer, and fork MUST NOT automatically roll over an outdated schema and MUST instead return `RUNTIME_STORE_REPAIR_REQUIRED`.
 - The Workspace Runtime MUST host one serialized-write execution session per active/recoverable run, permit different runs concurrently, and keep long executor waits from blocking controls.
 - A Runtime tick MUST NOT dispatch a run's hook backlog through a second store writer after that tick started or found an active execution session for the same run; the execution session owns checkpoint hook dispatch until it settles.
-- After acquiring Runtime authority and before scheduling, the Workspace Runtime MUST perform the [Agent Executor](agent-executor-spec.md#ownership-and-cleanup)'s bounded ACP ownership recovery and create the workspace-managed executor.
+- After acquiring Runtime authority and before scheduling, the Workspace Runtime MUST perform the [Agent Executor](agent-executor-spec.md#ownership-and-cleanup)'s bounded ownership recovery and create the workspace-managed executor.
 - Session start MUST distinguish `started`, `already-active`, `terminal`, and `quarantined`; Runtime tick activity counts only `started` executions and dispatched hook work.
 - Pause/cancel MUST durably fence their effect and abort only applicable active attempt controllers; late executor results cannot overwrite control state.
 - Steer MUST resolve an exact started Agent attempt from an exact attempt id, exact dynamic node key, `@ref`, `@ref#attemptNo`, or unambiguous authored Agent id within the control transaction.
@@ -650,4 +652,4 @@ Runtime owns generic inspection semantics and public shape.
 - `pnpm test:unit packages/runtime`: covers prepared-workflow closed validation and workspace referrer containment, read-only store inspection, prune selection, fork compatibility, selector resolution, semantic trees/folding, Forensics projections, privacy, and stop policies.
 - `pnpm test:integration packages/runtime`: covers layout-v2 publication, serialized repair and first use, repair resumption, canonical snapshot-manifest recovery, database/sidecar fencing, archived summaries, WAL-visible preservation, durable execution/recovery, read-only inspection, and safe known-workspace discovery.
 - `pnpm test:contract packages/cli`: covers the exact compact text distinction between initial Agent activity and intervals without current activity.
-- `pnpm --filter @acpus/runtime typecheck`: verifies the Runtime package implementation; `pnpm test:type packages/runtime` verifies its exported function and DTO contracts and their compiler, Core, Expression, and Agent Executor type relationships.
+- `pnpm --filter @acpus/runtime typecheck`: verifies the Runtime package implementation; `pnpm test:type packages/runtime` verifies its exported function and DTO contracts and their compiler, Core, Expression, and ACP execution type relationships.

@@ -5,10 +5,10 @@ import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { err, ok, type Result } from "neverthrow";
 import {
-  AcpxAgentResolutionSystemError,
+  AcpAgentResolutionSystemError,
   resolveAcpAgentLaunch,
-  type AcpxAgentResolutionFailure,
-} from "./acpx-agent-resolution.js";
+  type AcpAgentResolutionFailure,
+} from "./agent-resolution.js";
 import {
   finishAcpOwnership,
   writeAcpOwnershipManifest,
@@ -38,9 +38,17 @@ import {
   type AcpWorkerParentMessage,
 } from "./worker-protocol.js";
 
-const WORKER_READY_TIMEOUT_MS = 5_000;
-const COOPERATIVE_CLOSE_GRACE_MS = 1_000;
+const WORKER_BOOTSTRAP_TIMEOUT_MS = 5_000;
+const COOPERATIVE_CLOSE_GRACE_MS = 4_000;
 const WORKERS_DIRECTORY_MODE = 0o700;
+const INHERIT_PROCESS_GROUP_ENV = "ACPUS_INTERNAL_ACP_INHERIT_PROCESS_GROUP";
+
+class WorkerReportedFailure extends Error {
+  constructor(readonly failure: AgentBackendFailure) {
+    super(failure.message);
+    this.name = "WorkerReportedFailure";
+  }
+}
 
 type WorkerState = {
   workerId: string;
@@ -48,12 +56,29 @@ type WorkerState = {
   child: ChildProcess;
   manifest: AcpOwnershipManifest;
   manifestPath: string;
+  phase: "bootstrapping" | "opening" | "ready" | "stopping" | "closed";
+  openStarted: Promise<void>;
+  settleOpenStarted: (error?: Error) => void;
   ready: Promise<void>;
   settleReady: (error?: Error) => void;
   closed: Promise<void>;
   settleClosed: () => void;
+  cancelled?: string;
+  terminalFailure?: AgentBackendFailure;
   active?: ActiveTurn;
   cleaning?: Promise<void>;
+};
+
+type WorkerStartUnavailable =
+  | { status: "failed"; failure: AgentBackendFailure }
+  | { status: "cancelled"; message: string };
+
+type StartupSlot = {
+  input: ManagedAcpAttemptInput;
+  started?: Promise<Result<WorkerState, WorkerStartUnavailable>>;
+  worker?: WorkerState;
+  stopped?: string;
+  stopPromise?: Promise<void>;
 };
 
 type ActiveTurn = {
@@ -62,6 +87,7 @@ type ActiveTurn = {
   startedAtMonotonic: number;
   resolve(result: AgentTurnResult): void;
   request: AgentTurnRequest;
+  signal?: AbortSignal;
   lastProgress?: AgentTurnProgress;
   silence?: {
     startedAt: string;
@@ -77,46 +103,53 @@ type ManagedAcpExecutorState = {
   readonly options: ManagedAcpExecutorOptions;
   readonly owner: AcpExecutorOwnerIdentity;
   readonly workers: Map<string, WorkerState>;
-  readonly starting: Set<Promise<Result<WorkerState, AcpxAgentResolutionFailure>>>;
+  readonly attempts: Set<StartupSlot>;
   shuttingDown: boolean;
 };
 
 /** Creates the managed executor. Each call to withAttempt owns one worker tree. */
 export async function createManagedAcpExecutor(options: ManagedAcpExecutorOptions): Promise<ManagedAcpExecutor> {
   const owner = await normalizeAcpExecutorOwner(options.owner);
-  const state: ManagedAcpExecutorState = { options, owner, workers: new Map(), starting: new Set(), shuttingDown: false };
+  const state: ManagedAcpExecutorState = { options, owner, workers: new Map(), attempts: new Set(), shuttingDown: false };
   return {
     withAttempt: async <T>(input: ManagedAcpAttemptInput, use: (attempt: ManagedAcpAttempt) => Promise<T>): Promise<T> => {
       if (state.shuttingDown) return use(unavailableAttempt(workerLostFailure("ACP executor is shutting down.")));
+      const slot: StartupSlot = { input };
+      state.attempts.add(slot);
+      const onAbort = (): void => requestStop(state, slot, "attempt cancelled");
+      input.signal?.addEventListener("abort", onAbort, { once: true });
+      if (input.signal?.aborted) onAbort();
       let worker: WorkerState | undefined;
       let handedToCaller = false;
       try {
-        const starting = startWorker(state, input);
-        state.starting.add(starting);
-        try {
-          const started = await starting;
-          if (started.isErr()) {
-            handedToCaller = true;
-            return use(unavailableAttempt(configFailure(started.error)));
-          }
-          worker = started.value;
-        } finally {
-          state.starting.delete(starting);
+        slot.started = startWorker(state, slot);
+        const started = await slot.started;
+        if (started.isErr()) {
+          handedToCaller = true;
+          return use(unavailableAttempt(started.error));
         }
-        if (state.shuttingDown) return use(unavailableAttempt(workerLostFailure("ACP executor is shutting down.")));
+        worker = started.value;
+        if (slot.stopped || state.shuttingDown || input.signal?.aborted) {
+          handedToCaller = true;
+          return use(unavailableAttempt(cancelledStart(slot.stopped ?? "attempt cancelled")));
+        }
         handedToCaller = true;
         return await use({ runTurn: request => runWorkerTurn(worker!, request) });
       } catch (error) {
-        if (handedToCaller || error instanceof AcpxAgentResolutionSystemError) throw error;
+        if (handedToCaller || error instanceof AcpAgentResolutionSystemError) throw error;
         if (!worker) return use(unavailableAttempt(errorMessage(error)));
         throw error;
       } finally {
+        input.signal?.removeEventListener("abort", onAbort);
         if (worker) await cleanupWorker(state, worker, "attempt settled");
+        state.attempts.delete(slot);
       }
     },
     shutdown: async (): Promise<void> => {
       state.shuttingDown = true;
-      await Promise.allSettled([...state.starting]);
+      const attempts = [...state.attempts];
+      for (const slot of attempts) requestStop(state, slot, "executor shutdown");
+      await Promise.allSettled(attempts.flatMap(slot => slot.started ? [slot.started] : []));
       await Promise.all([...state.workers.values()].map(worker => cleanupWorker(state, worker, "executor shutdown")));
     },
   };
@@ -124,8 +157,12 @@ export async function createManagedAcpExecutor(options: ManagedAcpExecutorOption
 
 async function startWorker(
   state: ManagedAcpExecutorState,
-  input: ManagedAcpAttemptInput,
-): Promise<Result<WorkerState, AcpxAgentResolutionFailure>> {
+  slot: StartupSlot,
+): Promise<Result<WorkerState, WorkerStartUnavailable>> {
+  const { input } = slot;
+  if (slot.stopped || input.signal?.aborted || state.shuttingDown) {
+    return err(cancelledStart(slot.stopped ?? "attempt cancelled"));
+  }
   const resolved = await resolveAcpAgentLaunch({
     agent: input.agent,
     cwd: input.cwd,
@@ -135,19 +172,36 @@ async function startWorker(
       ? {}
       : { namedAgentLaunches: state.options.namedAgentLaunches }),
   });
-  if (resolved.isErr()) return err(resolved.error);
-  return ok(await startResolvedWorker(state, input, resolved.value));
+  if (resolved.isErr()) return err({ status: "failed", failure: configFailure(resolved.error) });
+  if (slot.stopped || input.signal?.aborted || state.shuttingDown) {
+    return err(cancelledStart(slot.stopped ?? "attempt cancelled"));
+  }
+  try {
+    return ok(await startResolvedWorker(state, slot, resolved.value));
+  } catch (error) {
+    if (error instanceof WorkerReportedFailure) {
+      return err({ status: "failed", failure: error.failure });
+    }
+    if (slot.stopped || input.signal?.aborted || state.shuttingDown) {
+      return err(cancelledStart(slot.stopped ?? "attempt cancelled"));
+    }
+    throw error;
+  }
 }
 
 async function startResolvedWorker(
   state: ManagedAcpExecutorState,
-  input: ManagedAcpAttemptInput,
+  slot: StartupSlot,
   resolvedLaunch: AcpAgentLaunch,
 ): Promise<WorkerState> {
+  const { input } = slot;
   await Promise.all([
     mkdir(state.options.workersRoot, { recursive: true, mode: WORKERS_DIRECTORY_MODE }),
     mkdir(state.options.sessionStateDirectoryForRun(input.runId), { recursive: true, mode: WORKERS_DIRECTORY_MODE }),
   ]);
+  if (slot.stopped || input.signal?.aborted || state.shuttingDown) {
+    throw new Error(slot.stopped ?? "attempt cancelled");
+  }
   const workerId = `acp_worker_${randomUUID()}`;
   const child = spawn(process.execPath, workerEntryArgs(), {
     detached: process.platform !== "win32",
@@ -187,12 +241,20 @@ async function startResolvedWorker(
     await writeAcpOwnershipManifest(manifestPath, manifest);
     if (earlyError) throw earlyError;
     if (closedEarly) throw new Error("ACP worker exited before initialization.");
+    let openStartedResolve!: () => void;
+    let openStartedReject!: (error: Error) => void;
+    const openStarted = new Promise<void>((resolve, reject) => {
+      openStartedResolve = resolve;
+      openStartedReject = reject;
+    });
+    void openStarted.catch(() => undefined);
     let readyResolve!: () => void;
     let readyReject!: (error: Error) => void;
     const ready = new Promise<void>((resolve, reject) => {
       readyResolve = resolve;
       readyReject = reject;
     });
+    void ready.catch(() => undefined);
     let closedResolve!: () => void;
     const closed = new Promise<void>(resolve => {
       closedResolve = resolve;
@@ -203,38 +265,56 @@ async function startResolvedWorker(
       child,
       manifest,
       manifestPath,
+      phase: "bootstrapping",
+      openStarted,
+      settleOpenStarted: error => error ? openStartedReject(error) : openStartedResolve(),
       ready,
       settleReady: error => error ? readyReject(error) : readyResolve(),
       closed,
       settleClosed: closedResolve,
     };
-    const ownedWorker = worker;
+    const ownedWorker: WorkerState = worker;
+    slot.worker = ownedWorker;
     onChildError = error => {
+      ownedWorker.settleOpenStarted(error);
       ownedWorker.settleReady(error);
       settleActive(ownedWorker, workerLostResult(ownedWorker, error.message));
     };
     onChildClose = () => {
+      ownedWorker.phase = "closed";
       ownedWorker.settleClosed();
+      ownedWorker.settleOpenStarted(new Error("ACP worker exited before acknowledging bootstrap."));
       ownedWorker.settleReady(new Error("ACP worker exited before becoming ready."));
       settleActive(ownedWorker, workerLostResult(ownedWorker, "ACP worker exited before returning a turn result."));
     };
-    state.workers.set(workerId, worker);
-    child.on("message", value => onWorkerMessage(ownedWorker, value));
+    state.workers.set(workerId, ownedWorker);
+    child.on("message", value => onWorkerMessage(state, ownedWorker, value));
+    if (slot.stopped || input.signal?.aborted || state.shuttingDown) {
+      requestStop(state, slot, slot.stopped ?? "attempt cancelled");
+      throw new Error(slot.stopped ?? "attempt cancelled");
+    }
     send(ownedWorker, {
       type: "initialize",
       protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
       workerId,
       attemptId: input.attemptId,
+      recordId: input.sessionName,
       sessionStateDirectory: state.options.sessionStateDirectoryForRun(input.runId),
       cwd: input.cwd,
       env: input.env,
-      agent: input.agent,
       resolvedLaunch,
       permissionMode: input.permissionMode,
       ...(input.model === undefined ? {} : { model: input.model }),
     });
-    await withTimeout(worker.ready, WORKER_READY_TIMEOUT_MS, "ACP worker did not initialize in time.");
-    return worker;
+    await withTimeout(ownedWorker.openStarted, WORKER_BOOTSTRAP_TIMEOUT_MS, "ACP worker did not acknowledge bootstrap in time.");
+    if (slot.stopped || input.signal?.aborted || state.shuttingDown) {
+      throw new Error(slot.stopped ?? "attempt cancelled");
+    }
+    await ownedWorker.ready;
+    if (slot.stopped || input.signal?.aborted || state.shuttingDown) {
+      throw new Error(slot.stopped ?? "attempt cancelled");
+    }
+    return ownedWorker;
   } catch (error) {
     if (worker) await cleanupWorker(state, worker, "worker initialization failed");
     else await cleanupUnmanagedWorker(child, manifestPath, manifest, state.options, "worker initialization failed").catch(() => {});
@@ -258,28 +338,56 @@ async function cleanupUnmanagedWorker(
   await finishAcpOwnership(options, manifestPath, manifest, alive, reason);
 }
 
-function onWorkerMessage(worker: WorkerState, value: unknown): void {
+function onWorkerMessage(state: ManagedAcpExecutorState, worker: WorkerState, value: unknown): void {
   if (!isAcpWorkerChildMessage(value) || value.workerId !== worker.workerId || value.attemptId !== worker.input.attemptId) {
-    worker.settleReady(new Error("ACP worker sent an invalid IPC message."));
-    settleActive(worker, workerLostResult(worker, "ACP worker sent an invalid IPC message."));
+    faultWorker(state, worker, workerLostFailure("ACP worker sent an invalid IPC message."));
     return;
   }
   const message = value as AcpWorkerChildMessage;
+  if (message.type === "open-started") {
+    if (worker.phase !== "bootstrapping") {
+      if (worker.phase !== "stopping" && worker.phase !== "closed") {
+        faultWorker(state, worker, workerLostFailure("ACP worker sent duplicate bootstrap acknowledgement."));
+      }
+      return;
+    }
+    worker.phase = "opening";
+    worker.settleOpenStarted();
+    return;
+  }
   if (message.type === "ready") {
+    if (worker.phase !== "opening" || worker.cancelled !== undefined) {
+      if (worker.phase !== "stopping" && worker.phase !== "closed") {
+        faultWorker(state, worker, workerLostFailure("ACP worker reported readiness out of order."));
+      }
+      return;
+    }
+    worker.phase = "ready";
     worker.settleReady();
     return;
   }
   if (message.type === "closed") {
+    worker.phase = "closed";
     worker.settleClosed();
+    if (worker.active) {
+      settleActive(worker, workerLostResult(worker, "ACP worker closed before returning a turn result."));
+      finishActive(worker);
+    }
     return;
   }
   if (message.type === "worker-failure") {
-    worker.settleReady(new Error(message.message));
-    settleActive(worker, workerLostResult(worker, message.message));
+    if (worker.cancelled !== undefined) return;
+    faultWorker(state, worker, message.failure);
     return;
   }
   const active = worker.active;
-  if (!active || active.turnId !== message.turnId || active.settled) return;
+  if (!active || active.turnId !== message.turnId) return;
+  if (message.type === "turn-result") {
+    settleActive(worker, message.result);
+    finishActive(worker);
+    return;
+  }
+  if (active.settled) return;
   if (message.type === "acp-activity") {
     noteActivity(worker, active, message.observedAt);
     return;
@@ -293,10 +401,15 @@ function onWorkerMessage(worker: WorkerState, value: unknown): void {
     notify(active.request.onObservation, message.observation);
     return;
   }
-  settleActive(worker, message.result);
 }
 
 function runWorkerTurn(worker: WorkerState, request: AgentTurnRequest): Promise<AgentTurnResult> {
+  if (worker.terminalFailure !== undefined) {
+    return Promise.resolve(failedWithoutWorker(worker.terminalFailure));
+  }
+  if (worker.cancelled !== undefined || worker.phase !== "ready") {
+    return Promise.resolve(cancelledWithoutWorker(worker.cancelled ?? "Agent attempt is not ready."));
+  }
   if (worker.active) return Promise.resolve(workerLostResult(worker, "ACP worker already has an active turn."));
   if (!worker.child.connected) return Promise.resolve(workerLostResult(worker, "ACP worker IPC is closed."));
   return new Promise(resolve => {
@@ -306,6 +419,7 @@ function runWorkerTurn(worker: WorkerState, request: AgentTurnRequest): Promise<
       startedAt: new Date().toISOString(),
       startedAtMonotonic: performance.now(),
       request,
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
       resolve,
       abort: () => {
         if (active.settled) return;
@@ -335,14 +449,20 @@ function runWorkerTurn(worker: WorkerState, request: AgentTurnRequest): Promise<
       active.abort();
       return;
     }
-    const { signal: _signal, onProgress: _onProgress, onObservation: _onObservation, ...workerRequest } = request;
+    const configuration = Object.fromEntries(
+      Object.entries(request.config ?? {}).filter(([key]) => key !== "model"),
+    );
     send(worker, {
       type: "run-turn",
       protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
       workerId: worker.workerId,
       attemptId: worker.input.attemptId,
       turnId,
-      request: workerRequest,
+      request: {
+        prompt: request.prompt,
+        ...(Object.keys(configuration).length === 0 ? {} : { configuration }),
+        ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
+      },
     });
   });
 }
@@ -379,19 +499,29 @@ function settleActive(worker: WorkerState, result: AgentTurnResult): void {
   active.settled = true;
   if (active.timeout) clearTimeout(active.timeout);
   if (active.silence?.timer) clearTimeout(active.silence.timer);
-  active.request.signal?.removeEventListener("abort", active.abort);
-  delete worker.active;
+  active.signal?.removeEventListener("abort", active.abort);
   active.resolve(result);
+}
+
+function finishActive(worker: WorkerState): void {
+  const active = worker.active;
+  if (!active) return;
+  if (active.timeout) clearTimeout(active.timeout);
+  if (active.silence?.timer) clearTimeout(active.silence.timer);
+  active.signal?.removeEventListener("abort", active.abort);
+  delete worker.active;
 }
 
 async function cleanupWorker(state: ManagedAcpExecutorState, worker: WorkerState, reason: string): Promise<void> {
   if (worker.cleaning) return worker.cleaning;
-  worker.cleaning = cleanupWorkerValue(state, worker, reason).catch(() => {});
+  worker.cleaning = cleanupWorkerValue(state, worker, reason);
+  void worker.cleaning.catch(() => undefined);
   return worker.cleaning;
 }
 
 async function cleanupWorkerValue(state: ManagedAcpExecutorState, worker: WorkerState, reason: string): Promise<void> {
   try {
+    if (worker.phase !== "closed") worker.phase = "stopping";
     const alive = await stopWorkerTree(worker, reason);
     await finishAcpOwnership(state.options, worker.manifestPath, worker.manifest, alive, reason);
   } finally {
@@ -399,9 +529,56 @@ async function cleanupWorkerValue(state: ManagedAcpExecutorState, worker: Worker
   }
 }
 
-function unavailableAttempt(failure: AgentBackendFailure | string): ManagedAcpAttempt {
-  const normalized = typeof failure === "string" ? workerLostFailure(failure) : failure;
+function requestStop(state: ManagedAcpExecutorState, slot: StartupSlot, reason: string): void {
+  slot.stopped ??= reason;
+  const worker = slot.worker;
+  if (worker === undefined || slot.stopPromise !== undefined) return;
+  worker.cancelled ??= reason;
+  if (worker.phase !== "closed") worker.phase = "stopping";
+  worker.settleOpenStarted(new Error(reason));
+  worker.settleReady(new Error(reason));
+  slot.stopPromise = cleanupWorker(state, worker, reason);
+  void slot.stopPromise.catch(() => undefined);
+}
+
+function faultWorker(
+  state: ManagedAcpExecutorState,
+  worker: WorkerState,
+  failure: AgentBackendFailure,
+): void {
+  if (worker.phase === "stopping" || worker.phase === "closed") return;
+  worker.phase = "stopping";
+  worker.terminalFailure = failure;
+  const error = new WorkerReportedFailure(failure);
+  worker.settleOpenStarted(error);
+  worker.settleReady(error);
+  if (worker.active) settleActive(worker, failedWithoutWorker(failure, worker.active));
+  void cleanupWorker(state, worker, "worker protocol failure");
+}
+
+function unavailableAttempt(unavailable: WorkerStartUnavailable | AgentBackendFailure | string): ManagedAcpAttempt {
+  if (typeof unavailable === "object" && "status" in unavailable) {
+    return unavailable.status === "cancelled"
+      ? { runTurn: async () => cancelledWithoutWorker(unavailable.message) }
+      : { runTurn: async () => failedWithoutWorker(unavailable.failure) };
+  }
+  const normalized = typeof unavailable === "string" ? workerLostFailure(unavailable) : unavailable;
   return { runTurn: async () => failedWithoutWorker(normalized) };
+}
+
+function cancelledStart(message: string): WorkerStartUnavailable {
+  return { status: "cancelled", message };
+}
+
+function cancelledWithoutWorker(message: string): AgentTurnResult {
+  return {
+    status: "cancelled",
+    message,
+    responses: [],
+    stderr: "",
+    summary: emptySummary(),
+    timing: resultTiming(undefined),
+  };
 }
 
 function workerLostResult(worker: WorkerState, message: string): AgentTurnResult {
@@ -424,7 +601,7 @@ function workerLostFailure(message: string): AgentBackendFailure {
   return { kind: "worker_lost", origin: "runtime", retryable: true, message };
 }
 
-function configFailure(failure: AcpxAgentResolutionFailure): AgentBackendFailure {
+function configFailure(failure: AcpAgentResolutionFailure): AgentBackendFailure {
   return { kind: "config", origin: "runtime", retryable: false, message: failure.message };
 }
 
@@ -504,7 +681,7 @@ function send(worker: WorkerState, message: AcpWorkerParentMessage): void {
 
 function notify<T>(callback: ((value: T) => unknown) | undefined, value: T): void {
   try {
-    callback?.(value);
+    void Promise.resolve(callback?.(value)).catch(() => undefined);
   } catch {
     // Observability callbacks must not control process ownership or turn settlement.
   }
@@ -517,7 +694,10 @@ function workerEntryArgs(): string[] {
 }
 
 function safeWorkerEnvironment(): NodeJS.ProcessEnv {
-  return Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "NODE_OPTIONS" && key !== "NODE_PATH"));
+  return {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "NODE_OPTIONS" && key !== "NODE_PATH")),
+    [INHERIT_PROCESS_GROUP_ENV]: randomUUID(),
+  };
 }
 
 async function stopWorkerTree(worker: WorkerState, reason: string): Promise<boolean> {

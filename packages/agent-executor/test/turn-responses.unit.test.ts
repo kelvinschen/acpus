@@ -1,9 +1,9 @@
-import type { AcpRuntimeEvent } from "acpx/runtime";
+import type { AcpEvent } from "@acpus/acp";
 import { describe, expect, it } from "vitest";
 import { createTurnResponseCollector } from "../src/turn-responses.js";
 
 describe("turn response collection", () => {
-  it("preserves exact output text independently of delta chunking", () => {
+  it("preserves exact assistant text independently of event chunking", () => {
     const split = collect(output(" α\n"), output("β "));
     const joined = collect(output(" α\nβ "));
 
@@ -11,11 +11,13 @@ describe("turn response collection", () => {
     expect(joined.complete()).toEqual(split.complete());
   });
 
-  it("treats an omitted stream as output and settles an empty turn explicitly", () => {
-    expect(collect({ type: "text_delta", text: "default output" }).complete()).toEqual({
-      responses: ["default output"],
-      finalResponse: "default output",
-    });
+  it("accepts only assistant text content blocks", () => {
+    expect(collect(
+      output("a"),
+      message("assistant", { type: "image", data: "ignored" }),
+      message("assistant", "plain JSON string"),
+      output("b"),
+    ).complete()).toEqual({ responses: ["ab"], finalResponse: "ab" });
     expect(collect().complete()).toEqual({ responses: [], finalResponse: "" });
   });
 
@@ -24,72 +26,46 @@ describe("turn response collection", () => {
       output("first"),
       thought("reasoning"),
       output("second"),
-      status("plan", "next"),
+      plan([{ content: "next", status: "pending" }]),
     );
 
     expect(responses.complete()).toEqual({ responses: ["first", "second"], finalResponse: "second" });
   });
 
   it("invalidates every response before a tool invocation", () => {
-    expect(collect(output("before"), tool({ tag: "tool_call" }), output("after")).complete()).toEqual({
+    expect(collect(output("before"), tool("call"), output("after")).complete()).toEqual({
       responses: ["before", "after"],
       finalResponse: "after",
     });
-    expect(collect(output("before"), tool({ tag: "tool_call" })).complete()).toEqual({
-      responses: ["before"],
-      finalResponse: "",
-    });
-    expect(collect(output("before"), tool()).complete()).toEqual({
+    expect(collect(output("before"), tool("call")).complete()).toEqual({
       responses: ["before"],
       finalResponse: "",
     });
   });
 
-  it("preserves the latest response candidate across tool updates", () => {
-    const invocation = tool({ tag: "tool_call", toolCallId: "known", status: "in_progress" });
-    const completion = tool({ tag: "tool_call_update", toolCallId: "known", status: "completed" });
-
-    expect(collect(invocation, output("final"), completion).complete()).toEqual({
+  it("segments on tool updates without invalidating the latest candidate", () => {
+    expect(collect(tool("call"), output("final"), tool("update")).complete()).toEqual({
       responses: ["final"],
       finalResponse: "final",
     });
-    expect(collect(output("candidate"), completion).complete()).toEqual({
-      responses: ["candidate"],
-      finalResponse: "candidate",
-    });
-  });
-
-  it("lets output after a tool update become the newer response candidate", () => {
-    const invocation = tool({ tag: "tool_call", toolCallId: "known", status: "in_progress" });
-    const completion = tool({ tag: "tool_call_update", toolCallId: "known", status: "completed" });
-
-    expect(collect(invocation, output("progress"), completion, output("final")).complete()).toEqual({
+    expect(collect(output("progress"), tool("update"), output("final")).complete()).toEqual({
       responses: ["progress", "final"],
       finalResponse: "final",
     });
-    expect(collect(invocation, output("candidate"), tool({ tag: "tool_call", toolCallId: "next" }), completion).complete()).toEqual({
-      responses: ["candidate"],
-      finalResponse: "",
-    });
   });
 
-  it("treats tools without ids or metadata and consecutive tools as boundaries", () => {
-    expect(collect(output("before"), tool(), tool(), output("after")).complete()).toEqual({
-      responses: ["before", "after"],
-      finalResponse: "after",
-    });
-  });
-
-  it("keeps usage and unknown status inside one response epoch", () => {
+  it("keeps usage, session, activity, and unknown events inside one response segment", () => {
     expect(collect(
       output("a"),
-      status("usage_update", "usage"),
-      status("provider_specific", "unknown"),
+      { type: "usage", context: { used: 1, size: 10 } },
+      { type: "session", update: "current_mode", value: { mode: "code" } },
+      { type: "activity", operation: "terminal/output" },
+      { type: "unknown", name: "extension", value: { state: true } },
       output("b"),
     ).complete()).toEqual({ responses: ["ab"], finalResponse: "ab" });
   });
 
-  it("ignores empty output deltas and preserves non-empty whitespace", () => {
+  it("ignores empty assistant text and preserves non-empty whitespace", () => {
     expect(collect(output(""), output(" \n")).complete()).toEqual({
       responses: [" \n"],
       finalResponse: " \n",
@@ -108,24 +84,31 @@ describe("turn response collection", () => {
   });
 });
 
-function collect(...events: AcpRuntimeEvent[]) {
+function collect(...events: AcpEvent[]) {
   const collector = createTurnResponseCollector();
   for (const event of events) collector.observe(event);
   return collector;
 }
 
-function output(text: string): AcpRuntimeEvent {
-  return { type: "text_delta", stream: "output", text };
+function output(text: string): AcpEvent {
+  return message("assistant", { type: "text", text });
 }
 
-function thought(text: string): AcpRuntimeEvent {
-  return { type: "text_delta", stream: "thought", text };
+function thought(text: string): AcpEvent {
+  return message("thought", { type: "text", text });
 }
 
-function status(tag: string, text: string): AcpRuntimeEvent {
-  return { type: "status", tag, text };
+function message(
+  channel: Extract<AcpEvent, { type: "message" }>["channel"],
+  content: Extract<AcpEvent, { type: "message" }>["content"],
+): AcpEvent {
+  return { type: "message", channel, content };
 }
 
-function tool(overrides: Partial<Extract<AcpRuntimeEvent, { type: "tool_call" }>> = {}): AcpRuntimeEvent {
-  return { type: "tool_call", text: "tool", ...overrides };
+function plan(value: Extract<AcpEvent, { type: "plan" }>["value"]): AcpEvent {
+  return { type: "plan", value };
+}
+
+function tool(action: "call" | "update"): AcpEvent {
+  return { type: "tool", action, toolCallId: "tool-1" };
 }

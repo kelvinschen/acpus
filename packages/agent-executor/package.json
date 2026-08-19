@@ -2,7 +2,7 @@
   "name": "@acpus/agent-executor",
   "version": "0.6.0",
   "type": "module",
-  "description": "Acpus acpx-backed ACP agent turn execution.",
+  "description": "Acpus ACP agent turn execution.",
   "license": "MIT",
   "engines": {
     "node": "^22.18.0 || >=24.0.0"
@@ -32,7 +32,7 @@
     "tsx": "^4.23.0"
   },
   "dependencies": {
-    "acpx": "0.13.0",
+    "@acpus/acp": "workspace:*",
     "neverthrow": "^8.2.0"
   },
   "repository": {

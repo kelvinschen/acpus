@@ -1130,7 +1130,7 @@ function nodeInspection(): NodeInspection {
       code: "not_approved",
       message: "not approved",
       upstream: {
-        source: "acpx",
+        source: "acp",
         operation: "turn",
         protocol: { name: "json-rpc", code: -32_000, message: "Rejected." },
         data: { retryable: false },

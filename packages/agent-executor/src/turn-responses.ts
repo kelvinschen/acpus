@@ -1,4 +1,4 @@
-import type { AcpRuntimeEvent } from "acpx/runtime";
+import type { AcpEvent, AcpJsonValue } from "@acpus/acp";
 
 export function createTurnResponseCollector() {
   const responses: string[] = [];
@@ -6,27 +6,28 @@ export function createTurnResponseCollector() {
   let finalCandidate: number | undefined;
 
   return {
-    observe(event: AcpRuntimeEvent): void {
-      if (event.type === "text_delta") {
-        if (event.stream === "thought") {
+    observe(event: AcpEvent): void {
+      if (event.type === "message") {
+        if (event.channel === "thought") {
           openResponse = undefined;
           return;
         }
-        if (event.text.length === 0) return;
+        const text = textBlockContent(event.content);
+        if (text === undefined || text.length === 0) return;
         if (openResponse === undefined) {
-          openResponse = responses.push(event.text) - 1;
+          openResponse = responses.push(text) - 1;
         } else {
-          responses[openResponse] += event.text;
+          responses[openResponse] += text;
         }
         finalCandidate = openResponse;
         return;
       }
-      if (event.type === "tool_call") {
+      if (event.type === "tool") {
         openResponse = undefined;
-        if (event.tag !== "tool_call_update") finalCandidate = undefined;
+        if (event.action === "call") finalCandidate = undefined;
         return;
       }
-      if (event.type === "status" && event.tag === "plan") {
+      if (event.type === "plan") {
         openResponse = undefined;
       }
     },
@@ -41,4 +42,9 @@ export function createTurnResponseCollector() {
       };
     },
   };
+}
+
+function textBlockContent(content: AcpJsonValue): string | undefined {
+  if (content === null || Array.isArray(content) || typeof content !== "object") return undefined;
+  return content.type === "text" && typeof content.text === "string" ? content.text : undefined;
 }

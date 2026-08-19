@@ -1,8 +1,9 @@
 import { admitRunForTest } from "./support/runtime-store.js";
-import { mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { defineWorkflow, z } from "@acpus/core";
-import type { AgentTurnObservation, AgentTurnProgress, AgentTurnRequest, AgentTurnResult, ManagedAcpExecutor } from "@acpus/agent-executor";
+import { createManagedAcpExecutor, type AgentTurnObservation, type AgentTurnProgress, type AgentTurnRequest, type AgentTurnResult, type ManagedAcpExecutor } from "@acpus/agent-executor";
 import { lift, template } from "@acpus/expression";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
@@ -21,7 +22,9 @@ import { agentSummary, agentTiming, completedAgentTurn, segmentedCompletedAgentT
 import { createVersionedWakeup } from "../src/scheduler/wakeup.js";
 import { rootFrameStarted } from "./support/scheduler.js";
 import { readInspection } from "../src/inspection/use-cases.js";
+import { resolveRuntimeLayout } from "../src/runtime-layout.js";
 
+const hangingAcpAgent = fileURLToPath(new URL("./fixtures/hanging-open-acp-agent.mjs", import.meta.url));
 const agentMocks = vi.hoisted(() => ({
   executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
 }));
@@ -243,7 +246,7 @@ describe("agent node execution", () => {
                       }],
                     },
                     cwd: workspace,
-                    acpxRecordId: "record-1",
+                    sessionProjectionPath: "sessions/session%2F1.json",
                   } : undefined,
                 );
               },
@@ -317,7 +320,6 @@ describe("agent node execution", () => {
                     tokenUsage: { source: "prompt_response", inputTokens: 10, outputTokens: 2, totalTokens: 12 },
                     tools: { totalToolCallCount: 1 },
                     cwd: workspace,
-                    acpxRecordId: "record-1",
                   },
                 }),
                 expect.objectContaining({
@@ -332,6 +334,7 @@ describe("agent node execution", () => {
             expect(JSON.stringify(metadata)).not.toContain("tool-1");
             expect(JSON.stringify(metadata)).not.toContain("README.md");
             expect(JSON.stringify(metadata)).not.toContain("\"timing\"");
+            expect(metadata?.turns?.[0]?.summary).not.toHaveProperty("sessionProjectionPath");
             expectAgentArtifactRef(metadata?.turns?.[0]?.turnArtifact, `${artifactRoot}/turn-001.json`, "application/json", artifactRows);
             expectAgentArtifactRef(metadata?.turns?.[1]?.stderrArtifact, `${artifactRoot}/turn-002.stderr.log`, "text/plain", artifactRows);
             const runDir = store.getRunDir(run.id);
@@ -346,7 +349,7 @@ describe("agent node execution", () => {
               turn: 1,
               agentKey: "reviewer",
               sessionName: turns[0]!.sessionName,
-              sessionProjectionPath: "acp/sessions/record-1.json",
+              sessionProjectionPath: "acp/sessions/session%2F1.json",
               status: "completed",
               timing: agentTiming(),
               prompt: turns[0]!.prompt,
@@ -370,9 +373,9 @@ describe("agent node execution", () => {
                   })],
                 },
                 cwd: workspace,
-                acpxRecordId: "record-1",
               },
             });
+            expect(turnArtifact).not.toHaveProperty("summary.sessionProjectionPath");
             expect(turnArtifact).not.toHaveProperty("summary.prompt");
             expect(turnArtifact).not.toHaveProperty("summary.response");
             expect(turnArtifact).not.toHaveProperty("response");
@@ -692,13 +695,13 @@ describe("agent node execution", () => {
                   kind: "provider_exit",
                   message: "credential helper failed",
                   upstream: {
-                    source: "acpx",
-                    operation: "sessions.ensure",
+                    source: "acp",
+                    operation: "open_session",
                     exitCode: 1,
                     code: "RUNTIME",
                     origin: "cli",
                     protocol: { name: "json-rpc", code: -32603, message: "Internal error" },
-                    data: { acpxCode: "RUNTIME", origin: "cli", details: "credential helper failed" },
+                    data: { origin: "cli", details: "credential helper failed" },
                   },
                 },
                 responses: ["partial"],
@@ -723,7 +726,7 @@ describe("agent node execution", () => {
                 origin: "provider",
                 code: "provider_exit",
                 message: "credential helper failed",
-                upstream: { source: "acpx", code: "RUNTIME", data: { details: "credential helper failed" } },
+                upstream: { source: "acp", code: "RUNTIME", data: { details: "credential helper failed" } },
               },
             });
             expect(store.getRun(run.id)?.dynamic?.progress).toEqual([
@@ -779,7 +782,7 @@ describe("agent node execution", () => {
             store.close();
           }
         });
-      }, 2_000);
+      });
 
     it("persists a direct scalar Agent output through the scheduler root", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-scalar-output", async workspace => {
@@ -810,7 +813,7 @@ describe("agent node execution", () => {
         });
       });
 
-    it("passes scheduler runtime identity into acpx-backed agent turn environment", async () => {
+    it("passes scheduler runtime identity into the ACP agent turn environment", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-runtime-context", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, agentRuntimeContextWorkflow());
           const store = await openRuntimeStore(workspace);
@@ -1147,6 +1150,40 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
         });
       });
 
+    it("passes the attempt signal to managed startup and skips a turn after startup abort", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-startup-abort", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
+          const node = prepared.ir.root.nodes.find(node => node.id === "review");
+          if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+          const controller = new AbortController();
+          const runTurn = vi.fn(async () => completedAgentTurn(taggedAgentOutput("{\"ok\":true}")));
+          let startupSignal: AbortSignal | undefined;
+          const managedAcpExecutor: ManagedAcpExecutor = {
+            withAttempt: async (input, use) => {
+              startupSignal = input.signal;
+              controller.abort();
+              return use({ runTurn });
+            },
+            shutdown: async () => {},
+          };
+
+          const result = await executeAgentNodeProduction(node, {}, {
+            cwd: workspace,
+            agents: prepared.ir.agents,
+            hostPolicy: loadAgentHostPolicy(process.env),
+            managedAcpExecutor,
+            signal: controller.signal,
+          });
+
+          expect(startupSignal).toBe(controller.signal);
+          expect(runTurn).not.toHaveBeenCalled();
+          expect(result.isErr() && result.error).toEqual({
+            type: "cancelled",
+            message: "Agent turn was aborted.",
+          });
+        });
+      });
+
     it("returns prompt resolution failures without rejecting the Agent boundary", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-resolution-result", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, defineWorkflow({
@@ -1447,8 +1484,8 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
       });
     });
 
-    it("maps Acpx named Agent resolution failures to a non-retryable runtime diagnostic", async () => {
-        await withRuntimeWorkspace("scheduler-node-executor-agent-acpx-config", async workspace => {
+    it("maps named Agent configuration failures to a non-retryable runtime diagnostic", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-config", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
           const node = prepared.ir.root.nodes.find(node => node.id === "review");
           if (!node || node.kind !== "agent") throw new Error("expected review agent node");
@@ -1462,7 +1499,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
                 kind: "config",
                 origin: "runtime",
                 retryable: false,
-                message: "Failed to resolve named Agent 'reviewer' through Acpx configuration.",
+                message: "Failed to resolve named Agent 'reviewer' configuration.",
               },
               responses: [],
               stderr: "",
@@ -1472,7 +1509,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
           })).rejects.toMatchObject({
             failure: {
               origin: "runtime",
-              code: "agent_acpx_config_resolution_failed",
+              code: "agent_config_resolution_failed",
               retryable: false,
             },
           });
@@ -1878,6 +1915,78 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
             expect(turnArtifact).not.toHaveProperty("finalResponse");
             expect(turnArtifact).not.toHaveProperty("response");
           } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("lets the durable Agent deadline abort real ACP startup", { timeout: 15_000 }, async () => {
+        await withRuntimeWorkspace("scheduler-agent-deadline-acp-startup", async workspace => {
+          const startedPath = join(workspace, "new.started");
+          const providerPidPath = join(workspace, "provider.pid");
+          const releasePath = join(workspace, "new.release");
+          const prepared = await prepareSyntheticWorkflow(
+            workspace,
+            startupDeadlineAgentWorkflow(startedPath, providerPidPath, releasePath),
+          );
+          const store = await openRuntimeStore(workspace);
+          const layout = resolveRuntimeLayout(workspace);
+          const realExecutor = await createManagedAcpExecutor({
+            workersRoot: layout.acpWorkersRoot,
+            sessionStateDirectoryForRun: runId => join(layout.runsRoot, runId, "acp"),
+            owner: { generation: layout.generationId ?? "test" },
+          });
+          let turnCalled = false;
+          let startupSignal: AbortSignal | undefined;
+          const managedAcpExecutor: ManagedAcpExecutor = {
+            withAttempt: (input, use) => {
+              startupSignal = input.signal;
+              return realExecutor.withAttempt(input, attempt => use({
+                runTurn: request => {
+                  turnCalled = true;
+                  return attempt.runTurn(request);
+                },
+              }));
+            },
+            shutdown: () => realExecutor.shutdown(),
+          };
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            const execution = advanceFrozenRunProduction({
+              cwd: workspace,
+              runId: run.id,
+              ownerId: "deadline-owner",
+              store,
+              managedAcpExecutor,
+            });
+
+            await waitForPath(startedPath);
+            const providerPid = Number((await readFile(providerPidPath, "utf8")).trim());
+            expect(processExists(providerPid)).toBe(true);
+            await waitUntil(() => Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.attempts)
+              .some(attempt => attempt.status === "timed_out"));
+            await waitUntil(() => startupSignal?.aborted === true);
+            await writeFile(releasePath, "");
+            await expect(execution).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
+
+            const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
+            expect(projection.run.status).toBe("failed");
+            expect(Object.values(projection.attempts)).toEqual([expect.objectContaining({
+              status: "timed_out",
+              terminalReason: "timed_out",
+              error: { reason: "attempt_timeout" },
+            })]);
+            expect(Object.values(projection.instances)).toEqual([expect.objectContaining({
+              status: "failed",
+              statusReason: "timed_out",
+            })]);
+            expect(turnCalled).toBe(false);
+            expect(store.getExecutionMetadata(run.id).some(entry => entry.kind === "agent_invocation")).toBe(false);
+            expect(store.listArtifacts(run.id)).toEqual([]);
+            await waitUntil(() => !processExists(providerPid));
+            expect(await readdir(layout.acpWorkersRoot)).toEqual([]);
+          } finally {
+            await managedAcpExecutor.shutdown();
             store.close();
           }
         });
@@ -2548,6 +2657,30 @@ function timeoutAgentWorkflow() {
   });
 }
 
+function startupDeadlineAgentWorkflow(startedPath: string, providerPidPath: string, releasePath: string) {
+  const command = [process.execPath, hangingAcpAgent].map(value => JSON.stringify(value)).join(" ");
+  return defineWorkflow({
+    name: "scheduler-agent-deadline-acp-startup",
+    agents: {
+      reviewer: {
+        command,
+        env: {
+          ACP_FIXTURE_STARTED_PATH: startedPath,
+          ACP_FIXTURE_PID_PATH: providerPidPath,
+          ACP_FIXTURE_RELEASE_PATH: releasePath,
+        },
+      },
+    },
+  }).build(({ agents, step }) => {
+    step("review").agent({
+      timeout: "2s",
+      agent: agents.reviewer,
+      prompt: "review",
+    });
+    return {};
+  });
+}
+
 function explicitSessionAgentWorkflow() {
   return defineWorkflow({
     name: "scheduler-node-executor-agent-explicit-session",
@@ -2647,6 +2780,36 @@ async function withImmediateAgentRepairs<T>(operation: () => Promise<T>): Promis
     return outcome.value;
   } finally {
     vi.useRealTimers();
+  }
+}
+
+async function waitForPath(path: string): Promise<void> {
+  await waitUntil(async () => {
+    try {
+      await access(path);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<void> {
+  const deadline = performance.now() + 5_000;
+  while (performance.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error("Condition was not met before the test timeout.");
+}
+
+function processExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH") return false;
+    throw error;
   }
 }
 

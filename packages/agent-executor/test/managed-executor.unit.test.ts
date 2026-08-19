@@ -1,11 +1,13 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { createManagedAcpExecutor, inspectAcpOwnership, recoverAcpOwnership } from "@acpus/agent-executor";
 
+const fixtureAgent = fileURLToPath(new URL("./fixtures/minimal-acp-agent.mjs", import.meta.url));
 const temporaryDirectories: string[] = [];
 const spawnedChildren: ChildProcess[] = [];
 
@@ -36,11 +38,12 @@ describe("ACP ownership inspection", () => {
     expect(replaced.manifests).toHaveLength(3);
   });
 
-  it("owns and releases an initialized worker without starting a provider", async () => {
+  it("bypasses invalid named-Agent config for a command and releases ownership", async () => {
     const root = await mkdtemp(join(tmpdir(), "acpus-agent-executor-"));
     temporaryDirectories.push(root);
     const workers = join(root, "workers");
-    await writeFile(join(root, ".acpxrc.json"), "{ invalid", "utf8");
+    await mkdir(join(root, ".acpus"));
+    await writeFile(join(root, ".acpus", "agents.json"), "{ invalid", "utf8");
     const executor = await createManagedAcpExecutor({
       workersRoot: workers,
       sessionStateDirectoryForRun: runId => join(root, "runs", runId),
@@ -53,7 +56,7 @@ describe("ACP ownership inspection", () => {
       sessionName: "session",
       cwd: root,
       env: {},
-      agent: { kind: "command", command: "unused-acp" },
+      agent: fixtureSelector(),
       permissionMode: "deny-all",
     }, async () => {
       const names = await readdir(workers);
@@ -88,10 +91,169 @@ describe("ACP ownership inspection", () => {
       sessionName: "session",
       cwd: root,
       env: {},
-      agent: { kind: "command", command: "unused-acp" },
+      agent: fixtureSelector(),
       permissionMode: "deny-all",
     }, async () => { throw failure; })).rejects.toThrow("caller failed");
 
+    expect(await readdir(workers)).toEqual([]);
+  });
+
+  it.skipIf(process.platform !== "linux")("keeps the managed provider inside the worker process group", async () => {
+    const root = await temporaryRoot();
+    const workers = join(root, "workers");
+    const pidPath = join(root, "provider.pid");
+    const executor = await testExecutor(root);
+
+    await executor.withAttempt(attemptInput(
+      root,
+      fixtureSelector(),
+      "process-group",
+      undefined,
+      { ACP_FIXTURE_PID_PATH: pidPath },
+    ), async () => {
+      const [manifestName] = await readdir(workers);
+      const persisted = JSON.parse(await readFile(join(workers, manifestName!), "utf8")) as { worker: { pgid: number } };
+      const providerPid = Number((await readFile(pidPath, "utf8")).trim());
+      expect(await linuxProcessGroup(providerPid)).toBe(persisted.worker.pgid);
+    });
+  });
+
+  it("preserves a structured eager-open failure and releases ownership", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acpus-agent-executor-"));
+    temporaryDirectories.push(root);
+    const workers = join(root, "workers");
+    const executor = await createManagedAcpExecutor({
+      workersRoot: workers,
+      sessionStateDirectoryForRun: runId => join(root, "runs", runId),
+      owner: { generation: "test" },
+    });
+    let callbackCalled = false;
+
+    const result = await executor.withAttempt({
+      runId: "run",
+      attemptId: "attempt-open-failure",
+      sessionName: "session-open-failure",
+      cwd: root,
+      env: {},
+      agent: fixtureSelector("exit-on-initialize"),
+      permissionMode: "deny-all",
+    }, async attempt => {
+      callbackCalled = true;
+      return attempt.runTurn({
+        agent: fixtureSelector("exit-on-initialize"),
+        prompt: "unused",
+        cwd: root,
+        env: {},
+        sessionName: "session-open-failure",
+        permissionMode: "deny-all",
+      });
+    });
+
+    expect(callbackCalled).toBe(true);
+    expect(result).toMatchObject({
+      status: "failed",
+      failure: {
+        kind: "provider_exit",
+        origin: "provider",
+        upstream: { source: "acp", operation: "open_session" },
+      },
+      responses: [],
+    });
+    expect(result).not.toHaveProperty("finalResponse");
+    expect(await readdir(workers)).toEqual([]);
+  });
+
+  it("covers delayed and cancelled provider-open phases", { timeout: 12_000 }, async () => {
+    const delayed = Promise.all(["delay-initialize", "delay-new"].map(async flag => {
+      const root = await temporaryRoot();
+      const workers = join(root, "workers");
+      const executor = await testExecutor(root);
+
+      const result = await executor.withAttempt(attemptInput(root, fixtureSelector(flag), flag), attempt =>
+        attempt.runTurn(turnInput(root, fixtureSelector(flag), flag)));
+
+      return [flag, {
+        status: result.status,
+        finalResponse: result.status === "completed" ? result.finalResponse : undefined,
+        ownership: await readdir(workers),
+      }] as const;
+    }));
+    const cancelled = Promise.all([
+      { operation: "new", stop: "abort" },
+      { operation: "initialize", stop: "shutdown" },
+    ].map(async ({ operation, stop }) => {
+      const root = await temporaryRoot();
+      const workers = join(root, "workers");
+      const gate = join(root, "gate");
+      const executor = await testExecutor(root);
+      const controller = new AbortController();
+      let callbackCalled = false;
+
+      const opening = executor.withAttempt(attemptInput(
+        root,
+        fixtureSelector(`gate-${operation}`),
+        `${stop}-open`,
+        controller.signal,
+        { ACP_FIXTURE_GATE_DIRECTORY: gate },
+      ), attempt => {
+        callbackCalled = true;
+        return attempt.runTurn(turnInput(root, fixtureSelector(), `${stop}-open`));
+      });
+      await waitForPath(join(gate, `${operation}.started`));
+      expect(callbackCalled).toBe(false);
+
+      if (stop === "abort") controller.abort();
+      else await executor.shutdown();
+      const result = await opening;
+
+      return [stop, {
+        callbackCalled,
+        status: result.status,
+        responses: result.responses,
+        finalResponse: "finalResponse" in result ? result.finalResponse : undefined,
+        ownership: await readdir(workers),
+      }] as const;
+    }));
+    const [delayedOutcomes, cancelledOutcomes] = await Promise.all([delayed, cancelled]);
+
+    expect(Object.fromEntries(delayedOutcomes)).toEqual({
+      "delay-initialize": { status: "completed", finalResponse: "unit-response", ownership: [] },
+      "delay-new": { status: "completed", finalResponse: "unit-response", ownership: [] },
+    });
+    expect(Object.fromEntries(cancelledOutcomes)).toEqual({
+      abort: { callbackCalled: true, status: "cancelled", responses: [], finalResponse: undefined, ownership: [] },
+      shutdown: { callbackCalled: true, status: "cancelled", responses: [], finalResponse: undefined, ownership: [] },
+    });
+  });
+
+  it("does not expose an attempt when abort wins the ready race", { timeout: 12_000 }, async () => {
+    const root = await temporaryRoot();
+    const workers = join(root, "workers");
+    const gate = join(root, "gate");
+    const executor = await testExecutor(root);
+    const controller = new AbortController();
+    let callbackCalled = false;
+
+    const opening = executor.withAttempt(attemptInput(
+      root,
+      fixtureSelector("gate-new"),
+      "ready-race",
+      controller.signal,
+      { ACP_FIXTURE_GATE_DIRECTORY: gate },
+    ), attempt => {
+      callbackCalled = true;
+      return attempt.runTurn(turnInput(root, fixtureSelector(), "ready-race"));
+    });
+    await waitForPath(join(gate, "new.started"));
+    expect(callbackCalled).toBe(false);
+
+    controller.abort();
+    await writeFile(join(gate, "new.release"), "");
+    const result = await opening;
+
+    expect(callbackCalled).toBe(true);
+    expect(result).toMatchObject({ status: "cancelled", responses: [] });
+    expect(result).not.toHaveProperty("finalResponse");
     expect(await readdir(workers)).toEqual([]);
   });
 
@@ -110,10 +272,10 @@ describe("ACP ownership inspection", () => {
       sessionName: "session",
       cwd: root,
       env: {},
-      agent: { kind: "command", command: "unused-acp" },
+      agent: fixtureSelector(),
       permissionMode: "deny-all",
     }, managed => managed.runTurn({
-      agent: { kind: "command", command: "unused-acp" },
+      agent: fixtureSelector(),
       prompt: "unused",
       cwd: root,
       env: {},
@@ -125,9 +287,9 @@ describe("ACP ownership inspection", () => {
     await executor.shutdown();
 
     const result = await attempt;
-    expect(result).toMatchObject({ status: "failed", failure: { kind: "worker_lost" }, responses: [] });
+    expect(result).toMatchObject({ status: "cancelled", responses: [] });
     expect(result).not.toHaveProperty("finalResponse");
-    expect(await readdir(workers)).toEqual([]);
+    expect(await directoryEntries(workers)).toEqual([]);
   });
 
   it("does not sweep a live worker when its creation identity is unavailable", async () => {
@@ -235,4 +397,85 @@ async function linuxStartToken(pid: number): Promise<string> {
   const startTime = fields[19];
   if (!startTime) throw new Error("Expected Linux process start token.");
   return `linux:${startTime}`;
+}
+
+async function linuxProcessGroup(pid: number): Promise<number> {
+  const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+  const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/u);
+  return Number(fields[2]);
+}
+
+function fixtureSelector(...flags: string[]) {
+  return {
+    kind: "command" as const,
+    command: [process.execPath, fixtureAgent, "unit-response", ...flags]
+      .map(value => JSON.stringify(value))
+      .join(" "),
+  };
+}
+
+async function temporaryRoot(): Promise<string> {
+  const root = await mkdtemp(join(tmpdir(), "acpus-agent-executor-"));
+  temporaryDirectories.push(root);
+  return root;
+}
+
+function testExecutor(root: string) {
+  return createManagedAcpExecutor({
+    workersRoot: join(root, "workers"),
+    sessionStateDirectoryForRun: runId => join(root, "runs", runId),
+    owner: { generation: "test" },
+  });
+}
+
+function attemptInput(
+  root: string,
+  agent: ReturnType<typeof fixtureSelector>,
+  id: string,
+  signal?: AbortSignal,
+  env: NodeJS.ProcessEnv = {},
+) {
+  return {
+    runId: "run",
+    attemptId: `attempt-${id}`,
+    sessionName: `session-${id}`,
+    cwd: root,
+    env,
+    agent,
+    permissionMode: "deny-all" as const,
+    ...(signal === undefined ? {} : { signal }),
+  };
+}
+
+function turnInput(root: string, agent: ReturnType<typeof fixtureSelector>, id: string) {
+  return {
+    agent,
+    prompt: "unused",
+    cwd: root,
+    env: {},
+    sessionName: `session-${id}`,
+    permissionMode: "deny-all" as const,
+  };
+}
+
+async function waitForPath(path: string): Promise<void> {
+  const deadline = performance.now() + 5_000;
+  while (performance.now() < deadline) {
+    try {
+      await access(path);
+      return;
+    } catch {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+  }
+  throw new Error(`Timed out waiting for ${path}.`);
+}
+
+async function directoryEntries(path: string): Promise<string[]> {
+  try {
+    return await readdir(path);
+  } catch (error) {
+    if (typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT") return [];
+    throw error;
+  }
 }

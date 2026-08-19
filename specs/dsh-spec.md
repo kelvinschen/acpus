@@ -54,11 +54,16 @@ and exposes bounded live projections to its Client contribution.
   same admission identity. An unknown outcome MAY be replayed once only with
   the identical identity and payload; an unresolved outcome MUST retain the
   provisional link and surface `ACPUS_ADMISSION_OUTCOME_UNKNOWN`.
-- The integration MUST register the immutable package-owned named Agent `dsh`
-  ahead of Acpx resolution. It MUST launch the package-owned DSH ACP server
-  directly, without a shell, `pnpm`, user Acpx configuration, or the `acpus`
-  executable. Other named workflow Agent `use` values MUST retain Acpx
-  resolution semantics.
+- The integration MUST register an immutable package-owned Host launch for the
+  exact normalized named Agent `dsh`. Under [Acpus named Agent
+  resolution](agent-executor-spec.md#named-agent-resolution), that launch MUST
+  take precedence over structured-argv configuration from
+  `<cwd>/.acpus/agents.json` or `~/.acpus/agents.json` and over the built-in
+  catalog, while an explicit workflow Agent `command` MUST bypass it. The Host
+  launch MUST start the package-owned DSH ACP server directly, without a shell,
+  `pnpm`, user Agent configuration, or the `acpus` executable. Every other
+  named workflow Agent `use` MUST follow the linked Acpus-owned resolution
+  contract.
 - The package-owned `dsh` launch MUST load standard `dsh-base`, use the
   integration's resolved DSH home for settings and credentials, and MUST NOT
   load the active DSH Profile or recursively mount `@acpus/dsh`. Its optional
@@ -548,10 +553,10 @@ cancelSessionTask(input: {
   contributions, the generated Profile Remote descriptor, and strict safe
   result projection.
 - `pnpm test:integration packages/dsh`: verifies real DSH Loader composition,
-  direct embedded admission, Acpx Agent execution, restart observation, Signal
-  parking and reconciliation, terminal followup deduplication, missing-parent
-  isolation, Runtime-store isolation, the keyed receipt, and the
-  no-CLI/no-DSH-worker boundary.
+  direct embedded admission, Acpus named Agent execution, restart observation,
+  Signal parking and reconciliation, terminal followup deduplication,
+  missing-parent isolation, Runtime-store isolation, the keyed receipt, and
+  the no-CLI/no-DSH-worker boundary.
 - `pnpm --filter @acpus/dsh typecheck`: verifies supported Acpus and DSH public
   API use.
 - `pnpm test:dist`: verifies packed package exports, Client handoff, embedded

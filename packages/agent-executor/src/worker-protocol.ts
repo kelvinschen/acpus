@@ -1,39 +1,44 @@
 import type {
+  AcpAgentLaunch,
+  AgentBackendFailure,
   AgentPermissionMode,
-  AgentSelector,
   AgentTurnObservation,
-  AgentTurnRequest,
   AgentTurnResult,
 } from "./types.js";
-import type { AcpxAgentLaunch } from "./acpx-agent-resolution.js";
 
-export const ACP_WORKER_PROTOCOL_VERSION = 4;
+export const ACP_WORKER_PROTOCOL_VERSION = 6;
+
+export type AcpWorkerTurnRequest = {
+  prompt: string;
+  configuration?: Record<string, string>;
+  timeoutMs?: number;
+};
 
 export type AcpWorkerParentMessage =
   | {
       type: "initialize";
-      protocolVersion: 4;
+      protocolVersion: 6;
       workerId: string;
       attemptId: string;
+      recordId: string;
       sessionStateDirectory: string;
       cwd: string;
       env: Record<string, string | undefined>;
-      agent: AgentSelector;
-      resolvedLaunch: AcpxAgentLaunch;
+      resolvedLaunch: AcpAgentLaunch;
       permissionMode: AgentPermissionMode;
       model?: string;
     }
   | {
       type: "run-turn";
-      protocolVersion: 4;
+      protocolVersion: 6;
       workerId: string;
       attemptId: string;
       turnId: string;
-      request: Omit<AgentTurnRequest, "signal" | "onProgress" | "onObservation">;
+      request: AcpWorkerTurnRequest;
     }
   | {
       type: "abort-turn";
-      protocolVersion: 4;
+      protocolVersion: 6;
       workerId: string;
       attemptId: string;
       turnId: string;
@@ -41,7 +46,7 @@ export type AcpWorkerParentMessage =
     }
   | {
       type: "close-attempt";
-      protocolVersion: 4;
+      protocolVersion: 6;
       workerId: string;
       attemptId: string;
       reason: string;
@@ -49,14 +54,20 @@ export type AcpWorkerParentMessage =
 
 export type AcpWorkerChildMessage =
   | {
+      type: "open-started";
+      protocolVersion: 6;
+      workerId: string;
+      attemptId: string;
+    }
+  | {
       type: "ready";
-      protocolVersion: 4;
+      protocolVersion: 6;
       workerId: string;
       attemptId: string;
     }
   | {
       type: "acp-activity";
-      protocolVersion: 4;
+      protocolVersion: 6;
       workerId: string;
       attemptId: string;
       turnId: string;
@@ -64,7 +75,7 @@ export type AcpWorkerChildMessage =
     }
   | {
       type: "turn-observation";
-      protocolVersion: 4;
+      protocolVersion: 6;
       workerId: string;
       attemptId: string;
       turnId: string;
@@ -72,7 +83,7 @@ export type AcpWorkerChildMessage =
     }
   | {
       type: "turn-result";
-      protocolVersion: 4;
+      protocolVersion: 6;
       workerId: string;
       attemptId: string;
       turnId: string;
@@ -80,14 +91,14 @@ export type AcpWorkerChildMessage =
     }
   | {
       type: "worker-failure";
-      protocolVersion: 4;
+      protocolVersion: 6;
       workerId: string;
       attemptId: string;
-      message: string;
+      failure: AgentBackendFailure;
     }
   | {
       type: "closed";
-      protocolVersion: 4;
+      protocolVersion: 6;
       workerId: string;
       attemptId: string;
     };
@@ -99,13 +110,13 @@ export function isAcpWorkerParentMessage(value: unknown): value is AcpWorkerPare
     || typeof value.attemptId !== "string") return false;
   if (value.type === "initialize") {
     return exactKeys(value, [
-      "type", "protocolVersion", "workerId", "attemptId", "sessionStateDirectory",
-      "cwd", "env", "agent", "resolvedLaunch", "permissionMode",
+      "type", "protocolVersion", "workerId", "attemptId", "recordId",
+      "sessionStateDirectory", "cwd", "env", "resolvedLaunch", "permissionMode",
     ], ["model"])
+      && typeof value.recordId === "string"
       && typeof value.sessionStateDirectory === "string"
       && typeof value.cwd === "string"
       && environment(value.env)
-      && isAgentSelector(value.agent)
       && agentLaunch(value.resolvedLaunch)
       && isPermissionMode(value.permissionMode)
       && optionalString(value.model);
@@ -130,12 +141,12 @@ export function isAcpWorkerChildMessage(value: unknown): value is AcpWorkerChild
     || value.protocolVersion !== ACP_WORKER_PROTOCOL_VERSION
     || typeof value.workerId !== "string"
     || typeof value.attemptId !== "string") return false;
-  if (value.type === "ready" || value.type === "closed") {
+  if (value.type === "open-started" || value.type === "ready" || value.type === "closed") {
     return exactKeys(value, ["type", "protocolVersion", "workerId", "attemptId"]);
   }
   if (value.type === "worker-failure") {
-    return exactKeys(value, ["type", "protocolVersion", "workerId", "attemptId", "message"])
-      && typeof value.message === "string";
+    return exactKeys(value, ["type", "protocolVersion", "workerId", "attemptId", "failure"])
+      && isFailure(value.failure);
   }
   if (value.type === "acp-activity") {
     return exactKeys(value, ["type", "protocolVersion", "workerId", "attemptId", "turnId", "observedAt"])
@@ -153,18 +164,12 @@ export function isAcpWorkerChildMessage(value: unknown): value is AcpWorkerChild
     && isTurnResult(value.result);
 }
 
-function isTurnRequest(value: unknown): value is Omit<AgentTurnRequest, "signal" | "onProgress" | "onObservation"> {
+function isTurnRequest(value: unknown): value is AcpWorkerTurnRequest {
   return record(value)
-    && exactKeys(value, ["agent", "prompt", "cwd", "env", "sessionName", "permissionMode"], ["model", "config", "timeoutMs"])
-    && isAgentSelector(value.agent)
+    && exactKeys(value, ["prompt"], ["configuration", "timeoutMs"])
     && typeof value.prompt === "string"
-    && typeof value.cwd === "string"
-    && environment(value.env)
-    && typeof value.sessionName === "string"
-    && isPermissionMode(value.permissionMode)
-    && optionalString(value.model)
-    && (value.config === undefined || stringRecord(value.config))
-    && (value.timeoutMs === undefined || finiteNumber(value.timeoutMs));
+    && (value.configuration === undefined || stringRecord(value.configuration))
+    && (value.timeoutMs === undefined || nonnegativeFiniteNumber(value.timeoutMs));
 }
 
 function isTurnObservation(value: unknown): value is AgentTurnObservation {
@@ -256,7 +261,7 @@ function isTurnResult(value: unknown): value is AgentTurnResult {
 
 function isTurnSummary(value: unknown): boolean {
   return record(value)
-    && exactKeys(value, ["eventCount", "availability", "tools"], ["stopReason", "context", "tokenUsage", "cwd", "acpxRecordId"])
+    && exactKeys(value, ["eventCount", "availability", "tools"], ["stopReason", "context", "tokenUsage", "cwd", "sessionProjectionPath"])
     && nonnegativeInteger(value.eventCount)
     && isTelemetryAvailability(value.availability)
     && optionalString(value.stopReason)
@@ -264,7 +269,7 @@ function isTurnSummary(value: unknown): boolean {
     && (value.tokenUsage === undefined || isTokenUsageSummary(value.tokenUsage))
     && isToolsSummary(value.tools)
     && optionalString(value.cwd)
-    && optionalString(value.acpxRecordId);
+    && optionalString(value.sessionProjectionPath);
 }
 
 function isTelemetryAvailability(value: unknown): boolean {
@@ -365,9 +370,9 @@ function isFailureEvidence(value: unknown): boolean {
 function isFailureUpstream(value: unknown): boolean {
   return record(value)
     && exactKeys(value, ["source", "operation"], ["code", "origin"])
-    && value.source === "acpx"
-    && (value.operation === "sessions.ensure" || value.operation === "session.set_config_option" || value.operation === "prompt")
-    && optionalString(value.code)
+    && value.source === "acp"
+    && (value.operation === "open_session" || value.operation === "configure_session" || value.operation === "run_turn")
+    && (value.code === undefined || typeof value.code === "string" || finiteNumber(value.code))
     && optionalString(value.origin);
 }
 
@@ -375,14 +380,22 @@ function stringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every(item => typeof item === "string");
 }
 
-function agentLaunch(value: unknown): value is AcpxAgentLaunch {
-  return typeof value === "string"
-    ? value.trim().length > 0
-    : Array.isArray(value)
-      && value.length > 0
-      && typeof value[0] === "string"
-      && value[0].length > 0
-      && value.every(item => typeof item === "string");
+function agentLaunch(value: unknown): value is AcpAgentLaunch {
+  if (!record(value)) return false;
+  if (value.kind === "command") {
+    return exactKeys(value, ["kind", "command"], ["name"])
+      && typeof value.command === "string"
+      && value.command.trim().length > 0
+      && optionalString(value.name);
+  }
+  return value.kind === "argv"
+    && exactKeys(value, ["kind", "argv"], ["name"])
+    && Array.isArray(value.argv)
+    && value.argv.length > 0
+    && typeof value.argv[0] === "string"
+    && value.argv[0].trim().length > 0
+    && value.argv.every(item => typeof item === "string")
+    && optionalString(value.name);
 }
 
 function nonnegativeInteger(value: unknown): value is number {
@@ -407,17 +420,6 @@ function environment(value: unknown): value is Record<string, string | undefined
 
 function stringRecord(value: unknown): value is Record<string, string> {
   return record(value) && Object.values(value).every(item => typeof item === "string");
-}
-
-function isAgentSelector(value: unknown): value is AgentSelector {
-  if (!record(value)) return false;
-  if (value.kind === "named") {
-    return exactKeys(value, ["kind", "name"])
-      && typeof value.name === "string";
-  }
-  return value.kind === "command"
-    && exactKeys(value, ["kind", "command"])
-    && typeof value.command === "string";
 }
 
 function isPermissionMode(value: unknown): value is AgentPermissionMode {

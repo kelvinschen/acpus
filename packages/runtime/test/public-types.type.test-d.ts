@@ -588,7 +588,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     timing: import("@acpus/agent-executor").AgentTurnTiming;
     prompt: string;
     responses: string[];
-    summary: AgentTurnSummary;
+    summary: Omit<AgentTurnSummary, "sessionProjectionPath">;
   } & (
     | { status: "completed"; finalResponse: string }
     | { status: "failed"; failure: import("@acpus/agent-executor").AgentBackendFailure }
@@ -597,7 +597,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf<RunInspectionDetailedFailure>().toMatchTypeOf<{
     origin: string;
     message: string;
-    upstream?: { source: "acpx"; data?: JsonValue };
+    upstream?: { source: "acp"; data?: JsonValue };
   }>();
 });
 

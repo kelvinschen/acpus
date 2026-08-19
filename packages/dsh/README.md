@@ -84,16 +84,11 @@ Acpus 模式始终提供内建 DSH Agent。该配置不可修改或删除。它�
 主要用于高度复杂的开发任务。
 ```
 
-也可以通过用途更新或删除配置：
-
-```text
-把用于复杂开发任务的 Codex Agent 改为主要用于架构设计和大型代码实现。
-删除用于复杂开发任务的 Codex Agent 配置。
-```
+也可以在对话中按用途更新或删除配置。
 
 会话标题栏中的 **Agent Profiles** 入口只显示当前配置。请通过对话修改配置。修改只影响后续 Workflow。
 
-可配置的 Agent 及其安装要求见 [ACPX Agent 目录](https://github.com/openclaw/acpx/tree/main/agents)。也可以使用 `~/.acpx/config.json`  类新增具名 Agent。 配置后告诉 DSH 该 Agent 的名称和用途即可。
+常用 Agent 已在 Acpus 内建目录中。其他具名 Agent 在 `~/.acpus/agents.json` 或工作目录的 `.acpus/agents.json` 中配置结构化 `argv`：`{"agents":{"my-agent":{"argv":["my-acp-server","--stdio"]}}}`。项目同名项优先；配置后告诉 DSH 该名称和用途。
 
 在使用 Profile 前，先安装对应 Agent，并完成该 Agent 的登录或凭据配置。保存 Profile 时不会检测可执行文件、网络、凭据或模型是否可用。
 
@@ -135,6 +130,6 @@ dsh plugin --profile web remove @acpus/dsh
 - Acpus 模式使用完整的 Supervisor Persona。DSH 的常规 Persona 不会叠加。
 - Acpus 模式下，模型只配置了 acpus 相关的工具，不会获得常规 DSH 工具如 `bash` `read` `write` 等。
 - 每个工作目录使用独立的 Workspace Runtime。默认状态位于 `${DSH_HOME:-$HOME/.dsh}/.acpus-dsh/runtime`，与 `$HOME/.acpus` 中的 CLI 状态隔离。
-- `use: "dsh"` 启动插件自带的 DSH ACP Server。该 Server 使用标准 `dsh-base` 和当前 DSH home，不加载当前 profile，也不递归加载 Acpus 模式。
-- 其他命名 Agent 由 ACPX 解析。
+- `use: "dsh"` 精确命中 Host 内建 DSH ACP Server，优先于两级配置和内建目录。该 Server 使用标准 `dsh-base` 和当前 DSH home，不加载当前 profile，也不递归加载 Acpus 模式。
+- 其他 `use` 按项目、全局、内建目录解析；显式 `command` 跳过具名解析。
 - Acpus Workflow 的执行独立于当前 DSH 回复。停止回复不会取消 Workflow, 取消操作必须明确作用于对应 Workflow。
