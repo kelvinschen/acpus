@@ -75,9 +75,16 @@ export async function startPredecessorDaemon(
   let closed = false;
   const server = createServer({ allowHalfOpen: true }, socket => {
     const chunks: Buffer[] = [];
-    socket.on("data", chunk => chunks.push(Buffer.from(chunk)));
-    socket.on("end", () => {
-      const request = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { method?: unknown };
+    let handled = false;
+    const respond = () => {
+      if (handled) return;
+      let request: { method?: unknown };
+      try {
+        request = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { method?: unknown };
+      } catch {
+        return;
+      }
+      handled = true;
       if (request.method === "status") {
         statusRequests += 1;
         socket.end(JSON.stringify({
@@ -100,13 +107,21 @@ export async function startPredecessorDaemon(
         }));
         return;
       }
-      socket.end(JSON.stringify({ ok: true, result: { status: "shutdown" } }), () => {
-        if (!closed) {
-          closed = true;
-          server.close();
-        }
-      });
+      socket.end(JSON.stringify({ ok: true, result: { status: "shutdown" } }));
+      if (!closed) {
+        closed = true;
+        server.close();
+      }
+    };
+    socket.on("error", error => {
+      if ((error as NodeJS.ErrnoException).code !== "EPIPE"
+        && (error as NodeJS.ErrnoException).code !== "ECONNRESET") throw error;
     });
+    socket.on("data", chunk => {
+      chunks.push(Buffer.from(chunk));
+      respond();
+    });
+    socket.on("end", respond);
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

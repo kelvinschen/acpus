@@ -11,7 +11,6 @@ export type HookJournalEntry = {
   source: HookSource;
   sourcePath: string;
   handlerId: string;
-  definitionHash: string;
   nodeKey?: string;
   status: HookJournalStatus;
   exitCode?: number;

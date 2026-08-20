@@ -61,7 +61,6 @@ async function openWorker(message: Extract<AcpWorkerParentMessage, { type: "open
   const input = message.input;
   const opened = await openAcpSession({
     agentSessionId: input.agentSessionId,
-    bindingFingerprint: input.bindingFingerprint,
     sessionOpenMode: input.sessionOpenMode,
     stateDirectory: input.sessionStateDirectory,
     launch: input.resolvedLaunch,
@@ -87,7 +86,6 @@ async function openWorker(message: Extract<AcpWorkerParentMessage, { type: "open
     protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
     ...identityOfMessage(input),
     projectionRef: opened.value.projectionPath,
-    bindingFingerprint: input.bindingFingerprint,
     ...(opened.value.reportedVersion === undefined ? {} : { reportedVersion: opened.value.reportedVersion }),
   });
 }

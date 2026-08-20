@@ -42,7 +42,6 @@ describe("daemon v4 submit authority", () => {
           { ...authority, layoutVersion: authority.layoutVersion + 1 },
           { ...authority, storageVersion: authority.storageVersion + 1 },
           { ...authority, authorityId: alternateHex(authority.authorityId) },
-          { ...authority, storeBinding: `sha256:${alternateHex(authority.storeBinding.slice(7))}` },
           { ...authority, leaseGeneration: authority.leaseGeneration + 1 },
         ];
 

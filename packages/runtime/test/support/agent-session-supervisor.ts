@@ -29,7 +29,6 @@ export function testAgentSessionSupervisor(
         agentSessionId: input.session.agentSessionId,
         sessionLeaseId: `test-lease:${input.attempt.attemptId}`,
         projectionRef: `sessions/${input.session.agentSessionId}.json`,
-        bindingFingerprint: fixtureBindingFingerprint(),
         runTurn: <E>(turn: TurnInput<E>) => new ResultAsync((async (): Promise<Result<AgentTurnOutcome, AgentTurnFailure<E>>> => {
           turnNo += 1;
           let sequence = 0;
@@ -133,9 +132,4 @@ export function testAgentSessionSupervisor(
     withSessionsNeutralized: (_input, commit) => new ResultAsync(Promise.resolve(commit([]).mapErr(error => ({ type: "commit" as const, error })))),
     shutdown,
   };
-}
-
-function fixtureBindingFingerprint() {
-  const digest = `sha256:${"a".repeat(64)}` as const;
-  return { version: 1 as const, digest, components: { launch: digest, cwd: digest, model: digest, options: digest } };
 }

@@ -1,6 +1,6 @@
 export { createAgentSessionSupervisor } from "./session-supervisor.js";
 export { inspectAcpOwnership } from "./ownership.js";
-export type { AcpError, AcpEvent, AgentSessionBindingFingerprintV1 } from "@acpus/acp";
+export type { AcpError, AcpEvent } from "@acpus/acp";
 export type { AcpAgentResolutionFailure } from "./agent-resolution.js";
 export type {
   AcpAgentLaunch,

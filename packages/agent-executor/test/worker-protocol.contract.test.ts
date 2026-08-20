@@ -5,24 +5,14 @@ import {
   isAcpWorkerParentMessage,
 } from "../src/worker-protocol.js";
 
-const identity = { protocolVersion: 9, hostId: "host", sessionLeaseId: "lease" } as const;
-const bindingFingerprint = {
-  version: 1,
-  digest: `sha256:${"0".repeat(64)}`,
-  components: {
-    launch: `sha256:${"1".repeat(64)}`,
-    cwd: `sha256:${"2".repeat(64)}`,
-    model: `sha256:${"3".repeat(64)}`,
-    options: `sha256:${"4".repeat(64)}`,
-  },
-} as const;
+const identity = { protocolVersion: 10, hostId: "host", sessionLeaseId: "lease" } as const;
 
-describe("ACP worker protocol v9", () => {
+describe("ACP worker protocol v10", () => {
   it("accepts the closed parent topology", () => {
-    expect(ACP_WORKER_PROTOCOL_VERSION).toBe(9);
+    expect(ACP_WORKER_PROTOCOL_VERSION).toBe(10);
     expect(isAcpWorkerParentMessage({
       type: "open",
-      protocolVersion: 9,
+      protocolVersion: 10,
       input: {
         hostId: "host",
         sessionLeaseId: "lease",
@@ -36,7 +26,6 @@ describe("ACP worker protocol v9", () => {
         env: {},
         permissionMode: "deny-all",
         configuration: { options: {} },
-        bindingFingerprint,
       },
     })).toBe(true);
     expect(isAcpWorkerParentMessage({ ...identity, type: "run", turnId: "turn", prompt: "work" })).toBe(true);
@@ -55,18 +44,16 @@ describe("ACP worker protocol v9", () => {
       ...identity,
       type: "ready",
       projectionRef: "sessions/session.json",
-      bindingFingerprint,
       reportedVersion: "1.2.3",
     })).toBe(true);
     expect(isAcpWorkerChildMessage({
       ...identity,
       type: "ready",
       projectionRef: "sessions/session.json",
-      bindingFingerprint,
       reportedVersion: "x".repeat(257),
     })).toBe(false);
     expect(isAcpWorkerChildMessage({ ...identity, type: "closed" })).toBe(true);
-    expect(isAcpWorkerChildMessage({ protocolVersion: 9, workerId: "worker", attemptId: "attempt", type: "closed" })).toBe(false);
+    expect(isAcpWorkerChildMessage({ protocolVersion: 10, workerId: "worker", attemptId: "attempt", type: "closed" })).toBe(false);
   });
 
   it("accepts only fixed-order non-empty binding mismatch categories", () => {

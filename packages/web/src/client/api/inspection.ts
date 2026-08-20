@@ -148,11 +148,9 @@ function isAgentSession(value: unknown): boolean {
     || !isNonNegativeInteger(value.generation)) return false;
   return hasOnlyKeys(value, [
       "scope", "agentSessionId", "generation", "lifecycle", "ownershipHealth",
-      "bindingDigest", "reportedVersion", "currentBinding", "checkpoint",
+      "reportedVersion", "currentBinding", "checkpoint",
     ])
     && isControlTarget(value.agentSessionId)
-    && (value.bindingDigest === undefined
-      || typeof value.bindingDigest === "string" && /^sha256:[0-9a-f]{64}$/u.test(value.bindingDigest))
     && (value.reportedVersion === undefined
       || typeof value.reportedVersion === "string"
         && value.reportedVersion.length > 0

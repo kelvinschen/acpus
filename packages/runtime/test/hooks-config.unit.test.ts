@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -6,7 +5,6 @@ import { mkdtemp } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { validateHooksFile } from "../src/hooks/config.js";
 import { loadHooksConfig, loadHooksConfigScopes } from "../src/hooks/loader.js";
-import { stableJson } from "../src/stable-json.js";
 
 describe("hooks config", () => {
   it("accepts event-map command hooks", () => {
@@ -145,15 +143,22 @@ describe("hooks config", () => {
       { source: "project", id: "same", command: "echo project again", definitionIndex: 1 },
       { source: "global", id: "same", command: "echo global", definitionIndex: 0 },
     ]);
-    const hooks = loaded._unsafeUnwrap();
-    expect(new Set(hooks.map(hook => hook.definitionHash)).size).toBe(3);
-    expect(hooks[0]?.definitionHash).toBe(createHash("sha256").update(stableJson({
-      source: "project",
-      sourcePath: join(workspace, ".acpus", "hooks.json"),
-      event: "run.completed",
-      definitionIndex: 0,
-      config: { id: "same", command: "echo project" },
-    })).digest("hex"));
+  });
+
+  it("assigns readable default ids from source, event, and index", async () => {
+    const workspace = await tempDir("hooks-default-id-");
+    const home = await tempDir("hooks-default-id-home-");
+    await mkdir(join(workspace, ".acpus"), { recursive: true });
+    await writeFile(join(workspace, ".acpus", "hooks.json"), JSON.stringify({
+      "node.failed": [{ command: "echo first" }, { command: "echo second" }],
+    }));
+
+    const loaded = await loadHooksConfig(workspace, { homeDir: home });
+
+    expect(loaded._unsafeUnwrap().map(hook => hook.effectiveId)).toEqual([
+      "project:node.failed:0",
+      "project:node.failed:1",
+    ]);
   });
 
   it("returns empty scoped configs for missing files", async () => {

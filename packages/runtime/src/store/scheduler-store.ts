@@ -42,7 +42,7 @@ import {
   type ReplayCommitInput,
   type ReplayCommitResult,
   type ReconcileAgentSteersInput,
-  type RecordAgentSessionBindingInput,
+  type RecordAgentSessionReadyInput,
   type RuntimeAgentControlInspection,
   type RunOwnerClaim,
   type SchedulerCancelInput,
@@ -80,7 +80,7 @@ type AgentSessionRow = {
   scope_digest: Sha256Digest;
   generation: number;
   explicit_shared: number;
-  binding_digest: Sha256Digest | null;
+  ready_at: string | null;
   reported_version: string | null;
   lifecycle: "active" | "abandoned";
   checkpoint: AgentSessionCheckpoint;
@@ -1089,36 +1089,30 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
 
-  tryRecordAgentSessionBinding(
-    input: RecordAgentSessionBindingInput,
-  ): SchedulerStoreResult<Sha256Digest> {
-    return schedulerStoreResult(() => this.recordAgentSessionBinding(input));
+  tryRecordAgentSessionReady(
+    input: RecordAgentSessionReadyInput,
+  ): SchedulerStoreResult<void> {
+    return schedulerStoreResult(() => this.recordAgentSessionReady(input));
   }
 
-  private recordAgentSessionBinding(input: RecordAgentSessionBindingInput): Sha256Digest {
+  private recordAgentSessionReady(input: RecordAgentSessionReadyInput): void {
     const now = (input.now ?? new Date()).toISOString();
     this.db.exec("BEGIN IMMEDIATE");
     try {
       this.requireStartedAttempt(input.runId, input.attemptId, input.ownerEpoch);
-      if (!isSha256Digest(input.bindingDigest)) {
-        this.bindingConflict(input, "contains an invalid Session fingerprint");
-      }
       if (input.reportedVersion !== undefined
         && (input.reportedVersion.length === 0 || input.reportedVersion.length > 256)) {
         this.bindingConflict(input, "contains an invalid Provider reported version");
       }
-      const row = this.requireAgentSession(input.runId, input.agentSessionId);
+      this.requireAgentSession(input.runId, input.agentSessionId);
       this.requireBindingForSession(input.runId, input.attemptId, input.agentSessionId);
-      if (row.binding_digest !== null && row.binding_digest !== input.bindingDigest) {
-        this.bindingConflict(input, "does not match the immutable Session fingerprint");
-      }
       this.db.prepare(`
         UPDATE agent_sessions
-        SET binding_digest = ?, reported_version = ?, updated_at = ?
+        SET ready_at = COALESCE(ready_at, ?),
+          reported_version = COALESCE(?, reported_version), updated_at = ?
         WHERE agent_session_id = ?
-      `).run(input.bindingDigest, input.reportedVersion ?? null, now, input.agentSessionId);
+      `).run(now, input.reportedVersion ?? null, now, input.agentSessionId);
       this.db.exec("COMMIT");
-      return input.bindingDigest;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
@@ -1170,7 +1164,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
           source: "generation_start",
           target: input.target,
           session: {
-            agentSessionId: agentSessionIdForScope(input.runId, input.scopeDigest, predecessor.generation + 1),
+            agentSessionId: agentSessionIdForScope(input.scopeDigest, predecessor.generation + 1),
             scopeDigest: input.scopeDigest,
             generation: predecessor.generation + 1,
             explicitShared: input.explicitShared,
@@ -1306,8 +1300,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
       this.requireStartedAttempt(input.runId, input.attemptId, input.ownerEpoch);
       const row = this.requireAgentSession(input.runId, input.agentSessionId);
       this.requireBindingForSession(input.runId, input.attemptId, input.agentSessionId);
-      if (row.binding_digest === null) {
-        this.checkpointConflict(input.runId, input.agentSessionId, "cannot dispatch before the Session binding is recorded");
+      if (row.ready_at === null) {
+        this.checkpointConflict(input.runId, input.agentSessionId, "cannot dispatch before the Session is ready");
       }
       const current = checkpointFromRow(row);
       if (!sameCheckpoint(current, input.expected)
@@ -1402,7 +1396,6 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
         agentSessionId: session.agentSessionId,
         generation: session.generation,
         lifecycle: session.lifecycle,
-        ...(session.bindingDigest === undefined ? {} : { bindingDigest: session.bindingDigest }),
         ...(session.reportedVersion === undefined ? {} : { reportedVersion: session.reportedVersion }),
         currentBinding: {
           attemptId: binding.attemptId,
@@ -1590,7 +1583,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
         explicit_shared, lifecycle, checkpoint, checkpoint_attempt_id,
         checkpoint_turn_id, checkpoint_session_lease_id,
         checkpoint_prompt_origin, checkpoint_input_digest, checkpoint_at,
-        binding_digest, reported_version
+        ready_at, reported_version
       FROM agent_sessions
       WHERE run_id = ?
       ORDER BY scope_digest, generation
@@ -1612,7 +1605,6 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
         scopeDigest: row.scope_digest,
         generation: row.generation,
         explicitShared: Boolean(row.explicit_shared),
-        ...(row.binding_digest === null ? {} : { bindingDigest: row.binding_digest }),
         ...(row.reported_version === null ? {} : { reportedVersion: row.reported_version }),
         lifecycle: row.lifecycle,
         checkpoint: checkpointFromRow(row),
@@ -1654,15 +1646,15 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   private requireAgentSessionInput(input: BindAgentAttemptSessionInput): void {
-    if (!/^acpus-[A-Za-z0-9_-]{22}$/u.test(input.agentSessionId)
+    if (!/^acpus-[0-9a-f]{64}-g[1-9][0-9]*$/u.test(input.agentSessionId)
       || !isSha256Digest(input.scopeDigest)
       || !isSha256Digest(input.inputDigest)
       || !Number.isInteger(input.generation)
       || input.generation < 1) {
       this.bindingConflict(input, "contains an invalid durable identity");
     }
-    if (input.agentSessionId !== agentSessionIdForScope(input.runId, input.scopeDigest, input.generation)) {
-      this.bindingConflict(input, "does not match its canonical run, scope, and generation identity");
+    if (input.agentSessionId !== agentSessionIdForScope(input.scopeDigest, input.generation)) {
+      this.bindingConflict(input, "does not match its canonical scope and generation identity");
     }
     const start = input.operation === "start";
     const continued = input.operation === "continue";
@@ -1839,7 +1831,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
       SELECT agent_session_id, run_id, scope_digest, generation, explicit_shared,
         lifecycle, checkpoint, checkpoint_attempt_id, checkpoint_turn_id,
         checkpoint_session_lease_id, checkpoint_prompt_origin,
-        checkpoint_input_digest, checkpoint_at, binding_digest, reported_version
+        checkpoint_input_digest, checkpoint_at, ready_at, reported_version
       FROM agent_sessions
       WHERE agent_session_id = ?
     `).get(agentSessionId) as AgentSessionRow | undefined;
@@ -1850,7 +1842,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
       SELECT agent_session_id, run_id, scope_digest, generation, explicit_shared,
         lifecycle, checkpoint, checkpoint_attempt_id, checkpoint_turn_id,
         checkpoint_session_lease_id, checkpoint_prompt_origin,
-        checkpoint_input_digest, checkpoint_at, binding_digest, reported_version
+        checkpoint_input_digest, checkpoint_at, ready_at, reported_version
       FROM agent_sessions
       WHERE run_id = ? AND scope_digest = ? AND lifecycle = 'active'
     `).get(runId, scopeDigest) as AgentSessionRow | undefined;
@@ -1861,7 +1853,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
       SELECT agent_session_id, run_id, scope_digest, generation, explicit_shared,
         lifecycle, checkpoint, checkpoint_attempt_id, checkpoint_turn_id,
         checkpoint_session_lease_id, checkpoint_prompt_origin,
-        checkpoint_input_digest, checkpoint_at, binding_digest, reported_version
+        checkpoint_input_digest, checkpoint_at, ready_at, reported_version
       FROM agent_sessions
       WHERE run_id = ? AND scope_digest = ?
       ORDER BY generation DESC
@@ -1874,7 +1866,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
       SELECT agent_session_id, run_id, scope_digest, generation, explicit_shared,
         lifecycle, checkpoint, checkpoint_attempt_id, checkpoint_turn_id,
         checkpoint_session_lease_id, checkpoint_prompt_origin,
-        checkpoint_input_digest, checkpoint_at, binding_digest, reported_version
+        checkpoint_input_digest, checkpoint_at, ready_at, reported_version
       FROM agent_sessions
       WHERE run_id = ? AND lifecycle = 'active'
       ORDER BY agent_session_id
@@ -1911,7 +1903,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     explicitShared: boolean;
   } {
     return {
-      agentSessionId: agentSessionIdForScope(input.runId, input.scopeDigest, 1),
+      agentSessionId: agentSessionIdForScope(input.scopeDigest, 1),
       scopeDigest: input.scopeDigest,
       generation: 1,
       explicitShared: input.explicitShared,

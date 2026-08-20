@@ -255,7 +255,7 @@ async function openWorkspaceRuntimeValue(
       cwd: opened.layout.canonicalPath,
       store,
       layout: opened.layout,
-      authority: createRuntimeAuthorityIdentity(opened.layout, claim.value.epoch),
+      authority: createRuntimeAuthorityIdentity(opened.layout, claim.value.ownerId, claim.value.epoch),
       authorityFence,
       supervisor,
       sessions,

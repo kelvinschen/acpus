@@ -36,7 +36,6 @@ export type LoadedHookConfig = HookConfig & {
   source: HookSource;
   sourcePath: string;
   definitionIndex: number;
-  definitionHash: string;
   effectiveId: string;
 };
 

@@ -12,6 +12,7 @@ Runtime hooks let users run configured shell commands when durable [Runtime](run
 - Supported hook events MUST be `run.started`, `run.completed`, `run.failed`, `run.canceled`, `run.awaiting`, `node.started`, `node.completed`, and `node.failed`.
 - Hook entries MUST contain a non-empty `command` string without NUL bytes and MAY contain `id`, `timeout`, and `match`.
 - Hook `id` MUST be display and journal metadata only; duplicate ids MUST NOT override or suppress any hook entry.
+- A hook without an explicit id MUST use the readable effective id `source:event:index`.
 - Project and global hook entries MUST be merged by direct union and MUST both run when both match.
 - Hook `match` fields MUST be JavaScript regular expression strings. Multiple match fields MUST be combined with AND semantics.
 - Hook `match.workflow` MUST match the frozen workflow name. Hook `match.nodeId`, `match.nodeKey`, and `match.kind` MUST apply only to `node.*` events and `run.awaiting`.
@@ -39,11 +40,11 @@ Runtime hooks let users run configured shell commands when durable [Runtime](run
 - A synchronous hook process spawn failure MUST produce one terminal `failed` journal entry, or `timed_out` when startup already exhausted the timeout; it MUST NOT disappear through the runner's non-interference boundary.
 - The hook journal MUST be stored outside the scheduler event stream in a `hook_journal` SQLite table.
 - The hook journal MUST write only terminal hook records with status `completed`, `failed`, or `timed_out`.
-- Hook journal rows MUST include `eventSequence` and `triggerOrder`. Hook-history reads MUST order rows by `eventSequence`, then `triggerOrder`, then journal row id.
+- Hook journal rows MUST include `eventSequence` and `triggerOrder`, and that pair MUST be unique within one run. Hook-history reads MUST order rows by `eventSequence`, then `triggerOrder`, then journal row id.
 - Hook context `run.status` and `node.status` MUST describe the hook event time, not a later scheduler projection state.
 - Hook node prompt/input fields MUST use persisted effective attempt values and MUST NOT re-evaluate authored expressions. When an attempt has no effective value because configuration resolution failed, the hook MUST still run with that optional field omitted.
 - Attempt-backed node events MUST identify `attemptId`, and hook context MUST load metadata for that exact attempt rather than the latest attempt sharing a node key.
-- A registered Agent turn artifact used for hook context MUST be a contained regular file matching its recorded size and digest; missing, tampered, or invalid JSON is durable corruption and MUST NOT advance the cursor.
+- A registered Agent turn artifact used for hook context MUST be a contained regular file matching its recorded size and digest; missing content, content that does not match its recorded identity, or invalid JSON is durable corruption and MUST NOT advance the cursor.
 - The hook journal MUST NOT create a `running` row and MUST NOT synthesize a failure row after a hook process or daemon crash.
 - Hook stdout and stderr stored in the journal MUST be bounded.
 - Hook journal retention MUST default to 7 days. Read-only APIs MUST NOT prune hook journal rows.

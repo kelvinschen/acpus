@@ -15,7 +15,7 @@ import {
   type AcpProjectedConversationEntry,
   type AcpSessionProjection,
 } from "../src/persistence.js";
-import type { AgentSessionBindingFingerprintV1, Sha256Digest } from "../src/types.js";
+import type { AgentSessionBinding } from "../src/session-binding.js";
 
 const parentRace = vi.hoisted(() => ({
   beforeSessionsCreate: undefined as (() => void) | undefined,
@@ -59,7 +59,7 @@ describe("ACP session projection persistence", () => {
       .toBe("sessions/session%2Fwith%20spaces%3F.json");
   });
 
-  it("atomically replaces and round-trips the exact v2 projection", async () => {
+  it("atomically replaces and round-trips the exact v3 projection", async () => {
     const root = await scratch(roots);
     const initial = projection();
     await saveAcpSessionProjection(root, initial);
@@ -107,34 +107,28 @@ describe("ACP session projection persistence", () => {
     const expected = projection();
     await saveAcpSessionProjection(root, expected);
     const before = await persistedBytes(root, expected.agentSessionId);
-    const requested = binding({ launch: 8, model: 9 });
+    const requested = binding({
+      launch: { kind: "command", command: "other-agent --acp" },
+      model: "other-model",
+    });
 
     await expect(loadAcpSessionProjection({
       stateDirectory: root,
       agentSessionId: expected.agentSessionId,
-      bindingFingerprint: requested,
+      binding: requested,
     })).rejects.toEqual(new SessionBindingMismatchIssue(["launch", "model"]));
     expect(await persistedBytes(root, expected.agentSessionId)).toBe(before);
   });
 
-  it.each([
-    {
-      name: "equal overall digest with unequal components",
-      requested: { ...binding(), components: { ...binding().components, cwd: digest(8) } },
-    },
-    {
-      name: "unequal overall digest with equal components",
-      requested: { ...binding(), digest: digest(8) },
-    },
-  ])("rejects an internally inconsistent fingerprint: $name", async ({ requested }) => {
+  it("treats differently ordered options as the same binding", async () => {
     const root = await scratch(roots);
     const expected = projection();
     await saveAcpSessionProjection(root, expected);
     await expect(loadAcpSessionProjection({
       stateDirectory: root,
       agentSessionId: expected.agentSessionId,
-      bindingFingerprint: requested,
-    })).rejects.toMatchObject(issueFor(expected.agentSessionId));
+      binding: binding({ options: { z: "last", a: "first" } }),
+    })).resolves.toEqual(expected);
   });
 
   it("rejects a projection whose Agent Session id differs from its filename", async () => {
@@ -146,7 +140,8 @@ describe("ACP session projection persistence", () => {
 
   it.each([
     { name: "malformed JSON", source: "{" },
-    { name: "the v1 schema", source: JSON.stringify({ ...projection(), schema: "acpus.acp-session.v1" }) },
+    { name: "the v2 schema", source: JSON.stringify({ ...projection(), schema: "acpus.acp-session.v2" }) },
+    { name: "a malformed binding", source: JSON.stringify({ ...projection(), binding: { ...binding(), cwd: 7 } }) },
     { name: "an unknown projection field", source: JSON.stringify({ ...projection(), rawJournal: [] }) },
   ])("refuses $name", async ({ source }) => {
     const root = await scratch(roots);
@@ -290,7 +285,7 @@ describe("ACP session projection persistence", () => {
 
 function projection(overrides: Partial<AcpSessionProjection> = {}): AcpSessionProjection {
   return {
-    schema: "acpus.acp-session.v2",
+    schema: "acpus.acp-session.v3",
     agentSessionId: "session/with spaces?",
     binding: binding(),
     backend: { sessionId: "backend-session-1", capabilities: { resume: true, load: false } },
@@ -305,21 +300,14 @@ function projection(overrides: Partial<AcpSessionProjection> = {}): AcpSessionPr
   };
 }
 
-function binding(overrides: Partial<Record<"launch" | "cwd" | "model" | "options", number>> = {}): AgentSessionBindingFingerprintV1 {
+function binding(overrides: Partial<AgentSessionBinding> = {}): AgentSessionBinding {
   return {
-    version: 1,
-    digest: digest(Object.values(overrides).reduce((sum, value) => sum + value, 0)),
-    components: {
-      launch: digest(overrides.launch ?? 1),
-      cwd: digest(overrides.cwd ?? 2),
-      model: digest(overrides.model ?? 3),
-      options: digest(overrides.options ?? 4),
-    },
+    launch: { kind: "argv", argv: ["fixture-agent", "--stdio"] },
+    cwd: "/workspace",
+    model: null,
+    options: { a: "first", z: "last" },
+    ...overrides,
   };
-}
-
-function digest(seed: number): Sha256Digest {
-  return `sha256:${seed.toString(16).padStart(64, "0")}`;
 }
 
 async function scratch(roots: string[]): Promise<string> {
@@ -342,7 +330,7 @@ function load(root: string, expected: AcpSessionProjection): Promise<AcpSessionP
   return loadAcpSessionProjection({
     stateDirectory: root,
     agentSessionId: expected.agentSessionId,
-    bindingFingerprint: expected.binding,
+    binding: expected.binding,
   });
 }
 

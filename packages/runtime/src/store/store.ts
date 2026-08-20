@@ -1912,11 +1912,11 @@ class SqliteRuntimeStore implements RuntimeStore {
   writeHookJournal(entry: HookJournalEntry): void {
     this.db.prepare(`
       INSERT INTO hook_journal (
-        run_id, event_sequence, trigger_order, event, source, source_path, handler_id, definition_hash,
+        run_id, event_sequence, trigger_order, event, source, source_path, handler_id,
         node_key, status, exit_code, stdout, stderr, duration_ms, error, triggered_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(run_id, event_sequence, definition_hash) DO NOTHING
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id, event_sequence, trigger_order) DO NOTHING
     `).run(
       entry.runId,
       entry.eventSequence,
@@ -1925,7 +1925,6 @@ class SqliteRuntimeStore implements RuntimeStore {
       entry.source,
       entry.sourcePath,
       entry.handlerId,
-      entry.definitionHash,
       entry.nodeKey ?? null,
       entry.status,
       entry.exitCode ?? null,

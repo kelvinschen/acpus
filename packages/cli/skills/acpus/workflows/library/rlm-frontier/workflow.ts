@@ -114,13 +114,13 @@ export default defineWorkflow({
           branchLimit: FOLLOW_UP_LIMIT,
         },
         exec: async ({ input, artifact }) => {
-          const { createHash } = await import("node:crypto");
           const normalize = (value: string) => value.normalize("NFKC").trim().replace(/\s+/gu, " ");
           const seen = new Set(input.visited.map(normalize));
           const candidateKeys = new Set<string>();
           const candidates: WorkItem[] = [];
           const rejectedFollowups: Array<{ task: string; reason: string }> = [];
           const reports = input.outcomes.map(outcome => {
+            let acceptedFollowupIndex = 0;
             const followups = outcome.investigation.followups.slice(0, input.branchLimit);
             for (const followup of outcome.investigation.followups.slice(input.branchLimit)) {
               rejectedFollowups.push({ task: followup, reason: "branch-limit" });
@@ -132,8 +132,9 @@ export default defineWorkflow({
                 continue;
               }
               candidateKeys.add(key);
+              acceptedFollowupIndex += 1;
               candidates.push({
-                id: createHash("sha256").update(`${outcome.item.id}\0${key}`).digest("hex").slice(0, 12),
+                id: `${outcome.item.id}.${acceptedFollowupIndex}`,
                 parentId: outcome.item.id,
                 depth: outcome.item.depth + 1,
                 task: key,

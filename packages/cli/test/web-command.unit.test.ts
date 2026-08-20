@@ -188,11 +188,10 @@ async function waitForSignalListeners(baseline: ReturnType<typeof signalListener
 function runtimeAuthority() {
   return {
     workspaceKey: "workspace-key",
-    runtimeAbi: 1,
+    runtimeAbi: 4,
     layoutVersion: 2,
-    storageVersion: 10,
+    storageVersion: 17,
     authorityId: "authority-a",
-    storeBinding: `sha256:${"a".repeat(64)}`,
     leaseGeneration: 1,
   };
 }

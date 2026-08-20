@@ -496,11 +496,10 @@ describe("daemon socket server", () => {
     });
     const mismatches = [
       { ...current, workspaceKey: "c".repeat(32) },
-      { ...current, runtimeAbi: 4 },
+      { ...current, runtimeAbi: 5 },
       { ...current, layoutVersion: 3 },
-      { ...current, storageVersion: 17 },
+      { ...current, storageVersion: 18 },
       { ...current, authorityId: "00000000-0000-4000-8000-000000000002" },
-      { ...current, storeBinding: `sha256:${"c".repeat(64)}` },
       { ...current, leaseGeneration: 2 },
     ];
     try {
@@ -706,13 +705,13 @@ describe("daemon socket server", () => {
       ok: true,
       result: {
         ...daemonStatus(),
-        authority: { ...runtimeAuthority(), runtimeAbi: 4 },
+        authority: { ...runtimeAuthority(), runtimeAbi: 5 },
       },
     });
     try {
       await expect(requestDaemonStatusProbe(futureAbiWorkspace)).resolves.toEqual(ok({
         kind: "unknown",
-        protocolVersion: 8,
+        protocolVersion: 9,
       }));
     } finally {
       await closeRawResponseServer(futureAbiServer);
@@ -984,11 +983,10 @@ function runDetails(): RunDetails {
 function runtimeAuthority(): RuntimeAuthorityIdentity {
   return {
     workspaceKey: "a".repeat(32),
-    runtimeAbi: 3,
+    runtimeAbi: 4,
     layoutVersion: 2,
-    storageVersion: 16,
+    storageVersion: 17,
     authorityId: "00000000-0000-4000-8000-000000000001",
-    storeBinding: `sha256:${"b".repeat(64)}`,
     leaseGeneration: 1,
   };
 }
@@ -998,7 +996,7 @@ function daemonStatus() {
     status: "ok" as const,
     pid: process.pid,
     leaseGeneration: 1,
-    protocolVersion: 8 as const,
+    protocolVersion: 9 as const,
     packageVersion: "test",
     authority: runtimeAuthority(),
   };

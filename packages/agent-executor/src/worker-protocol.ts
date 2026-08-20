@@ -1,7 +1,7 @@
-import type { AcpError, AcpEvent, AcpTurnResult, AgentSessionBindingFingerprintV1 } from "@acpus/acp";
+import type { AcpError, AcpEvent, AcpTurnResult } from "@acpus/acp";
 import type { AcpAgentLaunch, AgentPermissionMode, ProcessCapsuleError } from "./types.js";
 
-export const ACP_WORKER_PROTOCOL_VERSION = 9;
+export const ACP_WORKER_PROTOCOL_VERSION = 10;
 
 type CapsuleIdentity = Readonly<{ hostId: string; sessionLeaseId: string }>;
 
@@ -16,25 +16,24 @@ type ProcessCapsuleOpenInput = CapsuleIdentity & Readonly<{
   env: Readonly<Record<string, string>>;
   permissionMode: AgentPermissionMode;
   configuration: Readonly<{ model?: string; options: Readonly<Record<string, string>> }>;
-  bindingFingerprint: AgentSessionBindingFingerprintV1;
 }>;
 
 export type AcpWorkerParentMessage =
   | Readonly<{
       type: "open";
-      protocolVersion: 9;
+      protocolVersion: 10;
       input: ProcessCapsuleOpenInput;
     }>
-  | (CapsuleIdentity & Readonly<{ type: "run"; protocolVersion: 9; turnId: string; prompt: string }>)
+  | (CapsuleIdentity & Readonly<{ type: "run"; protocolVersion: 10; turnId: string; prompt: string }>)
   | (CapsuleIdentity & Readonly<{
       type: "cancel";
-      protocolVersion: 9;
+      protocolVersion: 10;
       turnId: string;
       reason: "operator" | "pause" | "lease_lost" | "steer" | "event_sink" | "deadline" | "inactivity";
     }>)
   | (CapsuleIdentity & Readonly<{
       type: "close";
-      protocolVersion: 9;
+      protocolVersion: 10;
       reason: "lease_settled" | "open_failed" | "neutralize" | "shutdown";
     }>);
 
@@ -46,16 +45,15 @@ export type ProcessCapsuleTerminal =
 export type AcpWorkerChildMessage =
   | (CapsuleIdentity & Readonly<{
       type: "ready";
-      protocolVersion: 9;
+      protocolVersion: 10;
       projectionRef: string;
-      bindingFingerprint: AgentSessionBindingFingerprintV1;
       reportedVersion?: string;
     }>)
-  | (CapsuleIdentity & Readonly<{ type: "event"; protocolVersion: 9; turnId: string; event: AcpEvent }>)
-  | (CapsuleIdentity & Readonly<{ type: "terminal"; protocolVersion: 9; turnId: string; terminal: ProcessCapsuleTerminal }>)
-  | (CapsuleIdentity & Readonly<{ type: "open_failed"; protocolVersion: 9; error: AcpError }>)
-  | (CapsuleIdentity & Readonly<{ type: "failed"; protocolVersion: 9; error: ProcessCapsuleError }>)
-  | (CapsuleIdentity & Readonly<{ type: "closed"; protocolVersion: 9 }>);
+  | (CapsuleIdentity & Readonly<{ type: "event"; protocolVersion: 10; turnId: string; event: AcpEvent }>)
+  | (CapsuleIdentity & Readonly<{ type: "terminal"; protocolVersion: 10; turnId: string; terminal: ProcessCapsuleTerminal }>)
+  | (CapsuleIdentity & Readonly<{ type: "open_failed"; protocolVersion: 10; error: AcpError }>)
+  | (CapsuleIdentity & Readonly<{ type: "failed"; protocolVersion: 10; error: ProcessCapsuleError }>)
+  | (CapsuleIdentity & Readonly<{ type: "closed"; protocolVersion: 10 }>);
 
 export function isAcpWorkerParentMessage(value: unknown): value is AcpWorkerParentMessage {
   if (!record(value) || value.protocolVersion !== ACP_WORKER_PROTOCOL_VERSION) return false;
@@ -83,11 +81,10 @@ export function isAcpWorkerChildMessage(value: unknown): value is AcpWorkerChild
   if (value.type === "ready") {
     return exactKeys(
       value,
-      ["type", "protocolVersion", "hostId", "sessionLeaseId", "projectionRef", "bindingFingerprint"],
+      ["type", "protocolVersion", "hostId", "sessionLeaseId", "projectionRef"],
       ["reportedVersion"],
     )
       && string(value.projectionRef)
-      && bindingFingerprint(value.bindingFingerprint)
       && (value.reportedVersion === undefined || boundedString(value.reportedVersion, 256));
   }
   if (value.type === "event") {
@@ -194,19 +191,12 @@ function capsuleError(value: unknown): value is ProcessCapsuleError {
     && ["worker_spawn_failed", "worker_exit", "ipc_closed", "ipc_protocol", "worker_exception"].includes(String(value.code)) && string(value.message);
 }
 
-function bindingFingerprint(value: unknown): value is AgentSessionBindingFingerprintV1 {
-  return record(value) && exactKeys(value, ["version", "digest", "components"])
-    && value.version === 1 && sha256(value.digest) && record(value.components)
-    && exactKeys(value.components, ["launch", "cwd", "model", "options"])
-    && Object.values(value.components).every(sha256);
-}
-
 function openInput(value: unknown): value is ProcessCapsuleOpenInput {
   return record(value)
     && exactKeys(value, [
       "hostId", "sessionLeaseId", "runId", "attemptId", "agentSessionId",
       "sessionOpenMode", "sessionStateDirectory", "resolvedLaunch", "cwd", "env",
-      "permissionMode", "configuration", "bindingFingerprint",
+      "permissionMode", "configuration",
     ])
     && identity(value)
     && string(value.runId)
@@ -218,8 +208,7 @@ function openInput(value: unknown): value is ProcessCapsuleOpenInput {
     && string(value.cwd)
     && stringRecord(value.env)
     && permission(value.permissionMode)
-    && configuration(value.configuration)
-    && bindingFingerprint(value.bindingFingerprint);
+    && configuration(value.configuration);
 }
 
 function acpOperation(value: unknown): boolean {
@@ -231,8 +220,6 @@ function acpOperation(value: unknown): boolean {
     "terminal/release",
   ].includes(String(value));
 }
-
-function sha256(value: unknown): boolean { return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value); }
 
 function identity(value: Record<string, unknown>): boolean { return string(value.hostId) && string(value.sessionLeaseId); }
 function configuration(value: unknown): boolean { return record(value) && exactKeys(value, ["options"], ["model"]) && optionalString(value.model) && stringRecord(value.options); }

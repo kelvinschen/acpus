@@ -4,8 +4,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projects = [
-  { name: "integration", args: ["--project", "integration", "--maxConcurrency=3"], maxWorkers: "47%" },
-  { name: "unit", args: ["--project", "unit"], maxWorkers: "28%" },
+  { name: "integration", args: ["--project", "integration", "--maxConcurrency=1"], maxWorkers: "40%" },
+  { name: "unit", args: ["--project", "unit"], maxWorkers: "27%" },
   { name: "contract+type", args: ["--project", "contract", "--project", "type-contract"], maxWorkers: "12%" },
   { name: "e2e+regression", args: ["--project", "e2e", "--project", "regression"], maxWorkers: "3%" },
 ];

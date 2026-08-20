@@ -150,7 +150,6 @@ function hook(event: LoadedHookConfig["event"], commandText: string, match?: Loa
     source: "project",
     sourcePath: "/workspace/.acpus/hooks.json",
     definitionIndex: 0,
-    definitionHash: `${id}-hash`,
     effectiveId: id,
     id,
     ...(match === undefined ? {} : { match }),

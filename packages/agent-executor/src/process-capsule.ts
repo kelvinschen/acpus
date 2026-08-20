@@ -3,7 +3,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { AcpError, AgentSessionBindingFingerprintV1 } from "@acpus/acp";
+import type { AcpError } from "@acpus/acp";
 import { err, ok, type Result } from "neverthrow";
 import { finishAcpOwnership, writeAcpOwnershipManifest } from "./ownership.js";
 import type { NormalizedRuntimeOwnerIdentity } from "./owner.js";
@@ -47,7 +47,6 @@ export type ProcessCapsuleOpenInput = Readonly<{
   session: AgentSessionIntent;
   sessionLeaseId: string;
   resolvedLaunch: AcpAgentLaunch;
-  bindingFingerprint: AgentSessionBindingFingerprintV1;
 }>;
 
 export type ProcessCapsuleOpenFailure =
@@ -62,7 +61,7 @@ type ProcessCapsuleTurnInput<E> = Readonly<{
   deadlineAt?: string;
   inactivityFailAfterMs?: number;
   onEvent: (event: AgentTurnEvent) => Result<void, E>;
-}>; 
+}>;
 
 export type ProcessCapsuleTurnSettlement<E> = Readonly<{
   snapshot: AgentTurnSnapshot;
@@ -79,7 +78,6 @@ export type ProcessCapsule = Readonly<{
   agentSessionId: string;
   sessionLeaseId: string;
   projectionRef: string;
-  bindingFingerprint: AgentSessionBindingFingerprintV1;
   reportedVersion?: string;
   runTurn<E>(input: ProcessCapsuleTurnInput<E>): Promise<ProcessCapsuleTurnSettlement<E>>;
   close(
@@ -121,7 +119,6 @@ type CapsuleState = {
   manifestError?: ProcessCapsuleError;
   phase: CapsulePhase;
   projectionRef?: string;
-  bindingFingerprint?: AgentSessionBindingFingerprintV1;
   reportedVersion?: string;
   openFailure?: ProcessCapsuleOpenFailure;
   ready: Promise<void>;
@@ -202,7 +199,6 @@ export async function openProcessCapsule(
           env: definedEnvironment(input.session.env),
           permissionMode: input.session.permissionMode,
           configuration: input.session.configuration,
-          bindingFingerprint: input.bindingFingerprint,
         },
       });
       await withTimeout(state.ready, openTimeout(input.attempt.deadlineAt), "ACP capsule did not become ready in time.");
@@ -213,7 +209,7 @@ export async function openProcessCapsule(
       await closeCapsule(state, "open_failed");
       return err(state.openFailure);
     }
-    if (!state.projectionRef || !state.bindingFingerprint) {
+    if (!state.projectionRef) {
       const failure = { type: "capsule_open_failed" as const, error: capsuleError("opening", "ipc_protocol", "ACP capsule became ready without a projection reference.") };
       await closeCapsule(state, "open_failed");
       return err(failure);
@@ -287,17 +283,12 @@ function onChildMessage(state: CapsuleState, value: unknown): void {
   }
   const message = value as AcpWorkerChildMessage;
   if (message.type === "ready") {
-    if (JSON.stringify(message.bindingFingerprint) !== JSON.stringify(state.input.bindingFingerprint)) {
-      faultCapsule(state, capsuleError("opening", "ipc_protocol", "ACP capsule returned a different Session binding fingerprint."));
-      return;
-    }
     if (state.phase !== "opening") {
       faultCapsule(state, capsuleError(phaseForError(state), "ipc_protocol", "ACP capsule reported readiness out of order."));
       return;
     }
     state.phase = "ready";
     state.projectionRef = message.projectionRef;
-    state.bindingFingerprint = message.bindingFingerprint;
     if (message.reportedVersion !== undefined) state.reportedVersion = message.reportedVersion;
     void updateManifestPhase(state, { phase: "ready" })
       .then(() => state.settleReady())
@@ -366,7 +357,6 @@ function publicCapsule(state: CapsuleState): ProcessCapsule {
     agentSessionId: state.input.session.agentSessionId,
     sessionLeaseId: state.input.sessionLeaseId,
     projectionRef: state.projectionRef!,
-    bindingFingerprint: state.bindingFingerprint!,
     ...(state.reportedVersion === undefined ? {} : { reportedVersion: state.reportedVersion }),
     runTurn: input => runCapsuleTurn(state, input),
     close: reason => closeCapsule(state, reason),

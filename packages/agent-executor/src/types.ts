@@ -1,4 +1,4 @@
-import type { AcpError, AcpEvent, AcpLaunch, AcpTurnResult, AgentSessionBindingFingerprintV1 } from "@acpus/acp";
+import type { AcpError, AcpEvent, AcpLaunch, AcpTurnResult } from "@acpus/acp";
 import type { Result, ResultAsync } from "neverthrow";
 import type { AcpAgentResolutionFailure } from "./agent-resolution.js";
 
@@ -200,7 +200,6 @@ export type AgentSessionLease = Readonly<{
   agentSessionId: string;
   sessionLeaseId: string;
   projectionRef: string;
-  bindingFingerprint: AgentSessionBindingFingerprintV1;
   reportedVersion?: string;
   runTurn<E>(input: TurnInput<E>): ResultAsync<AgentTurnOutcome, AgentTurnFailure<E>>;
 }>;
@@ -229,12 +228,6 @@ export type AgentSessionAcquireError =
       type: "session_quarantined";
       agentSessionId: string;
       evidence: SessionOwnershipEvidence;
-      message: string;
-    }>
-  | Readonly<{
-      type: "session_binding_resolution_failed";
-      agentSessionId: string;
-      category: "cwd" | "canonicalization";
       message: string;
     }>
   | Readonly<{

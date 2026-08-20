@@ -1,10 +1,8 @@
-import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { err, ok, type Result } from "neverthrow";
-import { stableJson } from "../stable-json.js";
-import { hookEvents, validateHooksFile, type HookConfig, type HooksFile, type HookSource, type HookValidationError, type LoadedHookConfig } from "./config.js";
+import { hookEvents, validateHooksFile, type HooksFile, type HookSource, type HookValidationError, type LoadedHookConfig } from "./config.js";
 
 export type HookConfigScope = {
   source: HookSource;
@@ -54,15 +52,13 @@ function flattenHooksFile(file: HooksFile, source: HookSource, sourcePath: strin
   for (const event of hookEvents) {
     const entries = file[event] ?? [];
     for (const [definitionIndex, entry] of entries.entries()) {
-      const definitionHash = hashDefinition(source, sourcePath, event, definitionIndex, entry);
       hooks.push({
         ...entry,
         event,
         source,
         sourcePath,
         definitionIndex,
-        definitionHash,
-        effectiveId: entry.id ?? `${source}:${event}:${definitionIndex}:${definitionHash.slice(0, 12)}`,
+        effectiveId: entry.id ?? `${source}:${event}:${definitionIndex}`,
       });
     }
   }
@@ -88,12 +84,6 @@ async function loadScope(source: HookSource, path: string): Promise<Result<HookC
   const validated = validateHooksFile(parsed);
   if (validated.isErr()) return err({ type: "invalid-config", source, path, errors: validated.error });
   return ok({ source, path, hooks: flattenHooksFile(validated.value, source, path) });
-}
-
-function hashDefinition(source: HookSource, sourcePath: string, event: string, definitionIndex: number, config: HookConfig): string {
-  return createHash("sha256")
-    .update(stableJson({ source, sourcePath, event, definitionIndex, config }))
-    .digest("hex");
 }
 
 function isNotFound(error: unknown): boolean {

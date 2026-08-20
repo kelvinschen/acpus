@@ -201,13 +201,7 @@ export function initializeRuntimeSchema(db: DatabaseSync): void {
       scope_digest TEXT NOT NULL,
       generation INTEGER NOT NULL CHECK (generation >= 1),
       explicit_shared INTEGER NOT NULL CHECK (explicit_shared IN (0, 1)),
-      binding_digest TEXT CHECK (
-        binding_digest IS NULL OR (
-          length(binding_digest) = 71
-          AND substr(binding_digest, 1, 7) = 'sha256:'
-          AND substr(binding_digest, 8) NOT GLOB '*[^0-9a-f]*'
-        )
-      ),
+      ready_at TEXT,
       reported_version TEXT CHECK (
         reported_version IS NULL OR length(reported_version) BETWEEN 1 AND 256
       ),
@@ -414,7 +408,6 @@ export function initializeRuntimeSchema(db: DatabaseSync): void {
       source TEXT NOT NULL,
       source_path TEXT NOT NULL,
       handler_id TEXT NOT NULL,
-      definition_hash TEXT NOT NULL,
       node_key TEXT,
       status TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'timed_out')),
       exit_code INTEGER,
@@ -450,8 +443,8 @@ export function initializeRuntimeSchema(db: DatabaseSync): void {
       ON agent_observation_entries(run_id, attempt_id, observed_at, entry_id);
     CREATE INDEX IF NOT EXISTS idx_hook_journal_run_id ON hook_journal(run_id);
     CREATE INDEX IF NOT EXISTS idx_hook_journal_triggered_at ON hook_journal(triggered_at);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_hook_journal_event_handler
-      ON hook_journal(run_id, event_sequence, definition_hash);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_hook_journal_event_order
+      ON hook_journal(run_id, event_sequence, trigger_order);
 
     CREATE TABLE IF NOT EXISTS artifacts (
       id TEXT PRIMARY KEY,

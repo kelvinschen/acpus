@@ -30,6 +30,7 @@ import {
   ClientOperationIssue,
   createReverseRpcHandlers,
 } from "./reverse-rpc.js";
+import { resolveAgentSessionBinding } from "./session-binding.js";
 import type {
   AcpError,
   AcpEvent,
@@ -101,12 +102,28 @@ async function open(input: OpenAcpSessionInput): Promise<AcpSession> {
     committed: false,
   };
   throwIfOpenCancelled(control);
+  let binding: Awaited<ReturnType<typeof resolveAgentSessionBinding>>;
+  try {
+    binding = await resolveAgentSessionBinding({
+      launch: input.launch,
+      cwd: input.cwd,
+      configuration: input.configuration,
+    });
+  } catch {
+    throw failure(
+      "invalid_input",
+      "open_session",
+      "Agent Session cwd could not be resolved.",
+      false,
+      { code: "cwd" },
+    );
+  }
   let saved: AcpSessionProjection | undefined;
   try {
     saved = await loadAcpSessionProjection({
       stateDirectory: input.stateDirectory,
       agentSessionId: input.agentSessionId,
-      bindingFingerprint: input.bindingFingerprint,
+      binding,
     });
     validateSessionOpenMode(input, saved);
     throwIfOpenCancelled(control);
@@ -130,6 +147,7 @@ async function open(input: OpenAcpSessionInput): Promise<AcpSession> {
     throwIfOpenCancelled(control);
     return await openSpawned(
       input,
+      binding,
       saved,
       child,
       monitor,
@@ -182,6 +200,7 @@ function validateSessionOpenMode(
 
 async function openSpawned(
   input: OpenAcpSessionInput,
+  binding: Awaited<ReturnType<typeof resolveAgentSessionBinding>>,
   saved: AcpSessionProjection | undefined,
   child: ChildProcessWithoutNullStreams,
   monitor: ProcessMonitor,
@@ -360,9 +379,9 @@ async function openSpawned(
   const now = new Date().toISOString();
   projection.value = {
     ...(saved ?? {
-      schema: "acpus.acp-session.v2",
+      schema: "acpus.acp-session.v3",
       agentSessionId: input.agentSessionId,
-      binding: input.bindingFingerprint,
+      binding,
       backend: { sessionId, capabilities },
       conversation: [],
       createdAt: now,
@@ -561,7 +580,6 @@ function validateOpenInput(input: OpenAcpSessionInput): AcpError | undefined {
   if (input.sessionOpenMode !== "new_or_empty" && input.sessionOpenMode !== "existing_required") {
     return failure("invalid_input", "open_session", "sessionOpenMode is invalid.", false);
   }
-  if (!bindingFingerprint(input.bindingFingerprint)) return failure("invalid_input", "open_session", "bindingFingerprint is invalid.", false);
   if (!effectiveConfiguration(input.configuration)) return failure("invalid_input", "open_session", "configuration is invalid.", false);
   if (typeof input.stateDirectory !== "string") return failure("invalid_input", "open_session", "stateDirectory must be a string.", false);
   if (!input.stateDirectory.trim()) return failure("invalid_input", "open_session", "stateDirectory must be non-empty.", false);
@@ -1079,16 +1097,6 @@ function jsonValue(value: unknown, depth = 0): AcpJsonValue {
   ));
 }
 
-function bindingFingerprint(value: unknown): value is OpenAcpSessionInput["bindingFingerprint"] {
-  if (!record(value) || !record(value.components)) return false;
-  const components = value.components;
-  return exactKeys(value, ["version", "digest", "components"])
-    && value.version === 1
-    && sha256(value.digest)
-    && exactKeys(components, ["launch", "cwd", "model", "options"])
-    && ["launch", "cwd", "model", "options"].every(key => sha256(components[key]));
-}
-
 function effectiveConfiguration(value: unknown): value is OpenAcpSessionInput["configuration"] {
   return record(value)
     && exactKeys(value, ["model", "options"])
@@ -1100,10 +1108,6 @@ function effectiveConfiguration(value: unknown): value is OpenAcpSessionInput["c
 function exactKeys(value: Record<string, unknown>, required: readonly string[]): boolean {
   return Object.keys(value).length === required.length
     && required.every(key => Object.hasOwn(value, key));
-}
-
-function sha256(value: unknown): value is `sha256:${string}` {
-  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
 }
 
 function toAcpError(operation: AcpOperation): (error: unknown) => AcpError {

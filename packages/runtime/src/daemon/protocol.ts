@@ -19,7 +19,7 @@ import {
 
 export type { RuntimeAuthorityIdentity };
 
-export const DAEMON_PROTOCOL_VERSION = 8;
+export const DAEMON_PROTOCOL_VERSION = 9;
 
 export type DaemonStatus = {
   status: "ok";
@@ -477,14 +477,13 @@ function isObservableInspectionViewQuery(value: unknown): value is ObservableIns
 
 function isRuntimeAuthorityWireIdentity(value: unknown): value is RuntimeAuthorityIdentity {
   return isPlainRecord(value)
-    && hasExactKeys(value, ["workspaceKey", "runtimeAbi", "layoutVersion", "storageVersion", "authorityId", "storeBinding", "leaseGeneration"])
+    && hasExactKeys(value, ["workspaceKey", "runtimeAbi", "layoutVersion", "storageVersion", "authorityId", "leaseGeneration"])
     && typeof value.workspaceKey === "string" && /^[a-f0-9]{32}$/.test(value.workspaceKey)
     && Number.isInteger(value.runtimeAbi) && Number(value.runtimeAbi) > 0
     && Number.isInteger(value.layoutVersion) && Number(value.layoutVersion) > 0
     && Number.isInteger(value.storageVersion) && Number(value.storageVersion) > 0
     && typeof value.authorityId === "string"
     && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.authorityId)
-    && typeof value.storeBinding === "string" && /^sha256:[a-f0-9]{64}$/.test(value.storeBinding)
     && Number.isInteger(value.leaseGeneration) && Number(value.leaseGeneration) > 0;
 }
 
@@ -610,10 +609,8 @@ function isAgentSessionInspection(value: unknown): boolean {
     || !isNonNegativeInteger(value.generation)) return false;
   return hasExactKeys(value, [
       "scope", "agentSessionId", "generation", "lifecycle", "currentBinding", "checkpoint",
-    ], ["ownershipHealth", "bindingDigest", "reportedVersion"])
+    ], ["ownershipHealth", "reportedVersion"])
     && isNonBlankString(value.agentSessionId)
-    && (value.bindingDigest === undefined
-      || typeof value.bindingDigest === "string" && /^sha256:[0-9a-f]{64}$/u.test(value.bindingDigest))
     && (value.reportedVersion === undefined
       || isNonBlankString(value.reportedVersion) && value.reportedVersion.length <= 256)
     && isStringEnum(value.lifecycle, ["active", "abandoned"])

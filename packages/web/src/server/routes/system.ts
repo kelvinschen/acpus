@@ -42,7 +42,7 @@ export function registerSystemRoutes(app: Hono, options: SystemRouteOptions): vo
   app.get("/api/config", (context) => {
     const config = {
       cwd: options.cwd,
-      access: options.access?.tokenHash !== undefined ? "token" : "open",
+      access: options.access?.token !== undefined ? "token" : "open",
     } satisfies ServerConfig;
     return context.json({ ok: true, config });
   });

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { sha256Digest } from "@acpus/core/content-identity";
 import type { AgentNodeIR } from "@acpus/core/ir";
 import { err, ok, type Result } from "neverthrow";
@@ -15,7 +14,6 @@ export type AgentSessionIdentity = {
 
 const SESSION_GROUP_DOMAIN = "acpus:session-group:v1\0";
 const SESSION_SCOPE_DOMAIN = "acpus:agent-session-scope:v1\0";
-const SESSION_ID_DOMAIN = "acpus:agent-session:v2\0";
 
 export function resolveAgentSessionIdentity(
   node: AgentNodeIR,
@@ -34,7 +32,7 @@ export function resolveAgentSessionIdentity(
     explicitSessionKey.value ?? nodeKey,
   );
   return ok({
-    agentSessionId: agentSessionIdForScope(canonicalRunId, scopeDigest, generation),
+    agentSessionId: agentSessionIdForScope(scopeDigest, generation),
     scopeDigest,
     generation,
     explicitShared: explicitSessionKey.value !== undefined,
@@ -51,18 +49,11 @@ export function agentSessionScopeDigest(
 }
 
 export function agentSessionIdForScope(
-  runId: string,
   scopeDigest: ReturnType<typeof sha256Digest>,
   generation: number,
 ): string {
   if (!Number.isInteger(generation) || generation < 1) throw new TypeError("Agent Session generation must be a positive integer.");
-  const sessionIdentity = { runId, scopeDigest, generation };
-  const digest = createHash("sha256")
-    .update(`${SESSION_ID_DOMAIN}${JSON.stringify(sessionIdentity)}`)
-    .digest()
-    .subarray(0, 16)
-    .toString("base64url");
-  return `acpus-${digest}`;
+  return `acpus-${scopeDigest.slice("sha256:".length)}-g${generation}`;
 }
 
 export function resolveAgentSessionGroupDigest(

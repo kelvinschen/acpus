@@ -37,8 +37,8 @@ import {
   sendDaemonSubmitAndObserve,
 } from "../src/daemon/client.js";
 
-const authorityA = authority("authority-a", 7, "a");
-const authorityB = authority("authority-b", 8, "b");
+const authorityA = authority("authority-a", 7);
+const authorityB = authority("authority-b", 8);
 
 describe("CLI Runtime authority client", () => {
   beforeEach(() => {
@@ -472,14 +472,13 @@ describe("CLI Runtime authority client", () => {
   });
 });
 
-function authority(authorityId: string, leaseGeneration: number, digestChar: string) {
+function authority(authorityId: string, leaseGeneration: number) {
   return {
     workspaceKey: "workspace-key",
-    runtimeAbi: 1 as const,
+    runtimeAbi: 4 as const,
     layoutVersion: 2 as const,
-    storageVersion: 10 as const,
+    storageVersion: 17 as const,
     authorityId,
-    storeBinding: `sha256:${digestChar.repeat(64)}` as const,
     leaseGeneration,
   };
 }
@@ -491,7 +490,7 @@ function currentProbe(identity: ReturnType<typeof authority>) {
       status: "ok" as const,
       pid: 42,
       leaseGeneration: identity.leaseGeneration,
-      protocolVersion: 4 as const,
+      protocolVersion: 9 as const,
       packageVersion: "0.13.3",
       authority: identity,
     },

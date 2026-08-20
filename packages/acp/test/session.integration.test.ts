@@ -7,8 +7,8 @@ import {
   openAcpSession,
   type AcpError,
   type AcpEvent,
+  type AcpLaunch,
   type AcpSession,
-  type AgentSessionBindingFingerprintV1,
   type OpenAcpSessionInput,
 } from "@acpus/acp";
 import type { Result } from "neverthrow";
@@ -150,8 +150,17 @@ describe("@acpus/acp session process integration", () => {
 
     const projection = await readProjection(fixture, session);
     expect(projection).toMatchObject({
-      schema: "acpus.acp-session.v2",
+      schema: "acpus.acp-session.v3",
       agentSessionId: "record/semantic",
+      binding: {
+        launch: {
+          kind: "argv",
+          argv: [process.execPath, agentFixture, "--session-id=argv session with spaces"],
+        },
+        cwd: fixture.cwd,
+        model: null,
+        options: { alpha: "first-explicit" },
+      },
       backend: {
         sessionId: "argv session with spaces",
         capabilities: { resume: false, load: false },
@@ -198,6 +207,9 @@ describe("@acpus/acp session process integration", () => {
       },
     });
     expect(projection).not.toHaveProperty("environment");
+    expect(projection).not.toHaveProperty("permissionMode");
+    expect(projection).not.toHaveProperty("reportedVersion");
+    expect((projection.binding as JsonRecord).launch).not.toHaveProperty("name");
 
     const requests = await requestLog(fixture.logPath);
     expect(methods(requests)).toEqual([
@@ -278,7 +290,6 @@ describe("@acpus/acp session process integration", () => {
     const fixture = await createFixture();
     const first = await openSession(fixture, { recordId: "binding-mismatch" });
     await closeTracked(first);
-    const expected = fixtureBinding();
     const logPath = join(fixture.root, "binding-mismatch.ndjson");
     const pidPath = join(fixture.root, "binding-mismatch.pid");
 
@@ -286,11 +297,7 @@ describe("@acpus/acp session process integration", () => {
       recordId: "binding-mismatch",
       logPath,
       env: { ACP_FIXTURE_PID_PATH: pidPath },
-      bindingFingerprint: {
-        ...expected,
-        digest: `sha256:${"5".repeat(64)}`,
-        components: { ...expected.components, launch: `sha256:${"6".repeat(64)}` },
-      },
+      launch: { kind: "command", command: "provider-must-not-start" },
     }));
 
     expect(errorOf(reopened)).toMatchObject({
@@ -849,7 +856,7 @@ function inputFor(
     env?: NodeJS.ProcessEnv;
     permissionMode?: OpenAcpSessionInput["permissionMode"];
     configuration?: OpenAcpSessionInput["configuration"];
-    bindingFingerprint?: AgentSessionBindingFingerprintV1;
+    launch?: AcpLaunch;
     sessionOpenMode?: OpenAcpSessionInput["sessionOpenMode"];
     signal?: AbortSignal;
   },
@@ -861,10 +868,9 @@ function inputFor(
   ] as [string, ...string[]];
   return {
     agentSessionId: options.recordId,
-    bindingFingerprint: options.bindingFingerprint ?? fixtureBinding(),
     sessionOpenMode: options.sessionOpenMode ?? "new_or_empty",
     stateDirectory: fixture.stateDirectory,
-    launch: { kind: "argv", argv, name: "integration-fixture" },
+    launch: options.launch ?? { kind: "argv", argv, name: "integration-fixture" },
     cwd: fixture.cwd,
     env: {
       ACP_FIXTURE_LOG_PATH: options.logPath ?? fixture.logPath,
@@ -877,19 +883,6 @@ function inputFor(
     permissionMode: options.permissionMode ?? "deny-all",
     configuration: options.configuration ?? { model: null, options: {} },
     ...(options.signal === undefined ? {} : { signal: options.signal }),
-  };
-}
-
-function fixtureBinding(): AgentSessionBindingFingerprintV1 {
-  return {
-    version: 1,
-    digest: `sha256:${"0".repeat(64)}`,
-    components: {
-      launch: `sha256:${"1".repeat(64)}`,
-      cwd: `sha256:${"2".repeat(64)}`,
-      model: `sha256:${"3".repeat(64)}`,
-      options: `sha256:${"4".repeat(64)}`,
-    },
   };
 }
 

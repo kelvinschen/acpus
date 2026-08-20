@@ -19,33 +19,10 @@ export type AcpSessionConfiguration = Readonly<{
   options?: Readonly<Record<string, string>>;
 }>;
 
-export type Sha256Digest = `sha256:${string}`;
 export type AgentSessionBindingCategory = "launch" | "cwd" | "model" | "options";
-export type CanonicalAgentSessionBindingV1 = Readonly<{
-  version: 1;
-  launch:
-    | Readonly<{ kind: "argv"; argv: readonly [string, ...string[]] }>
-    | Readonly<{ kind: "command"; command: string }>;
-  cwd: string;
-  configuration: Readonly<{
-    model: string | null;
-    options: Readonly<Record<string, string>>;
-  }>;
-}>;
-export type AgentSessionBindingFingerprintV1 = Readonly<{
-  version: 1;
-  digest: Sha256Digest;
-  components: Readonly<Record<AgentSessionBindingCategory, Sha256Digest>>;
-}>;
-export type FingerprintAgentSessionBindingInput = Readonly<{
-  launch: AcpLaunch;
-  cwd: string;
-  configuration: Readonly<{ model: string | null; options: Readonly<Record<string, string>> }>;
-}>;
 
 export type OpenAcpSessionInput = Readonly<{
   agentSessionId: string;
-  bindingFingerprint: AgentSessionBindingFingerprintV1;
   sessionOpenMode: "new_or_empty" | "existing_required";
   stateDirectory: string;
   launch: AcpLaunch;

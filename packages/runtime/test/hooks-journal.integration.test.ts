@@ -12,9 +12,9 @@ describe("hook journal store", () => {
       const store = await openRuntimeStore(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const event2 = entry(run.id, { eventSequence: 2, triggerOrder: 1, definitionHash: "hash-2", handlerId: "event-2", triggeredAt: "2026-07-04T00:00:00.000Z" });
-        const event1Second = entry(run.id, { eventSequence: 1, triggerOrder: 2, definitionHash: "hash-1b", handlerId: "event-1-second", triggeredAt: "2026-07-04T00:00:01.000Z" });
-        const event1First = entry(run.id, { eventSequence: 1, triggerOrder: 1, definitionHash: "hash-1a", handlerId: "event-1-first", triggeredAt: "2026-07-04T00:00:02.000Z", nodeKey: "require_ready" });
+        const event2 = entry(run.id, { eventSequence: 2, triggerOrder: 1, handlerId: "event-2", triggeredAt: "2026-07-04T00:00:00.000Z" });
+        const event1Second = entry(run.id, { eventSequence: 1, triggerOrder: 2, handlerId: "event-1-second", triggeredAt: "2026-07-04T00:00:01.000Z" });
+        const event1First = entry(run.id, { eventSequence: 1, triggerOrder: 1, handlerId: "event-1-first", triggeredAt: "2026-07-04T00:00:02.000Z", nodeKey: "require_ready" });
 
         store.writeHookJournal(event2);
         store.writeHookJournal(event1Second);
@@ -57,12 +57,12 @@ describe("hook journal store", () => {
       const store = await openRuntimeStore(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        store.writeHookJournal(entry(run.id, { eventSequence: 1, definitionHash: "old", triggeredAt: "2026-06-26T23:59:59.000Z" }));
-        store.writeHookJournal(entry(run.id, { eventSequence: 2, definitionHash: "kept", triggeredAt: "2026-06-27T00:00:00.000Z" }));
+        store.writeHookJournal(entry(run.id, { eventSequence: 1, handlerId: "old", triggeredAt: "2026-06-26T23:59:59.000Z" }));
+        store.writeHookJournal(entry(run.id, { eventSequence: 2, handlerId: "kept", triggeredAt: "2026-06-27T00:00:00.000Z" }));
 
         expect(store.pruneHookJournal(new Date("2026-06-27T00:00:00.000Z"))).toBe(1);
 
-        expect(store.getHookJournal(run.id)).toMatchObject([{ definitionHash: "kept" }]);
+        expect(store.getHookJournal(run.id)).toMatchObject([{ handlerId: "kept" }]);
       } finally {
         store.close();
       }
@@ -77,7 +77,7 @@ describe("hook journal store", () => {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
 
         expect(() => store.writeHookJournal(entry(run.id, { status: "running" as unknown as HookJournalEntry["status"] }))).toThrow();
-        expect(() => store.writeHookJournal(entry(run.id, { status: "dropped" as unknown as HookJournalEntry["status"], definitionHash: "dropped" }))).toThrow();
+        expect(() => store.writeHookJournal(entry(run.id, { status: "dropped" as unknown as HookJournalEntry["status"] }))).toThrow();
       } finally {
         store.close();
       }
@@ -94,7 +94,6 @@ function entry(runId: string, overrides: Partial<HookJournalEntry> = {}): HookJo
     source: "project",
     sourcePath: "/workspace/.acpus/hooks.json",
     handlerId: "notify",
-    definitionHash: "hash",
     status: "completed",
     exitCode: 0,
     stdout: "ok",

@@ -29,7 +29,6 @@ export type AgentSessionReplaySession = Readonly<{
   scopeDigest: Sha256Digest;
   generation: number;
   explicitShared: boolean;
-  bindingDigest?: Sha256Digest;
   reportedVersion?: string;
   lifecycle: "active" | "abandoned";
   checkpoint: AgentSessionCheckpointValue;

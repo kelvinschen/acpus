@@ -18,36 +18,21 @@ afterEach(async () => {
 });
 
 describe("Runtime daemon authority", () => {
-  it("changes daemon identity on restart while preserving the store binding", async () => {
+  it("uses the claimed Store owner as daemon authority", async () => {
     const workspace = await temporaryWorkspace();
     const layout = runtimeLayoutForGeneration(
       resolveRuntimeWorkspaceLayout(workspace),
       "gen_00000000-0000-4000-8000-000000000001",
     );
 
-    const first = createRuntimeAuthorityIdentity(layout, 7);
-    const second = createRuntimeAuthorityIdentity(layout, 7);
+    const first = createRuntimeAuthorityIdentity(layout, "00000000-0000-4000-8000-000000000001", 7);
+    const same = createRuntimeAuthorityIdentity(layout, "00000000-0000-4000-8000-000000000001", 7);
+    const second = createRuntimeAuthorityIdentity(layout, "00000000-0000-4000-8000-000000000002", 7);
 
-    expect(first.authorityId).not.toBe(second.authorityId);
-    expect(first.storeBinding).toBe(second.storeBinding);
-    expect(first.storeBinding).not.toContain(layout.generationId!);
+    expect(first.authorityId).toBe("00000000-0000-4000-8000-000000000001");
     expect(sameRuntimeAuthority(first, first)).toBe(true);
+    expect(sameRuntimeAuthority(first, same)).toBe(true);
     expect(sameRuntimeAuthority(first, second)).toBe(false);
-  });
-
-  it("changes the binding when the active generation changes", async () => {
-    const workspace = await temporaryWorkspace();
-    const root = resolveRuntimeWorkspaceLayout(workspace);
-    const first = createRuntimeAuthorityIdentity(runtimeLayoutForGeneration(
-      root,
-      "gen_00000000-0000-4000-8000-000000000001",
-    ), 1);
-    const second = createRuntimeAuthorityIdentity(runtimeLayoutForGeneration(
-      root,
-      "gen_00000000-0000-4000-8000-000000000002",
-    ), 1);
-
-    expect(first.storeBinding).not.toBe(second.storeBinding);
   });
 });
 

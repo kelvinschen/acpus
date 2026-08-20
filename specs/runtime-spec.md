@@ -292,13 +292,13 @@ type PruneReport = {
 - Every execution metadata record MUST identify an exact started Attempt and its active owner epoch; stale, terminal, mismatched, released, or expired ownership MUST reject without inserting metadata.
 - Overrides MUST allow only `use`, `command`, `model`, `permissionMode`, `config`, `cwd`, and `env`; an override `config` replaces the complete inherited map, including with `{}`, and identity replacement clears inherited model/config while preserving permission.
 - Agent Session scope MUST be the SHA-256 digest of the versioned canonical local identity `{ runId, kind: "node", value: nodeKey }` or explicit-shared identity `{ runId, kind: "key", value: renderedSessionKey }`; raw `sessionKey` MUST NOT appear in the durable Session id.
-- `agentSessionId` MUST be `acpus-` followed by the unpadded base64url encoding of the first 16 bytes of SHA-256 over the versioned canonical identity `{ runId, scopeDigest, generation }`.
+- `agentSessionId` MUST be `acpus-<scope-digest-hex>-g<generation>` using the complete already-computed scope digest.
 - A materialized Agent Session MUST have one durable row with lifecycle `active` or `abandoned`, one closed current checkpoint, and at most one active generation for each run and scope. Run deletion cascades those rows; Turn/Run terminal state and Runtime shutdown do not abandon continuity.
-- A current Agent Session row MUST hold a nullable immutable overall binding
-  digest. Null means the generation has never reached ready and MUST prohibit
-  invocation/dispatch. Runtime MUST write the lease fingerprint after ready and
-  before invocation; an existing value permits only exact idempotent equality.
-- The same ready write MUST replace nullable `reported_version` with the
+- A current Agent Session row MUST hold nullable `ready_at`. Null means the
+  generation has never reached ready and MUST prohibit invocation/dispatch.
+  Runtime MUST atomically record the first ready time after lease acquisition
+  and before invocation; repeated ready writes MUST preserve that first time.
+- The same ready write MUST refresh nullable `reported_version` with the
   Provider-reported version from that lease, or null when absent. This value is
   bounded observational metadata, not immutable Session identity, checkpoint
   evidence, or binding input.
@@ -310,7 +310,7 @@ type PruneReport = {
 - Retry planning or commit that encounters any affected explicit shared `sessionKey` MUST reject without Store writes and direct the operator to fork the same target.
 - Retry commit MUST NOT create a Session, Attempt, or pending generation assignment. Admission after an abandoned local generation MUST create the next generation with operation `start` and prompt origin `authored`; an Agent that failed before Session identity MUST still create generation one.
 - Scheduler replay MUST use persisted operation, checkpoint, binding, assignment, and control facts and MUST NOT reclassify historical Attempts with the current operation planner.
-- Storage version 16 is the unified Retry cutover. Retry and Steer are the only Agent-applicable external control wire variants; Continue and Restart MUST NOT be accepted as product controls, and run-level Retry MUST NOT be accepted.
+- Storage version 17 is the unified Retry and structured Session-binding cutover. Retry and Steer are the only Agent-applicable external control wire variants; Continue and Restart MUST NOT be accepted as product controls, and run-level Retry MUST NOT be accepted.
 - Runtime MUST persist an Agent session below that run's private `acp/sessions/` tree and MUST not retain an ACP worker process after its Session lease settles.
 - Runtime MUST serialize Agent execution and Retry neutralization with the Agent Executor's exact Session guard.
 - Runtime MUST NOT admit a steering replacement until the superseded executor using that session has settled.
@@ -486,8 +486,8 @@ type DaemonSteerControlResult = {
 - A steer instruction MUST contain non-whitespace text.
 - Apart from validating non-whitespace content, Runtime MUST persist a steer instruction without trimming or normalization.
 - The daemon MUST expose unary `status`, `shutdown`, and `control` methods plus streaming `submitAndObserve` over a workspace-derived Unix socket or equivalent named pipe, never an HTTP port.
-- The current daemon protocol version MUST be `8`, Runtime ABI version MUST be `3`, layout version MUST remain `2`, and storage version MUST be `16`. Package version is diagnostic metadata and MUST NOT determine compatibility.
-- Daemon status MUST expose one closed `RuntimeAuthorityIdentity` containing `workspaceKey`, `runtimeAbi`, `layoutVersion`, `storageVersion`, per-start `authorityId`, opaque `sha256:` `storeBinding`, and positive `leaseGeneration`. The binding MUST identify the workspace and active generation without exposing the generation id.
+- The current daemon protocol version MUST be `9`, Runtime ABI version MUST be `4`, layout version MUST remain `2`, and storage version MUST be `17`. Package version is diagnostic metadata and MUST NOT determine compatibility.
+- Daemon status MUST expose one closed `RuntimeAuthorityIdentity` containing `workspaceKey`, `runtimeAbi`, `layoutVersion`, `storageVersion`, the Store claim's owner UUID as `authorityId`, and positive `leaseGeneration`.
 - Unary requests and responses MUST use closed JSON shapes; responses are `{ ok: true, result }` or `{ ok: false, error: { code, message, ambiguity?: true } }`.
 - A rejected control response MUST set `ambiguity: true` only when target resolution was ambiguous, so a presentation client can replace raw candidate-key diagnostics with an occurrence-reference candidate view.
 - Prepared workflow requests MUST accept only the current workspace-or-snapshot union, lock v2, and bundle v1 shapes; Runtime MUST NOT parse protocol-v1 prepared workflow fields.
@@ -500,9 +500,8 @@ type DaemonSteerControlResult = {
 - Daemon submission clients MUST NOT impose a unilateral admission deadline because disconnecting cannot prove that a durable mutation did not commit; idempotent controls MAY retain their bounded transport timeout, and status and shutdown probes MAY retain shorter bounded transport timeouts.
 - Unary daemon clients MUST return `ResultAsync` with `rejected`, `transport`, and `protocol` failures. The submission client MUST incrementally expose `AsyncIterable<Result<DaemonRunStreamFrame, DaemonRunStreamClientFailure>>` without buffering the complete stream.
 - Successful control responses and admitted frames MUST validate the closed required `RunDetails`, `RunStatus`, execution-state, JSON-value, and control-result shapes; a control result type MUST match the requested intent, and malformed success data is a protocol failure.
-- Materialized Agent Session inspection MUST omit `bindingDigest` before ready
-  and expose only the validated overall digest after ready. It MUST NOT expose
-  component digests or raw launch/cwd/model/options; binding failures MAY expose
+- Materialized Agent Session inspection MUST NOT expose readiness timestamps,
+  binding values, or raw launch/cwd/model/options; binding failures MAY expose
   only safe mismatch categories.
 - Materialized Agent Session inspection MAY expose the latest bounded
   `reportedVersion` persisted by a successful ready write. Clients MUST treat

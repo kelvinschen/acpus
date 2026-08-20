@@ -10,8 +10,7 @@ session projection.
 
 ### Public Session Boundary
 
-- The package root MUST expose `openAcpSession`,
-  `fingerprintAgentSessionBinding`, and its package-owned launch, binding,
+- The package root MUST expose `openAcpSession` and its package-owned launch,
   session, turn, event, result, usage, and error types. It MUST expose no public
   protocol-version or transport subpath.
 - The callable Session surface MUST consist only of `openAcpSession`,
@@ -20,7 +19,7 @@ session projection.
 - `openAcpSession` MUST accept a command or structured-argv launch, effective
   cwd and environment, `approve-reads | approve-all | deny-all` permission mode,
   state directory, caller-owned Agent Session id, `new_or_empty | existing_required`
-  open mode, binding fingerprint, immutable effective model/options, and optional
+  open mode, immutable effective model/options, and optional
   caller-owned cancellation signal. Structured argv MUST retain its argument
   boundaries through startup.
 - `openAcpSession` MUST impose no package-owned open deadline.
@@ -98,36 +97,35 @@ session projection.
 - The projection path MUST be
   `sessions/<encodeURIComponent(agentSessionId)>.json` beneath the supplied state
   directory, and successful persistence MUST atomically replace that file.
-- The projection MUST use the closed schema `acpus.acp-session.v2` and contain
-  the matching Agent Session id; versioned overall and launch/cwd/model/options
-  SHA-256 binding digests; backend session id and resume/load capabilities;
+- The projection MUST use the closed schema `acpus.acp-session.v3` and contain
+  the matching Agent Session id; one closed structured binding; backend session
+  id and resume/load capabilities;
   bounded semantic conversation; optional latest stop and token usage; and
   canonical UTC creation and update timestamps.
 - The semantic conversation MUST retain a bounded newest suffix of User and
   Agent text, thought, tool calls, and compact tool-result content. It MUST omit
   raw tool output.
 - Opening an existing projection MUST validate its closed shape, Agent Session
-  id, and exact binding before spawning the Provider. Overall/component
-  inconsistency is projection corruption; a genuine mismatch is a typed
-  Session-binding failure with fixed-order safe categories. Either failure MUST
-  leave the file unchanged.
-- The projection MUST NOT contain raw cwd, launch, model, options, environment
-  values, secrets, raw protocol data, protocol-SDK values, or serialized Result
-  objects. The v1 projection shape is unsupported and MUST NOT be migrated.
+  id, and exact binding before spawning the Provider. A malformed projection is
+  corruption; a genuine mismatch is a typed Session-binding failure with
+  fixed-order safe categories. Either failure MUST leave the file unchanged.
+- The private projection MUST preserve the resolved launch without display
+  name, real cwd, model or null, and complete string options. It MUST NOT contain
+  environment values, permissions, secrets, raw protocol data, protocol-SDK
+  values, or serialized Result objects. Earlier projection shapes are
+  unsupported and MUST NOT be migrated.
 
 ### Session Binding
 
-- `fingerprintAgentSessionBinding` MUST hash one canonical v1 descriptor made
-  from the resolved launch without display name, `realpath(resolve(cwd))`, and
-  immutable effective model/options. Object keys MUST be recursively ordered by
-  UTF-16 code units, arrays MUST retain order, and canonical UTF-8 JSON MUST end
-  with one LF.
-- Overall and component hashes MUST use their versioned domain separators and
-  exact lowercase `sha256:` form. Invalid JSON-domain values MUST fail rather
-  than be omitted or normalized.
+- `openAcpSession` MUST construct one closed binding before projection lookup or
+  Provider spawn from the resolved launch without display name,
+  `realpath(resolve(cwd))`, and immutable effective model/options.
+- Option keys MUST be stored in stable UTF-16 code-unit order while their values
+  and argv boundaries remain unchanged. Existing bindings MUST be compared
+  directly by `launch`, `cwd`, `model`, and `options`.
 - Environment, PATH, permission, selector name, Run/Attempt/owner identity, and
   physical executable/package version MUST NOT enter the binding.
-- Provider-reported name/version MUST NOT enter the projection or binding.
+- Provider-reported name/version MUST NOT enter the binding.
 
 ## Verification
 

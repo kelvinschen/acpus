@@ -450,7 +450,7 @@ describe.concurrent("runtime daemon ticks", () => {
         } finally {
           probeStore.close();
         }
-        await waitUntil(() => runtimeRows(workspace, "SELECT definition_hash FROM hook_journal WHERE definition_hash = ?", "startup-cleanup-probe").length === 0);
+        await waitUntil(() => runtimeRows(workspace, "SELECT handler_id FROM hook_journal WHERE handler_id = ?", "startup-cleanup-probe").length === 0);
         await expect(access(late)).resolves.toBeUndefined();
       } finally {
         await loop.shutdown();
@@ -498,7 +498,7 @@ describe.concurrent("runtime daemon ticks", () => {
           throw new Error("no run should start");
         } })).resolves.toMatchObject({ runs: 0 });
 
-        expect(store.getHookJournal(run.id).map(entry => entry.definitionHash)).toEqual(["fresh"]);
+        expect(store.getHookJournal(run.id).map(entry => entry.handlerId)).toEqual(["fresh"]);
       } finally {
         store.close();
       }
@@ -975,16 +975,15 @@ function parallelTaskSignalRecoveryWorkflow(maxConcurrency?: number) {
   });
 }
 
-function hookJournalEntry(runId: string, definitionHash: string, triggeredAt: string): HookJournalEntry {
+function hookJournalEntry(runId: string, handlerId: string, triggeredAt: string): HookJournalEntry {
   return {
     runId,
-    eventSequence: definitionHash === "old" ? 1 : 2,
+    eventSequence: handlerId === "old" ? 1 : 2,
     triggerOrder: 1,
     event: "run.completed",
     source: "project",
     sourcePath: "/workspace/.acpus/hooks.json",
-    handlerId: definitionHash,
-    definitionHash,
+    handlerId,
     status: "completed",
     exitCode: 0,
     triggeredAt,

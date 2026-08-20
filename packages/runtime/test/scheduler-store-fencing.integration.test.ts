@@ -307,7 +307,7 @@ describe("scheduler store attempt fences", () => {
         const ready = appendReadyInstances(store.scheduler, run.id, claim.ownerEpoch, ["review"]);
         const attempt = unwrap(store.scheduler.tryStartAttempt(startInput(run.id, "review", claim.ownerEpoch, ready.version)));
         const scopeDigest = agentSessionScopeDigest(run.id, "node", "review");
-        const agentSessionId = agentSessionIdForScope(run.id, scopeDigest, 1);
+        const agentSessionId = agentSessionIdForScope(scopeDigest, 1);
         const inputDigest = sha256Digest("prompt:authored");
         const binding = {
           runId: run.id,
@@ -325,7 +325,7 @@ describe("scheduler store attempt fences", () => {
 
         expect(store.scheduler.tryBindAgentAttemptSession({
           ...binding,
-          agentSessionId: agentSessionIdForScope(run.id, scopeDigest, 2),
+          agentSessionId: agentSessionIdForScope(scopeDigest, 2),
         })._unsafeUnwrapErr()).toMatchObject({ type: "agent-session-binding-conflict" });
         expect(store.scheduler.tryBindAgentAttemptSession({
           ...binding,
@@ -356,43 +356,39 @@ describe("scheduler store attempt fences", () => {
           expected: notDispatched,
           invocationMetadata: { promptOrigin: "authored", inputDigest },
         } as const;
-        expect(store.scheduler.readAgentControlInspection(run.id).agentSessions)
-          .toContainEqual(expect.not.objectContaining({ bindingDigest: expect.any(String) }));
         expect(store.scheduler.tryCommitAgentTurnDispatch(dispatchInput)._unsafeUnwrapErr())
           .toMatchObject({ type: "agent-session-checkpoint-conflict" });
         expect(store.getExecutionMetadata(run.id)).toEqual([]);
-        const bindingDigest = sha256Digest("agent-session-binding");
-        expect(unwrap(store.scheduler.tryRecordAgentSessionBinding({
+        expect(unwrap(store.scheduler.tryRecordAgentSessionReady({
           runId: run.id,
           attemptId: attempt.attemptId,
           ownerEpoch: claim.ownerEpoch,
           agentSessionId,
-          bindingDigest,
           reportedVersion: "fixture-agent/1.2.3",
-        }))).toBe(bindingDigest);
+          now: new Date("2026-08-20T00:00:00.000Z"),
+        }))).toBeUndefined();
         expect(store.scheduler.readAgentControlInspection(run.id).agentSessions)
           .toContainEqual(expect.objectContaining({
             agentSessionId,
-            bindingDigest,
             reportedVersion: "fixture-agent/1.2.3",
           }));
-        expect(unwrap(store.scheduler.tryRecordAgentSessionBinding({
+        expect(unwrap(store.scheduler.tryRecordAgentSessionReady({
           runId: run.id,
           attemptId: attempt.attemptId,
           ownerEpoch: claim.ownerEpoch,
           agentSessionId,
-          bindingDigest,
           reportedVersion: "fixture-agent/1.2.4",
-        }))).toBe(bindingDigest);
+          now: new Date("2026-08-20T00:00:01.000Z"),
+        }))).toBeUndefined();
         expect(store.scheduler.readAgentControlInspection(run.id).agentSessions)
           .toContainEqual(expect.objectContaining({ reportedVersion: "fixture-agent/1.2.4" }));
-        expect(store.scheduler.tryRecordAgentSessionBinding({
-          runId: run.id,
-          attemptId: attempt.attemptId,
-          ownerEpoch: claim.ownerEpoch,
-          agentSessionId,
-          bindingDigest: sha256Digest("different-binding"),
-        })._unsafeUnwrapErr()).toMatchObject({ type: "agent-session-binding-conflict" });
+        const readiness = new DatabaseSync(runtimeDatabasePath(workspace), { readOnly: true });
+        expect(readiness.prepare("SELECT ready_at, reported_version FROM agent_sessions WHERE agent_session_id = ?")
+          .get(agentSessionId)).toEqual({
+            ready_at: "2026-08-20T00:00:00.000Z",
+            reported_version: "fixture-agent/1.2.4",
+          });
+        readiness.close();
         expect(unwrap(store.scheduler.tryCommitAgentTurnDispatch({
           ...dispatchInput,
         }))).toMatchObject({ checkpoint: "dispatch_intent", turnId: "turn-1" });
@@ -429,7 +425,7 @@ describe("scheduler store attempt fences", () => {
         const ready = appendReadyInstances(store.scheduler, run.id, claim.ownerEpoch, ["review"]);
         const attempt = unwrap(store.scheduler.tryStartAttempt(startInput(run.id, "review", claim.ownerEpoch, ready.version)));
         const scopeDigest = agentSessionScopeDigest(run.id, "node", "review");
-        const agentSessionId = agentSessionIdForScope(run.id, scopeDigest, 1);
+        const agentSessionId = agentSessionIdForScope(scopeDigest, 1);
         const inputDigest = sha256Digest("prompt:checkpoint");
         unwrap(store.scheduler.tryBindAgentAttemptSession({
           runId: run.id,
@@ -444,12 +440,11 @@ describe("scheduler store attempt fences", () => {
           promptOrigin: "authored",
           inputDigest,
         }));
-        unwrap(store.scheduler.tryRecordAgentSessionBinding({
+        unwrap(store.scheduler.tryRecordAgentSessionReady({
           runId: run.id,
           attemptId: attempt.attemptId,
           ownerEpoch: claim.ownerEpoch,
           agentSessionId,
-          bindingDigest: sha256Digest("checkpoint-binding"),
         }));
         const intent = unwrap(store.scheduler.tryCommitAgentTurnDispatch({
           runId: run.id,

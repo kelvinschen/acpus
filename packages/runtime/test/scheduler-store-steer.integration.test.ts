@@ -247,12 +247,11 @@ async function startedAgentTurn(store: RuntimeStore, workspace: string): Promise
     promptOrigin: "authored",
     inputDigest,
   })._unsafeUnwrap();
-  store.scheduler.tryRecordAgentSessionBinding({
+  store.scheduler.tryRecordAgentSessionReady({
     runId: run.id,
     attemptId: attempt.attemptId,
     ownerEpoch: claim.ownerEpoch,
     agentSessionId: plan.session.agentSessionId,
-    bindingDigest: sha256Digest("steer-session-binding"),
   })._unsafeUnwrap();
   const turnId = "turn-active";
   const sessionLeaseId = "lease-active";

@@ -10,8 +10,8 @@ import { RUNTIME_ABI_VERSION } from "../src/runtime-contracts.js";
 
 describe("daemon M6 control protocol", () => {
   it("cuts over the authority and daemon wire versions", () => {
-    expect(RUNTIME_ABI_VERSION).toBe(3);
-    expect(DAEMON_PROTOCOL_VERSION).toBe(8);
+    expect(RUNTIME_ABI_VERSION).toBe(4);
+    expect(DAEMON_PROTOCOL_VERSION).toBe(9);
   });
 
   it.each([
@@ -98,7 +98,6 @@ describe("daemon M6 control protocol", () => {
               agentSessionId: "session-1",
               generation: 1,
               lifecycle: "active",
-              bindingDigest: `sha256:${"a".repeat(64)}`,
               reportedVersion: "fixture-agent/1.2.3",
               ownershipHealth: "healthy",
               currentBinding: { attemptId: "attempt-1", operation: "start", promptOrigin: "authored" },

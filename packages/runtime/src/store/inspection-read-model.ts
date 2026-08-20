@@ -151,7 +151,6 @@ type HookJournalRow = {
   source: HookJournalEntry["source"];
   source_path: string;
   handler_id: string;
-  definition_hash: string;
   node_key: string | null;
   status: HookJournalEntry["status"];
   exit_code: number | null;
@@ -171,7 +170,7 @@ export class SqliteRuntimeInspectionReadModel {
 
   getHookJournal(runId: string): HookJournalEntry[] {
     const rows = this.db.prepare(`
-      SELECT id, run_id, event_sequence, trigger_order, event, source, source_path, handler_id, definition_hash,
+      SELECT id, run_id, event_sequence, trigger_order, event, source, source_path, handler_id,
         node_key, status, exit_code, stdout, stderr, duration_ms, error, triggered_at
       FROM hook_journal
       WHERE run_id = ?
@@ -466,7 +465,6 @@ function hookJournalEntryFromRow(row: HookJournalRow): HookJournalEntry {
     source: row.source,
     sourcePath: row.source_path,
     handlerId: row.handler_id,
-    definitionHash: row.definition_hash,
     ...(row.node_key === null ? {} : { nodeKey: row.node_key }),
     status: row.status,
     ...(row.exit_code === null ? {} : { exitCode: Number(row.exit_code) }),

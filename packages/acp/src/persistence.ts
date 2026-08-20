@@ -17,12 +17,15 @@ import {
   type FileHandle,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import type {
-  AgentSessionBindingCategory,
-  AgentSessionBindingFingerprintV1,
-} from "./types.js";
+import {
+  agentSessionBindingMismatchCategories,
+  isAgentSessionBinding,
+  normalizeAgentSessionBinding,
+  type AgentSessionBinding,
+} from "./session-binding.js";
+import type { AgentSessionBindingCategory } from "./types.js";
 
-const ACP_SESSION_PROJECTION_SCHEMA = "acpus.acp-session.v2" as const;
+const ACP_SESSION_PROJECTION_SCHEMA = "acpus.acp-session.v3" as const;
 export const ACP_SESSION_CONVERSATION_MAX_ENTRIES = 256;
 export const ACP_SESSION_CONVERSATION_MAX_BYTES = 256 * 1024;
 
@@ -71,7 +74,7 @@ export type AcpProjectedConversationEntry =
 export type AcpSessionProjection = Readonly<{
   schema: typeof ACP_SESSION_PROJECTION_SCHEMA;
   agentSessionId: string;
-  binding: AgentSessionBindingFingerprintV1;
+  binding: AgentSessionBinding;
   backend: Readonly<{
     sessionId: string;
     capabilities: Readonly<{ resume: boolean; load: boolean }>;
@@ -117,7 +120,7 @@ export class SessionBindingMismatchIssue extends Error {
 export type LoadAcpSessionProjectionInput = Readonly<{
   stateDirectory: string;
   agentSessionId: string;
-  bindingFingerprint: AgentSessionBindingFingerprintV1;
+  binding: AgentSessionBinding;
 }>;
 
 export function acpSessionProjectionPath(agentSessionId: string): string {
@@ -156,7 +159,7 @@ export async function loadAcpSessionProjection(
   if (value.agentSessionId !== input.agentSessionId) {
     throw issue("validate", relativePath, "The ACP session projection Agent Session id does not match.");
   }
-  validateBinding(value.binding, input.bindingFingerprint, relativePath);
+  validateBinding(value.binding, input.binding, relativePath);
   return value;
 }
 
@@ -521,7 +524,7 @@ function normalizeProjection(projection: AcpSessionProjection): AcpSessionProjec
   const normalized: AcpSessionProjection = {
     schema: ACP_SESSION_PROJECTION_SCHEMA,
     agentSessionId: projection.agentSessionId,
-    binding: normalizeBinding(projection.binding),
+    binding: normalizeAgentSessionBinding(projection.binding),
     backend: {
       sessionId: projection.backend.sessionId,
       capabilities: {
@@ -557,7 +560,7 @@ function isAcpSessionProjection(value: unknown, enforceBounds: boolean): value i
     ], ["lastStop"])
     || value.schema !== ACP_SESSION_PROJECTION_SCHEMA
     || !nonemptyString(value.agentSessionId)
-    || !bindingFingerprint(value.binding)
+    || !isAgentSessionBinding(value.binding)
     || !projectedBackend(value.backend)
     || !Array.isArray(value.conversation)
     || !value.conversation.every(projectedConversationEntry)
@@ -628,51 +631,18 @@ function jsonValue(value: unknown): value is AcpProjectedJsonValue {
   return record(value) && Object.values(value).every(jsonValue);
 }
 
-function bindingFingerprint(value: unknown): value is AgentSessionBindingFingerprintV1 {
-  return record(value)
-    && exactKeys(value, ["version", "digest", "components"])
-    && value.version === 1
-    && sha256(value.digest)
-    && record(value.components)
-    && exactKeys(value.components, ["launch", "cwd", "model", "options"])
-    && Object.values(value.components).every(sha256);
-}
-
-function normalizeBinding(value: AgentSessionBindingFingerprintV1): AgentSessionBindingFingerprintV1 {
-  return {
-    version: 1,
-    digest: value.digest,
-    components: {
-      launch: value.components.launch,
-      cwd: value.components.cwd,
-      model: value.components.model,
-      options: value.components.options,
-    },
-  };
-}
-
 function validateBinding(
-  actual: AgentSessionBindingFingerprintV1,
-  expected: AgentSessionBindingFingerprintV1,
+  actual: AgentSessionBinding,
+  expected: AgentSessionBinding,
   path: string,
 ): void {
-  if (!bindingFingerprint(expected)) throw issue("validate", path, "The expected Agent Session binding is invalid.");
-  const categories = (["launch", "cwd", "model", "options"] as const)
-    .filter(category => actual.components[category] !== expected.components[category]);
-  const overallEqual = actual.digest === expected.digest;
-  const componentsEqual = categories.length === 0;
-  if (overallEqual && componentsEqual) return;
-  if (overallEqual || componentsEqual) {
-    throw issue("validate", path, "The ACP session projection binding fingerprint is internally inconsistent.");
-  }
+  if (!isAgentSessionBinding(expected)) throw issue("validate", path, "The expected Agent Session binding is invalid.");
+  const categories = agentSessionBindingMismatchCategories(actual, expected);
+  if (categories.length === 0) return;
   throw new SessionBindingMismatchIssue(categories as [
     AgentSessionBindingCategory,
     ...AgentSessionBindingCategory[],
   ]);
-}
-
-function sha256(value: unknown): value is `sha256:${string}` {
-  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
 }
 
 function record(value: unknown): value is Record<string, unknown> {

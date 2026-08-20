@@ -5,7 +5,7 @@ import { RUNTIME_LAYOUT_VERSION } from "./runtime-layout.js";
 import { RUNTIME_STORAGE_VERSION } from "./storage/database.js";
 import type { RunDetails } from "./store/store.js";
 
-export const RUNTIME_ABI_VERSION = 3;
+export const RUNTIME_ABI_VERSION = 4;
 
 export type RuntimeAuthorityIdentity = {
   workspaceKey: string;
@@ -13,7 +13,6 @@ export type RuntimeAuthorityIdentity = {
   layoutVersion: typeof RUNTIME_LAYOUT_VERSION;
   storageVersion: typeof RUNTIME_STORAGE_VERSION;
   authorityId: string;
-  storeBinding: `sha256:${string}`;
   leaseGeneration: number;
 };
 

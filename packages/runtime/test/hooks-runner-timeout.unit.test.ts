@@ -90,7 +90,6 @@ function hook(timeout: string): LoadedHookConfig {
     source: "project",
     sourcePath: "/workspace/.acpus/hooks.json",
     definitionIndex: 0,
-    definitionHash: "hook-hash",
     effectiveId: "hook",
     id: "hook",
     timeout,

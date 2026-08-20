@@ -12,7 +12,6 @@ import {
   type AcpOperation,
   type AcpPermissionMode,
   type AcpSession,
-  type AgentSessionBindingFingerprintV1,
   type AcpSessionConfiguration,
   type AcpTokenUsage,
   type AcpTurnInput,
@@ -114,7 +113,6 @@ test("@acpus/acp exposes the frozen stable session boundary", () => {
   }>>();
   expectTypeOf<OpenAcpSessionInput>().toEqualTypeOf<Readonly<{
     agentSessionId: string;
-    bindingFingerprint: AgentSessionBindingFingerprintV1;
     sessionOpenMode: "new_or_empty" | "existing_required";
     stateDirectory: string;
     launch: AcpLaunch;
@@ -150,16 +148,6 @@ test("@acpus/acp exposes the frozen stable session boundary", () => {
   } as const satisfies AcpLaunch;
   const frozenInput = {
     agentSessionId: "session-1",
-    bindingFingerprint: {
-      version: 1,
-      digest: `sha256:${"0".repeat(64)}`,
-      components: {
-        launch: `sha256:${"1".repeat(64)}`,
-        cwd: `sha256:${"2".repeat(64)}`,
-        model: `sha256:${"3".repeat(64)}`,
-        options: `sha256:${"4".repeat(64)}`,
-      },
-    } as AgentSessionBindingFingerprintV1,
     sessionOpenMode: "new_or_empty",
     stateDirectory: "/state",
     launch: frozenLaunch,

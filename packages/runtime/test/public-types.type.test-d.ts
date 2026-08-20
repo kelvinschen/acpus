@@ -390,8 +390,8 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   >();
   expectTypeOf<AgentHostPolicy["inactivityFailAfterMs"]>().toEqualTypeOf<number | undefined>();
 
-  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<8>();
-  expectTypeOf<typeof RUNTIME_ABI_VERSION>().toEqualTypeOf<3>();
+  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<9>();
+  expectTypeOf<typeof RUNTIME_ABI_VERSION>().toEqualTypeOf<4>();
   expectTypeOf(daemonEndpoint).toEqualTypeOf<(cwd: string) => string>();
   expectTypeOf(requestDaemonStatus).toEqualTypeOf<(cwd: string) => ResultAsync<DaemonStatus, DaemonClientFailure>>();
   expectTypeOf(requestDaemonStatusProbe).toEqualTypeOf<
@@ -417,7 +417,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     status: "ok";
     pid: number;
     leaseGeneration: number;
-    protocolVersion: 8;
+    protocolVersion: 9;
     packageVersion: string;
     authority: RuntimeAuthorityIdentity;
   }>();
@@ -431,11 +431,10 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf<DaemonRunObservationUntil>().toEqualTypeOf<"admitted" | "subject-terminal" | "decision-boundary">();
   expectTypeOf<RuntimeAuthorityIdentity>().toEqualTypeOf<{
     workspaceKey: string;
-    runtimeAbi: 3;
+    runtimeAbi: 4;
     layoutVersion: 2;
-    storageVersion: 16;
+    storageVersion: 17;
     authorityId: string;
-    storeBinding: `sha256:${string}`;
     leaseGeneration: number;
   }>();
   expectTypeOf(createWorkflowVisualizationOverlay).toMatchTypeOf<

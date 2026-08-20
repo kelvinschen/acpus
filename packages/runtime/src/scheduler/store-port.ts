@@ -286,12 +286,11 @@ export type AdvanceAgentSessionCheckpointInput = Readonly<{
   now?: Date;
 }>;
 
-export type RecordAgentSessionBindingInput = Readonly<{
+export type RecordAgentSessionReadyInput = Readonly<{
   runId: string;
   attemptId: string;
   ownerEpoch: number;
   agentSessionId: string;
-  bindingDigest: Sha256Digest;
   reportedVersion?: string;
   now?: Date;
 }>;
@@ -335,7 +334,6 @@ export type RuntimeAgentSessionInspection = Readonly<{
   agentSessionId: string;
   generation: number;
   lifecycle: "active" | "abandoned";
-  bindingDigest?: Sha256Digest;
   reportedVersion?: string;
   ownershipHealth?: "healthy" | "quarantined" | "unverified";
   currentBinding: Readonly<{
@@ -413,7 +411,7 @@ export type SchedulerStorePort = {
   trySteerAgent(input: SchedulerSteerInput): SchedulerStoreResult<SchedulerSteerResult>;
   planAgentAttemptAdmission(input: PlanAgentAttemptAdmissionInput): Result<AgentAttemptOperationPlan, AgentOperationPlanError>;
   tryBindAgentAttemptSession(input: BindAgentAttemptSessionInput): SchedulerStoreResult<AgentAttemptSessionBinding>;
-  tryRecordAgentSessionBinding(input: RecordAgentSessionBindingInput): SchedulerStoreResult<Sha256Digest>;
+  tryRecordAgentSessionReady(input: RecordAgentSessionReadyInput): SchedulerStoreResult<void>;
   tryAdvanceAgentSessionCheckpoint(input: AdvanceAgentSessionCheckpointInput): SchedulerStoreResult<AgentSessionCheckpointValue>;
   tryCommitAgentTurnDispatch(input: CommitAgentTurnDispatchInput): SchedulerStoreResult<AgentSessionCheckpointValue>;
   trySettleFencedAgentSessionCheckpoint(input: SettleFencedAgentSessionCheckpointInput): SchedulerStoreResult<AgentSessionCheckpointValue>;

@@ -209,7 +209,7 @@ function materializeAgent(store: RuntimeStore, runId: string, claim: RunOwnerCla
     idempotencyKey: "agent:s1",
   });
   const scopeDigest = agentSessionScopeDigest(runId, shared ? "key" : "node", shared ? "shared" : "review~1");
-  const agentSessionId = agentSessionIdForScope(runId, scopeDigest, 1);
+  const agentSessionId = agentSessionIdForScope(scopeDigest, 1);
   const inputDigest = sha256Digest("prompt:s1");
   store.scheduler.tryBindAgentAttemptSession({
     runId,
@@ -228,12 +228,11 @@ function materializeAgent(store: RuntimeStore, runId: string, claim: RunOwnerCla
 }
 
 function failAgent(store: RuntimeStore, runId: string, claim: RunOwnerClaim, session: Materialized): void {
-  store.scheduler.tryRecordAgentSessionBinding({
+  store.scheduler.tryRecordAgentSessionReady({
     runId,
     ownerEpoch: claim.ownerEpoch,
     attemptId: session.attemptId,
     agentSessionId: session.agentSessionId,
-    bindingDigest: sha256Digest(`binding:${session.agentSessionId}`),
   })._unsafeUnwrap();
   const intent = store.scheduler.tryCommitAgentTurnDispatch({
     runId,

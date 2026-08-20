@@ -54,7 +54,7 @@ describe("Runtime store repair diagnostics", () => {
         stderr,
       });
 
-      expect(RUNTIME_STORAGE_VERSION).toBe(16);
+      expect(RUNTIME_STORAGE_VERSION).toBe(17);
       expect(exitCode).toBe(1);
       expect(stdout.text).toBe("");
       expect(stderr.text).toContain("Error code: RUNTIME_STORE_REPAIR_REQUIRED");

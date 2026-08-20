@@ -41,12 +41,13 @@ surface.
 - The caller MUST supply the exact durable Attempt context and Session intent.
   Cancellation and authored deadline remain authoritative through guard
   acquisition, Agent resolution, capsule open, every Turn, and cleanup.
-- Inside the Session guard and after Agent resolution, the Supervisor MUST
-  compute the canonical Agent Session binding before capsule spawn. Resolution
-  or canonicalization failure MUST create no capsule or Provider process.
+- Inside the Session guard, Agent resolution MUST finish before capsule spawn.
+  ACP MUST resolve and compare its structured Agent Session binding before the
+  worker starts a Provider; binding resolution or mismatch MUST start no
+  Provider process.
 - A lease MUST open one Process Capsule and one ACP Session, expose only the
-  lease's Session/lease/projection identities, exact binding fingerprint,
-  optional bounded Provider-reported version, and `runTurn`, then close the
+  lease's Session/lease/projection identities, optional bounded
+  Provider-reported version, and `runTurn`, then close the
   capsule after the callback settles.
 - One lease MUST admit at most one active Turn. Response-repair Turns MAY reuse
   that lease; natural shared-session continuation, safe retry, and Steer
@@ -93,11 +94,9 @@ surface.
 - Worker IPC MUST carry one ordered raw `AcpEvent` delta per event and one
   terminal envelope. `open_failed` is the only pre-ready ACP failure lane;
   `failed` is reserved for Process Capsule faults.
-- Worker protocol v9 open MUST carry the exact binding fingerprint and ready
-  MUST echo it. A missing, malformed, or different ready fingerprint MUST fail
-  the capsule protocol. Ready MAY additionally carry the non-empty
-  Provider-reported version bounded to 256 characters; it MUST NOT affect the
-  fingerprint.
+- Worker protocol v10 open MUST carry the resolved launch and effective Session
+  inputs without a parent-computed binding value. Ready MAY carry the non-empty
+  Provider-reported version bounded to 256 characters.
 - The parent capsule MUST assign sequence/time metadata and exclusively own
   response, final-candidate, tool, usage, timing, and partial-snapshot
   reduction. Terminal receipt MUST NOT increment the ACP event count.

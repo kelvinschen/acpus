@@ -25,15 +25,14 @@ describe.concurrent("daemon lease socket protocol", () => {
           status: "ok",
           pid: process.pid,
           leaseGeneration: expect.any(Number),
-          protocolVersion: 8,
+          protocolVersion: 9,
           packageVersion: "0.0.0-test",
           authority: {
             workspaceKey: expect.any(String),
-            runtimeAbi: 3,
+            runtimeAbi: 4,
             layoutVersion: 2,
-            storageVersion: 16,
+            storageVersion: 17,
             authorityId: expect.any(String),
-            storeBinding: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
             leaseGeneration: expect.any(Number),
           },
         });

@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { fingerprintAgentSessionBinding } from "@acpus/acp";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { resolveAcpAgentLaunch } from "./agent-resolution.js";
 import {
@@ -125,27 +124,6 @@ async function useSessionLeaseUnderGuard<T, E>(
         },
       });
     }
-    let bindingFingerprint: Awaited<ReturnType<typeof fingerprintAgentSessionBinding>>;
-    try {
-      bindingFingerprint = await fingerprintAgentSessionBinding({
-        launch: resolved.value,
-        cwd: input.session.cwd,
-        configuration: {
-          model: input.session.configuration.model ?? null,
-          options: input.session.configuration.options,
-        },
-      });
-    } catch (error) {
-      return err({
-        type: "acquire",
-        error: {
-          type: "session_binding_resolution_failed",
-          agentSessionId,
-          category: "canonicalization",
-          message: error instanceof Error ? error.message : String(error),
-        },
-      });
-    }
     const beforeOpen = attemptUnavailable(input.attempt, agentSessionId, "open");
     if (beforeOpen !== undefined) return err({ type: "acquire", error: beforeOpen });
     const opened = await openProcessCapsule({
@@ -155,7 +133,6 @@ async function useSessionLeaseUnderGuard<T, E>(
       session: input.session,
       sessionLeaseId: `lease_${randomUUID()}`,
       resolvedLaunch: resolved.value,
-      bindingFingerprint,
     });
     if (opened.isErr()) return err({ type: "acquire", error: openFailure(agentSessionId, opened.error) });
     capsule = opened.value;
@@ -190,7 +167,6 @@ function leaseFor(capsule: ProcessCapsule, attempt: Parameters<AgentSessionSuper
     agentSessionId: capsule.agentSessionId,
     sessionLeaseId: capsule.sessionLeaseId,
     projectionRef: capsule.projectionRef,
-    bindingFingerprint: capsule.bindingFingerprint,
     ...(capsule.reportedVersion === undefined ? {} : { reportedVersion: capsule.reportedVersion }),
     runTurn: input => new ResultAsync(runTurn(capsule, attempt, input)),
   };

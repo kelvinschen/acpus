@@ -28,7 +28,7 @@ object contains a run-relative reference such as:
 
 ```json
 {
-  "sessionProjectionPath": "acp/sessions/acpus-Mw48dJv0p2g2ep6TflAn_g.json"
+  "sessionProjectionPath": "acp/sessions/acpus-3b0e3c749bf4a76bd777c93f3bead30832247aa0dd3acfe1cc72445a1aec0f53-g1.json"
 }
 ```
 
@@ -44,7 +44,7 @@ final response. Node output and schema conformance use only `finalResponse`.
 
 ## Session Projection Semantics
 
-The JSON file is the Acpus-owned `acpus.acp-session.v2` projection. It preserves
+The JSON file is the Acpus-owned `acpus.acp-session.v3` projection. It preserves
 bounded User and Agent messages, including text, thought, tool calls, and each
 tool result's compact content. It omits the much larger raw tool-result output.
 
@@ -59,7 +59,9 @@ It is a semantic conversation record, not a raw ACP stream:
 - it is not a source for reconstructing exact response segments or a final
   response;
 - raw ACP protocol data is not retained.
-- raw launch, cwd, model, options, environment, and secrets are not retained.
+- resolved launch, cwd, model, and options are retained to protect Session
+  continuity; environment, permission, and Provider version are not. Do not put
+  secrets in Agent model or option values.
 
 Copy and transform the projection when a benchmark needs a stable snapshot or
 a narrower dataset.

@@ -363,12 +363,11 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
       },
     }, lease => new ResultAsync((async () => {
       if (options.store && options.runId && options.attemptId && options.ownerEpoch !== undefined) {
-        throwSchedulerStoreResult(options.store.scheduler.tryRecordAgentSessionBinding({
+        throwSchedulerStoreResult(options.store.scheduler.tryRecordAgentSessionReady({
           runId: options.runId,
           attemptId: options.attemptId,
           ownerEpoch: options.ownerEpoch,
           agentSessionId: lease.agentSessionId,
-          bindingDigest: lease.bindingFingerprint.digest as import("@acpus/core/content-identity").Sha256Digest,
           ...(lease.reportedVersion === undefined ? {} : { reportedVersion: lease.reportedVersion }),
         }));
       }

@@ -9,27 +9,23 @@ describe("createAccessPolicy", () => {
   it("returns empty policy by default", () => {
     const policy = createAccessPolicy();
     expect(policy.token).toBeUndefined();
-    expect(policy.tokenHash).toBeUndefined();
   });
 
   it("returns empty policy when token access is disabled", () => {
     const policy = createAccessPolicy({ enabled: false });
-    expect(policy.tokenHash).toBeUndefined();
+    expect(policy.token).toBeUndefined();
   });
 
   it("does not infer token access from network hosts", () => {
     const policy = createAccessPolicy();
-    expect(policy.tokenHash).toBeUndefined();
+    expect(policy.token).toBeUndefined();
   });
 
-  it("generates token and hash when enabled", () => {
+  it("generates a token when enabled", () => {
     const policy = createAccessPolicy({ enabled: true });
     expect(policy.token).toBeDefined();
-    expect(policy.tokenHash).toBeDefined();
     expect(typeof policy.token).toBe("string");
-    expect(typeof policy.tokenHash).toBe("string");
     expect(policy.token!.length).toBeGreaterThan(0);
-    expect(policy.tokenHash!.length).toBeGreaterThan(0);
   });
 
   it("generates consistent 24-byte base64url token", () => {
@@ -56,7 +52,7 @@ describe("requireToken middleware", () => {
     return app;
   }
 
-  it("skips auth when no tokenHash is set", async () => {
+  it("skips auth when no token is set", async () => {
     const app = appWith({});
     const res = await app.request("/api/health");
     expect(res.status).toBe(200);
@@ -80,13 +76,15 @@ describe("requireToken middleware", () => {
     expect(res.status).toBe(200);
   });
 
-  it("rejects invalid Bearer token", async () => {
+  it("rejects wrong Bearer tokens with equal or different byte lengths", async () => {
     const policy = createAccessPolicy({ enabled: true });
     const app = appWith(policy);
-    const res = await app.request("/api/health", {
-      headers: { authorization: "Bearer wrong-token" },
-    });
-    expect(res.status).toBe(401);
+    for (const token of ["wrong-token", "x".repeat(policy.token!.length)]) {
+      const res = await app.request("/api/health", {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.status).toBe(401);
+    }
   });
 
   it("accepts token from query param", async () => {

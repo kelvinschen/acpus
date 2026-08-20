@@ -179,7 +179,6 @@ function journalEntry(
     source: hook.source,
     sourcePath: hook.sourcePath,
     handlerId: hook.id ?? hook.effectiveId,
-    definitionHash: hook.definitionHash,
     ...(context.node?.key === undefined ? {} : { nodeKey: context.node.key }),
     status: result.status,
     ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),

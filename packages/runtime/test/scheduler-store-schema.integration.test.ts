@@ -166,7 +166,7 @@ describe("scheduler store format", () => {
         "scope_digest",
         "generation",
         "explicit_shared",
-        "binding_digest",
+        "ready_at",
         "reported_version",
         "lifecycle",
         "checkpoint",
