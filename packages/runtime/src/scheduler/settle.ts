@@ -1,4 +1,4 @@
-import type { WorkflowIR } from "@acpus/core/ir";
+import type { AdmittedWorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import { continueRootEvents } from "./materialize.js";
@@ -10,7 +10,7 @@ import { applySchedulerEvents } from "./transitions.js";
 import type { SchedulerProjection } from "./types.js";
 
 export type FrozenSchedulerRun = {
-  ir: WorkflowIR;
+  ir: AdmittedWorkflowIR;
   input: JsonValue;
   meta: Record<string, string>;
 };

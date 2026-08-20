@@ -51,12 +51,12 @@ describe.concurrent("DSH ACP Agent", () => {
     ]);
     await Promise.all([
       writeFile(
-        join(home, ".acpus", "agents.json"),
+        join(home, ".acpus", "config.json"),
         '{"agents":{"dsh":"global-dsh-must-not-run"}}\n',
         "utf8",
       ),
       writeFile(
-        join(workspace, ".acpus", "agents.json"),
+        join(workspace, ".acpus", "config.json"),
         '{"agents":{"dsh":"project-dsh-must-not-run"}}\n',
         "utf8",
       ),

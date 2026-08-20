@@ -3,7 +3,7 @@
 This directory owns the built-in knowledge for the DSH Acpus Supervisor. It is
 not a Skill and is not loaded from `packages/cli/skills/acpus` at runtime.
 
-The modules are written for the closed seven-tool DSH surface. They may use the
+The modules are written for the closed six-tool DSH surface. They may use the
 CLI Skill and executable examples as design-time references, but must translate
 their guidance into DSH-native authoring, observation, and recovery behavior.
 CLI commands and CLI-store assumptions do not belong here.

@@ -17,7 +17,7 @@ acpus workflow check <workflow> [--input <json|file.json>] [--agents <json|file.
 
 - **Source:** Accept the same path, catalog, or `-` stdin source as `workflow run`.
 - **Effect:** Typecheck, compile, and validate without creating a run.
-- **Input:** Pass strict inline JSON or a CLI-working-directory `.json` file through `--input` and `--agents`.
+- **Input:** Pass strict inline JSON or a CLI-working-directory `.json` file through `--input` and Agent injections through `--agents`.
 
 ## Inspection details
 
@@ -111,7 +111,7 @@ acpus runs fork <run-id> \
   [--target <source-target>]
 ```
 
-- **Use Fork when:** Workflow, input, Agent mapping, or Task definition must change.
+- **Use Fork when:** Workflow, input, Agent binding, or Task definition must change.
 - **Child:** Leave the source unchanged, inherit every option not replaced, then inspect the child id from the receipt.
 - **With `--target`:** Rerun the target and work completed after it became ready. Rerun any intersecting explicit `sessionKey` conversation as one unit.
 - **Without `--target`:** Reuse compatible completed results. Ambient state and randomness are outside compatibility matching.
@@ -145,7 +145,7 @@ acpus workflow catalog [name] [--project | --global]
 acpus workflow import <file|directory|zip|tgz|http-url> [--project | --global] [--check]
 ```
 
-- **Browse:** Omit `name` in a terminal to select a workflow; piped output lists scope, status, and name.
+- **Browse:** Omit `name` in a terminal to select a workflow; piped output groups names and statuses by scope.
 - **Inspect:** Provide `name`; add a scope flag when project and global entries collide.
 - **Import:** Copy one snapshot. Do not install dependencies, track updates, or overwrite.
 - **`--check`:** Use only with trusted modules because it executes module top-level code. A global check proves compatibility only in the current workspace.

@@ -3,32 +3,31 @@ import { AcpusClientState, type AcpusRemote } from "../src/client/state.js";
 import type { SessionActivityProjection } from "../src/remote/types.js";
 
 describe("Acpus Client task projection ownership", () => {
-  it("reads the latest Agent Profile catalog through the Remote boundary", async () => {
-    const profiles = [{
+  it("reads the latest Agent Preset catalog through the Remote boundary", async () => {
+    const presets = [{
       id: "dsh",
-      use: "dsh",
       guidance: "Coordinate delegated work.",
-      builtIn: true,
+      scope: "host" as const,
     }];
-    const readAgentProfiles = vi.fn(async () => ({
+    const readAgentPresets = vi.fn(async () => ({
       ok: true as const,
-      value: { profiles },
+      value: { presets },
     }));
-    const state = new AcpusClientState(remoteStub({ readAgentProfiles }));
+    const state = new AcpusClientState(remoteStub({ readAgentPresets }));
 
-    await expect(state.readAgentProfiles()).resolves.toEqual(profiles);
-    expect(readAgentProfiles).toHaveBeenCalledWith({});
+    await expect(state.readAgentPresets()).resolves.toEqual(presets);
+    expect(readAgentPresets).toHaveBeenCalledWith({});
   });
 
-  it("surfaces Agent Profile Remote failures for the retry UI", async () => {
+  it("surfaces Agent Preset Remote failures for the retry UI", async () => {
     const state = new AcpusClientState(remoteStub({
-      readAgentProfiles: vi.fn(async () => ({
+      readAgentPresets: vi.fn(async () => ({
         ok: false as const,
         error: { message: "catalog unavailable" },
       })),
     }));
 
-    await expect(state.readAgentProfiles()).rejects.toThrow("catalog unavailable");
+    await expect(state.readAgentPresets()).rejects.toThrow("catalog unavailable");
   });
 
   it("remembers expansion independently for each session", () => {
@@ -478,9 +477,9 @@ describe("Acpus Client task projection ownership", () => {
 
 function remoteStub(overrides: Partial<AcpusRemote> = {}): AcpusRemote {
   return {
-    readAgentProfiles: vi.fn(async () => ({
+    readAgentPresets: vi.fn(async () => ({
       ok: true as const,
-      value: { profiles: [] },
+      value: { presets: [] },
     })),
     readActivityDetail: vi.fn(async () => ({
       ok: true as const,

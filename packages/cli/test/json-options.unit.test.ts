@@ -4,25 +4,28 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseAgents } from "../src/presentation/json-input.js";
 
-const overrides = { reviewer: { use: "codex", model: "gpt-5" } };
+const injections = {
+  reviewer: { preset: "critical-reviewer" },
+  worker: { use: "codex", model: "gpt-5" },
+};
 
 describe("CLI JSON options", () => {
-  it("parses Agent overrides from inline JSON and relative or absolute JSON files", async () => {
+  it("parses Agent injections from inline JSON and relative or absolute JSON files", async () => {
     await withWorkspace(async workspace => {
       const relativePath = join(workspace, "agents.JSON");
       const absolutePath = join(workspace, "absolute.json");
       await Promise.all([
-        writeFile(relativePath, JSON.stringify(overrides)),
-        writeFile(absolutePath, JSON.stringify(overrides)),
+        writeFile(relativePath, JSON.stringify(injections)),
+        writeFile(absolutePath, JSON.stringify(injections)),
       ]);
 
-      await expect(parseAgents(JSON.stringify(overrides), workspace)).resolves.toEqual(overrides);
-      await expect(parseAgents("agents.JSON", workspace)).resolves.toEqual(overrides);
-      await expect(parseAgents(absolutePath, "/ignored")).resolves.toEqual(overrides);
+      await expect(parseAgents(JSON.stringify(injections), workspace)).resolves.toEqual(injections);
+      await expect(parseAgents("agents.JSON", workspace)).resolves.toEqual(injections);
+      await expect(parseAgents(absolutePath, "/ignored")).resolves.toEqual(injections);
     });
   });
 
-  it("rejects unreadable, empty, invalid, and non-object Agent override files", async () => {
+  it("rejects unreadable, empty, invalid, and non-object Agent injection files", async () => {
     await withWorkspace(async workspace => {
       await Promise.all([
         writeFile(join(workspace, "empty.json"), " \n"),
@@ -52,8 +55,8 @@ describe("CLI JSON options", () => {
 
   it("does not probe the filesystem for inline JSON strings ending in .json", async () => {
     await withWorkspace(async workspace => {
-      await writeFile(join(workspace, "agents.json"), JSON.stringify(overrides));
-      await writeFile(join(workspace, "agents.txt"), JSON.stringify(overrides));
+      await writeFile(join(workspace, "agents.json"), JSON.stringify(injections));
+      await writeFile(join(workspace, "agents.txt"), JSON.stringify(injections));
       await expect(parseAgents('"agents.json"', workspace)).rejects.toThrow("--agents must be a JSON object");
       await expect(parseAgents("agents.txt", workspace)).rejects.toThrow("--agents must be valid JSON");
     });

@@ -3,16 +3,13 @@ import { valueToExprIR } from "@acpus/expression/ir";
 import { AGENT_TOKEN } from "../../internal/symbols.js";
 import { toSchemaIR, type Schema } from "../../schema/index.js";
 import type { Resolvable } from "@acpus/expression";
-import type { AgentDefinitionIR, AgentNodeIR, AgentRunIR, DiagnosticIR } from "../../ir/types.js";
+import type { AgentDeclarationIR, AgentDefinitionIR, AgentNodeIR, AgentRunIR, AgentSlotIR, DiagnosticIR } from "../../ir/types.js";
 import type { EnvInput, StaticEnvInput } from "./shared.js";
 
 /** Permission modes accepted by Acpus agent definitions and Agent node runs. */
 export type AgentPermissionMode = "approve-reads" | "approve-all" | "deny-all";
 
-export type AgentUseSpec = {
-  use: string;
-  kind?: never;
-  command?: never;
+type AgentOptionsSpec = {
   model?: string;
   config?: Record<string, string>;
   permissionMode?: AgentPermissionMode;
@@ -20,19 +17,27 @@ export type AgentUseSpec = {
   env?: StaticEnvInput;
 };
 
-export type AgentCommandSpec = {
+export type AgentUseSpec = AgentOptionsSpec & {
+  use: string;
+  kind?: never;
+  command?: never;
+};
+
+export type AgentCommandSpec = AgentOptionsSpec & {
   command: string;
   kind?: never;
   use?: never;
-  model?: string;
-  config?: Record<string, string>;
-  permissionMode?: AgentPermissionMode;
-  cwd?: string;
-  env?: StaticEnvInput;
+};
+
+export type AgentSlotSpec = AgentOptionsSpec & {
+  kind?: never;
+  use?: never;
+  command?: never;
 };
 
 /** Top-level workflow agent definition keyed by the workflow's `agents` map. */
 export type AgentDefinitionSpec = AgentUseSpec | AgentCommandSpec;
+export type AgentDeclarationSpec = AgentDefinitionSpec | AgentSlotSpec;
 
 export type AgentToken<Key extends string = string> = {
   readonly [AGENT_TOKEN]: true;
@@ -62,7 +67,7 @@ export type AgentStepSpec<
   outputSchema?: undefined;
 });
 
-function agentDefinitionToIR(spec: AgentDefinitionSpec): AgentDefinitionIR {
+function agentDefinitionToIR(spec: AgentDeclarationSpec): AgentDeclarationIR {
   const options = {
     model: spec.model,
     config: spec.config,
@@ -77,6 +82,12 @@ function agentDefinitionToIR(spec: AgentDefinitionSpec): AgentDefinitionIR {
       ...options,
     }) as AgentDefinitionIR;
   }
+  if (spec.use === undefined) {
+    return stripUndefined({
+      kind: "agent_slot",
+      ...options,
+    }) as AgentSlotIR;
+  }
   return stripUndefined({
     kind: "agent_definition",
     use: spec.use,
@@ -85,10 +96,10 @@ function agentDefinitionToIR(spec: AgentDefinitionSpec): AgentDefinitionIR {
 }
 
 export function lowerAgentDefinitions(
-  agents: Record<string, AgentDefinitionSpec> | undefined,
+  agents: Record<string, AgentDeclarationSpec> | undefined,
   diagnostics: DiagnosticIR[],
-): Record<string, AgentDefinitionIR> {
-  const definitions: Array<[string, AgentDefinitionIR]> = [];
+): Record<string, AgentDeclarationIR> {
+  const definitions: Array<[string, AgentDeclarationIR]> = [];
   for (const [name, value] of Object.entries((agents ?? {}) as Record<string, unknown>)) {
     const definition = lowerAgentDefinition(name, value, diagnostics);
     if (definition) definitions.push([name, definition]);
@@ -100,29 +111,33 @@ function lowerAgentDefinition(
   name: string,
   value: unknown,
   diagnostics: DiagnosticIR[],
-): AgentDefinitionIR | undefined {
+): AgentDeclarationIR | undefined {
   const path = `agents.${name}`;
   if (!isRecord(value)) {
     invalidAgentDefinition(diagnostics, path, `Agent '${name}' definition must be an object.`);
     return undefined;
   }
-  if (value.kind !== undefined) {
-    invalidAgentDefinition(diagnostics, `${path}.kind`, `Agent '${name}' definition must be a plain authoring spec, not an IR object.`);
-    return undefined;
-  }
-
-  const hasUse = value.use !== undefined;
-  const hasCommand = value.command !== undefined;
-  if (hasUse === hasCommand) {
-    invalidAgentDefinition(diagnostics, path, `Agent '${name}' definition must set exactly one of use or command.`);
-    return undefined;
-  }
-
   let invalid = false;
   const reject = (fieldPath: string, message: string) => {
     invalid = true;
     invalidAgentDefinition(diagnostics, fieldPath, message);
   };
+  const knownFields = new Set(["use", "command", "model", "config", "permissionMode", "cwd", "env", "agentMode"]);
+  for (const field of Object.keys(value)) {
+    if (field === "kind") {
+      reject(`${path}.kind`, `Agent '${name}' definition must be a plain authoring spec, not an IR object.`);
+    } else if (!knownFields.has(field)) {
+      reject(`${path}.${field}`, `Agent '${name}' definition contains unknown field '${field}'.`);
+    }
+  }
+
+  const hasUse = value.use !== undefined;
+  const hasCommand = value.command !== undefined;
+  if (hasUse && hasCommand) {
+    invalidAgentDefinition(diagnostics, path, `Agent '${name}' definition must set exactly one of use or command.`);
+    return undefined;
+  }
+
   if (value.agentMode !== undefined) {
     reject(`${path}.agentMode`, `Agent '${name}' agentMode is not supported.`);
   }
@@ -147,11 +162,11 @@ function lowerAgentDefinition(
       invalidAgentDefinition(diagnostics, `${path}.use`, `Agent '${name}' use must be a non-empty string.`);
       return undefined;
     }
-  } else if (typeof value.command !== "string" || value.command.length === 0) {
+  } else if (hasCommand && (typeof value.command !== "string" || value.command.length === 0)) {
     invalidAgentDefinition(diagnostics, `${path}.command`, `Agent '${name}' command must be a non-empty string.`);
     return undefined;
   }
-  return agentDefinitionToIR(value as AgentDefinitionSpec);
+  return agentDefinitionToIR(value as AgentDeclarationSpec);
 }
 
 function invalidAgentDefinition(diagnostics: DiagnosticIR[], path: string, message: string): void {

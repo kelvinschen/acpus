@@ -1,5 +1,11 @@
 import type { JsonValue } from "@acpus/expression/ir";
-import { tryNormalizeWorkflowInput } from "@acpus/runtime";
+import {
+  finalizeAgentBindings,
+  tryNormalizeWorkflowInput,
+  tryParseAgentInjectionMap,
+  type AgentInjectionMap,
+  type AgentPresetCatalog,
+} from "@acpus/runtime";
 import type { WorkspaceRuntime } from "@acpus/runtime/host";
 import {
   tryPrepareWorkflow,
@@ -73,10 +79,62 @@ export function normalizeAuthoringInput(
   );
 }
 
+export function normalizeAgentInjections(
+  value: JsonValue,
+  declarations?: Record<string, unknown>,
+): { status: "valid"; agents: AgentInjectionMap } | InvalidWorkflow {
+  const parsed = tryParseAgentInjectionMap(value, declarations);
+  return parsed.match(
+    agents => ({ status: "valid", agents }),
+    error => ({
+      status: "invalid",
+      phase: "agents",
+      diagnostics: [{
+        code: "ACPUS_AGENT_INJECTIONS_INVALID",
+        severity: "error",
+        message: error.message,
+        ...(error.path === undefined ? {} : { path: error.path }),
+      }],
+    }),
+  );
+}
+
+export async function preflightAgentBindings(
+  declarations: PreparedWorkflow["ir"]["agents"],
+  agents: AgentInjectionMap,
+  presetCatalog?: AgentPresetCatalog,
+): Promise<{ status: "valid" } | InvalidWorkflow> {
+  const finalized = await finalizeAgentBindings({
+    declarations,
+    injections: agents,
+    ...(presetCatalog === undefined ? {} : { presetCatalog }),
+  });
+  return finalized.match(
+    () => ({ status: "valid" }),
+    failure => ({
+      status: "invalid",
+      phase: "agents",
+      diagnostics: [{
+        code: failure.type === "agent-injections-invalid"
+          ? "ACPUS_AGENT_INJECTIONS_INVALID"
+          : failure.type === "agent-preset-not-found"
+            ? "ACPUS_AGENT_PRESET_NOT_FOUND"
+            : "ACPUS_AGENT_BINDINGS_UNRESOLVED",
+        severity: "error",
+        message: failure.message,
+        ...(failure.type === "agent-injections-invalid" && failure.path !== undefined
+          ? { path: failure.path }
+          : {}),
+      }],
+    }),
+  );
+}
+
 export async function submitPreparedWorkflow(input: {
   runtime: WorkspaceRuntime;
   prepared: PreparedWorkflow;
   normalizedInput: JsonValue;
+  agentInjections?: AgentInjectionMap;
   admissionRequestId: string;
   link: RunLink;
   links: RunLinkStore;
@@ -90,6 +148,9 @@ export async function submitPreparedWorkflow(input: {
     requestId: input.admissionRequestId,
     prepared: input.prepared,
     input: input.normalizedInput,
+    ...(input.agentInjections === undefined
+      ? {}
+      : { agentInjections: input.agentInjections }),
   };
   let submitted = await input.runtime.submit(submission);
   if (submitted.isErr()) {

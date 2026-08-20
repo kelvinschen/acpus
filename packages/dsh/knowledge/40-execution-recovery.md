@@ -2,7 +2,7 @@
 
 ## Admission
 
-Call `acpus_run` with the complete workflow string. For the usual one-shot workflow, embed facts known before admission and omit run input. If a workflow intentionally declares `inputSchema`, pass only matching business input. An `invalid` result creates no task: repair all related diagnostics coherently and resubmit changed source. An `admitted` result supplies the exact `{ name, occurrence }` selector; preserve it for later operations.
+Call `acpus_run` with the complete workflow string and an `agents` object mapping every unbound logical slot to `{ preset: "<exact-id>" }`. For the usual one-shot workflow, embed facts known before admission and omit run input. If a workflow intentionally declares `inputSchema`, pass only matching business input. An `invalid` result creates no task: repair all related diagnostics coherently and resubmit changed source or bindings. When `phase` is `agents`, complete every missing slot, replace any field-only binding with a concrete Preset or direct `use`/`command`, and use only ids returned by the effective catalog. An `admitted` result supplies the exact `{ name, occurrence }` selector; preserve it for later operations.
 
 Keep one intended workflow together while fixing authoring errors. Do not claim work started before admission. After admission, briefly tell the user what work is now underway using their task language, then end the turn without another Acpus tool call. The host will send a notice when an authored Signal needs input or the task becomes terminal.
 
@@ -42,7 +42,7 @@ Retry local transient failure under unchanged admitted state. Do not retry compl
 
 ### Fork
 
-Fork when authored behavior, embedded facts, declared input, Agent mapping, duty, or constraints must change. Explicitly inherit each unchanged workflow/input value and replace only intended values. A replacement workflow goes through the same preparation checks as a new run; invalid preparation creates no child. Reuse completed work only when its definition, resolved inputs, outputs, conversation context, and side effects remain valid for the child. Otherwise restart from an earlier returned Target or run fresh.
+Fork when authored behavior, embedded facts, declared input, Agent mapping, duty, or constraints must change. Explicitly inherit each unchanged workflow, input, and agents value and replace only intended values. A replacement workflow or Agent mapping goes through the same admission checks as a new run; invalid preparation creates no child. Reuse completed work only when its definition, resolved inputs, outputs, conversation context, and side effects remain valid for the child. Otherwise restart from an earlier returned Target or run fresh.
 
 ## Artifacts and terminal verification
 

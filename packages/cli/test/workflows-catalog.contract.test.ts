@@ -38,16 +38,20 @@ describe("workflow catalog CLI contracts", () => {
 
         const textList = await runText(workspace, ["workflow", "catalog"]);
         expect(textList.stdout).toBe([
-          "global   available  deploy",
-          "project  available  poison",
-          "project  available  release",
+          "Project workflows:",
+          "  poison   available",
+          "  release  available",
+          "",
+          "Global workflows:",
+          "  deploy  available",
           "",
         ].join("\n"));
         expect(textList.stdout).not.toContain(workspace);
         expect(textList.stdout).not.toContain(home);
 
         const plainEntry = [
-          "Catalog: project/release",
+          "Workflow: release",
+          "Scope: project",
           "Status: available",
           `Package: ${join(workspace, ".acpus", "workflows", "release")}`,
           `Entry: ${join(workspace, ".acpus", "workflows", "release", "workflow.ts")}`,
@@ -63,7 +67,8 @@ describe("workflow catalog CLI contracts", () => {
           stderr: new TtyCaptureStream(),
         }))).toBe(0);
         expect(coloredStdout.text).toBe([
-          "\u001b[36mCatalog:\u001b[0m \u001b[1mproject/release\u001b[0m",
+          "\u001b[36mWorkflow:\u001b[0m \u001b[1mrelease\u001b[0m",
+          "\u001b[36mScope:\u001b[0m \u001b[1mproject\u001b[0m",
           "\u001b[36mStatus:\u001b[0m \u001b[32mavailable\u001b[0m",
           `\u001b[36mPackage:\u001b[0m ${join(workspace, ".acpus", "workflows", "release")}`,
           `\u001b[36mEntry:\u001b[0m ${join(workspace, ".acpus", "workflows", "release", "workflow.ts")}`,
@@ -80,7 +85,7 @@ describe("workflow catalog CLI contracts", () => {
 
         const poison = await runText(workspace, ["workflow", "catalog", "poison"]);
         expect(poison.exitCode).toBe(0);
-        expect(poison.stdout).toContain("Catalog: project/poison");
+        expect(poison.stdout).toContain("Workflow: poison\nScope: project");
         expect(poison.stderr).toBe("");
       });
     });
@@ -94,7 +99,7 @@ describe("workflow catalog CLI contracts", () => {
 
         const scoped = await runText(workspace, ["workflow", "catalog", "--project"]);
         expect(scoped.exitCode).toBe(0);
-        expect(scoped.stdout).toBe("project  available  shared  requires --project or --global\n");
+        expect(scoped.stdout).toBe("Project workflows:\n  shared  available  requires --project or --global\n");
 
         const ambiguous = await runText(workspace, ["workflow", "catalog", "shared"]);
         expect(ambiguous.exitCode).toBe(2);
@@ -155,13 +160,13 @@ describe("workflow catalog CLI contracts", () => {
         promptMocks.select.mockImplementationOnce(async ({ options }) => {
           const visible = options.map(option => `${option.label} ${option.hint} ${option.disabled ?? false}`).join("\n");
           expect(visible).toBe([
-            "shared (project) scope required false",
-            "shared (global) scope required false",
-            "broken project · CATALOG_ENTRY_MISSING true",
+            "[project] shared requires --project or --global false",
+            "[global] shared requires --project or --global false",
+            "[project] broken CATALOG_ENTRY_MISSING true",
           ].join("\n"));
           expect(visible).not.toContain(workspace);
           expect(visible).not.toContain(home);
-          return options.find(option => option.label === "shared (global)")!.value;
+          return options.find(option => option.label === "[global] shared")!.value;
         });
         const stdin = new TtyInput();
         const stdout = new TtyCaptureStream();
@@ -175,9 +180,10 @@ describe("workflow catalog CLI contracts", () => {
         expect(exitCode).toBe(0);
         expect(promptMocks.select).toHaveBeenCalledOnce();
         expect(promptMocks.select.mock.calls[0]![0]).toMatchObject({ output: stderr });
-        expect(stdout.text).toContain("\u001b[36mCatalog:\u001b[0m");
+        expect(stdout.text).toContain("\u001b[36mWorkflow:\u001b[0m");
         expect(stripVTControlCharacters(stdout.text)).toBe([
-          "Catalog: global/shared",
+          "Workflow: shared",
+          "Scope: global",
           "Status: available (requires --project or --global when unscoped)",
           `Package: ${join(home, ".acpus", "workflows", "shared")}`,
           `Entry: ${join(home, ".acpus", "workflows", "shared", "workflow.ts")}`,

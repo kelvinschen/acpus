@@ -28,10 +28,12 @@ describe("Acpus Supervisor tool contract", () => {
 
     const fork = branches.find(branch => branch.properties.type.const === "fork");
     if (fork === undefined) throw new Error("Expected the fork action schema.");
-    expect(fork).toMatchObject({ required: ["type", "workflow", "input", "restart"] });
+    expect(fork).toMatchObject({ required: ["type", "workflow", "input", "agents", "restart"] });
     expect(nestedTags(fork, "workflow"))
       .toEqual(["inherit", "replace"]);
     expect(nestedTags(fork, "input"))
+      .toEqual(["inherit", "replace"]);
+    expect(nestedTags(fork, "agents"))
       .toEqual(["inherit", "replace"]);
     expect(nestedTags(fork, "restart"))
       .toEqual(["compatible", "target"]);
@@ -61,6 +63,30 @@ describe("Acpus Supervisor tool contract", () => {
     });
     expect(resolveTask).toHaveBeenCalledWith("session", undefined);
     expect(inspect).toHaveBeenCalledWith({ kind: "run", runId: "run-1" });
+  });
+
+  it("passes Preset Agent injection separately from workflow source", async () => {
+    const run = vi.fn(async () => ({
+      status: "admitted" as const,
+      runId: "private-run",
+      task: { name: "workflow", occurrence: 1 },
+    }));
+    const { tools } = registerTools({ run });
+
+    await expect(tool(tools, "acpus_run").execute({
+      workflow: "export default workflow;",
+      agents: { worker: { preset: "dsh" } },
+    }, execution("admit"))).resolves.toEqual({
+      status: "admitted",
+      task: { name: "workflow", occurrence: 1 },
+    });
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({
+      workspace: "/workspace",
+      sessionId: "session",
+      toolCallId: "admit",
+      workflow: "export default workflow;",
+      agents: { worker: { preset: "dsh" } },
+    }));
   });
 
   it("treats zero timeline as Target summary detail", async () => {
@@ -136,6 +162,10 @@ describe("Acpus Supervisor tool contract", () => {
         type: "fork",
         workflow: { type: "inherit" },
         input: { type: "replace", value: null },
+        agents: {
+          type: "replace",
+          value: { worker: { preset: "deep-coder" } },
+        },
         restart: { type: "compatible" },
       },
     }, execution("fork-null"))).resolves.toEqual({
@@ -147,6 +177,7 @@ describe("Acpus Supervisor tool contract", () => {
       type: "fork",
       runId: "run-1",
       input: null,
+      agentInjections: { worker: { preset: "deep-coder" } },
     });
   });
 

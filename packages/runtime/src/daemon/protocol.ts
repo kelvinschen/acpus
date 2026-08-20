@@ -1,6 +1,6 @@
 import { isJsonValue, type JsonValue } from "@acpus/expression/ir";
 import { isPreparedRunWorkflow, type PreparedRunWorkflow } from "../admission/prepared-workflow.js";
-import type { AgentOverrideMap } from "../control/agent-overrides.js";
+import type { AgentInjectionMap } from "../agents/injections.js";
 import type {
   InspectionCandidates,
   InspectionObservation,
@@ -19,7 +19,7 @@ import {
 
 export type { RuntimeAuthorityIdentity };
 
-export const DAEMON_PROTOCOL_VERSION = 9;
+export const DAEMON_PROTOCOL_VERSION = 10;
 
 export type DaemonStatus = {
   status: "ok";
@@ -50,7 +50,7 @@ export type DaemonSubmitAndObserveInput = {
   requestId: string;
   prepared: PreparedRunWorkflow;
   input: JsonValue;
-  agentOverrides?: AgentOverrideMap;
+  agentInjections?: AgentInjectionMap;
   until: DaemonRunObservationUntil;
 };
 
@@ -275,7 +275,7 @@ function isRunDetails(value: unknown): value is RunDetails {
         "nodeCount",
         "execution",
       ],
-      ["progressUpdatedAt", "output", "agentOverrides", "fork", "dynamic"],
+      ["progressUpdatedAt", "output", "fork", "dynamic"],
     )
     || typeof value.id !== "string"
     || typeof value.name !== "string"
@@ -288,7 +288,6 @@ function isRunDetails(value: unknown): value is RunDetails {
     || (value.progressUpdatedAt !== undefined && typeof value.progressUpdatedAt !== "string")
     || !isJsonValue(value.input)
     || (value.output !== undefined && !isJsonValue(value.output))
-    || (value.agentOverrides !== undefined && (!isPlainRecord(value.agentOverrides) || !isJsonValue(value.agentOverrides)))
     || (value.fork !== undefined && !isRunForkInfo(value.fork))
     || !Array.isArray(value.hooks)
     || !isJsonValue(value.hooks)
@@ -434,11 +433,11 @@ function isControlIntent(value: unknown): value is DaemonControlIntent {
       && isJsonValue(value.payload);
   }
   if (value.type !== "fork"
-    || !hasExactKeys(value, ["requestId", "type", "runId"], ["target", "prepared", "input", "agentOverrides"])) return false;
+    || !hasExactKeys(value, ["requestId", "type", "runId"], ["target", "prepared", "input", "agentInjections"])) return false;
   return (value.target === undefined || typeof value.target === "string" && value.target.length > 0)
     && (value.prepared === undefined || isPreparedRunWorkflow(value.prepared))
     && (value.input === undefined || isJsonValue(value.input))
-    && (value.agentOverrides === undefined || isPlainRecord(value.agentOverrides));
+    && (value.agentInjections === undefined || isPlainRecord(value.agentInjections));
 }
 
 function isSubmitAndObserveRequest(value: Record<string, unknown>): value is DaemonSubmitAndObserveRequest {
@@ -446,14 +445,14 @@ function isSubmitAndObserveRequest(value: Record<string, unknown>): value is Dae
     && hasExactKeys(
       value,
       ["method", "expectedAuthority", "requestId", "prepared", "input", "until"],
-      ["agentOverrides"],
+      ["agentInjections"],
     )
     && isRuntimeAuthorityWireIdentity(value.expectedAuthority)
     && typeof value.requestId === "string" && value.requestId.length > 0
     && isPreparedRunWorkflow(value.prepared)
     && hasOwn(value, "input")
     && isJsonValue(value.input)
-    && (value.agentOverrides === undefined || isPlainRecord(value.agentOverrides))
+    && (value.agentInjections === undefined || isPlainRecord(value.agentInjections))
     && (value.until === "admitted" || value.until === "subject-terminal" || value.until === "decision-boundary");
 }
 

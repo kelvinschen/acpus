@@ -29,7 +29,7 @@
 - A store id MUST be `gen_<randomUUID()>`. `generation.json` MUST contain only `schemaVersion: 1`, matching `id`, nullable non-negative `storageVersion`, canonical `createdAt`, and optional canonical `archivedAt`.
 - Every complete store other than `activeGenerationId` is archived and immutable except for whole-store pruning.
 - `run-index.json`, when present, MUST be the closed `{ schemaVersion: 1, runs }` record; each run summary contains exactly `id`, `name`, `status`, `createdAt`, and `updatedAt`, ordered by `updatedAt DESC`, `createdAt DESC`, then `id ASC`.
-- The active database MUST use the Acpus SQLite `application_id` and `user_version = 16`.
+- The active database MUST use the Acpus SQLite `application_id` and `user_version = 18`.
 - Runtime-owned roots, manifests, databases, run capsules, sources, and trash MUST reject symbolic-link substitution. Existing run/file identity fencing remains scoped to opened store data and MUST fail visibly on an observable replacement.
 - A read-only open MUST NOT create the Acpus home, shard, manifest, database, or store directories.
 - A current-store read session MUST resolve the manifest generation, hold shared ownership of that generation, re-read the manifest before opening SQLite, and fail if the active generation changed. It MUST validate the application and storage versions through that connection's SQLite PRAGMAs so committed WAL state remains visible. Every read performed through that session MUST reuse its one read-only SQLite connection and MUST NOT switch generations.
@@ -44,7 +44,7 @@
 - `inspectRuntimeStore` MUST be read-only; a successful inspection returns exactly `ready`, `repairable` with a user-facing message, or `unsupported` with a user-facing message. A missing store is `ready` because ordinary first use initializes it.
 - `repairRuntimeStore` MUST return only `{ changed: boolean }` or a `busy | unsupported | unreadable | failed` error. It MUST be a no-op for a missing or already-ready store.
 - `awaitRuntimeStoreOffline` MUST acquire exclusive workspace ownership and prove that Runtime authority, run-lease, and ACP ownership are absent without modifying store data; it returns only success or a `busy | unavailable` error.
-- Repair MUST remain isolated to one resolved workspace and state root, including that target's daemon endpoint, lock, manifest, journal, generations, and store. It MUST request graceful shutdown only through that endpoint, serialize through the workspace-exclusive lock, re-inspect under that lock, preserve repairable bytes, create and verify a storage-v12 store, and publish the v2 manifest atomically. It MUST never force-kill a daemon or delete source data.
+- Repair MUST remain isolated to one resolved workspace and state root, including that target's daemon endpoint, lock, manifest, journal, generations, and store. It MUST request graceful shutdown only through that endpoint, serialize through the workspace-exclusive lock, re-inspect under that lock, preserve repairable bytes, create and verify a storage-v18 store, and publish the v2 manifest atomically. It MUST never force-kill a daemon or delete source data.
 - A durable repair intent MUST contain only the information needed to resume. Repeating repair after interruption MUST converge without caller-supplied planning state.
 - Concurrent repair callers MUST converge on one publication. A caller that observes the resulting ready store returns unchanged success; unresolved exclusive ownership contention remains `busy`.
 - Concurrent first use MUST serialize initialization, re-inspect, and adopt the one store named by the manifest before acquiring normal shared-store ownership.
@@ -71,9 +71,9 @@
 - An existing-store open MUST return absence only for `ENOENT` or `ENOTDIR`; permission, symlink-loop, I/O, and SQLite failures MUST remain system failures.
 - Every repair activity probe and SQLite open MUST reject symbolic-link or non-file database, WAL, and shared-memory paths before reading them.
 - Runtime-generated run ids MUST combine local `YYYYMMDDHHmmss` time with 20 uppercase hexadecimal random characters.
-- `RuntimeStore.admitRun` MUST return `ResultAsync<RunRecord, AdmitRunFailure>` and validate compiler-prepared workflow data, normalize input against the frozen input schema, and validate Agent overrides before mutation.
-- Admission with a request id MUST use `admission-request:<requestId>` as the `run.admitted` event idempotency key and persist a stable fingerprint of prepared identity, normalized input, and Agent overrides. Repeating the same request id and fingerprint MUST return the original run without another capsule, admitted event, or execution session; reusing it with a different fingerprint MUST return `CONTROL_CONFLICT` without mutation.
-- `AdmitRunFailure` MUST be the union of `PreparedRunValidationFailure`, `SchemaNormalizationFailure`, `AgentOverrideValidationFailure`, and the tagged `admission-request-conflict` failure; workspace mismatch, path publication conflicts, filesystem, SQLite, invariant, and unknown failures MUST reject.
+- `RuntimeStore.admitRun` MUST return `ResultAsync<RunRecord, AdmitRunFailure>` and validate compiler-prepared workflow data, normalize input against the frozen input schema, strictly validate Agent injections, resolve referenced Agent Presets, and finalize every Agent binding before mutation.
+- Admission with a request id MUST use `admission-request:<requestId>` as the `run.admitted` event idempotency key and persist a SHA-256 fingerprint of prepared identity, normalized input, and the validated unexpanded Agent injections. Repeating the same request id and fingerprint MUST return the original run before loading or resolving the current Preset catalog, without another capsule, admitted event, or execution session; reusing it with a different fingerprint MUST return `CONTROL_CONFLICT` without mutation.
+- `AdmitRunFailure` MUST be the union of `PreparedRunValidationFailure`, `SchemaNormalizationFailure`, `AgentBindingFailure`, `AgentPresetCatalogFailure`, and the tagged `admission-request-conflict` failure; workspace mismatch, path publication conflicts, filesystem, SQLite, invariant, and unknown failures MUST reject.
 - `PreparedRunValidationFailure.reason` MUST distinguish `invalid-ir-json`, `invalid-ir`, `ir-mismatch`, `ir-digest-mismatch`, `source-graph-mismatch`, `source-bundle-mismatch`, `package-lock-mismatch`, and `entry-mismatch`.
 - New-run and replacement-fork admission MUST validate the closed preparation-lock v2 shape, canonical frozen IR, matching lock metadata, and compiler-owned workflow source reference before mutation; daemon failures use `INVALID_REQUEST`.
 - Successful prepared-workflow validation MUST return a Runtime-owned detached value so caller mutation cannot change source, bundle, lock, or IR data after validation and before durable publication.
@@ -97,7 +97,7 @@
 - Admission and fork publication MUST fail without removing or replacing a pre-existing staging or final run path.
 - A failed admission or fork MUST remove only a staging or final run path created by that operation; concurrent operation and owned-path cleanup failures MUST both remain observable.
 - Frozen files and registered artifacts MUST be regular non-symlinks beneath the current store's non-symlinked runs root; missing, escaping, or mismatched files fail visibly rather than appearing absent.
-- Admission MUST atomically persist `run.admitted`, run/public node projections, scheduler bootstrap state, and separately stored Agent overrides before Runtime-owned advancement.
+- Admission MUST atomically persist `run.admitted`, run/public node projections, scheduler bootstrap state, and `agent_bindings_json` before Runtime-owned advancement. Workflow source and run-capsule publication MUST happen only after every recoverable validation and Agent-binding failure has passed.
 - Execution MUST use frozen IR instead of live workflow source and MUST NOT copy reusable task source or dependencies into the run directory; snapshot reusable source lives only in the Runtime source store.
 - Completed runs MUST persist normalized root output and `run.completed`; runtime failures after admission persist failed state and `run.failed`.
 - A run row without its required frozen input/files MUST fail as durable corruption rather than appear absent.
@@ -274,23 +274,44 @@ type PruneReport = {
 
 ### Agents
 
+#### Agent Presets, Injections, And Frozen Bindings
+
+- Runtime MUST own Agent Preset catalog composition, persistence, resolution, admission expansion, and durable binding freeze. Presentation adapters MAY discover choices and mutate project/global presets only through Runtime APIs.
+- Project/global Presets MUST use the `presets` sections owned by the
+  [Configuration](configuration-spec.md) contract; a Host MAY supply a
+  process-local `AgentPresetProvider` through
+  `WorkspaceRuntimeHostDependencies`.
+- The effective catalog precedence MUST always be Host, then project, then global for an exact id, independent of requested scope order. A scope request MUST contain only unique `host | project | global` values, and project scope requires a workspace.
+- Catalog choice data exposed to an orchestrator MUST contain only `{ id, guidance, scope }`; command, `use`, model, permission, config, cwd, env, and definition digest MUST remain behind explicit resolution at admission.
+- A Preset id MUST match `^[a-z0-9][a-z0-9_-]{0,63}$`; each scope MUST contain at most 50 entries; guidance MUST contain 1 through 2,000 trimmed characters; project/global MUST reject the Host-reserved `dsh` id. Preset definitions MUST be closed concrete named or command Agent specs and MUST NOT contain Slots or nested Preset references.
+- Project/global Preset persistence MUST mutate only the unified
+  configuration's `presets` section through the secure, section-preserving
+  write contract in [Configuration](configuration-spec.md).
+- `AgentInjectionMap` MUST be a closed map keyed only by declared Agent names. Each value MUST be exactly a direct injection containing only `use`, `command`, `model`, `permissionMode`, `config`, non-empty `cwd`, and `env`, or exactly `{ preset: string }`; it MUST reject unknown declarations, unknown fields, and mixed direct/Preset shapes.
+- Finalization MUST produce exactly one concrete effective definition and one frozen binding for every declaration. Every Slot without a direct, Preset, or inherited materialized identity MUST fail with `agent-bindings-unresolved` and stable code-unit-sorted names; Scheduler and execution boundaries MUST receive only `AdmittedWorkflowIR`.
+- Direct and materialized injections MUST replace complete `config` and `env` maps when those fields are present. An injected identity replaces `use | command`, clears inherited `model` and `config` unless supplied with that identity, and preserves declaration/inherited permission, cwd, and env unless supplied. Selectorless fields alone MUST preserve the current identity provenance.
+- A frozen binding MUST contain `source`, concrete `effective`, and optional `materializedInjection`. `source` MUST record identity provenance as exactly workflow, direct, or `{ kind: "preset", id, scope, definitionDigest }`. A field-only direct injection MUST preserve the source kind and Preset id/scope while refreshing `definitionDigest` to authenticate the final materialized definition.
+- Admission MUST resolve every referenced Preset against the current catalog and store its concrete definition as the binding's materialized injection. Frozen-run decode MUST rebuild every effective definition from the authored declarations plus materialized injections and reject missing names, impossible provenance, or any byte-stable structural divergence as corruption.
+- Ordinary `RunDetails`, admission receipts, daemon frames, and run events MUST NOT expose expanded definitions, materialized injections, Preset definitions, or binding provenance. Narrow Forensics MAY expose the frozen binding needed to explain the effective definition.
+- A fork without an Agent injection MUST reapply only the source binding's materialized injection to the selected child declarations; it MUST NOT inherit superseded authored declaration fields. An explicit Preset injection MUST re-resolve the current catalog; an idempotent replay of the same fork request MUST return the existing child before catalog loading.
+- Fork request identity MUST be a SHA-256 digest of the validated unexpanded request, while semantic fork reuse MUST include the finalized frozen bindings. Neither event fingerprint MAY embed command, config, env, or other expanded binding material.
+
 - Agent execution MUST render frozen prompt, cwd, env, permission, session, model, and static Agent `config` values, resolving a directly interpolated ArtifactRef to its verified absolute path.
 - Runtime MUST call the [Agent Executor](agent-executor-spec.md) through one exact Agent Session lease for normalized ACP execution and progress; Runtime MUST not parse raw ACP transport or child topology for decisions, summaries, or progress.
 - Runtime MUST translate each effective named or command Agent definition into the corresponding Session intent; absent permission defaults to `approve-all`.
 - Static Agent `config` is a frozen string-to-string desired ACP option map for a reusable Agent profile; it is not an ACP `configOptions` snapshot or cross-session mutable state and MUST NOT contain secrets.
 - The effective model MUST be `config.model ?? model`; `config.model` uses the ACP session model path rather than the generic config-option loop.
 - Runtime MUST pass `config` only on the first request of an authored Agent Attempt; response-repair and steering turns MUST omit it.
-- After resolving an Agent attempt's initial prompt, cwd, Acpus-managed env, permission, session, model, config, and deadline, Runtime MUST persist one `agent_invocation` metadata record before the first provider request.
-- `agent_invocation` MUST contain the final prompt sent on that attempt's first request, including output-schema instructions.
+- Before each provider request, Runtime MUST atomically persist one `agent_invocation` metadata record with that request's dispatch intent.
+- Each `agent_invocation` MUST contain the final prompt sent on that request, including output-schema instructions.
 - `agent_invocation` MUST classify prompt origin as `authored`, `steering`, or `repair`.
 - `agent_invocation` env MUST contain only frozen profile env plus resolved node env.
 - `agent_invocation` MUST NOT contain inherited host env or Runtime-injected `ACPUS_RUNTIME_*` values.
 - `agent_invocation` MUST omit internal session names, provider identity, ACP
-  record identity, backend session identity, later repair turns, partial
-  responses, tools, usage, and artifacts.
+  record identity, backend session identity, partial responses, tools, usage,
+  and artifacts.
 - Failure to persist `agent_invocation` MUST reject the execution boundary before provider dispatch.
 - Every execution metadata record MUST identify an exact started Attempt and its active owner epoch; stale, terminal, mismatched, released, or expired ownership MUST reject without inserting metadata.
-- Overrides MUST allow only `use`, `command`, `model`, `permissionMode`, `config`, `cwd`, and `env`; an override `config` replaces the complete inherited map, including with `{}`, and identity replacement clears inherited model/config while preserving permission.
 - Agent Session scope MUST be the SHA-256 digest of the versioned canonical local identity `{ runId, kind: "node", value: nodeKey }` or explicit-shared identity `{ runId, kind: "key", value: renderedSessionKey }`; raw `sessionKey` MUST NOT appear in the durable Session id.
 - `agentSessionId` MUST be `acpus-<scope-digest-hex>-g<generation>` using the complete already-computed scope digest.
 - A materialized Agent Session MUST have one durable row with lifecycle `active` or `abandoned`, one closed current checkpoint, and at most one active generation for each run and scope. Run deletion cascades those rows; Turn/Run terminal state and Runtime shutdown do not abandon continuity.
@@ -310,7 +331,7 @@ type PruneReport = {
 - Retry planning or commit that encounters any affected explicit shared `sessionKey` MUST reject without Store writes and direct the operator to fork the same target.
 - Retry commit MUST NOT create a Session, Attempt, or pending generation assignment. Admission after an abandoned local generation MUST create the next generation with operation `start` and prompt origin `authored`; an Agent that failed before Session identity MUST still create generation one.
 - Scheduler replay MUST use persisted operation, checkpoint, binding, assignment, and control facts and MUST NOT reclassify historical Attempts with the current operation planner.
-- Storage version 17 is the unified Retry and structured Session-binding cutover. Retry and Steer are the only Agent-applicable external control wire variants; Continue and Restart MUST NOT be accepted as product controls, and run-level Retry MUST NOT be accepted.
+- The active storage schema MUST use unified Retry and structured Session bindings. Retry and Steer are the only Agent-applicable external control wire variants; Continue and Restart MUST NOT be accepted as product controls, and run-level Retry MUST NOT be accepted.
 - Runtime MUST persist an Agent session below that run's private `acp/sessions/` tree and MUST not retain an ACP worker process after its Session lease settles.
 - Runtime MUST serialize Agent execution and Retry neutralization with the Agent Executor's exact Session guard.
 - Runtime MUST NOT admit a steering replacement until the superseded executor using that session has settled.
@@ -447,7 +468,7 @@ type PruneReport = {
 
 ### Controls And Daemon
 
-- `@acpus/runtime/host` MUST expose `openWorkspaceRuntime(location, dependencies?)` as `ResultAsync<WorkspaceRuntime, WorkspaceRuntimeOpenFailure>`. `WorkspaceRuntimeLocation` MUST contain only `workspace` and the Host-supplied absolute `stateRoot`; opening MUST NOT infer the CLI home. `WorkspaceRuntimeHostDependencies` MAY carry immutable named Agent launches, which MUST remain process-local behavior and MUST NOT enter Runtime identity, persistence, or workflow IR.
+- `@acpus/runtime/host` MUST expose `openWorkspaceRuntime(location, dependencies?)` as `ResultAsync<WorkspaceRuntime, WorkspaceRuntimeOpenFailure>`. `WorkspaceRuntimeLocation` MUST contain only `workspace` and the Host-supplied absolute `stateRoot`; opening MUST NOT infer the CLI home. `WorkspaceRuntimeHostDependencies` MAY carry immutable named Agent launches and an `AgentPresetProvider`; both remain process-local Host behavior, while a selected Preset's resolved definition and provenance enter only the admitted frozen binding.
 - `WorkspaceRuntimeOpenFailure` MUST expose only `runtime-store-unsupported`, `runtime-store-unavailable`, `runtime-authority-busy`, `runtime-configuration-invalid`, and `runtime-open-failed`. Repair `busy`, `unreadable`, and `failed` outcomes map to `runtime-store-unavailable`; Host failures MUST NOT direct callers to CLI-store Doctor commands.
 - `WorkspaceRuntime` MUST expose only its canonical workspace, prepared-workflow admission, typed run control, inspection and inspection observation, artifact listing/reading, admission lookup, and orderly `close()`.
 - Every Workspace Runtime store operation MUST remain bound to its owned store and storage generation; it MUST NOT reopen or re-resolve the workspace from `cwd`.
@@ -486,12 +507,12 @@ type DaemonSteerControlResult = {
 - A steer instruction MUST contain non-whitespace text.
 - Apart from validating non-whitespace content, Runtime MUST persist a steer instruction without trimming or normalization.
 - The daemon MUST expose unary `status`, `shutdown`, and `control` methods plus streaming `submitAndObserve` over a workspace-derived Unix socket or equivalent named pipe, never an HTTP port.
-- The current daemon protocol version MUST be `9`, Runtime ABI version MUST be `4`, layout version MUST remain `2`, and storage version MUST be `17`. Package version is diagnostic metadata and MUST NOT determine compatibility.
+- The current daemon protocol version MUST be `10`, Runtime ABI version MUST be `5`, layout version MUST remain `2`, and storage version MUST be `18`. Package version is diagnostic metadata and MUST NOT determine compatibility.
 - Daemon status MUST expose one closed `RuntimeAuthorityIdentity` containing `workspaceKey`, `runtimeAbi`, `layoutVersion`, `storageVersion`, the Store claim's owner UUID as `authorityId`, and positive `leaseGeneration`.
 - Unary requests and responses MUST use closed JSON shapes; responses are `{ ok: true, result }` or `{ ok: false, error: { code, message, ambiguity?: true } }`.
 - A rejected control response MUST set `ambiguity: true` only when target resolution was ambiguous, so a presentation client can replace raw candidate-key diagnostics with an occurrence-reference candidate view.
 - Prepared workflow requests MUST accept only the current workspace-or-snapshot union, lock v2, and bundle v1 shapes; Runtime MUST NOT parse protocol-v1 prepared workflow fields.
-- A submission request MUST contain the complete expected authority, one admission request id, prepared workflow, input, optional Agent overrides, and exactly one stop policy: `admitted`, `subject-terminal`, or `decision-boundary`.
+- A submission request MUST contain the complete expected authority, one admission request id, prepared workflow, input, optional strict Agent injections, and exactly one stop policy: `admitted`, `subject-terminal`, or `decision-boundary`.
 - Before any mutation, submission MUST compare every expected-authority field with the daemon authority and return `AUTHORITY_MISMATCH` with a definite not-admitted outcome on any difference.
 - Submission output MUST be strict NDJSON containing only an `admitted` frame, zero or more `observation` frames, or one terminal `error` frame with phase, admission outcome, optional run id, and daemon error. Frames and their nested run and inspection documents MUST use closed validated shapes; invalid or truncated frames are protocol failures, and an error frame MUST be followed by EOF.
 - The daemon MUST emit `admitted` only after durable idempotent admission and execution-session start. The `admitted` stop policy then closes; blocking policies observe through a separate read-only connection bound to the daemon generation and close after Runtime observation closes.
@@ -535,7 +556,7 @@ type DaemonSteerControlResult = {
 - The replacement Attempt MUST use operation `continue`, prompt origin `steering`, the same Agent Session generation, and the requested event sequence as its admission lineage.
 - Pause, cancel, and owner-loss handling MUST add a fallback semantic fence for each affected active Agent turn.
 - Runtime MUST NOT roll back external side effects already performed by a superseded Agent turn.
-- A steering replacement MUST reuse the frozen run, input, node configuration, Agent mapping, and output schema.
+- A steering replacement MUST reuse the frozen run, input, node configuration, concrete Agent bindings, and output schema.
 - A steering replacement MUST reuse the effective ACP session.
 - A steering replacement MUST receive a newly resolved full attempt timeout.
 - Startup reconciliation MUST converge every accepted-but-unsignalled `draining` directive from durable checkpoint and ownership evidence; uncertainty blocks rather than re-delivering the instruction.
@@ -574,7 +595,7 @@ type DaemonSteerControlResult = {
 - Read-side control applicability is advisory; every submitted control MUST resolve and validate again inside the control transaction.
 - Fork MUST create a new pending child run from the selected source run.
 - Fork MUST leave the source run unchanged.
-- A fork child MUST inherit the source workflow, input, and Agent mapping except where the request supplies a replacement.
+- A fork child MUST inherit the source workflow, input, and frozen Agent bindings except where the request supplies a replacement workflow or Agent injections.
 - A fork child MUST execute its selected workflow from initial run state rather than continue the source execution state.
 - Fork reuse MUST consider only accepted completed Agent, Task, and Signal results from the direct source run.
 - A source result MUST be reusable only for the same child occurrence when its effective Agent, Task, or Signal definition and every resolved workflow value it reads are unchanged.
@@ -625,7 +646,7 @@ Runtime owns generic inspection semantics and public shape.
 - A started Agent item MAY expose its current or latest-turn telemetry as optional input, output, and total token counts plus Context-window used and size. Missing counters MUST remain absent. Tree telemetry MUST omit usage source, cached or thought tokens, model, provider, pricing, content, and internal identity.
 - A narrow node read MUST expose the same resolved-target state timing as a generic target view and MUST omit target duration when the selected target has no completed materialized boundary.
 - A target Forensics view MUST contain the selected subject and state alongside `definition`, `invocation`, and `result` projections.
-- Forensics Definition MUST come only from the run's frozen effective IR and frozen Agent overrides; it MUST NOT read current workflow source or evaluate an expression.
+- Forensics Definition MUST come only from the run's frozen effective IR and frozen Agent bindings; it MUST NOT read current workflow source, resolve the current Preset catalog, or evaluate an expression.
 - Forensics Definition MUST render frozen expressions in one stable, complete human-readable form.
 - Forensics Invocation MUST come only from durable scheduler decisions, persisted Signal state, or attempt-scoped `task_attempt`/`agent_invocation` metadata.
 - Forensics Result MUST expose output only from the scheduler-accepted occurrence or root output; it MUST NOT infer output from attempt metadata, provider response, progress, or expression evaluation.
@@ -636,10 +657,10 @@ Runtime owns generic inspection semantics and public shape.
 - A static frozen node without a materialized occurrence MUST still expose Definition, MUST omit target duration, and MUST report Invocation/Result as not started or not selected according to durable branch choice.
 - Forensics MUST project conditional branch choice, effective Parallel concurrency, materialized Fanout items/quorum/concurrency, and Loop index/round/state/transition from durable scheduler state without re-evaluating authored expressions; a Switch Definition's case ids MUST match its durable `selectedBranch` values.
 - A dynamic Forensics Invocation MAY include its ordered branch, Fanout item/index, and Loop index/round/state context stack.
-- Root Forensics Definition MUST include workflow metadata, complete input schema, root child ids/output expression, every frozen effective Agent profile, and its run override.
+- Root Forensics Definition MUST include workflow metadata, complete input schema, root child ids/output expression, every frozen effective Agent profile, and its frozen binding provenance.
 - Root Forensics Invocation MUST contain the complete run input.
-- Agent Forensics Definition MUST include its complete effective profile, run override, node expressions, and output schema.
-- Agent Forensics Invocation MUST contain only the first actual request's prompt/origin, cwd, Acpus-managed env, model, permission, shared-session key when present, applied config, and deadline.
+- Agent Forensics Definition MUST include its complete effective profile, frozen binding provenance, node expressions, and output schema.
+- Agent Forensics Invocation MUST contain only the selected attempt's first actual request prompt/origin, cwd, Acpus-managed env, model, permission, shared-session key when present, applied config, and deadline; origin MUST be `authored`, `steering`, or `repair`.
 - Task Forensics Definition MUST render an inline Task as `implementation: inline` without source, preview, or digest, or identify a module by specifier/export.
 - Task Forensics Invocation MUST contain its complete input, effective cwd, Acpus-managed env, and effective timeout values.
 - Signal Forensics Invocation MUST use its persisted rendered prompt and deadline.

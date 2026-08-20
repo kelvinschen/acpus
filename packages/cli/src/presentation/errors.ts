@@ -47,3 +47,7 @@ export function vizError(message: string): CliError {
 export function skillError(message: string, details: Pick<CliResult, "skill" | "errorCode"> = {}): CliError {
   return new CliError(1, { ok: false, phase: "skill", message, ...details });
 }
+
+export function agentError(message: string): CliError {
+  return new CliError(1, { ok: false, phase: "agent", message });
+}

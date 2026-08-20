@@ -148,7 +148,7 @@ function hook(event: LoadedHookConfig["event"], commandText: string, match?: Loa
     event,
     command: commandText,
     source: "project",
-    sourcePath: "/workspace/.acpus/hooks.json",
+    sourcePath: "/workspace/.acpus/config.json",
     definitionIndex: 0,
     effectiveId: id,
     id,

@@ -419,7 +419,8 @@ describe("workflow source command plumbing", () => {
 
     expect(stdout.text).toBe([
       "Fork run created.",
-      "Catalog: global/dynamic-source",
+      "Catalog workflow: dynamic-source",
+      "Catalog scope: global",
       "Catalog status: available",
       "Catalog package: /home/.acpus/workflows/dynamic-source",
       "Catalog entry: /home/.acpus/workflows/dynamic-source/workflow.ts",
@@ -511,13 +512,40 @@ describe("workflow source command plumbing", () => {
     expect(mock.prepareWorkflowForCli).not.toHaveBeenCalled();
     expect(mock.sendDaemonControl).not.toHaveBeenCalled();
   });
+
+  it("rejects invalid fork Agent JSON before replacement workflow preparation", async () => {
+    const command = createRunsCommand({
+      cwd: "/workspace",
+      stdin: Readable.from([]),
+      stdout: new CaptureStream(),
+      stderr: new CaptureStream(),
+      setExitCode: vi.fn(),
+    });
+
+    await expect(command.parseAsync([
+      "fork",
+      "run_source",
+      "--workflow",
+      "replacement",
+      "--agents",
+      "missing-agents.json",
+    ], { from: "user" })).rejects.toMatchObject({
+      exitCode: 2,
+      result: {
+        phase: "usage",
+        message: expect.stringContaining("--agents file '/workspace/missing-agents.json' could not be read"),
+      },
+    });
+    expect(mock.prepareWorkflowForCli).not.toHaveBeenCalled();
+    expect(mock.sendDaemonControl).not.toHaveBeenCalled();
+  });
 });
 
 function preparedWorkflow(
   diagnostics: PreparedWorkflow["ir"]["diagnostics"] = [],
 ): PreparedWorkflow {
   const ir: PreparedWorkflow["ir"] = {
-    irVersion: 7,
+    irVersion: 8,
     name: "dynamic-source",
     agents: {},
     root: {

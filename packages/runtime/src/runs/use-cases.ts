@@ -1,5 +1,5 @@
 import type { JsonValue } from "@acpus/expression/ir";
-import type { WorkflowIR } from "@acpus/core/ir";
+import type { AdmittedWorkflowIR } from "@acpus/core/ir";
 import { err, ok, ResultAsync } from "neverthrow";
 import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
 import type { PreparedRunWorkflow } from "../admission/prepared-workflow.js";
@@ -46,7 +46,7 @@ export type RunVisualizationControls = {
   retryTargets: RunVisualizationControlTarget[];
 };
 
-export type RunVisualizationWorkflow = Pick<WorkflowIR, "name" | "description" | "agents">;
+export type RunVisualizationWorkflow = Pick<AdmittedWorkflowIR, "name" | "description" | "agents">;
 
 export type RunVisualizationSnapshot = {
   run: RunDetails;

@@ -116,7 +116,7 @@ describe.concurrent("runtime daemon ticks", () => {
           input: { ready: true },
         })).rejects.toMatchObject({
           code: "INVALID_REQUEST",
-          message: expect.stringContaining("WorkflowIR irVersion must be 7"),
+          message: expect.stringContaining("WorkflowIR irVersion must be 8"),
         });
         expect(runtimeRows(workspace, "SELECT id FROM runs")).toEqual([]);
       } finally {
@@ -982,7 +982,7 @@ function hookJournalEntry(runId: string, handlerId: string, triggeredAt: string)
     triggerOrder: 1,
     event: "run.completed",
     source: "project",
-    sourcePath: "/workspace/.acpus/hooks.json",
+    sourcePath: "/workspace/.acpus/config.json",
     handlerId,
     status: "completed",
     exitCode: 0,

@@ -10,8 +10,8 @@ import { RUNTIME_ABI_VERSION } from "../src/runtime-contracts.js";
 
 describe("daemon M6 control protocol", () => {
   it("cuts over the authority and daemon wire versions", () => {
-    expect(RUNTIME_ABI_VERSION).toBe(4);
-    expect(DAEMON_PROTOCOL_VERSION).toBe(9);
+    expect(RUNTIME_ABI_VERSION).toBe(5);
+    expect(DAEMON_PROTOCOL_VERSION).toBe(10);
   });
 
   it.each([

@@ -29,7 +29,7 @@ describe("checked workflow import contracts", () => {
           "--check",
         ]);
         expect(checked.exitCode).toBe(0);
-        expect(checked.stdout).toContain("Catalog: global/workspace-checked");
+        expect(checked.stdout).toContain("Catalog workflow: workspace-checked\nCatalog scope: global");
         expect(checked.stdout).toContain("Checked: yes");
         expect(checked.stdout).toMatch(/Source graph: sha256:[a-f0-9]{64}/u);
         expect(checked.stdout).toMatch(/workflow\.ts:3:\d+ \[warning SC001\]/u);

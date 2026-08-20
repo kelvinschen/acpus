@@ -185,7 +185,7 @@ describe("CLI result output contracts", () => {
 
   it("counts nested workflow nodes in summaries", () => {
     const ir: WorkflowIR = {
-      irVersion: 7,
+      irVersion: 8,
       name: "nested",
       agents: {},
       root: {
@@ -327,6 +327,14 @@ describe("CLI result output contracts", () => {
     ].join("\n"));
     expect(stdout.text).not.toContain("Workflow: cli-valid");
     expect(stderr.text).toBe("");
+  });
+
+  it("writes stable unbound Agent choices after a structural workflow check", () => {
+    const stdout = new CaptureStream();
+    const result = { ...checkResult(), unboundAgents: ["reviewer", "worker"] } satisfies CliResult;
+
+    expect(writeResult(result, { stdout, stderr: new CaptureStream() }, 0)).toBe(0);
+    expect(stdout.text).toContain("Unbound Agent slots: reviewer, worker\n");
   });
 
   it("writes terminal visualizations without generic summaries and preserves diagnostics", () => {
@@ -627,7 +635,8 @@ describe("CLI result output contracts", () => {
 
     expect(stdout.text).toBe([
       "Workflow imported.",
-      "Catalog: project/dynamic-import",
+      "Catalog workflow: dynamic-import",
+      "Catalog scope: project",
       "Catalog status: available",
       "Catalog package: /workspace/.acpus/workflows/dynamic-import",
       "Catalog entry: /workspace/.acpus/workflows/dynamic-import/workflow.ts",
@@ -644,7 +653,7 @@ class TtyCaptureStream extends CaptureStream {
   readonly isTTY = true;
 }
 
-function checkResult(): CliResult {
+function checkResult(): Extract<CliResult, { ok: true; phase: "check" }> {
   return {
     ok: true,
     phase: "check",
@@ -652,7 +661,7 @@ function checkResult(): CliResult {
     workflow: {
       name: "cli-valid",
       description: "Validate CLI workflow summaries.",
-      irVersion: 7,
+      irVersion: 8,
       nodeCount: 1,
       outputShape: { kind: "object", possibleKeys: ["ready"] },
       diagnostics: {

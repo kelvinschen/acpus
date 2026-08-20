@@ -1,4 +1,4 @@
-import type { WorkflowIR } from "@acpus/core/ir";
+import type { AgentDefinitionIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonObject, JsonValue, StaticExprShape } from "@acpus/expression/ir";
 import type {
   RunInspectionControl,
@@ -36,13 +36,17 @@ export type WebControlCommand =
   | { type: "cancel"; target?: string }
   | { type: "signal"; target: string; payload: JsonValue };
 
-export type WorkflowContext = Pick<WorkflowIR, "name" | "description" | "agents">;
+export type WorkflowContext = Pick<WorkflowIR, "name" | "description"> & {
+  agents: Record<string, AgentDefinitionIR>;
+};
+
+export type WorkflowVisualizationContext = Pick<WorkflowIR, "name" | "description" | "agents">;
 
 export type WorkflowVisualizationResult =
   | {
     status: "ready";
     graph: WebGraph;
-    workflow: WorkflowContext & { irVersion: number; nodeCount: number };
+    workflow: WorkflowVisualizationContext & { irVersion: number; nodeCount: number };
     contract: {
       inputSchema?: WorkflowIR["inputSchema"];
       output: WorkflowIR["root"]["output"];

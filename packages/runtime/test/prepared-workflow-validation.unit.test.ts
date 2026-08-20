@@ -390,7 +390,7 @@ type WorkflowParts = Partial<Omit<WorkflowIR, "root">> & {
 function workflowIr(partial: WorkflowParts = {}): WorkflowIR {
   const { nodes, output = { kind: "object", fields: {} }, root, ...rest } = partial;
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "snapshot-validation",
     agents: {},
     inputSchema: {

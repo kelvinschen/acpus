@@ -2,15 +2,11 @@
 
 Use this for run, observe, artifacts, ordinary interaction, stop, and validation without execution.
 
-- Use `acpus <cmd> --help` for exact options.
-- Read [Advanced CLI Operations](advanced-cli-operations.md) for detailed controls, optional tooling, or deletion.
-- Read [Runtime Recovery](runtime-recovery.md) for Retry, Steer, Fork, and failure diagnosis.
+## Agent injection
 
-## Agent overrides
-
-- Pass Agent overrides to `workflow check`, `workflow run`, or `runs fork` through `--agents`.
-- Use an inline JSON object or `.json` file keyed by declared Agent name.
-- Override `use` or `command`, `model`, `config`, `permissionMode`, `cwd`, or `env`.
+- Before binding Agent slots, follow [ACP Agents](acp-agents.md) to list and select Presets.
+- Pass Preset or direct injections to `workflow check`, `workflow run`, or `runs fork` through `--agents` as an inline JSON object or `.json` file keyed by slot name.
+- Without `--agents`, check reports unbound slots; with them, every slot must bind. Run and Fork freeze admitted bindings.
 
 ## Run and observe
 
@@ -61,7 +57,6 @@ Options:
 3. Use `--follow` only when terminal completion itself is the goal.
 4. At terminal state, verify output and artifacts. Read structured artifact files with a bounded, type-appropriate tool.
 
-Read [Advanced CLI Operations](advanced-cli-operations.md#inspection-details) only for candidate selection or follow mechanics.
 
 ## Artifacts
 
@@ -84,8 +79,6 @@ acpus runs cancel <run-id> [--target <target>]
 - Inspect the target first; a displayed selector identifies the subject but does not recommend a control.
 - Signal answers an open wait; pause/resume control run admission.
 - Cancel is destructive and requires confirmation unless already requested.
-
-Read [Advanced CLI Operations](advanced-cli-operations.md#runtime-control-details) for all control commands, targeting, fencing, reuse, and receipts.
 
 ## Doctor
 

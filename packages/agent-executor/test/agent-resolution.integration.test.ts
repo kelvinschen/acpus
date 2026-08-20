@@ -1,14 +1,10 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { errAsync, okAsync } from "neverthrow";
+import { describe, expect, it, vi } from "vitest";
 import {
   AcpAgentResolutionSystemError,
   resolveAcpAgentLaunch,
   resolveNamedAcpAgentLaunch,
 } from "../src/agent-resolution.js";
-
-const temporaryDirectories: string[] = [];
 
 const builtInAgents = {
   pi: ["npx", "pi-acp@^0.0.31"],
@@ -34,253 +30,101 @@ const builtInAgents = {
   zeroclaw: ["zeroclaw", "acp"],
 } as const;
 
-afterEach(async () => {
-  await Promise.all(temporaryDirectories.splice(0).map(directory => rm(directory, { recursive: true, force: true })));
-});
-
 describe("Acpus named Agent resolution", () => {
   it.each(Object.entries(builtInAgents))("owns the %s built-in launch", async (name, expected) => {
-    const fixture = await configFixture();
-
-    const result = await resolveNamed(name, fixture);
-
-    expect(result._unsafeUnwrap()).toEqual({ kind: "argv", argv: expected, name });
+    expect((await resolveNamedAcpAgentLaunch({ name }))._unsafeUnwrap()).toEqual({
+      kind: "argv",
+      argv: expected,
+      name,
+    });
   });
 
   it.each(["factory-droid", "factorydroid"])("resolves the %s alias to droid", async name => {
-    const fixture = await configFixture();
-
-    expect((await resolveNamed(name, fixture))._unsafeUnwrap()).toEqual({
+    expect((await resolveNamedAcpAgentLaunch({ name }))._unsafeUnwrap()).toEqual({
       kind: "argv",
       argv: builtInAgents.droid,
       name,
     });
   });
 
-  it("checks a project canonical alias before an exact global alias", async () => {
-    const fixture = await configFixture();
-    await writeConfig(fixture.globalConfig, {
-      agents: { factorydroid: "global-exact --stdio" },
-    });
-    await writeConfig(fixture.projectConfig, {
-      agents: { droid: "project-canonical --stdio" },
-    });
+  it("checks an exact configured alias before its canonical name", async () => {
+    const configuredAgentCommand = vi.fn((names: readonly string[]) => okAsync(
+      names.includes("factorydroid") ? "exact --stdio" : undefined,
+    ));
 
-    expect((await resolveNamed(" FACTORYDROID ", fixture))._unsafeUnwrap()).toEqual({
+    expect((await resolveNamedAcpAgentLaunch({ name: " FACTORYDROID ", configuredAgentCommand }))._unsafeUnwrap()).toEqual({
       kind: "command",
-      command: "project-canonical --stdio",
+      command: "exact --stdio",
       name: "factorydroid",
     });
+    expect(configuredAgentCommand).toHaveBeenCalledTimes(1);
+    expect(configuredAgentCommand).toHaveBeenCalledWith(["factorydroid", "droid"]);
   });
 
-  it("checks an exact alias before its canonical name within one source", async () => {
-    const fixture = await configFixture();
-    await writeConfig(fixture.projectConfig, {
-      agents: {
-        factorydroid: "exact-alias --stdio",
-        droid: "canonical-alias --stdio",
-      },
-    });
+  it("lets configured commands override a built-in", async () => {
+    const configuredAgentCommand = (names: readonly string[]) => okAsync(names.includes("codex") ? "configured-codex --stdio" : undefined);
 
-    expect((await resolveNamed("factorydroid", fixture))._unsafeUnwrap()).toEqual({
+    expect((await resolveNamedAcpAgentLaunch({ name: " CODEX ", configuredAgentCommand }))._unsafeUnwrap()).toEqual({
       kind: "command",
-      command: "exact-alias --stdio",
-      name: "factorydroid",
-    });
-  });
-
-  it("lets normalized project config override global config and a built-in", async () => {
-    const fixture = await configFixture();
-    await writeConfig(fixture.globalConfig, { agents: { codex: "global-codex --stdio" } });
-    await writeConfig(fixture.projectConfig, { agents: { " CoDeX ": "project-codex --stdio" } });
-
-    expect((await resolveNamed(" CODEX ", fixture))._unsafeUnwrap()).toEqual({
-      kind: "command",
-      command: "project-codex --stdio",
+      command: "configured-codex --stdio",
       name: "codex",
     });
   });
 
-  it("returns a config failure for an unknown name instead of treating it as a command", async () => {
-    const fixture = await configFixture();
+  it("propagates configured resolver failures", async () => {
+    const result = await resolveNamedAcpAgentLaunch({
+      name: "codex",
+      configuredAgentCommand: () => errAsync({ type: "agent-config", message: "config invalid" }),
+    });
 
-    const result = await resolveNamed("not-configured", fixture);
+    expect(result._unsafeUnwrapErr()).toEqual({ type: "agent-config", message: "config invalid" });
+  });
 
-    expect(result._unsafeUnwrapErr()).toMatchObject({
+  it("returns a config failure for an unknown or empty name", async () => {
+    expect((await resolveNamedAcpAgentLaunch({ name: "not-configured" }))._unsafeUnwrapErr()).toMatchObject({
       type: "agent-config",
       message: expect.stringContaining("not-configured"),
     });
-  });
-
-  it("returns a config failure for an empty normalized selector", async () => {
-    const fixture = await configFixture();
-
-    const result = await resolveNamed(" \t ", fixture);
-
-    expect(result._unsafeUnwrapErr()).toEqual({
+    expect((await resolveNamedAcpAgentLaunch({ name: " \t " }))._unsafeUnwrapErr()).toEqual({
       type: "agent-config",
       message: "Named Agent name must contain a non-whitespace character.",
     });
   });
 
-  it.each(["global", "project"] as const)("returns a typed failure for malformed %s config", async source => {
-    const fixture = await configFixture();
-    await writeFile(source === "global" ? fixture.globalConfig : fixture.projectConfig, "{ invalid", "utf8");
-
-    const result = await resolveNamed("codex", fixture);
-
-    expect(result._unsafeUnwrapErr()).toMatchObject({
-      type: "agent-config",
-      message: expect.stringContaining(source === "global" ? fixture.globalConfig : fixture.projectConfig),
-    });
-  });
-
-  it("validates every entry in each present config before resolving", async () => {
-    const fixture = await configFixture();
-    await writeConfig(fixture.globalConfig, {
-      agents: { unrelated: { argv: ["legacy"] } },
-    });
-    await writeConfig(fixture.projectConfig, {
-      agents: { codex: "project-codex --stdio" },
-    });
-
-    const result = await resolveNamed("codex", fixture);
-
-    expect(result._unsafeUnwrapErr()).toMatchObject({ type: "agent-config" });
-  });
-
-  it("returns a typed failure when a present config cannot be read", async () => {
-    const fixture = await configFixture();
-    await mkdir(fixture.projectConfig);
-
-    const result = await resolveNamed("codex", fixture);
-
-    expect(result._unsafeUnwrapErr()).toMatchObject({
-      type: "agent-config",
-      message: expect.stringContaining(fixture.projectConfig),
-    });
-  });
-
-  it("returns a typed failure when the config directory path is not a directory", async () => {
-    const fixture = await configFixture();
-    await rm(dirname(fixture.projectConfig), { recursive: true });
-    await writeFile(dirname(fixture.projectConfig), "not a directory", "utf8");
-
-    const result = await resolveNamed("codex", fixture);
-
-    expect(result._unsafeUnwrapErr()).toMatchObject({
-      type: "agent-config",
-      message: expect.stringContaining(fixture.projectConfig),
-    });
-  });
-
-  it("resolves each attempt against current config", async () => {
-    const fixture = await configFixture();
-    await writeConfig(fixture.projectConfig, { agents: { custom: "first --stdio" } });
-    expect((await resolveNamed("custom", fixture))._unsafeUnwrap()).toEqual({
-      kind: "command",
-      command: "first --stdio",
-      name: "custom",
-    });
-
-    await writeConfig(fixture.projectConfig, { agents: { custom: "second --stdio" } });
-    expect((await resolveNamed("custom", fixture))._unsafeUnwrap()).toEqual({
-      kind: "command",
-      command: "second --stdio",
-      name: "custom",
-    });
-  });
-
-  it("lets an explicit command bypass host and malformed config", async () => {
-    const fixture = await configFixture();
-    await writeFile(fixture.projectConfig, "{ invalid", "utf8");
-    const host = vi.fn(() => ["host-agent"]);
-
-    const result = await resolveAcpAgentLaunch({
-      agent: { kind: "command", command: "explicit-agent --stdio" },
-      cwd: fixture.cwd,
-      env: fixture.env,
-      namedAgentLaunches: { host },
-    });
-
-    expect(result._unsafeUnwrap()).toEqual({ kind: "command", command: "explicit-agent --stdio" });
-    expect(host).not.toHaveBeenCalled();
-  });
-
-  it("lets an own host resolver bypass malformed config and receive only the model", async () => {
-    const fixture = await configFixture();
-    await writeFile(fixture.projectConfig, "{ invalid", "utf8");
+  it("lets explicit commands and Host launches bypass configured resolution", async () => {
+    const configuredAgentCommand = vi.fn(() => errAsync({ type: "agent-config" as const, message: "must not run" }));
     const host = vi.fn(({ model }: { model?: string }) => ["host-agent", model ?? "default"]);
 
-    const result = await resolveAcpAgentLaunch({
+    expect((await resolveAcpAgentLaunch({
+      agent: { kind: "command", command: "explicit-agent --stdio" },
+      namedAgentLaunches: { host },
+      configuredAgentCommand,
+    }))._unsafeUnwrap()).toEqual({ kind: "command", command: "explicit-agent --stdio" });
+    expect((await resolveAcpAgentLaunch({
       agent: { kind: "named", name: " HOST " },
-      cwd: fixture.cwd,
-      env: fixture.env,
       model: "selected-model",
       namedAgentLaunches: { host },
-    });
-
-    expect(result._unsafeUnwrap()).toEqual({
+      configuredAgentCommand,
+    }))._unsafeUnwrap()).toEqual({
       kind: "argv",
       argv: ["host-agent", "selected-model"],
       name: "host",
     });
-    expect(host).toHaveBeenCalledWith({ model: "selected-model" });
+    expect(configuredAgentCommand).not.toHaveBeenCalled();
   });
 
-  it("does not resolve inherited host registry entries", async () => {
-    const fixture = await configFixture();
+  it("ignores inherited Host entries and rejects invalid own launches", async () => {
     const inherited = vi.fn(() => ["inherited-host"]);
     const namedAgentLaunches = Object.create({ custom: inherited }) as Record<string, typeof inherited>;
-
-    const result = await resolveAcpAgentLaunch({
+    expect((await resolveAcpAgentLaunch({
       agent: { kind: "named", name: "custom" },
-      cwd: fixture.cwd,
-      env: fixture.env,
       namedAgentLaunches,
-    });
-
-    expect(result._unsafeUnwrapErr()).toMatchObject({ type: "agent-config" });
+    }))._unsafeUnwrapErr()).toMatchObject({ type: "agent-config" });
     expect(inherited).not.toHaveBeenCalled();
-  });
-
-  it("treats an invalid host launch as a system invariant failure", async () => {
-    const fixture = await configFixture();
 
     expect(() => resolveAcpAgentLaunch({
       agent: { kind: "named", name: "host" },
-      cwd: fixture.cwd,
-      env: fixture.env,
       namedAgentLaunches: { host: () => [] },
     })).toThrow(AcpAgentResolutionSystemError);
   });
 });
-
-async function configFixture(): Promise<{
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  globalConfig: string;
-  projectConfig: string;
-}> {
-  const root = await mkdtemp(join(tmpdir(), "acpus-agent-resolution-"));
-  temporaryDirectories.push(root);
-  const home = join(root, "home");
-  const cwd = join(root, "workspace");
-  const globalConfig = join(home, ".acpus", "agents.json");
-  const projectConfig = join(cwd, ".acpus", "agents.json");
-  await Promise.all([mkdir(dirname(globalConfig), { recursive: true }), mkdir(dirname(projectConfig), { recursive: true })]);
-  return {
-    cwd,
-    env: { ...process.env, HOME: home, USERPROFILE: home },
-    globalConfig,
-    projectConfig,
-  };
-}
-
-function writeConfig(path: string, config: unknown): Promise<void> {
-  return writeFile(path, `${JSON.stringify(config)}\n`, "utf8");
-}
-
-function resolveNamed(name: string, fixture: Awaited<ReturnType<typeof configFixture>>) {
-  return resolveNamedAcpAgentLaunch({ name, cwd: fixture.cwd, env: fixture.env });
-}

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { sha256Digest } from "@acpus/core/content-identity";
-import type { AgentDefinitionIR, AgentNodeIR, WorkflowIR } from "@acpus/core/ir";
+import type { AgentDefinitionIR, AgentNodeIR } from "@acpus/core/ir";
 import {
   type AgentSelector,
   type AgentSessionLease,
@@ -85,7 +85,7 @@ export type AgentAttemptFailure =
 
 type AgentExecutorOptionsBase = {
   cwd: string;
-  agents: WorkflowIR["agents"];
+  agents: Record<string, AgentDefinitionIR>;
   hostPolicy: AgentHostPolicy;
   deadlineAt?: string;
   progressWriter?: NodeProgressWriter;

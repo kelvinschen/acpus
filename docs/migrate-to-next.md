@@ -285,11 +285,12 @@ without canceling the run.
 
 ### Hooks
 
-Do not copy `.acpus/hooks.yaml` to `.acpus/hooks.json`. Rebuild the integration
-from its purpose:
+Do not copy `.acpus/hooks.yaml` forward. Rebuild the integration from its
+purpose in the unified Acpus configuration:
 
-- 0.6 reads `<workspace>/.acpus/hooks.json` and `$HOME/.acpus/hooks.json`.
-- The JSON top level is an event map; there is no `hooks` wrapper.
+- Acpus reads `<workspace>/.acpus/config.json` and `$HOME/.acpus/config.json`.
+- Hooks live in the top-level `hooks` section alongside optional `agents` and
+  `presets` sections.
 - Supported events are `run.started`, `run.completed`, `run.failed`,
   `run.canceled`, `run.awaiting`, `node.started`, `node.completed`, and
   `node.failed`.

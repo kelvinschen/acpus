@@ -2,7 +2,7 @@ import {
   advanceFrozenRun,
   forkAgentWorkflow,
   forkRuntimeRun,
-  overrideAgentWorkflow,
+  injectedAgentWorkflow,
   targetedForkCompletedSourceWorkflow,
   targetedForkFailedSourceWorkflow,
   targetedForkReplacementWorkflow,
@@ -319,6 +319,11 @@ describe.concurrent("scheduler Agent fork session replay", () => {
           expect(turns[2]!.agentSessionId).toBe(turns[3]!.agentSessionId);
           expect(turns[2]!.agentSessionId).not.toBe(turns[0]!.agentSessionId);
 
+          executeRuntimeSql(workspace, `
+            UPDATE run_events
+            SET payload_json = json_set(payload_json, '$.semanticFingerprint', 'test-consumed-before-missing')
+            WHERE run_id = ? AND type = 'run.forked'
+          `, firstMismatch.id);
           const missingBeforeReplay = await forkRuntimeRun(store, source.id, { input: {} });
           executeRuntimeSql(workspace, `
             DELETE FROM fork_replay_facts
@@ -333,7 +338,12 @@ describe.concurrent("scheduler Agent fork session replay", () => {
           expect(turns[4]!.agentSessionId).toBe(turns[5]!.agentSessionId);
           expect(turns[4]!.agentSessionId).not.toBe(turns[0]!.agentSessionId);
 
-          const partial = await forkRuntimeRun(store, source.id, { agentOverrides: {} });
+          executeRuntimeSql(workspace, `
+            UPDATE run_events
+            SET payload_json = json_set(payload_json, '$.semanticFingerprint', 'test-consumed')
+            WHERE run_id = ? AND type = 'run.forked'
+          `, missingBeforeReplay.id);
+          const partial = await forkRuntimeRun(store, source.id, { agentInjections: {} });
           executeRuntimeSql(workspace, `
             DELETE FROM fork_replay_facts
             WHERE run_id = ? AND source_sequence = (
@@ -435,7 +445,7 @@ describe.concurrent("scheduler Agent fork session replay", () => {
         const forkStore = await openRuntimeStore(workspace);
         try {
           const fork = await forkRuntimeRun(forkStore, sourceId, {
-            agentOverrides: { reviewer: { command: "custom-acp-server" } },
+            agentInjections: { reviewer: { command: "custom-acp-server" } },
           });
           expect(runtimeRows(workspace, "SELECT * FROM fork_replay_session_groups WHERE run_id = ?", fork.id)).toEqual([]);
           expect(runtimeRows(workspace, "SELECT * FROM fork_replay_facts WHERE run_id = ?", fork.id)).toEqual([]);
@@ -446,8 +456,8 @@ describe.concurrent("scheduler Agent fork session replay", () => {
       });
     });
 
-  it("re-executes the whole session group when fork-time agent overrides change", async () => {
-      await withRuntimeWorkspace("scheduler-node-executor-agent-fork-override-reexecutes", async workspace => {
+  it("re-executes the whole session group when fork-time Agent injections change", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-fork-injection-reexecutes", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, forkAgentWorkflow("shared-session"));
         const store = await openRuntimeStore(workspace);
         const sourceTurns: AgentTurnRequest[] = [];
@@ -467,7 +477,7 @@ describe.concurrent("scheduler Agent fork session replay", () => {
           expect(store.getRun(source.id)).toMatchObject({ status: "completed", output: {} });
 
           const fork = await forkRuntimeRun(store, source.id, {
-            agentOverrides: { reviewer: { command: "custom-acp-server" } },
+            agentInjections: { reviewer: { command: "custom-acp-server" } },
           });
           const forkRun = store.getRun(fork.id);
           expect(forkRun).toMatchObject({ status: "pending" });
@@ -497,30 +507,30 @@ describe.concurrent("scheduler Agent fork session replay", () => {
       });
     });
 
-  it("rejects invalid agent overrides at admission", async () => {
-      await withRuntimeWorkspace("scheduler-node-executor-agent-override-invalid", async workspace => {
-        const prepared = await prepareSyntheticWorkflow(workspace, overrideAgentWorkflow());
+  it("rejects invalid Agent injections at admission", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-injection-invalid", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, injectedAgentWorkflow());
         const store = await openRuntimeStore(workspace);
         try {
           expect((await store.admitRun({
             prepared,
             input: {},
             cwd: workspace,
-            agentOverrides: { reviewer: { options: {} } } as any,
+            agentInjections: { reviewer: { options: {} } } as any,
           }))._unsafeUnwrapErr()).toMatchObject({
-            type: "agent-overrides-invalid",
+            type: "agent-injections-invalid",
             message: expect.stringContaining("$.reviewer Unrecognized key"),
           });
           expect((await store.admitRun({
             prepared,
             input: {},
             cwd: workspace,
-            agentOverrides: { missing: { use: "codex" } },
+            agentInjections: { missing: { use: "codex" } },
           }))._unsafeUnwrapErr()).toMatchObject({
-            type: "agent-overrides-invalid",
+            type: "agent-injections-invalid",
             message: expect.stringContaining("does not reference a declared agent"),
           });
-          for (const [agentOverrides, message] of [
+          for (const [agentInjections, message] of [
             [{ reviewer: { policy: "full" } }, "$.reviewer Unrecognized key"],
             [{ reviewer: { kind: "agent_definition" } }, "$.reviewer Unrecognized key"],
             [{ reviewer: { timeout: "1s" } }, "$.reviewer Unrecognized key"],
@@ -534,9 +544,9 @@ describe.concurrent("scheduler Agent fork session replay", () => {
               prepared,
               input: {},
               cwd: workspace,
-              agentOverrides,
+              agentInjections,
             }))._unsafeUnwrapErr()).toMatchObject({
-              type: "agent-overrides-invalid",
+              type: "agent-injections-invalid",
               message: expect.stringContaining(message),
             });
           }

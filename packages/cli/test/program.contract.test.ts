@@ -334,7 +334,7 @@ describe("CLI program usage contracts", () => {
     });
   });
 
-  it("resolves .json Agent override files before workflow preparation or runtime mutation", async () => {
+  it("resolves .json Agent injection files before workflow preparation or runtime mutation", async () => {
     await withPlainTestWorkspace("agent-files", async workspace => {
       await writeFile(join(workspace, "empty.json"), "  \n");
       await writeFile(join(workspace, "invalid.json"), "{\"reviewer\":}");
@@ -344,7 +344,7 @@ describe("CLI program usage contracts", () => {
       const cases = [
         { argv: ["workflow", "check", "missing.workflow.ts", "--agents", "missing.json"], message: `--agents file '${join(workspace, "missing.json")}' could not be read` },
         { argv: ["workflow", "run", "missing.workflow.ts", "--agents", "missing.json"], message: `--agents file '${join(workspace, "missing.json")}' could not be read` },
-        { argv: ["runs", "fork", "run_1", "--agents", "missing.json"], message: `--agents file '${join(workspace, "missing.json")}' could not be read` },
+        { argv: ["runs", "fork", "run_1", "--workflow", "missing.workflow.ts", "--agents", "missing.json"], message: `--agents file '${join(workspace, "missing.json")}' could not be read` },
         { argv: ["workflow", "check", "missing.workflow.ts", "--agents", "empty.json"], message: `--agents file '${join(workspace, "empty.json")}' is empty` },
         { argv: ["workflow", "check", "missing.workflow.ts", "--agents", "invalid.json"], message: `--agents file '${join(workspace, "invalid.json")}' must be valid JSON` },
         { argv: ["workflow", "check", "missing.workflow.ts", "--agents", "array.json"], message: "--agents must be a JSON object" },
@@ -439,8 +439,9 @@ describe("CLI program usage contracts", () => {
   it("validates and lists project hooks", async () => {
     await withPlainTestWorkspace("hooks-project", async workspace => {
       await mkdir(join(workspace, ".acpus"), { recursive: true });
-      await writeFile(join(workspace, ".acpus", "hooks.json"), JSON.stringify({
+      await writeFile(join(workspace, ".acpus", "config.json"), JSON.stringify({ hooks: {
         "run.completed": [{ id: "notify", command: "echo ok", match: { workflow: "^release$" } }],
+      },
       }));
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
@@ -449,6 +450,7 @@ describe("CLI program usage contracts", () => {
 
       expect(validateExit).toBe(0);
       expect(stdout.text).toContain("OK (1 hooks)");
+      expect(stdout.text).toContain(`Project: ${join(workspace, ".acpus", "config.json")}`);
       expect(stderr.text).toBe("");
 
       const listStdout = new CaptureStream();
@@ -456,7 +458,7 @@ describe("CLI program usage contracts", () => {
       const listExit = await runCli(["hooks", "list", "--project"], { cwd: workspace, stdout: listStdout, stderr: listStderr });
 
       expect(listExit).toBe(0);
-      expect(listStdout.text).toContain(`Project: ${join(workspace, ".acpus", "hooks.json")}`);
+      expect(listStdout.text).toContain(`Project: ${join(workspace, ".acpus", "config.json")}`);
       expect(listStdout.text).toContain("notify  ->  echo ok  (match: workflow=^release$)");
       expect(listStdout.text).not.toContain("Global:");
       expect(listStderr.text).toBe("");
@@ -470,12 +472,12 @@ describe("CLI program usage contracts", () => {
       process.env.HOME = home;
       await mkdir(join(workspace, ".acpus"), { recursive: true });
       await mkdir(join(home, ".acpus"), { recursive: true });
-      await writeFile(join(workspace, ".acpus", "hooks.json"), JSON.stringify({
+      await writeFile(join(workspace, ".acpus", "config.json"), JSON.stringify({ hooks: {
         "run.completed": [{ id: "project-notify", command: "echo project", match: { workflow: "^release$" } }],
-      }));
-      await writeFile(join(home, ".acpus", "hooks.json"), JSON.stringify({
+      } }));
+      await writeFile(join(home, ".acpus", "config.json"), JSON.stringify({ hooks: {
         "node.failed": [{ id: "global-alert", command: "echo global", match: { nodeId: "^build$" } }],
-      }));
+      } }));
 
       try {
         const validateStdout = new CaptureStream();
@@ -483,7 +485,12 @@ describe("CLI program usage contracts", () => {
         const validateExit = await runCli(["hooks", "validate"], { cwd: workspace, stdout: validateStdout, stderr: validateStderr });
 
         expect(validateExit).toBe(0);
-        expect(validateStdout.text).toBe("OK (2 hooks)\n");
+        expect(validateStdout.text).toBe([
+          "OK (2 hooks)",
+          `Project: ${join(workspace, ".acpus", "config.json")}`,
+          `Global: ${join(home, ".acpus", "config.json")}`,
+          "",
+        ].join("\n"));
         expect(validateStderr.text).toBe("");
 
         const textStdout = new CaptureStream();
@@ -492,9 +499,9 @@ describe("CLI program usage contracts", () => {
 
         expect(textExit).toBe(0);
         expect(textStdout.text.startsWith("Hooks (project + global):\n\n")).toBe(true);
-        expect(textStdout.text).toContain(`Project: ${join(workspace, ".acpus", "hooks.json")}`);
+        expect(textStdout.text).toContain(`Project: ${join(workspace, ".acpus", "config.json")}`);
         expect(textStdout.text).toContain("project-notify  ->  echo project  (match: workflow=^release$)");
-        expect(textStdout.text).toContain(`Global: ${join(home, ".acpus", "hooks.json")}`);
+        expect(textStdout.text).toContain(`Global: ${join(home, ".acpus", "config.json")}`);
         expect(textStdout.text).toContain("global-alert  ->  echo global  (match: nodeId=^build$)");
         expect(textStderr.text).toBe("");
 
@@ -503,7 +510,7 @@ describe("CLI program usage contracts", () => {
         const globalExit = await runCli(["hooks", "list", "--global"], { cwd: workspace, stdout: globalStdout, stderr: globalStderr });
 
         expect(globalExit).toBe(0);
-        expect(globalStdout.text).toContain(`Global: ${join(home, ".acpus", "hooks.json")}`);
+        expect(globalStdout.text).toContain(`Global: ${join(home, ".acpus", "config.json")}`);
         expect(globalStdout.text).toContain("global-alert  ->  echo global  (match: nodeId=^build$)");
         expect(globalStdout.text).not.toContain("Project:");
         expect(globalStderr.text).toBe("");
@@ -562,9 +569,9 @@ describe("CLI program usage contracts", () => {
   it("reports hook validation failures through the validate phase", async () => {
     await withPlainTestWorkspace("hooks-invalid", async workspace => {
       await mkdir(join(workspace, ".acpus"), { recursive: true });
-      await writeFile(join(workspace, ".acpus", "hooks.json"), JSON.stringify({
+      await writeFile(join(workspace, ".acpus", "config.json"), JSON.stringify({ hooks: {
         "run.completed": [{ command: "", match: { workflow: "[" } }],
-      }));
+      } }));
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
 
@@ -572,7 +579,7 @@ describe("CLI program usage contracts", () => {
 
       expect(exitCode).toBe(1);
       expect(stdout.text).toBe("");
-      expect(stderr.text).toContain("Invalid hooks config");
+      expect(stderr.text).toContain("Invalid Acpus config");
     });
   });
 });

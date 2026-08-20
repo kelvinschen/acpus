@@ -6,9 +6,9 @@ Runtime hooks let users run configured shell commands when durable [Runtime](run
 
 ## Requirements
 
-- Hook configuration MUST live in JSON files at `<workspace>/.acpus/hooks.json` and `$HOME/.acpus/hooks.json`.
-- A hooks JSON file MUST be an event map whose top-level keys are supported hook events and whose values are arrays of command hooks.
-- A hooks JSON file MUST NOT use a top-level `hooks` wrapper field.
+- Hook configuration MUST use the `hooks` section of the project/global files
+  owned by the [Configuration](configuration-spec.md) contract. Its keys MUST
+  be supported hook events and its values MUST be arrays of command hooks.
 - Supported hook events MUST be `run.started`, `run.completed`, `run.failed`, `run.canceled`, `run.awaiting`, `node.started`, `node.completed`, and `node.failed`.
 - Hook entries MUST contain a non-empty `command` string without NUL bytes and MAY contain `id`, `timeout`, and `match`.
 - Hook `id` MUST be display and journal metadata only; duplicate ids MUST NOT override or suppress any hook entry.
@@ -32,7 +32,7 @@ Runtime hooks let users run configured shell commands when durable [Runtime](run
 - Runtime hooks MUST receive a JSON context on stdin and MUST NOT receive workflow state through environment variables.
 - Hook execution MUST be non-interfering: hook failure, timeout, output, or journal write failure MUST NOT change workflow status, workflow output, IR, runtime scope, or public run event payloads.
 - Hook runner, observer, or journal failure after cursor advancement MUST NOT roll the cursor back or replay the observation.
-- Invalid hook configuration MUST fail daemon startup with an `Invalid hooks config` error instead of silently disabling hooks.
+- Invalid Acpus configuration MUST fail daemon startup instead of silently disabling hooks.
 - The hook runner MUST execute command hooks asynchronously with shell spawning and a default timeout of 30 seconds.
 - Hook timeout strings MUST use the `@acpus/core/ir` duration grammar, MUST resolve to safe-integer milliseconds, and MUST interpret an omitted unit as milliseconds.
 - Hook timeout scheduling MUST preserve accepted durations above Node's single-timer limit by using cancellable chunks and MUST cancel the active timeout when the hook settles.

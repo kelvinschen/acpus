@@ -18,6 +18,10 @@ export type NamedAcpAgentLaunchRegistry = Readonly<
   Record<string, NamedAcpAgentLaunchResolver>
 >;
 
+export type ConfiguredAcpAgentCommandResolver = (
+  names: readonly string[],
+) => ResultAsync<string | undefined, AcpAgentResolutionFailure>;
+
 export type AgentToolInputPreview = {
   preview: string;
   truncated: boolean;
@@ -90,6 +94,7 @@ export type AgentSessionSupervisorOptions = Readonly<{
   sessionStateDirectoryForRun(runId: string): string;
   owner: RuntimeOwnerIdentity;
   namedAgentLaunches?: NamedAcpAgentLaunchRegistry;
+  configuredAgentCommand?: ConfiguredAcpAgentCommandResolver;
 }>;
 
 export type AgentSessionRef = Readonly<{

@@ -1,4 +1,4 @@
-import { walkNodes, type AgentDefinitionIR, type ExprIR, type NodeChildScope, type NodeIR, type SchemaIR, type WorkflowIR } from "@acpus/core/ir";
+import { walkNodes, type AgentDeclarationIR, type ExprIR, type NodeChildScope, type NodeIR, type SchemaIR, type WorkflowIR } from "@acpus/core/ir";
 import type {
   RunDynamicAttempt,
   RunDynamicFrame,
@@ -29,7 +29,7 @@ export type WorkflowVisualizationOverlay = {
 // Semantic summary of a node's authored configuration, rendered by browser-facing packages.
 export type NodeDetail =
   | { kind: "task"; input: ExprIR; target: "inline" | "module" }
-  | { kind: "agent"; agent: string; use?: string; command?: string; model?: string; outputSchema?: SchemaIR }
+  | { kind: "agent"; agent: string; use?: string; command?: string; model?: string; unbound?: boolean; outputSchema?: SchemaIR }
   | { kind: "signal"; outputSchema?: SchemaIR }
   | { kind: "assert"; condition: ExprIR; message?: ExprIR }
   | { kind: "if"; condition: ExprIR }
@@ -177,13 +177,14 @@ function nodeDetail(node: NodeIR, agents: WorkflowIR["agents"]): NodeDetail {
     case "task":
       return { kind: "task", input: node.run.input, target: node.run.target.kind };
     case "agent": {
-      const definition: AgentDefinitionIR | undefined = agents[node.run.agent];
+      const definition: AgentDeclarationIR | undefined = agents[node.run.agent];
       const model = definition?.config?.model ?? definition?.model;
       return {
         kind: "agent",
         agent: node.run.agent,
         ...(definition?.kind === "agent_definition" ? { use: definition.use } : {}),
         ...(definition?.kind === "agent_command" ? { command: definition.command } : {}),
+        ...(definition?.kind === "agent_slot" ? { unbound: true } : {}),
         ...(model === undefined ? {} : { model }),
         ...(node.outputSchema === undefined ? {} : { outputSchema: node.outputSchema }),
       };

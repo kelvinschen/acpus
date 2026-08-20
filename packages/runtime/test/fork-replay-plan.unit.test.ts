@@ -130,7 +130,7 @@ function sessionWorkflow(options: { laterSessionKey?: ExprIR; input?: JsonValue 
   }
   return {
     ir: {
-      irVersion: 7,
+      irVersion: 8,
       name: "session-group-plan",
       agents: { reviewer: { kind: "agent_definition", use: "codex" } },
       root: { nodes, output: literal(null) },

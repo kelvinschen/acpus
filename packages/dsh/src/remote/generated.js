@@ -297,7 +297,7 @@ const _acpus_dsh_acpus_readActivityDetail_result$schema = z.union([z.object({
   'text': z.string(),
   'truncated': z.boolean(),
 }), z.object({
-  'origin': z.union([z.literal("authored"), z.literal("steering")]),
+  'origin': z.union([z.literal("authored"), z.literal("steering"), z.literal("repair")]),
 })).optional(),
   'result': z.union([z.object({
   'kind': z.literal("output"),
@@ -340,14 +340,12 @@ const _acpus_dsh_acpus_readActivityDetail_result$schema = z.union([z.object({
   'status': z.literal("rejected"),
   'reason': z.union([z.literal("task-unavailable"), z.literal("node-unavailable"), z.literal("detail-unavailable"), z.literal("temporarily-unavailable")]),
 })])
-const _acpus_dsh_acpus_readAgentProfiles_parameter_0$schema = z.object({})
-const _acpus_dsh_acpus_readAgentProfiles_result$schema = z.object({
-  'profiles': z.array(z.object({
+const _acpus_dsh_acpus_readAgentPresets_parameter_0$schema = z.object({})
+const _acpus_dsh_acpus_readAgentPresets_result$schema = z.object({
+  'presets': z.array(z.object({
   'id': z.string(),
-  'use': z.string(),
-  'model': z.string().optional(),
   'guidance': z.string(),
-  'builtIn': z.boolean(),
+  'scope': z.union([z.literal("host"), z.literal("project"), z.literal("global")]),
 })),
 })
 const _acpus_dsh_acpus_readSessionActivity_parameter_0$schema = z.object({
@@ -485,7 +483,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#AwaitSessionActivityRevisionResult',
         schema: _acpus_dsh_acpus_awaitSessionActivityRevision_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":375,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":446,"column":3},
     },
     {
       id: '@acpus/dsh#acpus/cancelSessionTask',
@@ -510,7 +508,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#CancelSessionTaskResult',
         schema: _acpus_dsh_acpus_cancelSessionTask_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":387,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":458,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readActivityDetail',
@@ -535,13 +533,13 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#ReadActivityDetailResult',
         schema: _acpus_dsh_acpus_readActivityDetail_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":323,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":394,"column":9},
     },
     {
-      id: '@acpus/dsh#acpus/readAgentProfiles',
+      id: '@acpus/dsh#acpus/readAgentPresets',
       service: 'acpusMode',
       namespace: 'acpus',
-      method: 'readAgentProfiles',
+      method: 'readAgentPresets',
       invocation: { kind: 'direct' },
       parameters: [
         {
@@ -550,17 +548,17 @@ export const TYPERT_REMOTE = {
           source: 'json',
           codec: {
             mode: 'strict',
-            typeSymbol: '@acpus/dsh/projection#ReadAgentProfilesRequest',
-            schema: _acpus_dsh_acpus_readAgentProfiles_parameter_0$schema,
+            typeSymbol: '@acpus/dsh/projection#ReadAgentPresetsRequest',
+            schema: _acpus_dsh_acpus_readAgentPresets_parameter_0$schema,
           },
         },
       ],
       result: {
         mode: 'strict',
-        typeSymbol: '@acpus/dsh/projection#ReadAgentProfilesResult',
-        schema: _acpus_dsh_acpus_readAgentProfiles_result$schema,
+        typeSymbol: '@acpus/dsh/projection#ReadAgentPresetsResult',
+        schema: _acpus_dsh_acpus_readAgentPresets_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":303,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":380,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readSessionActivity',
@@ -585,7 +583,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#SessionActivityProjection',
         schema: _acpus_dsh_acpus_readSessionActivity_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":316,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":387,"column":3},
     },
   ],
 }

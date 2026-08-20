@@ -3,15 +3,11 @@ import { AcpusMode } from "./host/mode.js";
 export default AcpusMode;
 export {
   AcpusMode,
+  type ApplyAgentPresetsRequest,
+  type ApplyAgentPresetsResult,
   type AcpusModeConfig,
   type AcpusRunRequest,
 } from "./host/mode.js";
-export type {
-  AgentProfile,
-  AgentProfileChange,
-  UpdateAgentProfilesInput,
-  UpdateAgentProfilesResult,
-} from "./host/agent-profiles.js";
 export {
   AcpusPresetCollisionError,
   installAcpusPreset,

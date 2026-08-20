@@ -1,8 +1,8 @@
-import type { NodeDetail, WorkflowContext } from "../api.js";
+import type { NodeDetail, WorkflowVisualizationContext } from "../api.js";
 import { InspectorSection, JsonSection, KeyValue } from "./Inspector.js";
 
 type AgentDetail = Extract<NodeDetail, { kind: "agent" }>;
-type AgentProfile = WorkflowContext["agents"][string];
+type AgentProfile = WorkflowVisualizationContext["agents"][string];
 
 export function NodeDefinitionSection({
   detail,
@@ -43,10 +43,12 @@ function AgentDefinitionSection({
   const command = agentProfile?.kind === "agent_command" ? agentProfile.command : detail.command;
   const model = detail.model ?? agentProfile?.config?.model ?? agentProfile?.model ?? runtimeModel;
   const config = Object.entries(agentProfile?.config ?? {}).sort(([left], [right]) => left.localeCompare(right));
+  const unbound = detail.unbound === true || agentProfile?.kind === "agent_slot";
 
   return (
     <InspectorSection title="Agent Definition">
       <KeyValue label="Name" value={detail.agent} />
+      {unbound && <KeyValue label="Binding" value="Unbound Agent slot" />}
       {agent && <KeyValue label="Agent" value={agent} />}
       {command && <KeyValue label="Command" value={command} />}
       {model && <KeyValue label="Effective model" value={model} />}

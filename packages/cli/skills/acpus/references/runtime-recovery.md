@@ -47,7 +47,7 @@ For `ACPUS_WORKSPACE_UNAVAILABLE`, restore the exact original workspace path, th
 | Wait | No recovery condition or new information exists. | Leaves correct active work uninterrupted. |
 | Steer | The admitted task remains correct, but an exactly active Agent Turn needs an in-scope information update. | Interrupts and drains that Turn, then runs a replacement Attempt in the same Agent Session. |
 | Retry | A failed or timed-out Task, Agent, or frame can repeat under unchanged admitted state. | Reopens the complete required range; affected local Agent Sessions are replaced by a new generation. |
-| Fork | The workflow, input, Agent mapping, or task definition must change. | Creates a new run and reuses compatible completed work when safe. |
+| Fork | The workflow, input, Agent binding, or task definition must change. | Creates a new run and reuses compatible completed work when safe. |
 
 Prefer the smallest action that preserves correct admitted state:
 
@@ -60,7 +60,7 @@ Prefer the smallest action that preserves correct admitted state:
   - Use for one failed or timed-out Task, Agent, or frame when workflow and inputs remain correct.
   - Retry a timed-out Signal target; do not signal its closed wait.
 - **Fork**
-  - Use when authored behavior, input, Agent mapping, or Task definition must change.
+  - Use when authored behavior, input, Agent binding, or Task definition must change.
   - Use instead of Retry when the range intersects an explicit shared Agent Session. Run the exact Fork command supplied by Acpus.
   - Reuse earlier results only when their outputs and side effects remain valid.
 

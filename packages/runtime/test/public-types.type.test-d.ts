@@ -32,15 +32,17 @@ import {
   tryLoadRuntimeConfiguration,
   tryNormalizeForkInput,
   tryNormalizeWorkflowInput,
-  tryValidateAgentOverrides,
+  tryParseAgentInjectionMap,
 } from "@acpus/runtime";
 import type {
   AdmitRunFailure,
   AgentHostPolicy,
   AgentHostPolicyFailure,
   AgentOutputProcessing,
-  AgentOverrideMap,
-  AgentOverrideValidationFailure,
+  AgentInjectionMap,
+  AgentInjectionValidationFailure,
+  AgentBindingFailure,
+  AgentPresetCatalogFailure,
   AgentTurnArtifact,
   ArtifactResolutionFailure,
   ArtifactRecord,
@@ -125,6 +127,7 @@ import type {
 } from "@acpus/runtime";
 import {
   openWorkspaceRuntime,
+  type AgentPresetProvider,
   type NamedAcpAgentLaunchRegistry,
   type NamedAcpAgentLaunchResolver,
   type WorkspaceRuntime,
@@ -274,6 +277,7 @@ test("@acpus/runtime/host exposes the embeddable Runtime interface", () => {
   }>>();
   expectTypeOf<WorkspaceRuntimeHostDependencies>().toEqualTypeOf<Readonly<{
     namedAgentLaunches?: NamedAcpAgentLaunchRegistry;
+    agentPresetProvider?: AgentPresetProvider;
   }>>();
   expectTypeOf<WorkspaceRuntimeOpenFailure>().toEqualTypeOf<
     | { type: "runtime-store-unsupported" | "runtime-store-unavailable"; message: string }
@@ -358,13 +362,14 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf(tryNormalizeWorkflowInput).toEqualTypeOf<
     (ir: WorkflowIR, input: JsonValue, label?: string) => Result<JsonValue, SchemaNormalizationFailure>
   >();
-  expectTypeOf(tryValidateAgentOverrides).toEqualTypeOf<
-    (ir: WorkflowIR, input: AgentOverrideMap | undefined) => Result<AgentOverrideMap, AgentOverrideValidationFailure>
+  expectTypeOf(tryParseAgentInjectionMap).toEqualTypeOf<
+    (value: unknown, declarations?: Record<string, unknown>) => Result<AgentInjectionMap, AgentInjectionValidationFailure>
   >();
   expectTypeOf<AdmitRunFailure>().toEqualTypeOf<
     | PreparedRunValidationFailure
     | SchemaNormalizationFailure
-    | AgentOverrideValidationFailure
+    | AgentBindingFailure
+    | AgentPresetCatalogFailure
     | { type: "admission-request-conflict"; requestId: string; message: string }
   >();
   expectTypeOf(deleteRun).toEqualTypeOf<(cwd: string, runId: string) => ResultAsync<RunRecord | undefined, RunDeleteFailure>>();
@@ -390,8 +395,8 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   >();
   expectTypeOf<AgentHostPolicy["inactivityFailAfterMs"]>().toEqualTypeOf<number | undefined>();
 
-  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<9>();
-  expectTypeOf<typeof RUNTIME_ABI_VERSION>().toEqualTypeOf<4>();
+  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<10>();
+  expectTypeOf<typeof RUNTIME_ABI_VERSION>().toEqualTypeOf<5>();
   expectTypeOf(daemonEndpoint).toEqualTypeOf<(cwd: string) => string>();
   expectTypeOf(requestDaemonStatus).toEqualTypeOf<(cwd: string) => ResultAsync<DaemonStatus, DaemonClientFailure>>();
   expectTypeOf(requestDaemonStatusProbe).toEqualTypeOf<
@@ -417,7 +422,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     status: "ok";
     pid: number;
     leaseGeneration: number;
-    protocolVersion: 9;
+    protocolVersion: 10;
     packageVersion: string;
     authority: RuntimeAuthorityIdentity;
   }>();
@@ -431,9 +436,9 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf<DaemonRunObservationUntil>().toEqualTypeOf<"admitted" | "subject-terminal" | "decision-boundary">();
   expectTypeOf<RuntimeAuthorityIdentity>().toEqualTypeOf<{
     workspaceKey: string;
-    runtimeAbi: 4;
+    runtimeAbi: 5;
     layoutVersion: 2;
-    storageVersion: 17;
+    storageVersion: 18;
     authorityId: string;
     leaseGeneration: number;
   }>();

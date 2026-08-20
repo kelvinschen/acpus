@@ -24,7 +24,7 @@ export async function submitRunThroughDaemon(
     requestId: input.requestId ?? `test:${randomUUID()}`,
     prepared: input.prepared,
     input: input.input,
-    ...(input.agentOverrides === undefined ? {} : { agentOverrides: input.agentOverrides }),
+    ...(input.agentInjections === undefined ? {} : { agentInjections: input.agentInjections }),
     until: "admitted",
   })) {
     if (frame.isErr()) throw failureError(frame.error);

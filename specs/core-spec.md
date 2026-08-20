@@ -30,13 +30,11 @@
 - Workflow authoring config MAY declare `description?: string`, and compilation MUST preserve it as top-level `WorkflowIR.description` metadata when present.
 - During graph construction, `input.*` fields MUST be exposed as `Expr<T>` tokens.
 - During graph construction, `meta.runId`, `meta.workflowPath`, `meta.workflowName`, and `meta.workspaceDir` MUST be exposed as run-level `Expr<string>` tokens.
-- Agent definitions MUST be declared at workflow top level under `agents` as plain object definitions.
-- `{ use, model?, ... }` MUST define a named Agent and `{ command, ... }` MUST define a custom command Agent.
-- Agent definition `use` and `command` MUST be mutually exclusive.
-- Top-level agent definitions MUST be authoring specs without an IR `kind` field.
-- Named and custom command agent definitions MAY declare `model`.
-- Named and custom command agent definitions MAY declare `config?: Record<string, string>` as a declaration-time static Agent profile. Core MUST preserve it as an opaque string map; it is not an ACP `configOptions` snapshot, and adapter-specific key/value validation belongs outside Core.
-- Agent definitions MUST NOT declare `agentMode`.
+- Agent declarations MUST be declared at workflow top level under `agents` as plain closed object specs without an IR `kind` field.
+- `{ use, ... }` MUST declare a concrete named Agent, `{ command, ... }` MUST declare a concrete custom-command Agent, and a selectorless `{ ... }` including `{}` MUST declare an Agent Slot whose identity is supplied at admission.
+- `use` and `command` MUST be mutually exclusive. Authoring declarations MUST NOT accept `preset`, unknown fields, or `agentMode`.
+- Concrete definitions and Slots MAY declare `model`, `permissionMode`, `config?: Record<string, string>`, non-empty `cwd`, and `env?: Record<string, string>` as static defaults. Core MUST preserve `config` and `env` as opaque string maps; adapter-specific key/value validation belongs outside Core.
+- `AgentDefinitionSpec` MUST describe only concrete named/command definitions; `AgentSlotSpec` MUST describe only selectorless declarations; `AgentDeclarationSpec` and `AgentMap` MUST be their union and map respectively.
 - The `build` context `agents` member MUST expose one typed token for each key declared in workflow top-level `agents`.
 - Agent node authoring field `agent` MUST use an agent token from the `build` context `agents` member.
 - When authors extract an `agents` object before passing it to `defineWorkflow(...)`, they SHOULD preserve literal keys, for example with `satisfies AgentMap`; otherwise TypeScript MAY widen the keys and lose per-Agent inference.
@@ -161,7 +159,7 @@
 
 ### IR And Validation
 
-- `tryCompileWorkflowDefinition(definition, options?)` MUST lower an in-memory workflow definition to a `Result<WorkflowIR, WorkflowCompilationFailure>` with `irVersion: 7` on success.
+- `tryCompileWorkflowDefinition(definition, options?)` MUST lower an in-memory workflow definition to a `Result<WorkflowIR, WorkflowCompilationFailure>` with `irVersion: 8` on success.
 - `tryCompileWorkflowDefinition(...)` MUST retain an ordinary build/lowering exception as the `workflow-lowering-failed` cause.
 - `compileWorkflowDefinition(definition, options?)` MUST rethrow an ordinary build/lowering cause unchanged and MUST preserve a tagged Task/link failure as the thrown error's cause.
 - `WorkflowCompilationFailure` MUST distinguish workflow lowering failure, malformed Task authoring specs, missing reusable-Task links, and invalid reusable-Task link fields.
@@ -175,13 +173,15 @@
 - `WorkflowIR` MUST contain only `irVersion`, `name`, optional `description`, optional `inputSchema`, `agents`, `root`, and `diagnostics`.
 - Every executable `ScopeIR`, including `WorkflowIR.root`, MUST contain exactly `nodes: NodeIR[]` and one required `output: ExprIR`. Scope outputs MUST lower as one expression and MUST NOT use a named-output map or a top-level workflow `outputs` field.
 - `LoopNodeIR.do.output` MUST be an object expression containing exactly the authored `state` and `stop` fields.
-- `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.
-- `AgentDefinitionIR` MUST retain optional `config: Record<string, string>` in IR version 7. It MUST NOT retain `agentMode`. Agent node and Agent run IR MUST remain closed shapes without a `config` field.
+- `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, Agent declarations, task runs, and task execution targets MUST use closed serialized object shapes.
+- `AgentDefinitionIR` MUST contain only concrete `agent_definition` or `agent_command` identities plus their optional static fields. `AgentSlotIR` MUST use `kind: "agent_slot"`, contain no identity, and retain the same optional static fields. `AgentDeclarationIR` MUST be their union.
+- `AdmittedWorkflowIR` MUST replace `WorkflowIR.agents` with `Record<string, AgentDefinitionIR>` so Scheduler and execution consumers cannot receive unresolved Slots.
+- Agent declaration IR MUST NOT retain `agentMode` or `preset`. Agent node and Agent run IR MUST remain closed shapes without a `config` field.
 - `childScopes(node)` MUST return every direct composite child scope and none for leaf nodes, ordered as `then` before `else`, authored switch cases before `default`, authored parallel keys, then fanout or loop body scope.
 - `walkNodes(scope)` MUST traverse nodes in depth-first pre-order, preserve authored node and branch order, and report child-scope ancestry from outermost to innermost.
 - Structural traversal MUST exhaust the closed `NodeIR` union so adding a node kind requires traversal handling at compile time.
 - `WorkflowIR.description`, when present, MUST be a string.
-- `validateWorkflowIR(ir)` MUST require IR version 7 and diagnose unknown fields, malformed agent definitions (including non-string `config` values), malformed node runs, missing or invalid scope output expressions, invalid expressions/templates/schemas, missing required composite branches/defaults, invalid loop transition output, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
+- `validateWorkflowIR(ir)` MUST require IR version 8 and diagnose unknown fields, malformed concrete Agent definitions or Slots (including selectors on Slots and non-string `config`/`env` values), malformed node runs, missing or invalid scope output expressions, invalid expressions/templates/schemas, missing required composite branches/defaults, invalid loop transition output, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
 - `validateWorkflowIR(ir)` MUST be the sole owner of `ID001` node-id diagnostics. Each invalid id MUST produce one error containing the accepted `/^[A-Za-z_][A-Za-z0-9_-]*$/` pattern, the node IR path, and a hint to use a compile-time literal id.
 - Node builders MUST NOT emit `ID001`.
 - `compileWorkflowDefinition(definition, { validate: false })` MUST intentionally skip node-id validation but MUST NOT bypass Task spec or reusable-Task link completeness.

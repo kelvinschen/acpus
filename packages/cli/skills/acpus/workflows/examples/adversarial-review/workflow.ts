@@ -28,10 +28,10 @@ export default defineWorkflow({
     maxRounds: z.number().default(3).describe("Maximum worker-review rounds."),
   }),
   agents: {
-    planner: { use: "pi" },
-    worker: { use: "claude" },
-    reviewer: { use: "pi" },
-    judge: { use: "claude" },
+    planner: {},
+    worker: {},
+    reviewer: {},
+    judge: {},
   },
 }).build(({ input, agents, meta, step }) => {
   const reviewerLimit = lift(input.maxReviewers, value => Math.min(12, Math.max(1, Math.floor(value))));

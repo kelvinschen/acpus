@@ -12,7 +12,7 @@ export function validateWorkflowIR(ir: WorkflowIR): DiagnosticIR[] {
     return diagnostics;
   }
   validateKnownFields(ir, ["irVersion", "name", "description", "inputSchema", "agents", "root", "diagnostics"], diagnostics, "");
-  if (ir.irVersion !== 7) addError(diagnostics, "IR002", "WorkflowIR irVersion must be 7.", "irVersion");
+  if (ir.irVersion !== 8) addError(diagnostics, "IR002", "WorkflowIR irVersion must be 8.", "irVersion");
   if (typeof ir.name !== "string") {
     addError(diagnostics, "IR002", "WorkflowIR name must be a string.", "name");
   } else if (!ir.name || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(ir.name)) {
@@ -92,7 +92,13 @@ function validateAgents(agents: WorkflowIR["agents"], diagnostics: DiagnosticIR[
       continue;
     }
 
-    addError(diagnostics, "A002", `Agent '${name}' kind must be agent_definition or agent_command.`, path);
+    if (agent.kind === "agent_slot") {
+      validateKnownFields(agent, ["kind", "model", "config", "permissionMode", "cwd", "env"], diagnostics, path);
+      validateAgentDefinitionOptions(agent, diagnostics, path, name);
+      continue;
+    }
+
+    addError(diagnostics, "A002", `Agent '${name}' kind must be agent_definition, agent_command, or agent_slot.`, path);
   }
 }
 

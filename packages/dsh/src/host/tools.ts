@@ -1,6 +1,10 @@
 import type { JsonValue as AcpusJsonValue } from "@acpus/expression/ir";
 import type {
+  AgentInjectionMap,
+  AgentPresetChange,
+  AgentPresetSpec,
   InspectionRead,
+  WritableAgentPresetScope,
 } from "@acpus/runtime";
 import type { RuntimeControlIntent } from "@acpus/runtime/host";
 import type { PreparedWorkflow } from "@acpus/workflow-compiler";
@@ -13,9 +17,9 @@ import {
   type ToolRunContext,
   type ValueSchemaSpec,
 } from "@deepseek-ai/dsh-tools";
-import type { UpdateAgentProfilesInput } from "./agent-profiles.js";
 import type { AcpusMode } from "./mode.js";
 import {
+  normalizeAgentInjections,
   normalizeAuthoringInput,
   prepareAuthoringWorkflow,
   type InvalidWorkflow,
@@ -30,6 +34,27 @@ const TOOL_TEXT_LIMIT = 64 * 1024;
 const TOOL_IDENTITY_LIMIT = 1_024;
 const CONTROL_STATUSES = new Set(["running", "awaiting", "failed", "timed_out"]);
 type InspectionTreeEntry = Extract<InspectionRead, { kind: "run" }>["tree"][number];
+
+type PresetChangeInput =
+  | {
+      operation: "set";
+      id: string;
+      preset: AgentPresetSpec;
+    }
+  | {
+      operation: "remove";
+      id: string;
+    };
+
+type PresetsToolInput =
+  | {
+      operation: "list";
+    }
+  | {
+      operation: "apply";
+      scope: WritableAgentPresetScope;
+      changes: PresetChangeInput[];
+    };
 
 type ControlAction =
   | { type: "pause" | "resume" }
@@ -46,13 +71,16 @@ type ControlAction =
       input:
         | { type: "inherit" }
         | { type: "replace"; value: DshJsonValue };
+      agents:
+        | { type: "inherit" }
+        | { type: "replace"; value: DshJsonValue };
       restart:
         | { type: "compatible" }
         | { type: "target"; target: string };
     };
 
 export function registerSupervisorTools(ctx: Context): void {
-  ctx.tools.register(profilesTool(ctx));
+  ctx.tools.register(presetsTool(ctx));
   ctx.tools.register(tasksTool(ctx));
   ctx.tools.register(runTool(ctx));
   ctx.tools.register(inspectTool(ctx));
@@ -60,56 +88,160 @@ export function registerSupervisorTools(ctx: Context): void {
   ctx.tools.register(artifactTool(ctx));
 }
 
-function profilesTool(ctx: Context) {
+function presetsTool(ctx: Context) {
   return defineTool({
-    name: "acpus_profiles",
-    description: "Atomically set or remove user-defined Agent Profiles. The built-in dsh Profile is immutable. Changes become visible in the next model step's System Prompt.",
+    name: "acpus_presets",
+    description: "List the effective safe Agent Preset catalog for this workspace, or atomically apply explicit user-requested project/global changes. The built-in dsh Preset is immutable.",
     parameters: {
+      operation: {
+        type: "string",
+        required: true,
+        enum: ["list", "apply"],
+      },
+      scope: {
+        type: "string",
+        enum: ["project", "global"],
+        description: "Required only for apply; persist the complete batch in exactly this scope.",
+      },
       changes: {
         type: "array",
-        required: true,
+        description: "Required only for apply; one non-empty atomic set/remove batch.",
         items: {
           oneOf: [
-            {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                operation: { type: "string", const: "set", required: true },
-                profile: {
-                  type: "object",
-                  required: true,
-                  additionalProperties: false,
-                  properties: {
-                    id: { type: "string", required: true },
-                    use: { type: "string", required: true },
-                    model: {
-                      type: "string",
-                      description: "Optional model override. Omit this field to inherit the Agent default; an empty string is treated as omitted.",
-                    },
-                    guidance: { type: "string", required: true },
-                  },
+            operationSchema("set", {
+              id: { type: "string", required: true },
+              preset: {
+                type: "object",
+                required: true,
+                additionalProperties: false,
+                properties: {
+                  guidance: { type: "string", required: true },
+                  agent: { type: "json", required: true },
                 },
               },
-            },
-            {
-              type: "object",
-              additionalProperties: false,
-              properties: {
-                operation: { type: "string", const: "remove", required: true },
-                id: { type: "string", required: true },
-              },
-            },
+            }),
+            operationSchema("remove", {
+              id: { type: "string", required: true },
+            }),
           ],
         },
       },
     },
     output: output(),
-    async execute(args) {
-      return json(await mode(ctx).updateAgentProfiles(
-        args as unknown as UpdateAgentProfilesInput,
-      ));
+    async execute(args, exec) {
+      const service = mode(ctx);
+      const activeWorkspace = workspace(exec);
+      const input = parsePresetsToolInput(args);
+      if (input.operation === "list") {
+        return json({ presets: await service.agentPresetChoices(activeWorkspace) });
+      }
+      return json(await service.applyAgentPresets({
+        workspace: activeWorkspace,
+        scope: input.scope,
+        changes: input.changes.map(toAgentPresetChange),
+      }));
     },
   });
+}
+
+function parsePresetsToolInput(value: unknown): PresetsToolInput {
+  if (!isPlainObject(value) || (value.operation !== "list" && value.operation !== "apply")) {
+    throw failure("Preset operation must be list or apply.", "ACPUS_AGENT_PRESETS_INVALID");
+  }
+  if (value.operation === "list") {
+    if (!hasExactKeys(value, ["operation"])) {
+      throw failure("Preset list accepts only operation.", "ACPUS_AGENT_PRESETS_INVALID");
+    }
+    return { operation: "list" };
+  }
+  if (!hasExactKeys(value, ["operation", "scope", "changes"])
+    || (value.scope !== "project" && value.scope !== "global")
+    || !Array.isArray(value.changes)) {
+    throw failure(
+      "Preset apply requires exactly operation, scope, and changes.",
+      "ACPUS_AGENT_PRESETS_INVALID",
+    );
+  }
+  return {
+    operation: "apply",
+    scope: value.scope,
+    changes: value.changes.map(parsePresetChange),
+  };
+}
+
+function parsePresetChange(value: unknown): PresetChangeInput {
+  if (!isPlainObject(value) || typeof value.id !== "string") {
+    throw failure("Each Preset change requires an operation and id.", "ACPUS_AGENT_PRESETS_INVALID");
+  }
+  if (value.operation === "remove" && hasExactKeys(value, ["operation", "id"])) {
+    return { operation: "remove", id: value.id };
+  }
+  if (value.operation === "set"
+    && hasExactKeys(value, ["operation", "id", "preset"])
+    && isPlainObject(value.preset)
+    && hasExactKeys(value.preset, ["guidance", "agent"])
+    && typeof value.preset.guidance === "string"
+    && isAgentPresetDefinition(value.preset.agent)) {
+    return {
+      operation: "set",
+      id: value.id,
+      preset: {
+        guidance: value.preset.guidance,
+        agent: value.preset.agent,
+      },
+    };
+  }
+  throw failure("Each Preset change must be one closed set or remove operation.", "ACPUS_AGENT_PRESETS_INVALID");
+}
+
+function toAgentPresetChange(change: PresetChangeInput): AgentPresetChange {
+  return change.operation === "remove"
+    ? { type: "remove", id: change.id }
+    : { type: "set", id: change.id, preset: change.preset };
+}
+
+function isAgentPresetDefinition(value: unknown): value is AgentPresetSpec["agent"] {
+  if (!isPlainObject(value)
+    || !hasOnlyKeys(value, ["use", "command", "model", "config", "permissionMode", "cwd", "env"])) {
+    return false;
+  }
+  const hasUse = value.use !== undefined;
+  const hasCommand = value.command !== undefined;
+  if (hasUse === hasCommand) return false;
+  if (hasUse && (typeof value.use !== "string" || value.use.length === 0)) return false;
+  if (hasCommand && (typeof value.command !== "string" || value.command.length === 0)) return false;
+  if (value.model !== undefined && typeof value.model !== "string") return false;
+  if (value.cwd !== undefined && (typeof value.cwd !== "string" || value.cwd.length === 0)) return false;
+  if (value.permissionMode !== undefined
+    && value.permissionMode !== "approve-reads"
+    && value.permissionMode !== "approve-all"
+    && value.permissionMode !== "deny-all") {
+    return false;
+  }
+  return isStringRecordOrUndefined(value.config)
+    && isStringRecordOrUndefined(value.env);
+}
+
+function isStringRecordOrUndefined(value: unknown): value is Record<string, string> | undefined {
+  return value === undefined
+    || (isPlainObject(value) && Object.values(value).every(item => typeof item === "string"));
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object"
+    && value !== null
+    && !Array.isArray(value)
+    && Object.getPrototypeOf(value) === Object.prototype;
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(value).every(key => allowed.has(key));
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  return hasOnlyKeys(value, keys)
+    && keys.every(key => Object.hasOwn(value, key));
 }
 
 function tasksTool(ctx: Context) {
@@ -151,6 +283,10 @@ function runTool(ctx: Context) {
         type: "json",
         description: "Workflow business input. Omit this field to use an empty object; explicit JSON values including null are preserved.",
       },
+      agents: {
+        type: "json",
+        description: "Invocation Agent injection object keyed by logical workflow Agent slot. Bind a Preset as {\"preset\":\"<exact-id>\"}.",
+      },
     },
     output: {
       ...output(),
@@ -166,6 +302,7 @@ function runTool(ctx: Context) {
         toolCallId: String(exec.callId),
         workflow: args.workflow,
         ...(args.input === undefined ? {} : { input: args.input as AcpusJsonValue }),
+        ...(args.agents === undefined ? {} : { agents: args.agents }),
         signal: exec.signal,
       });
       return json(result.status === "admitted"
@@ -278,6 +415,16 @@ function controlTool(ctx: Context) {
                 }),
               ],
             },
+            agents: {
+              required: true,
+              description: "Inherit the frozen Agent mapping or replace it with an invocation Agent injection object.",
+              oneOf: [
+                actionSchema("inherit"),
+                actionSchema("replace", {
+                  value: { type: "json", required: true },
+                }),
+              ],
+            },
             restart: {
               required: true,
               description: "Use compatibility-based reuse or restart from one exact source Target.",
@@ -309,6 +456,7 @@ function controlTool(ctx: Context) {
         String(exec.callId),
         prepared.prepared,
         prepared.input,
+        prepared.agents,
       );
       const cancel = action.type === "cancel"
         ? await service.prepareModelCancel(
@@ -437,27 +585,42 @@ async function prepareFork(
   status: "ready";
   prepared?: PreparedWorkflow;
   input?: AcpusJsonValue;
+  agents?: AgentInjectionMap;
 } | InvalidWorkflow> {
   if (action.type !== "fork") return { status: "ready" };
   const prepared = action.workflow.type === "replace"
     ? await prepareAuthoringWorkflow(workspace, action.workflow.source)
     : undefined;
   if (prepared?.status === "invalid") return prepared;
+  const agents = action.agents.type === "replace"
+    ? normalizeAgentInjections(action.agents.value, prepared?.prepared.ir.agents)
+    : undefined;
+  if (agents?.status === "invalid") return agents;
   if (action.input.type === "inherit") {
     return {
       status: "ready",
       ...(prepared === undefined ? {} : { prepared: prepared.prepared }),
+      ...(agents === undefined ? {} : { agents: agents.agents }),
     };
   }
   if (prepared === undefined) {
-    return { status: "ready", input: action.input.value as AcpusJsonValue };
+    return {
+      status: "ready",
+      input: action.input.value as AcpusJsonValue,
+      ...(agents === undefined ? {} : { agents: agents.agents }),
+    };
   }
   const normalized = normalizeAuthoringInput(
     prepared.prepared,
     action.input.value as AcpusJsonValue,
   );
   if (normalized.status === "invalid") return normalized;
-  return { status: "ready", prepared: prepared.prepared, input: normalized.input };
+  return {
+    status: "ready",
+    prepared: prepared.prepared,
+    input: normalized.input,
+    ...(agents === undefined ? {} : { agents: agents.agents }),
+  };
 }
 
 function controlIntent(
@@ -466,6 +629,7 @@ function controlIntent(
   callId: string,
   prepared?: PreparedWorkflow,
   input?: AcpusJsonValue,
+  agents?: AgentInjectionMap,
 ): RuntimeControlIntent {
   const requestId = `dsh-control:${callId}`;
   switch (action.type) {
@@ -493,6 +657,7 @@ function controlIntent(
         ...(action.restart.type === "target" ? { target: action.restart.target } : {}),
         ...(prepared === undefined ? {} : { prepared }),
         ...(input === undefined ? {} : { input }),
+        ...(agents === undefined ? {} : { agentInjections: agents }),
       };
   }
 }
@@ -609,6 +774,20 @@ function actionSchema(
     additionalProperties: false,
     properties: {
       type: { type: "string" as const, const: type, required: true as const },
+      ...properties,
+    },
+  };
+}
+
+function operationSchema(
+  operation: string,
+  properties: Record<string, ParameterPropertySpec> = {},
+): ValueSchemaSpec {
+  return {
+    type: "object" as const,
+    additionalProperties: false,
+    properties: {
+      operation: { type: "string" as const, const: operation, required: true as const },
       ...properties,
     },
   };

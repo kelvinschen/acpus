@@ -79,7 +79,7 @@ type WorkflowParts = Partial<Omit<WorkflowIR, "root">> & {
 function workflow(partial: WorkflowParts = {}): WorkflowIR {
   const { nodes, output = { kind: "object", fields: {} }, root, ...rest } = partial;
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "normalization",
     agents: {},
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },

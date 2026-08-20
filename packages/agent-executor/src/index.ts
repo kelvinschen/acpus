@@ -33,6 +33,7 @@ export type {
   AgentTurnSummary,
   AgentTurnTiming,
   AttemptContext,
+  ConfiguredAcpAgentCommandResolver,
   HardCleanupEvidence,
   NamedAcpAgentLaunchRegistry,
   NamedAcpAgentLaunchResolver,

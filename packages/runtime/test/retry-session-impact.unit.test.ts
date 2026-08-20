@@ -1,4 +1,4 @@
-import type { NodeIR, WorkflowIR } from "@acpus/core/ir";
+import type { NodeIR, AdmittedWorkflowIR } from "@acpus/core/ir";
 import { describe, expect, it } from "vitest";
 import { planRetrySessionImpact } from "../src/scheduler/retry-session-impact.js";
 import type { FrozenSchedulerRun } from "../src/scheduler/settle.js";
@@ -46,8 +46,8 @@ describe("Retry Session impact planning", () => {
 });
 
 function frozenWorkflow(nodes: NodeIR[]): FrozenSchedulerRun {
-  const ir: WorkflowIR = {
-    irVersion: 7,
+  const ir: AdmittedWorkflowIR = {
+    irVersion: 8,
     name: "retry-session-impact",
     agents: { reviewer: { kind: "agent_definition", use: "codex" } },
     root: { nodes, output: { kind: "object", fields: {} } },

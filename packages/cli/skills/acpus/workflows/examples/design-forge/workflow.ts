@@ -42,8 +42,8 @@ export default defineWorkflow({
     ),
   }),
   agents: {
-    designer: { use: "trae" },
-    challenger: { use: "trae" },
+    designer: {},
+    challenger: {},
   },
 }).build(({ input, agents, meta, step }) => {
   const blackboard = step("seed_blackboard").task({

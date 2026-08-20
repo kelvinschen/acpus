@@ -33,10 +33,13 @@ The `acpus` package owns command parsing and natural-language presentation for a
 | `skill install` | Either `--dir <skills-root>`, or one of `--project` or `--global` with `--agent <universal[,claude]>`; optional `--dry-run`. Missing scoped selections are interactive only in a TTY. |
 | `skill uninstall` | Either `--dir <skills-root>`, or one of `--project` or `--global` with `--agent <universal[,claude]>`; optional `--dry-run`. Missing scoped selections are interactive only in a TTY. |
 | `hooks validate`, `hooks list` | Optional, mutually exclusive `--project` or `--global`. |
+| `agent presets` | Lists Presets by default; optional, mutually exclusive `--project` or `--global`. |
+| `agent presets add <id>` | Requires exactly one of `--project` or `--global` and `--definition <json\|file.json>`. |
+| `agent presets remove <id>` | Requires exactly one of `--project` or `--global`. |
 | `web` | Optional `--host`, `--port`, and `--token`; a syntactically valid listener failure is operational, not usage. |
 
 - Version flags MUST be root-only terminal operations and MUST fail instead of executing a supplied command.
-- Every CLI command MUST present results and handled failures as natural-language text. Structured programmatic consumers MUST use the Runtime, daemon, or Web contracts owned by their respective packages.
+- Every CLI command MUST present results and handled failures as natural-language text; structured consumers MUST use the Runtime, daemon, or Web contracts owned by their respective packages.
 - Help MUST remain on `-h`/`--help` without implicit `help` subcommands.
 - Root help MUST display the CLI package version before usage.
 - Root help MUST show `If the Acpus Skill is not loaded, use acpus skill read to get its usage guide.` before the command list.
@@ -52,6 +55,14 @@ The `acpus` package owns command parsing and natural-language presentation for a
 - Empty or whitespace-only steer instruction input MUST fail before daemon startup.
 - Retry MUST reject an omitted or blank target before daemon startup. The CLI MUST NOT register Continue or Restart commands or aliases.
 
+#### Agent Presets
+
+- Preset commands MUST use the Runtime-owned catalog selected from CLI cwd. Unscoped list returns the effective project-over-global choices; scoped list returns only that scope.
+- Preset ids MUST be canonical lowercase ids: 1–64 characters, beginning with an alphanumeric character and otherwise containing only alphanumerics, `_`, or `-`; `dsh` is reserved. `add` MUST reject a same-scope collision and `remove` MUST reject a missing same-scope id without changing either catalog; a same-id entry in the other scope is independent.
+- `--definition` MUST accept one complete `{ guidance, agent }` Preset as inline JSON or a CLI-cwd-relative `.json` file. CLI presentation MUST NOT resolve, launch, or echo its Agent definition.
+- Successful list output MUST group choices by scope and show each Preset's real id followed by its guidance. Successful list and add output MUST be natural-language text without Agent definitions.
+- The default Preset list MUST remain read-only. Add and remove MUST delegate strict validation and atomic persistence to Runtime and require explicit scope in interactive and non-interactive use.
+
 ### Workflow Resolution And Import
 
 - Catalog discovery MUST inspect first-level directories beneath `<workspace>/.acpus/workflows` and `$HOME/.acpus/workflows` without importing workflow modules.
@@ -65,7 +76,7 @@ The `acpus` package owns command parsing and natural-language presentation for a
 
 - Invalid entries MUST be visible when `workflow catalog` omits `name` but excluded from named catalog lookup and from check, run, and visualization lookup.
 - `workflow catalog` without `name` MUST open a single-select prompt when stdin, stdout, and stderr are interactive and at least one available entry exists; otherwise it lists directly.
-- Catalog prompts MUST show invalid entries as disabled choices without paths, write interaction UI to stderr, and reserve stdout for the selected catalog result.
+- Catalog prompts MUST label choices as `[scope] name`, show invalid entries as disabled choices without paths, write interaction UI to stderr, and reserve stdout for the selected catalog result.
 - A catalog prompt selection MUST perform named lookup with the selected entry's scope; prompt cancellation is a usage failure.
 - Unscoped lookup MUST require a name unique across project and global catalogs; scoped lookup searches only the selected scope.
 - Path-like workflow arguments MUST use direct preparation unless a scope flag is present; other arguments resolve as catalog names.
@@ -92,10 +103,10 @@ The `acpus` package owns command parsing and natural-language presentation for a
 
 ### Preparation, Runtime, And Read Boundaries
 
-- `workflow check` MUST prepare without runtime admission or durable preflight artifacts; optional input and Agent overrides are normalized and validated without mutation.
-- `--input` and `--agents` values ending in `.json`, case-insensitively, MUST select a UTF-8 file resolved from CLI cwd; all other values are parsed as inline JSON without filesystem probing or fallback.
+- `workflow check` MUST prepare without runtime admission or durable preflight artifacts and normalize optional input. Without `--agents`, it performs structural validation and returns or displays the stable id-sorted `unboundAgents`; with `--agents`, it finalizes Agent injections without mutation and requires `unboundAgents` to be empty.
+- `--input`, `--agents`, and Agent Preset `--definition` values ending in `.json`, case-insensitively, MUST select a UTF-8 file resolved from CLI cwd; all other values are parsed as inline JSON without filesystem probing or fallback.
 - JSON option files MUST contain strict JSON. Missing, unreadable, empty, invalid, BOM-prefixed, JSONC, stdin, and non-JSON inputs fail as usage errors before preparation or mutation.
-- `--agents` inline or file-backed values MUST parse as a JSON object before preparation or mutation.
+- `--agents` inline or file-backed values MUST parse as a JSON object before preparation or mutation and accept either one Preset id or direct Agent fields per declared Agent name, never both.
 - Preparation failures MUST map to their compiler-owned `source`, `check`, `compile`, `lock`, or `validate` phases.
 - Every workflow run MUST prepare and admit through the workspace daemon Adapter; the CLI never owns Runtime authority, scheduler advancement, run leases, active attempts, or execution abort controllers.
 - The daemon Adapter MUST open one `WorkspaceRuntime` and translate existing protocol requests to its admission, control, inspection, artifact, and admission-lookup operations without changing the CLI wire contract.
@@ -107,14 +118,14 @@ The `acpus` package owns command parsing and natural-language presentation for a
 - On first Ctrl-C before admission is known, the CLI MUST retain a detach intent, wait for the definite admission result, and exit after admission without canceling it. A second Ctrl-C MAY hard-interrupt and MUST report `ADMISSION_OUTCOME_UNKNOWN`. After admission, Ctrl-C MUST detach immediately with exit 0.
 - `workflow viz` without `--out` MUST render one compact static semantic tree from the prepared `WorkflowIR` without creating a run.
 - Terminal visualization text MUST show the workflow name, structural input schema, required output key shape, Agent bindings, and authored node/composite tree without inventing runtime fanout items or loop rounds.
-- Terminal visualization Agent bindings MUST use `name (target, optional effective model/config mode)` and MUST omit permission mode.
+- Terminal visualization Agent bindings MUST use `name (target or unbound, optional effective model/config mode)` and MUST omit permission mode.
 - Terminal visualization Agent nodes MUST show `agent(<referenced Agent binding key>)` as dim metadata.
 - Terminal visualization MUST enable ANSI styling only for a TTY when `NO_COLOR` is absent; non-TTY visualization MUST contain no ANSI sequences.
 - `workflow viz --out <file.html>` MUST write one offline HTML graph through WebUI rendering helpers and MUST refuse an existing output unless `--force` is present.
 - `workflow viz --force` without `--out` MUST fail as usage before workflow preparation.
 - Visualization filesystem failures other than an existing destination MUST use phase `viz` and exit 1.
 - Both workflow visualization modes MUST preserve CLI diagnostics.
-- Read-only commands MUST NOT start the daemon or create Runtime workspace shards; this includes inspect, artifact lookup, artifact listing, `runs prune --dry-run`, catalog reads, hook reads, Doctor without `--fix`, and skill read.
+- Read-only commands MUST NOT start the daemon or create Runtime workspace shards; this includes inspect, artifact lookup, artifact listing, `runs prune --dry-run`, catalog and Agent Preset reads, hook reads, Doctor without `--fix`, and skill read.
 - Runtime-backed read-only commands MUST use Runtime read APIs.
 - `web` MUST start only the Web server and MUST NOT ensure, start, or wake the workspace daemon during launch.
 - Artifact lookup MUST delegate `ArtifactRef` parsing and path safety to Runtime `resolveArtifact`.
@@ -170,7 +181,7 @@ The `acpus` package owns command parsing and natural-language presentation for a
 
 ### Controls, Doctor, Skills, And Hooks
 
-- Fork replacement workflow, input, and Agent overrides MUST be prepared or normalized against frozen workflow data before daemon control.
+- Fork replacement workflow, input, and Agent injections MUST be prepared or normalized against frozen workflow data before daemon control.
 - Fork replacement workflow resolution MUST have check/run/viz path, catalog-scope, and stdin parity.
 - The daemon MUST NOT import fork replacement source.
 - Mutating controls MUST start or wake the daemon, dispatch one closed intent, and wait up to 30 seconds for the requested effect to be applied or fail.
@@ -234,7 +245,7 @@ The `acpus` package owns command parsing and natural-language presentation for a
 ### Output And Exit Codes
 
 - `CliResult` MUST be a phase-discriminated closed TypeScript union that rejects fields owned by another phase; `ResultPhase` includes distinct `source`, `lock`, and `import` members.
-- Successful CLI results MUST write natural-language text to stdout; handled failures MUST write natural-language text to stderr. The CLI MUST NOT expose a machine-output mode.
+- Successful CLI results MUST write natural-language text to stdout and handled failures MUST write natural-language text to stderr, except the closed successful Agent Preset `--json` projections specified above. No other command exposes a machine-output mode.
 - Text Doctor health checks MUST align the status, area, and message fields as three columns within each report. In a TTY with `NO_COLOR` unset, the summary MUST use the report's success/failure color, each status MUST map `ok`/`warn`/`fail` to success/warning/failure colors, and the area MUST use a consistent accent; non-TTY output MUST remain free of ANSI styling.
 - Successful text `workflow check` output MUST report passed TypeScript, authoring-rule, and WorkflowIR stages, and MUST include the static node count without printing the generic workflow metadata summary.
 - Failed text workflow preparation MUST count `TS####` errors as TypeScript errors, `AL###` and `TB###` errors as authoring-rule errors, report `WF001` and `WF002` as check-infrastructure errors, and mark a WorkflowIR stage skipped when preparation stopped before compilation.
@@ -252,8 +263,8 @@ The `acpus` package owns command parsing and natural-language presentation for a
 - Update output MUST expose its triggering Runtime delta, omit empty Updates blocks, qualify run headings with elapsed time, and leave target and Timeline headings unqualified.
 - A run's terminal output MUST appear once, while target views omit unrelated output. A blocking failure after attachment MUST include a one-shot recovery command preserving target and Timeline detail.
 - Diagnostic text MUST show source location when available, indent paths/hints, and relativize sources inside CLI cwd.
-- Text catalog listings MUST show scope, status, name, and compact ambiguity or invalid state without package or entry paths.
-- Text named catalog output MUST omit a generic success message and use `Catalog`, `Status`, `Package`, and `Entry` labels without repeating the catalog prefix. It MUST add semantic ANSI styling only when stdout is a TTY and `NO_COLOR` is unset; non-TTY output MUST remain free of ANSI styling.
+- Text catalog listings MUST group workflows by scope and show each real name, status, and compact ambiguity or invalid state without package or entry paths.
+- Text named catalog output MUST omit a generic success message and use `Workflow`, `Scope`, `Status`, `Package`, and `Entry` labels. It MUST add semantic ANSI styling only when stdout is a TTY and `NO_COLOR` is unset; non-TTY output MUST remain free of ANSI styling.
 - A valid `web` invocation that cannot bind its listener MUST return exit 1 with phase `run`.
 - Exit codes MUST be 0 for success, 2 for usage errors, and 1 for other failures or unconfirmed controls.
 - Default workflow run MUST exit 0 after daemon acceptance.

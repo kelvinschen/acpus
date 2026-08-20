@@ -88,7 +88,7 @@ function hook(timeout: string): LoadedHookConfig {
     event: "run.completed",
     command: "hook-command",
     source: "project",
-    sourcePath: "/workspace/.acpus/hooks.json",
+    sourcePath: "/workspace/.acpus/config.json",
     definitionIndex: 0,
     effectiveId: "hook",
     id: "hook",

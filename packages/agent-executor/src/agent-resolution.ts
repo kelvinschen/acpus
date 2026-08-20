@@ -1,9 +1,8 @@
-import { readFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
 import { err, errAsync, ok, okAsync, ResultAsync, type Result } from "neverthrow";
 import type {
   AcpAgentLaunch,
   AgentSelector,
+  ConfiguredAcpAgentCommandResolver,
   NamedAcpAgentLaunchRegistry,
 } from "./types.js";
 
@@ -48,8 +47,6 @@ export type AcpAgentResolutionFailure = {
   message: string;
 };
 
-export type AcpAgentConfig = ReadonlyMap<string, string>;
-
 export class AcpAgentResolutionSystemError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -59,10 +56,9 @@ export class AcpAgentResolutionSystemError extends Error {
 
 export function resolveAcpAgentLaunch(input: {
   agent: AgentSelector;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
   model?: string;
   namedAgentLaunches?: NamedAcpAgentLaunchRegistry;
+  configuredAgentCommand?: ConfiguredAcpAgentCommandResolver;
 }): ResultAsync<AcpAgentLaunch, AcpAgentResolutionFailure> {
   if (input.agent.kind === "command") {
     return okAsync({ kind: "command", command: input.agent.command });
@@ -79,99 +75,47 @@ export function resolveAcpAgentLaunch(input: {
     });
   }
 
-  return resolveNamedAcpAgentLaunch({ name, cwd: input.cwd, env: input.env });
+  return resolveNamedAcpAgentLaunch({
+    name,
+    ...(input.configuredAgentCommand === undefined
+      ? {}
+      : { configuredAgentCommand: input.configuredAgentCommand }),
+  });
 }
 
 export function resolveNamedAcpAgentLaunch(input: {
   name: string;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
+  configuredAgentCommand?: ConfiguredAcpAgentCommandResolver;
 }): ResultAsync<AcpAgentLaunch, AcpAgentResolutionFailure> {
   return new ResultAsync(resolveNamedAcpAgentLaunchValue(input));
 }
 
-export function parseAcpAgentConfig(content: string, path: string): Result<AcpAgentConfig, AcpAgentResolutionFailure> {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(content) as unknown;
-  } catch (error) {
-    return err(configFailure(`Invalid Agent config at '${path}': invalid JSON: ${causeMessage(error)}`));
-  }
-
-  if (!record(parsed) || !hasExactKeys(parsed, ["agents"]) || !record(parsed.agents)) {
-    return err(configFailure(`Invalid Agent config at '${path}': expected exactly {"agents": {...}}.`));
-  }
-
-  const agents = new Map<string, string>();
-  const sourceNames = new Map<string, string>();
-  for (const [sourceName, entry] of Object.entries(parsed.agents)) {
-    const name = normalizeAgentName(sourceName);
-    if (!name) {
-      return err(configFailure(`Invalid Agent config at '${path}': Agent names must contain a non-whitespace character.`));
-    }
-    const collidingName = sourceNames.get(name);
-    if (collidingName !== undefined) {
-      return err(configFailure(
-        `Invalid Agent config at '${path}': Agent names ${JSON.stringify(collidingName)} and ${JSON.stringify(sourceName)} both normalize to '${name}'.`,
-      ));
-    }
-    if (typeof entry !== "string" || entry.trim().length === 0) {
-      return err(configFailure(
-        `Invalid Agent config at '${path}' for Agent ${JSON.stringify(sourceName)}: expected a non-empty shell command string.`,
-      ));
-    }
-    sourceNames.set(name, sourceName);
-    agents.set(name, entry);
-  }
-  return ok(agents);
-}
-
 async function resolveNamedAcpAgentLaunchValue(input: {
   name: string;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
+  configuredAgentCommand?: ConfiguredAcpAgentCommandResolver;
 }): Promise<Result<AcpAgentLaunch, AcpAgentResolutionFailure>> {
   const name = normalizeAgentName(input.name);
   if (!name) return err(configFailure("Named Agent name must contain a non-whitespace character."));
 
-  const projectPath = projectAgentConfigPath(input.cwd);
-  const globalPath = globalAgentConfigPath(input.env);
-  const [project, global] = await Promise.all([
-    readAgentConfig(projectPath),
-    globalPath === undefined
-      ? Promise.resolve(ok(new Map<string, string>()))
-      : readAgentConfig(globalPath),
-  ]);
-  if (project.isErr()) return err(project.error);
-  if (global.isErr()) return err(global.error);
-
-  const configured = resolveConfiguredAgent(project.value, name) ?? resolveConfiguredAgent(global.value, name);
-  if (configured !== undefined) return ok({ kind: "command", command: configured, name });
+  const configured = await resolveConfiguredAgent(input.configuredAgentCommand, name);
+  if (configured.isErr()) return err(configured.error);
+  if (configured.value !== undefined) return ok({ kind: "command", command: configured.value, name });
 
   const builtIn = resolveBuiltInAgent(name);
   if (builtIn !== undefined) return ok({ kind: "argv", argv: copyArgv(builtIn), name });
 
   return err(configFailure(
-    `Named Agent '${name}' is not configured or built in. Add it to '${projectPath}' with a shell command string or use an explicit command selector.`,
+    `Named Agent '${name}' is not configured or built in. Configure it in Acpus config or use an explicit command selector.`,
   ));
 }
 
-async function readAgentConfig(path: string): Promise<Result<AcpAgentConfig, AcpAgentResolutionFailure>> {
-  let content: string;
-  try {
-    content = await readFile(path, "utf8");
-  } catch (error) {
-    if (isNotFound(error)) return ok(new Map());
-    return err(configFailure(`Failed to read Agent config at '${path}': ${causeMessage(error)}`));
-  }
-  return parseAcpAgentConfig(content, path);
-}
-
-function resolveConfiguredAgent(
-  config: AcpAgentConfig,
+async function resolveConfiguredAgent(
+  resolver: ConfiguredAcpAgentCommandResolver | undefined,
   name: string,
-): string | undefined {
-  return config.get(name) ?? config.get(canonicalAgentName(name));
+): Promise<Result<string | undefined, AcpAgentResolutionFailure>> {
+  if (resolver === undefined) return ok(undefined);
+  const canonical = canonicalAgentName(name);
+  return resolver(canonical === name ? [name] : [name, canonical]);
 }
 
 function resolveBuiltInAgent(name: string): readonly [string, ...string[]] | undefined {
@@ -205,15 +149,6 @@ function copyArgv(argv: readonly [string, ...string[]]): [string, ...string[]] {
   return [...argv];
 }
 
-function projectAgentConfigPath(cwd: string): string {
-  return join(resolve(cwd), ".acpus", "agents.json");
-}
-
-function globalAgentConfigPath(env: NodeJS.ProcessEnv): string | undefined {
-  const home = env.HOME || env.USERPROFILE;
-  return home ? join(home, ".acpus", "agents.json") : undefined;
-}
-
 function normalizeAgentName(name: string): string {
   return name.trim().toLowerCase();
 }
@@ -226,27 +161,9 @@ function configFailure(message: string): AcpAgentResolutionFailure {
   return { type: "agent-config", message };
 }
 
-function record(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
-  const keys = Object.keys(value);
-  return keys.length === expected.length && expected.every(key => Object.hasOwn(value, key));
-}
-
 function agentArgv(value: unknown): value is [string, ...string[]] {
   return Array.isArray(value)
     && value.length > 0
     && value.every(argument => typeof argument === "string")
     && value[0]!.trim().length > 0;
-}
-
-function isNotFound(error: unknown): boolean {
-  const code = record(error) ? error.code : undefined;
-  return code === "ENOENT";
-}
-
-function causeMessage(cause: unknown): string {
-  return cause instanceof Error ? cause.message : String(cause);
 }

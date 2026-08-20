@@ -1,11 +1,11 @@
 import type { JsonValue } from "@acpus/expression/ir";
 import type { PreparedRunWorkflow } from "./admission/prepared-workflow.js";
-import type { AgentOverrideMap } from "./control/agent-overrides.js";
+import type { AgentInjectionMap } from "./agents/injections.js";
 import { RUNTIME_LAYOUT_VERSION } from "./runtime-layout.js";
 import { RUNTIME_STORAGE_VERSION } from "./storage/database.js";
 import type { RunDetails } from "./store/store.js";
 
-export const RUNTIME_ABI_VERSION = 4;
+export const RUNTIME_ABI_VERSION = 5;
 
 export type RuntimeAuthorityIdentity = {
   workspaceKey: string;
@@ -20,7 +20,7 @@ export type RuntimeSubmission = {
   requestId: string;
   prepared: PreparedRunWorkflow;
   input: JsonValue;
-  agentOverrides?: AgentOverrideMap;
+  agentInjections?: AgentInjectionMap;
 };
 
 export type RuntimeSubmitFailure = {
@@ -62,7 +62,7 @@ export type RuntimeControlIntent =
   | { requestId: string; type: "retry"; runId: string; target: string }
   | { requestId: string; type: "cancel"; runId: string; target?: string }
   | { requestId: string; type: "steer"; runId: string; target: string; instruction: string }
-  | { requestId: string; type: "fork"; runId: string; target?: string; prepared?: PreparedRunWorkflow; input?: JsonValue; agentOverrides?: AgentOverrideMap }
+  | { requestId: string; type: "fork"; runId: string; target?: string; prepared?: PreparedRunWorkflow; input?: JsonValue; agentInjections?: AgentInjectionMap }
   | { requestId: string; type: "signal"; runId: string; nodeId: string; payload: JsonValue };
 
 export type RuntimeControlFailure = {

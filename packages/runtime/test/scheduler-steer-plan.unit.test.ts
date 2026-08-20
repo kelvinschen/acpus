@@ -1,4 +1,4 @@
-import type { NodeIR, WorkflowIR } from "@acpus/core/ir";
+import type { NodeIR, AdmittedWorkflowIR } from "@acpus/core/ir";
 import { describe, expect, it } from "vitest";
 import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
 import { planSteerControl, steerControlTargets } from "../src/scheduler/steer-plan.js";
@@ -119,8 +119,8 @@ function started(nodeKey: string, nodeId: string, attemptId: string, instancePat
 }
 
 function frozenWorkflow(nodes: NodeIR[]): FrozenSchedulerRun {
-  const ir: WorkflowIR = {
-    irVersion: 7,
+  const ir: AdmittedWorkflowIR = {
+    irVersion: 8,
     name: "steer-plan",
     agents: { reviewer: { kind: "agent_definition", use: "codex" } },
     root: { nodes, output: { kind: "object", fields: {} } },

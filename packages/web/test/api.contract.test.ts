@@ -1294,7 +1294,7 @@ describe("web API contract", () => {
       const result = {
         status: "ready",
         graph: { nodes: [], edges: [] },
-        workflow: { name: "release", irVersion: 7, nodeCount: 0 },
+        workflow: { name: "release", irVersion: 8, nodeCount: 0 },
         contract: {
           output: { kind: "object", fields: {} },
           outputShape: { kind: "object", possibleKeys: [] },

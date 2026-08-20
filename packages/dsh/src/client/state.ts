@@ -1,6 +1,6 @@
 import type {
   ActivityHoverDetail,
-  AgentProfileView,
+  AgentPresetView,
   CancelSessionTaskResult,
   ResolvedTaskSelector,
   SessionActivityProjection,
@@ -29,9 +29,9 @@ export type SessionConnection =
 export type SessionConnectionPhase = "connected" | "reconnecting" | "stale" | "unknown";
 
 export type AcpusRemote = {
-  readAgentProfiles(
+  readAgentPresets(
     input: Record<string, never>,
-  ): Promise<RemoteResult<{ profiles: AgentProfileView[] }>>;
+  ): Promise<RemoteResult<{ presets: AgentPresetView[] }>>;
   readActivityDetail(
     input: { sessionId: string; generation: number; activityId: string },
   ): Promise<RemoteResult<
@@ -83,10 +83,10 @@ export class AcpusClientState {
 
   constructor(private readonly remote: AcpusRemote) {}
 
-  async readAgentProfiles(): Promise<AgentProfileView[]> {
-    const result = await this.remote.readAgentProfiles({});
+  async readAgentPresets(): Promise<AgentPresetView[]> {
+    const result = await this.remote.readAgentPresets({});
     if (!result.ok) throw new Error(result.error.message);
-    return result.value.profiles;
+    return result.value.presets;
   }
 
   activityExpanded(sessionId: string): boolean {

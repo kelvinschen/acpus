@@ -1,5 +1,6 @@
 import type { Readable, Writable } from "node:stream";
 import { Command, CommanderError } from "commander";
+import { createAgentCommand } from "./agent/command.js";
 import { createDoctorCommand } from "./doctor/command.js";
 import { createHooksCommand } from "./hooks/command.js";
 import { getCliPackageInfo } from "./platform/package-info.js";
@@ -77,6 +78,10 @@ function createProgram(
   program.addCommand(createWorkflowCommand({
     ...io,
     stdin,
+    setExitCode,
+  }));
+  program.addCommand(createAgentCommand({
+    ...io,
     setExitCode,
   }));
   program.addCommand(createRunsCommand({

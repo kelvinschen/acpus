@@ -19,19 +19,19 @@ For Agent-heavy authoring, calibrate logical work before topology; broad or unce
 
 ### **READ first**
 
-- **Authoring** Read `references/authoring.md` completely;
+- **Authoring** Read `references/authoring.md`;
+- **Bind an agent:** Read `references/acp-agents.md` before selecting Presets or concrete Agent backends.
 - **Run or observe:** Read `references/cli-operations.md` for admission, inspection, artifacts, ordinary interaction, and stop controls;
-- **Recover or intervene:** Read `references/runtime-recovery.md` for failed/timed-out/stale runs, Retry, Steer, Fork decisions, or deep diagnostics.
 - **Library/catalog reuse:** Enable only for user-written `/wf:<hint>` or `/workflow:<hint>`. Read the README first; read implementation only to modify or diagnose. Without a marker, read only user-named workflows.
-- **Choose an agent:** Read `references/acp-agents.md` when Agent availability matters.
 
 ### **DO NOT read by default**
 
+- **Recover or intervene:** Read `references/runtime-recovery.md` for failed/timed-out/stale runs, Retry, Steer, Fork decisions, or deep diagnostics.
 - **Advanced authoring:** Read `references/advanced-authoring.md` only for Agent session reuse, reusable/prebuilt Tasks, imports, artifacts, Task process controls, or cooperative cancellation.
 - **Signal authoring:** Read `references/signal-authoring.md` only for parallel Signal waits, payload validation, timeout behavior, or duration syntax.
 - **Advanced CLI operations:** Read `references/advanced-cli-operations.md` only for Forensics, detailed controls, catalogs/import, visualization, WebUI, Skill management, deletion, or version lookup.
 - **Review Agent records:** Read `references/agent-records.md` only for settled turn artifacts or the run-local ACP session projection.
-- **Configure hooks:** Read `references/hooks-json.md`.
+- **Configure Acpus:** Read `references/configuration.md` for named Agents, Presets, and Hooks.
 
 ### **Explain concepts:**
 Search all available documentation under `references/` to explain concepts. Choose the most relevant reference(s) for each topic.

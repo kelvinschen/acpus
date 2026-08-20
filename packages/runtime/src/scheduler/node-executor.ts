@@ -1,4 +1,4 @@
-import type { AgentNodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
+import type { AdmittedWorkflowIR, AgentNodeIR, TaskNodeIR } from "@acpus/core/ir";
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
 import type { Result } from "neverthrow";
 import { executeAgentNode, type AgentAttemptFailure, type AgentNodeFailure } from "../execution/agent-node.js";
@@ -18,7 +18,7 @@ import type { AgentTurnExecutionRegistry } from "../execution/agent-turn-registr
 export type RuntimeNodeExecutorInput = {
   cwd: string;
   sourceRoot?: string;
-  ir: WorkflowIR;
+  ir: AdmittedWorkflowIR;
   scope: EvaluationScope;
   store: RuntimeStore;
   agentHostPolicy: AgentHostPolicy;

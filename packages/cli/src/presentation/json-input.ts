@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import type { AgentOverrideMap } from "@acpus/runtime";
+import type { AgentInjectionMap } from "@acpus/runtime";
 import { isJsonValue, type JsonValue } from "@acpus/expression/ir";
 import { err, errAsync, ok, okAsync, Result, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
 import { usageError } from "./errors.js";
@@ -18,18 +18,18 @@ const parseJson = Result.fromThrowable(
   causeMessage,
 );
 
-export async function parseAgents(raw: string | undefined, cwd: string): Promise<AgentOverrideMap | undefined> {
+export async function parseAgents(raw: string | undefined, cwd: string): Promise<AgentInjectionMap | undefined> {
   if (raw === undefined) return undefined;
   const value = await parseJsonArgument(raw, cwd, "--agents");
   if (!value || typeof value !== "object" || Array.isArray(value)) throw usageError("--agents must be a JSON object.");
-  return value as AgentOverrideMap;
+  return value as AgentInjectionMap;
 }
 
 export function parseInput(raw: string, cwd: string): Promise<JsonValue> {
   return parseJsonArgument(raw, cwd, "--input");
 }
 
-function parseJsonArgument(raw: string, cwd: string, option: string): Promise<JsonValue> {
+export function parseJsonArgument(raw: string, cwd: string, option: string): Promise<JsonValue> {
   return tryParseJsonArgument(raw, cwd, option).match(
     value => value,
     error => { throw usageError(jsonArgumentErrorMessage(error)); },

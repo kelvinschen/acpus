@@ -5,6 +5,7 @@ import {
   type AgentSessionSupervisor,
   type AgentSessionSupervisorOptions,
   type AgentSessionLease,
+  type ConfiguredAcpAgentCommandResolver,
   type TurnInput,
 } from "@acpus/agent-executor";
 
@@ -20,6 +21,8 @@ expectTypeOf<AgentSessionLease["runTurn"]>().parameters.toEqualTypeOf<[TurnInput
 expectTypeOf<AgentSessionLease["reportedVersion"]>().toEqualTypeOf<string | undefined>();
 expectTypeOf<"onEvent">().toMatchTypeOf<keyof TurnInput<unknown>>();
 expectTypeOf<"onObservation">().not.toMatchTypeOf<keyof TurnInput<unknown>>();
+expectTypeOf<"configuredAgentCommand">().toMatchTypeOf<keyof AgentSessionSupervisorOptions>();
+expectTypeOf<ConfiguredAcpAgentCommandResolver>().parameter(0).toEqualTypeOf<readonly string[]>();
 
 createAgentSessionSupervisor({
   workersRoot: "/tmp/workers",

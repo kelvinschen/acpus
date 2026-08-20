@@ -43,13 +43,13 @@ describe("@acpus/dsh public contract", () => {
     expect(client.inject).toEqual(["slots", "remote"]);
     expect(typeof client.AcpusActivityTray).toBe("function");
     expect(typeof client.AcpusInternalToolView).toBe("function");
-    expect(typeof client.AcpusProfileAction).toBe("function");
+    expect(typeof client.AcpusPresetAction).toBe("function");
     expect(remote.package).toBe("@acpus/dsh");
     expect(remote.descriptors.map(descriptor => descriptor.method).sort()).toEqual([
       "awaitSessionActivityRevision",
       "cancelSessionTask",
       "readActivityDetail",
-      "readAgentProfiles",
+      "readAgentPresets",
       "readSessionActivity",
     ]);
     expect(remote.descriptors.find(descriptor =>
@@ -114,7 +114,7 @@ describe("@acpus/dsh public contract", () => {
     expect(metadata).toContain("name: Acpus 模式");
     expect(metadata).toContain("order: 5");
     expect(composition).toContain("complete: true");
-    expect(composition).toContain("{{acpus_agents}}");
+    expect(composition).toContain("{{acpus_agent_presets}}");
     expect(composition).toContain("name: '@acpus/dsh/supervisor'");
     expect(composition).not.toMatch(/dsh-tool-|dsh-subagent|dsh-workflow|dsh-skill/);
     expect(discovered).toEqual([
@@ -228,7 +228,7 @@ describe("@acpus/dsh public contract", () => {
     )).toHaveLength(6);
     expect(calls.filter(([kind]) => kind === "register").slice(0, 6)).toEqual(
       [
-        "acpus_profiles",
+        "acpus_presets",
         "acpus_tasks",
         "acpus_run",
         "acpus_inspect",
@@ -258,10 +258,10 @@ describe("@acpus/dsh public contract", () => {
       "register",
       expect.objectContaining({
         name: "conversation.session.header.actions",
-        id: "acpus-agent-profiles",
+        id: "acpus-agent-presets",
         order: 0,
       }),
-      client.AcpusProfileAction,
+      client.AcpusPresetAction,
     ]);
     expect(calls.filter(([kind]) => kind === "register").at(-1)).toEqual([
       "register",
@@ -273,36 +273,36 @@ describe("@acpus/dsh public contract", () => {
     expect(remoteDispose).toHaveBeenCalledOnce();
   });
 
-  it("publishes only the safe Agent Profile catalog fields", () => {
+  it("publishes only the safe Agent Preset catalog fields", () => {
     const descriptor = remote.descriptors.find(candidate =>
-      candidate.method === "readAgentProfiles"
+      candidate.method === "readAgentPresets"
     );
     const parameter = descriptor?.parameters[0];
     if (parameter?.source !== "json" || parameter.codec.mode !== "strict"
       || descriptor?.result.mode !== "strict") {
-      throw new Error("Expected strict Agent Profile catalog codecs.");
+      throw new Error("Expected strict Agent Preset catalog codecs.");
     }
 
     expect(parameter.codec.schema.parse({ private: "ignored" })).toEqual({});
     const parsed = descriptor.result.schema.parse({
-      profiles: [{
+      presets: [{
         id: "dsh",
-        use: "dsh",
         guidance: "Built-in DSH.",
-        builtIn: true,
+        scope: "host",
+        use: "dsh",
+        model: "private-model",
         command: "private-command",
         env: { SECRET: "value" },
       }],
       revision: 4,
       stateDir: "/private/state",
-    }) as projection.ReadAgentProfilesResult;
+    }) as projection.ReadAgentPresetsResult;
 
     expect(parsed).toEqual({
-      profiles: [{
+      presets: [{
         id: "dsh",
-        use: "dsh",
         guidance: "Built-in DSH.",
-        builtIn: true,
+        scope: "host",
       }],
     });
   });
@@ -418,6 +418,27 @@ describe("@acpus/dsh public contract", () => {
     expect(parsed.detail).not.toHaveProperty("cwd");
     expect(parsed.detail).not.toHaveProperty("env");
     expect(parsed.detail).not.toHaveProperty("implementation");
+  });
+
+  it("accepts a repair-origin first Agent request in hover data", () => {
+    const descriptor = remote.descriptors.find(candidate =>
+      candidate.method === "readActivityDetail"
+    );
+    if (descriptor === undefined || descriptor.result.mode !== "strict") {
+      throw new Error("Expected a strict readActivityDetail result codec.");
+    }
+
+    expect(descriptor.result.schema.parse({
+      status: "available",
+      detail: {
+        kind: "agent",
+        agent: "claude",
+        prompt: { origin: "repair", text: "Repair the response.", truncated: false },
+      },
+    })).toMatchObject({
+      status: "available",
+      detail: { kind: "agent", prompt: { origin: "repair" } },
+    });
   });
 });
 

@@ -1,4 +1,4 @@
-import type { WorkflowIR } from "@acpus/core/ir";
+import type { AdmittedWorkflowIR } from "@acpus/core/ir";
 import { ok } from "neverthrow";
 import { describe, expect, it } from "vitest";
 import type { HookEvent } from "../src/hooks/config.js";
@@ -145,7 +145,7 @@ function frozenRun(): FrozenRun {
   return {
     ir: workflow(),
     input: {},
-    agentOverrides: {},
+    agentBindings: {},
     meta: { runId: "run_1", workflowName: "release", workflowPath: "workflow.ts", workspaceDir: "/workspace" },
   };
 }
@@ -168,9 +168,9 @@ function row(type: string, payload: Record<string, unknown>, sequence = 1, nodeK
   };
 }
 
-function workflow(): WorkflowIR {
+function workflow(): AdmittedWorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "release",
     agents: {},
     root: {

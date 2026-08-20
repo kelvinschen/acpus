@@ -496,9 +496,9 @@ describe("daemon socket server", () => {
     });
     const mismatches = [
       { ...current, workspaceKey: "c".repeat(32) },
-      { ...current, runtimeAbi: 5 },
+      { ...current, runtimeAbi: 6 },
       { ...current, layoutVersion: 3 },
-      { ...current, storageVersion: 18 },
+      { ...current, storageVersion: 19 },
       { ...current, authorityId: "00000000-0000-4000-8000-000000000002" },
       { ...current, leaseGeneration: 2 },
     ];
@@ -705,13 +705,13 @@ describe("daemon socket server", () => {
       ok: true,
       result: {
         ...daemonStatus(),
-        authority: { ...runtimeAuthority(), runtimeAbi: 5 },
+        authority: { ...runtimeAuthority(), runtimeAbi: 6 },
       },
     });
     try {
       await expect(requestDaemonStatusProbe(futureAbiWorkspace)).resolves.toEqual(ok({
         kind: "unknown",
-        protocolVersion: 9,
+        protocolVersion: 10,
       }));
     } finally {
       await closeRawResponseServer(futureAbiServer);
@@ -941,7 +941,7 @@ function preparedRunWorkflow(): PreparedRunWorkflow {
   const digest = `sha256:${"a".repeat(64)}` as Sha256Digest;
   const source = { kind: "workspace", entry: "test.workflow.ts" } as const;
   const ir: PreparedRunWorkflow["ir"] = {
-    irVersion: 7,
+    irVersion: 8,
     name: "test",
     agents: {},
     root: { nodes: [], output: { kind: "object", fields: {} } },
@@ -983,9 +983,9 @@ function runDetails(): RunDetails {
 function runtimeAuthority(): RuntimeAuthorityIdentity {
   return {
     workspaceKey: "a".repeat(32),
-    runtimeAbi: 4,
+    runtimeAbi: 5,
     layoutVersion: 2,
-    storageVersion: 17,
+    storageVersion: 18,
     authorityId: "00000000-0000-4000-8000-000000000001",
     leaseGeneration: 1,
   };
@@ -996,7 +996,7 @@ function daemonStatus() {
     status: "ok" as const,
     pid: process.pid,
     leaseGeneration: 1,
-    protocolVersion: 9 as const,
+    protocolVersion: 10 as const,
     packageVersion: "test",
     authority: runtimeAuthority(),
   };

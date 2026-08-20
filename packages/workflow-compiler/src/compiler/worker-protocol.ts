@@ -81,7 +81,7 @@ function isCompiledWorkflowModule(value: unknown): value is CompiledWorkflowModu
 function isWorkflowIR(value: unknown): value is WorkflowIR {
   if (!(isRecord(value)
     && hasExactKeys(value, ["irVersion", "name", "agents", "root", "diagnostics"], ["description", "inputSchema"])
-    && value.irVersion === 7
+    && value.irVersion === 8
     && typeof value.name === "string"
     && (value.description === undefined || typeof value.description === "string")
     && isRecord(value.agents)

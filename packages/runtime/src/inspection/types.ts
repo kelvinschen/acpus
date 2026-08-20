@@ -2,7 +2,7 @@ import type { AgentDefinitionIR, ExprIR, NodeIR, SchemaIR } from "@acpus/core/ir
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTelemetryAvailability } from "@acpus/agent-executor";
 import type { ArtifactRecord } from "../artifacts/types.js";
-import type { AgentOverrideMap } from "../control/agent-overrides.js";
+import type { FrozenAgentBinding } from "../agents/injections.js";
 import type {
   RunDetails,
   RunForkInfo,
@@ -649,7 +649,7 @@ export type InspectionSubject = {
   selector?: string;
 };
 
-export type ForensicsAgentOverride = AgentOverrideMap[string];
+export type ForensicsAgentBinding = FrozenAgentBinding;
 
 export type ForensicsScopeDefinition = {
   nodes: string[];
@@ -664,7 +664,7 @@ export type ForensicsDefinition =
       inputSchema?: SchemaIR;
       agents: Record<string, {
         profile: AgentDefinitionIR;
-        override?: ForensicsAgentOverride;
+        binding: ForensicsAgentBinding;
       }>;
       root: ForensicsScopeDefinition;
     }
@@ -672,7 +672,7 @@ export type ForensicsDefinition =
       kind: "agent";
       agent: string;
       profile: AgentDefinitionIR;
-      override?: ForensicsAgentOverride;
+      binding: ForensicsAgentBinding;
       prompt: string;
       permissionMode?: "approve-reads" | "approve-all" | "deny-all";
       sessionKey?: string;
@@ -779,7 +779,7 @@ export type ForensicsInvocation =
   | (ForensicsResolvedInvocationBase & {
       kind: "agent";
       attempt: number;
-      promptOrigin: "authored" | "steering";
+      promptOrigin: "authored" | "steering" | "repair";
       prompt: string;
       cwd: string;
       env: Record<string, string>;

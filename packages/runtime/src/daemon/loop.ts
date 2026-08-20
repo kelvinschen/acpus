@@ -135,7 +135,7 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
       requestId: request.requestId,
       prepared: request.prepared,
       input: request.input,
-      ...(request.agentOverrides === undefined ? {} : { agentOverrides: request.agentOverrides }),
+      ...(request.agentInjections === undefined ? {} : { agentInjections: request.agentInjections }),
     });
     if (submitted.isErr()) {
       yield runStreamError(

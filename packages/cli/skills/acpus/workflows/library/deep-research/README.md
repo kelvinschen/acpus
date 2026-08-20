@@ -43,15 +43,16 @@ report and retains the authoritative Markdown beside it.
 
 ## Run
 
-Resolve the active Acpus skill directory and use the workflow's absolute path:
+Resolve the active Acpus skill directory, bind its `lead`, `worker`, and
+`skeptic` Agent slots in `agents.json`, then use the workflow's absolute path:
 
 ```sh
-acpus workflow run /absolute/path/to/acpus-skill/workflows/library/deep-research/workflow.ts --input '{"question":"What should I research?","depth":"deep"}'
+acpus workflow run /absolute/path/to/acpus-skill/workflows/library/deep-research/workflow.ts --input '{"question":"What should I research?","depth":"deep"}' --agents agents.json
 ```
 
 For a local codebase, run from that repository and describe the scope in
 `context`:
 
 ```sh
-acpus workflow run /absolute/path/to/acpus-skill/workflows/library/deep-research/workflow.ts --input '{"question":"How does the runtime preserve resident Agent sessions?","context":"This repository; orient the reader before tracing implementation.","depth":"deep"}'
+acpus workflow run /absolute/path/to/acpus-skill/workflows/library/deep-research/workflow.ts --input '{"question":"How does the runtime preserve resident Agent sessions?","context":"This repository; orient the reader before tracing implementation.","depth":"deep"}' --agents agents.json
 ```

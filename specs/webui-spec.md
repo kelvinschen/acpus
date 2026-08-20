@@ -85,7 +85,7 @@
 - WebUI server code MUST own graph labels and Inspector definition, schema preview, expression preview, and template preview formatting.
 - A Web graph Task `NodeDetail` MUST contain the complete authored input expression formatted as one `input` string and the Task target kind.
 - A Web graph Task `NodeDetail` MUST NOT reduce an object input to a field-name list.
-- A Web graph Agent `NodeDetail` MUST identify its effective Agent profile and model; the coherent workflow context owns the complete effective Agent definition.
+- A Web graph Agent `NodeDetail` MUST identify its effective Agent definition and model. A static Agent Slot MUST instead identify that its binding is unbound, while a runtime workflow context MUST contain only admitted concrete Agent definitions.
 - Browser HTTP transport MUST distinguish network failure, invalid JSON, invalid envelopes, and application request failures before the React Query adapter converts them to thrown query errors.
 - Before returning a successful JSON API response to React Query, Browser HTTP transport MUST validate the payload against the endpoint's Web-owned result shape; a mismatch MUST be classified as `response-invalid-envelope`.
 - Recoverable workflow browsing and preparation failures MUST remain tagged Results until the Hono adapter converts them to an HTTP response; permission, I/O, and other unknown failures MUST propagate to the redacted `500` boundary.
@@ -150,7 +150,7 @@
 - WebUI control request bodies MUST be closed shapes: Pause and Resume contain only `type`; Retry contains `type` and a non-blank `target`; Cancel contains `type` and an optional non-blank `target`; Signal contains `type`, a non-blank `target`, and `payload`. A successful control response MUST contain only `{ ok: true }`.
 - WebUI control failures with daemon code `RUN_NOT_FOUND` MUST map to HTTP 404 and error code `run_not_found`. `RUNTIME_UPDATE_BLOCKED` during authority readiness MUST map to HTTP 409 `runtime_update_blocked`. Other daemon rejections MUST map to HTTP 400 with the daemon code normalized to lowercase snake case. The daemon error message MUST be preserved.
 - Unexpected WebUI server failures MUST return a fixed `internal_error` response without exposing filesystem, process, or runtime details.
-- WebUI runtime controls MUST NOT expose fork; fork remains a CLI/runtime control because replacement workflow, input, and agent overrides require explicit parameters.
+- WebUI runtime controls MUST NOT expose fork; fork remains a CLI/runtime control because replacement workflow, input, and Agent injections require explicit parameters.
 - WebUI Pause and Resume controls MUST be mutually exclusive: active runs show Pause, paused runs show Resume, and terminal runs show neither.
 - WebUI Retry MUST be target-first for failed runs. It MUST submit one exact Runtime-approved retry target and MUST NOT default to run-level retry.
 - WebUI MUST use Runtime-projected retry/run-cancel applicability and MUST NOT reconstruct target legality from run status, failed dynamic rows, graph state, or authored ids. WebUI owns only product filtering, selection, labels, and confirmation copy.
@@ -173,7 +173,7 @@
 - Runtime workflow Overview MUST show the run start, last update, and duration.
 - Runtime workflow inspection MUST show the frozen description and effective Agent definitions from the same coherent runtime snapshot as the graph and run details.
 - Runtime workflow inspection MUST show actual `RunDetails.input` and final `RunDetails.output` when recorded. It MUST NOT derive partial workflow output from top-level node outputs while a run is active.
-- Static workflow inspection MUST show the authored description and Agent definitions, declared input schema, raw `output: ExprIR`, and `outputShape`, label the authored value `Output Expression`, and omit invented runtime values or output-mapping terminology.
+- Static workflow inspection MUST show the authored description and Agent declarations, including unbound Agent Slots, declared input schema, raw `output: ExprIR`, and `outputShape`, label the authored value `Output Expression`, and omit invented runtime values or output-mapping terminology.
 - Workflow inspection MUST use the same docked inspector card and graph reflow behavior as node inspection.
 - A rendered materialized runtime node occurrence MUST expose its canonical Run-scoped `@ref` as the Inspector target. An authored static node that has no materialized occurrence MAY expose its authored id.
 - Fanout and loop context may remain graph-local state, but Inspector routes and queries MUST NOT accept or reconstruct a public `context` parameter. The selected canonical target alone identifies the deep occurrence.

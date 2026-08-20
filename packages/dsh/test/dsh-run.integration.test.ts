@@ -9,7 +9,7 @@ import { describe, expect, it } from "vitest";
 import { loadDshComposition, supervisingAgent } from "./support/dsh-composition.js";
 
 const toolNames = [
-  "acpus_profiles",
+  "acpus_presets",
   "acpus_tasks",
   "acpus_run",
   "acpus_inspect",
@@ -41,11 +41,17 @@ describe("Acpus run through a real DSH Loader composition", () => {
     ]);
     await Promise.all([
       writeFile(cliManifest, "{}\n"),
-      writeFile(join(workspace, ".acpus", "agents.json"), `${JSON.stringify({
+      writeFile(join(workspace, ".acpus", "config.json"), `${JSON.stringify({
         agents: {
           fixture: [process.execPath, fixtureAgent, "named-acp-agent", agentSentinel]
             .map(shellQuote)
             .join(" "),
+        },
+        presets: {
+          "fixture-worker": {
+            guidance: "Run the fixture ACP Agent.",
+            agent: { use: "fixture" },
+          },
         },
       })}\n`),
       writeFile(join(bin, "acpus"), `#!/bin/sh\nprintf invoked > ${shellQuote(sentinel)}\nexit 97\n`),
@@ -66,7 +72,10 @@ describe("Acpus run through a real DSH Loader composition", () => {
         signal: new AbortController().signal,
         callId: CallId("run-call"),
         name: "acpus_run",
-        arguments: { workflow: agentWorkflow },
+        arguments: {
+          workflow: agentWorkflow,
+          agents: { worker: { preset: "fixture-worker" } },
+        },
         agent: supervisingAgent(context, workspace),
       });
       if (run.isError) throw new Error(run.error.message);
@@ -105,7 +114,7 @@ const agentWorkflow = [
   'import { defineWorkflow } from "acpus/core";',
   "export default defineWorkflow({",
   '  name: "dsh-named-agent",',
-  '  agents: { worker: { use: "fixture" } },',
+  "  agents: { worker: {} },",
   "}).build(({ agents, step }) => {",
   '  const result = step("worker").agent({ agent: agents.worker, prompt: "Complete the delegated work." });',
   "  return { answer: result.output };",

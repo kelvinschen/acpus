@@ -118,7 +118,7 @@ describe("workflow compilation", () => {
     });
 
     expect(ir.diagnostics).toEqual([]);
-    expect(ir.irVersion).toBe(7);
+    expect(ir.irVersion).toBe(8);
     expect(ir).not.toHaveProperty("lock");
     expect(ir.description).toBe("Review a package release for readiness.");
     expect(ir.root.nodes.map((node) => node.kind)).toEqual([
@@ -1100,14 +1100,33 @@ describe("workflow compilation", () => {
       run: { agent: "worker" },
     });
 
+    const slot = defineWorkflow({
+      name: "agent_slot",
+      agents: {
+        reviewer: {},
+        constrained: { model: "gpt-5.4", config: { effort: "high" }, permissionMode: "deny-all" },
+      },
+    }).build(() => ({}));
+
+    expect(compileWorkflowDefinition(slot).agents).toEqual({
+      reviewer: { kind: "agent_slot" },
+      constrained: {
+        kind: "agent_slot",
+        model: "gpt-5.4",
+        config: { effort: "high" },
+        permissionMode: "deny-all",
+      },
+    });
+
     const malformed = defineWorkflow({
       name: "malformed_agent_definition",
       agents: {
-        missing_use: { model: "gpt-5.4" },
         mixed: { use: "codex", command: "acpx worker" },
         ir_shaped: { kind: "agent_definition", use: "codex" },
         legacy_agent_mode: { use: "codex", agentMode: "plan" },
         bad_config: { use: "codex", config: { mode: true } },
+        preset_shaped: { preset: "reviewer" },
+        unknown_field: { mystery: true },
       } as any,
     }).build(() => ({}));
 
@@ -1115,10 +1134,6 @@ describe("workflow compilation", () => {
 
     expect(malformedIr.agents).toEqual({});
     expect(malformedIr.diagnostics).toEqual([
-      expect.objectContaining({
-        code: "A002",
-        path: "agents.missing_use",
-      }),
       expect.objectContaining({
         code: "A002",
         path: "agents.mixed",
@@ -1134,6 +1149,14 @@ describe("workflow compilation", () => {
       expect.objectContaining({
         code: "A002",
         path: "agents.bad_config.config.mode",
+      }),
+      expect.objectContaining({
+        code: "A002",
+        path: "agents.preset_shaped.preset",
+      }),
+      expect.objectContaining({
+        code: "A002",
+        path: "agents.unknown_field.mystery",
       }),
     ]);
   });

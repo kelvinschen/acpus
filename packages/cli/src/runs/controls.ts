@@ -88,7 +88,7 @@ export function createControlCommands(ctx: RunsCommandContext): Command[] {
     .option("--project", "resolve replacement workflow name from the project catalog")
     .option("--global", "resolve replacement workflow name from the global catalog")
     .option("--input <json|file.json>", "override workflow input with inline JSON or a JSON file")
-    .option("--agents <json|file.json>", "override inherited agents with inline JSON or a JSON file")
+    .option("--agents <json|file.json>", "inject replacement Agents with inline JSON or a JSON file")
     .option("--target <source-occurrence>", "rewind: rerun this occurrence and later work; omit #attemptNo")
     .action(async (runId: string, options: ForkMutation) => {
       await mutateRun(ctx, runId, {
@@ -187,6 +187,7 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
   const replacementInput = request.type === "fork" && request.input !== undefined
     ? await parseInput(request.input, ctx.cwd)
     : undefined;
+  const agentInjections = request.type === "fork" ? await parseAgents(request.agents, ctx.cwd) : undefined;
   const preparation = request.type === "fork" && request.workflow !== undefined
     ? await prepareWorkflowForCli({
         workspaceDir: ctx.cwd,
@@ -197,7 +198,6 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
       })
     : undefined;
   const prepared = preparation?.prepared;
-  const agentOverrides = request.type === "fork" ? await parseAgents(request.agents, ctx.cwd) : undefined;
   const forkInput = request.type === "fork"
     ? await maybeNormalizeForkInput(ctx, runId, replacementInput, prepared)
     : undefined;
@@ -222,7 +222,7 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
         ...(request.target ? { target: request.target } : {}),
         ...(prepared ? { prepared } : {}),
         ...(forkInput !== undefined ? { input: forkInput } : {}),
-        ...(agentOverrides !== undefined ? { agentOverrides } : {}),
+        ...(agentInjections !== undefined ? { agentInjections } : {}),
       };
       break;
   }

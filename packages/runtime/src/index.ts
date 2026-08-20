@@ -13,6 +13,49 @@ export type {
 export type { Sha256Digest } from "@acpus/core/content-identity";
 export type { ArtifactRecord } from "./artifacts/types.js";
 export {
+  addAgentPreset,
+  applyAgentPresetChanges,
+  globalAcpusConfigPath,
+  loadAcpusConfigScope,
+  loadAgentPresetCatalog,
+  projectAcpusConfigPath,
+  removeAgentPreset,
+  resolveConfiguredAgentCommand,
+  type AcpusConfig,
+  type AcpusConfigReadFailure,
+  type AgentPresetCatalog,
+  type AgentPresetCatalogFailure,
+  type AgentPresetChange,
+  type AgentPresetChoice,
+  type AgentPresetProvider,
+  type AgentPresetProviderFailure,
+  type AgentPresetResolutionFailure,
+  type AgentPresetScope,
+  type AgentPresetSpec,
+  type AgentPresetWriteFailure,
+  type HostAgentPreset,
+  type ResolvedAgentPreset,
+  type WritableAgentPresetScope,
+} from "./acpus-config.js";
+export {
+  finalizeAgentBindings,
+  hasPresetInjections,
+  parseAgentInjectionMap,
+  tryParseAgentInjectionMap,
+  unboundAgentNames,
+  withAgentBindings,
+  type AgentBindingFailure,
+  type AgentBindingSource,
+  type AgentDirectInjectionSpec,
+  type AgentInjectionMap,
+  type AgentInjectionSpec,
+  type AgentInjectionValidationFailure,
+  type AgentPresetInjectionSpec,
+  type FinalizedAgentBindings,
+  type FrozenAgentBinding,
+  type FrozenAgentBindingMap,
+} from "./agents/injections.js";
+export {
   startDaemonLoop,
   type DaemonLoopHandle,
   type DaemonLoopOptions,
@@ -110,7 +153,7 @@ export type {
   InspectionViewQuery,
   ObservableInspectionViewQuery,
   ObserveInspectionQuery,
-  ForensicsAgentOverride,
+  ForensicsAgentBinding,
   ForensicsDefinition,
   ForensicsExecutionContext,
   ForensicsInvocation,
@@ -142,10 +185,8 @@ export {
 } from "./hooks/config.js";
 export {
   formatHookLoadError,
-  globalHooksPath,
   loadHooksConfigScope,
   loadHooksConfigScopes,
-  projectHooksPath,
   type HookConfigScope,
   type HookLoadError,
 } from "./hooks/loader.js";
@@ -181,11 +222,6 @@ export {
   type RunRecord,
   type RunStatus,
 } from "./store/store.js";
-export {
-  tryValidateAgentOverrides,
-  type AgentOverrideMap,
-  type AgentOverrideValidationFailure,
-} from "./control/agent-overrides.js";
 export {
   awaitRuntimeStoreOffline,
   inspectRuntimeStore,

@@ -1,64 +1,52 @@
 # ACP Agents
 
-Use `use` for an Acpus built-in, Host-provided, or configured named Agent:
+## Select And Bind Agents
+
+Resolve each unbound Agent slot in this order:
+
+1. Honor an explicit user choice. A Preset id, named Agent, or raw command becomes exactly `{ "preset": "id" }`, `{ "use": "name" }`, or `{ "command": "..." }`. Use it without discovery or reconfirmation, and do not reinterpret one kind as another.
+2. Otherwise discover Presets. Use Host choices when available; otherwise run `acpus agent presets` from the workspace. Select the Preset whose `guidance` best matches the slot's work.
+3. If discovery returns no Presets, stop before admission and tell the user automatic selection needs a configured Preset. Ask them for its purpose, Agent, optional model/options, and scope, then follow [Configuration](configuration.md). If scope is missing, ask.
+
+When no Preset exists, also offer direct built-in choices such as `codex` or `claude`. They need no `agents` configuration, but the user must choose one and confirm that the corresponding Agent is installed, authenticated, and usable. Do not choose one silently.
+
+Reusable workflows declare unbound Agent slots:
 
 ```ts
 agents: {
-  reviewer: { use: "codex", config: { reasoning_effort: "high" } },
+  worker: {},
+  reviewer: {},
 }
 ```
 
-Use `command` only when the user supplies a raw ACP server command:
+Inject chosen ids by slot name:
+
+```sh
+acpus workflow run workflow.ts --agents '{
+  "worker":{"preset":"deep-coder"},
+  "reviewer":{"preset":"critical-reviewer"}
+}'
+```
+
+Runtime expands and freezes ids. Direct fields bind one invocation:
+
+```json
+{ "worker": { "use": "codex", "config": { "reasoning_effort": "high" } } }
+```
+
+Every slot must bind before admission. One injection sets either `preset` or direct Agent fields, never both.
+
+## Concrete Agents
+
+A workflow may bind `use`, or `command` for a user-supplied raw ACP server:
 
 ```ts
 agents: {
-  reviewer: { command: "my-acp-server --stdio" },
+  reviewer: { use: "codex" },
+  private: { command: "my-acp-server --stdio" },
 }
 ```
 
 An explicit `command` launches as written and bypasses named Agent lookup.
 
-## Built-in Agents
-
-The built-ins are `pi`, `openclaw`, `codex`, `claude`, `gemini`, `cursor`,
-`copilot`, `droid`, `fast-agent`, `grok-build`, `iflow`, `kilocode`, `kimi`,
-`kiro`, `mux`, `opencode`, `pool`, `qoder`, `qwen`, `trae`, and `zeroclaw`.
-Declare any of them as `{ use: "<agent>" }`.
-
-## Configured Agents
-
-- **Global:** Add commands to `$HOME/.acpus/agents.json`.
-- **Project:** Add project-specific commands to `<cwd>/.acpus/agents.json`.
-- **Precedence:** A project entry overrides a global entry with the same normalized name.
-- **Shape:** Each file contains only `agents`; each entry is a non-empty Shell command:
-
-```json
-{
-  "agents": {
-    "my-agent": "my-acp-server --stdio"
-  }
-}
-```
-
-
-Then select it normally:
-
-```ts
-agents: {
-  worker: { use: "my-agent" },
-}
-```
-
-- **Unknown named Agent:** Add a non-empty command to configuration.
-- **User supplied a raw command:** Change the definition to `{ command: "..." }`.
-- **Invalid configuration:** Fix the path and entry named by the diagnostic; every present file is validated completely.
-- **After an ambient configuration fix:** Retry the failed Agent or containing frame.
-- **To change the workflow's Agent definition:** Fork.
-
-- **Resolution order:** Host-provided Agent, file configuration, then built-in catalog.
-- **Later work:** A shared-session occurrence, Retry generation, or Steer replacement resolves current configuration.
-
-## ACP Agent Config
-
-- Use top-level workflow `config` for static string ACP Session options.
-- `config.model` overrides top-level `model`; other keys select ACP options.
+Built-ins are `pi`, `openclaw`, `codex`, `claude`, `gemini`, `cursor`, `copilot`, `droid`, `fast-agent`, `grok-build`, `iflow`, `kilocode`, `kimi`, `kiro`, `mux`, `opencode`, `pool`, `qoder`, `qwen`, `trae`, and `zeroclaw`.

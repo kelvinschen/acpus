@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { childScopes, walkNodes, type ExprIR, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
+import { childScopes, walkNodes, type ExprIR, type NodeIR, type ScopeIR, type AdmittedWorkflowIR } from "@acpus/core/ir";
 import { isJsonValue, type JsonPrimitive, type JsonValue, type TemplateIR } from "@acpus/expression/ir";
 import type { ArtifactRecord } from "../artifacts/types.js";
 import type { CommittedRuntimeEventRow } from "../store/committed-event.js";
@@ -68,7 +68,7 @@ const schedulerFailureReasons = new Set([
 ]);
 
 export function projectInspectionRunView(input: {
-  ir: WorkflowIR;
+  ir: AdmittedWorkflowIR;
   run: RunDetails;
   observations?: AgentObservationInspectionProjection;
   structure?: "materialized";
@@ -87,7 +87,7 @@ export function projectInspectionRunView(input: {
 
 /** Builds the pulse-free run tree used only for incremental decision changes. */
 export function projectInspectionRunDecisionView(input: {
-  ir: WorkflowIR;
+  ir: AdmittedWorkflowIR;
   run: RunDetails;
   agentSessions?: RunInspectionRunSummary["agentSessions"];
 }): Extract<InspectionView, { kind: "run" }> {
@@ -103,7 +103,7 @@ export function projectInspectionRunDecisionView(input: {
 }
 
 export function resolveTargetState(input: {
-  ir: WorkflowIR;
+  ir: AdmittedWorkflowIR;
   run: RunDetails;
   artifacts: ArtifactRecord[];
   target: string;
@@ -172,7 +172,7 @@ export function semanticChanges(
   });
 }
 
-export function inspectionStaticNodes(ir: WorkflowIR): RunInspectionStaticNode[] {
+export function inspectionStaticNodes(ir: AdmittedWorkflowIR): RunInspectionStaticNode[] {
   return Array.from(walkNodes(ir.root), ({ node, ancestry }, order) => ({
     nodeId: node.id,
     kind: node.kind,
@@ -190,7 +190,7 @@ export function terminalRun(status: string): boolean {
 }
 
 function projectInspectionRun(
-  ir: WorkflowIR,
+  ir: AdmittedWorkflowIR,
   run: RunDetails,
   projectAgentActivity: ReturnType<typeof createAgentActivityProjector>,
   projectAgentToolActivity: ReturnType<typeof createAgentToolActivityProjector>,
@@ -678,7 +678,7 @@ function snapshotIndexes(run: RunDetails, staticNodes: RunInspectionStaticNode[]
   };
 }
 
-function occurrenceTree(ir: WorkflowIR, indexes: SnapshotIndexes): OccurrenceTree {
+function occurrenceTree(ir: AdmittedWorkflowIR, indexes: SnapshotIndexes): OccurrenceTree {
   const items: RunInspectionItem[] = [];
   const executionStatuses: RunInspectionStatus[] = [];
 
@@ -790,7 +790,7 @@ function occurrenceTree(ir: WorkflowIR, indexes: SnapshotIndexes): OccurrenceTre
 }
 
 function snapshotNodeItem(
-  ir: WorkflowIR,
+  ir: AdmittedWorkflowIR,
   indexes: SnapshotIndexes,
   node: NodeIR,
   path: InstancePath,
@@ -1027,7 +1027,7 @@ function unmaterializedExecutionStatuses(scope: ScopeIR): RunInspectionStatus[] 
 }
 
 function instanceItem(
-  ir: WorkflowIR,
+  ir: AdmittedWorkflowIR,
   instance: RunDynamicNodeInstance,
   indexes: SnapshotIndexes,
   nodesById: ReadonlyMap<string, NodeIR>,
@@ -1071,7 +1071,7 @@ function instanceItem(
 }
 
 function projectTarget(
-  ir: WorkflowIR,
+  ir: AdmittedWorkflowIR,
   run: RunDetails,
   artifacts: ArtifactRecord[],
   staticNodes: RunInspectionStaticNode[],
@@ -1234,7 +1234,7 @@ function staticTargetStatuses(
 }
 
 function targetInspectionItems(
-  ir: WorkflowIR,
+  ir: AdmittedWorkflowIR,
   run: RunDetails,
   indexes: SnapshotIndexes,
   instances: RunDynamicNodeInstance[],
@@ -1287,7 +1287,7 @@ function targetInspectionItems(
 }
 
 function runSummary(
-  ir: WorkflowIR,
+  ir: AdmittedWorkflowIR,
   run: RunDetails,
   includeAgentUsage: boolean,
   agentSessions: RunInspectionRunSummary["agentSessions"] = [],
@@ -1312,7 +1312,7 @@ function runSummary(
   };
 }
 
-function runAgentUsage(ir: WorkflowIR, run: RunDetails): NonNullable<RunInspectionRunSummary["agentUsage"]> | undefined {
+function runAgentUsage(ir: AdmittedWorkflowIR, run: RunDetails): NonNullable<RunInspectionRunSummary["agentUsage"]> | undefined {
   const agentNodeIds = new Set(Array.from(walkNodes(ir.root), ({ node }) => node.kind === "agent" ? node.id : undefined)
     .filter((nodeId): nodeId is string => nodeId !== undefined));
   if (agentNodeIds.size === 0) return undefined;
@@ -1359,7 +1359,7 @@ function compositeDetails(run: RunDetails, node: NodeIR, nodeKey?: string): Pick
 }
 
 function agentDecisionState(
-  ir: WorkflowIR,
+  ir: AdmittedWorkflowIR,
   node: Extract<NodeIR, { kind: "agent" }>,
 ): AgentDecisionState {
   const backend = agentBackend(ir, node);
@@ -1370,7 +1370,7 @@ function agentDecisionState(
 }
 
 function agentDetails(
-  ir: WorkflowIR,
+  ir: AdmittedWorkflowIR,
   node: Extract<NodeIR, { kind: "agent" }>,
   metadata: RunExecutionMetadata | undefined,
   progress: RunNodeProgress | undefined,
@@ -1388,7 +1388,7 @@ function agentDetails(
 }
 
 function agentBackend(
-  ir: WorkflowIR,
+  ir: AdmittedWorkflowIR,
   node: Extract<NodeIR, { kind: "agent" }>,
 ): AgentInspectionState["backend"] {
   const configured = ir.agents[node.run.agent];
@@ -1575,7 +1575,7 @@ function inspectionPath(path: RunDynamicNodeInstance["instancePath"]): string[] 
   return (path ?? []).map(segment => segment.kind === "node" ? segment.nodeId : segment.kind === "branch" ? `${segment.nodeId}.${segment.branchId}` : segment.kind === "fanout" ? `${segment.nodeId}[${segment.itemIndex}]` : `${segment.nodeId}#${segment.iter}`);
 }
 
-function nodeById(ir: WorkflowIR, nodeId: string): NodeIR | undefined {
+function nodeById(ir: AdmittedWorkflowIR, nodeId: string): NodeIR | undefined {
   for (const visit of walkNodes(ir.root)) if (visit.node.id === nodeId) return visit.node;
   return undefined;
 }

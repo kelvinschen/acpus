@@ -162,6 +162,16 @@ describe("Web API transport", () => {
     await expect(visualizeWorkflow({ kind: "file", path: "workflow.ts" })).resolves.toEqual(result);
   });
 
+  it("accepts an authored Agent slot in a static visualization", async () => {
+    const result = readyVisualization();
+    result.workflow.agents = {
+      reviewer: { kind: "agent_slot", model: "gpt-5.6-luna" },
+    };
+    respondJson({ ok: true, result });
+
+    await expect(visualizeWorkflow({ kind: "file", path: "workflow.ts" })).resolves.toEqual(result);
+  });
+
   it.each([
     ["unknown discriminant", { status: "unknown", message: "ignored" }],
     ["invalid failure phase", { status: "failed", phase: "bundle", message: "failed" }],
@@ -602,6 +612,20 @@ function malformedEndpointCases() {
       },
     },
     {
+      name: "runtime snapshot with an unbound Agent slot",
+      call: () => getRunRuntimeSnapshot("run_1"),
+      body: {
+        ok: true,
+        run,
+        workflow: {
+          ...workflowContext(),
+          agents: { reviewer: { kind: "agent_slot" } },
+        },
+        graph,
+        controls: { canCancelRun: false, retryTargets: [] },
+      },
+    },
+    {
       name: "runtime snapshot with a non-public retry target kind",
       call: () => getRunRuntimeSnapshot("run_1"),
       body: {
@@ -1027,7 +1051,7 @@ function readyVisualization(): ReadyVisualization {
 
 function producerWorkflow(): WorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "release",
     description: "Release workflow",
     inputSchema: {

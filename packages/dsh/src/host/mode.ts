@@ -5,16 +5,22 @@ import { Context, Service } from "@deepseek-ai/cordis";
 import { resolveSessionPreset } from "@deepseek-ai/dsh-agent-presets";
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import type { JsonValue } from "@acpus/expression/ir";
-import type { InspectionForensicsView } from "@acpus/runtime";
+import {
+  applyAgentPresetChanges,
+  hasPresetInjections,
+  loadAgentPresetCatalog,
+  type AgentPresetCatalog,
+  type AgentPresetChange,
+  type AgentPresetScope,
+  type InspectionForensicsView,
+  type WritableAgentPresetScope,
+} from "@acpus/runtime";
 import type { WorkspaceRuntime } from "@acpus/runtime/host";
 import { AcpusOperationError, runtimePoolOperationError } from "./errors.js";
 import {
-  AgentProfileStore,
-  effectiveAgentProfiles,
-  type AgentProfile,
-  type UpdateAgentProfilesInput,
-  type UpdateAgentProfilesResult,
-} from "./agent-profiles.js";
+  dshAgentPresetProvider,
+  toAgentPresetView,
+} from "./agent-presets.js";
 import { RuntimePool } from "./runtime-pool.js";
 import { createDshAgentLaunches } from "./dsh-agent.js";
 import { RunLinkStore } from "./run-links.js";
@@ -27,7 +33,9 @@ import {
   type AcpusPresetInstallOptions,
 } from "../preset/index.js";
 import {
+  normalizeAgentInjections,
   normalizeAuthoringInput,
+  preflightAgentBindings,
   prepareAuthoringWorkflow,
   readAdmissionReceipt,
   submitPreparedWorkflow,
@@ -42,12 +50,13 @@ import type {
   CancelSessionTaskRequest,
   CancelSessionTaskResult,
   HoverResult,
-  ReadAgentProfilesRequest,
-  ReadAgentProfilesResult,
+  ReadAgentPresetsRequest,
+  ReadAgentPresetsResult,
   ReadActivityDetailRequest,
   ReadActivityDetailResult,
   ReadSessionActivityRequest,
   SessionActivityProjection,
+  AgentPresetView,
 } from "../remote/types.js";
 import type { DelegatedTaskSelector, ResolvedTaskSelector } from "../task.js";
 
@@ -68,8 +77,19 @@ export type AcpusRunRequest = {
   toolCallId: string;
   workflow: string;
   input?: JsonValue;
+  agents?: JsonValue;
   signal?: AbortSignal;
 };
+
+export type ApplyAgentPresetsRequest = {
+  workspace: string;
+  scope: WritableAgentPresetScope;
+  changes: readonly AgentPresetChange[];
+};
+
+export type ApplyAgentPresetsResult =
+  | { status: "applied" }
+  | { status: "rejected"; reason: string };
 
 export class AcpusMode extends TypertRemoteService {
   private readonly runtimes: RuntimePool;
@@ -77,7 +97,6 @@ export class AcpusMode extends TypertRemoteService {
   private readonly supervision: AcpusSupervision;
   private readonly projections: AcpusProjectionReader;
   private readonly presetOptions: AcpusPresetInstallOptions;
-  private readonly profiles: AgentProfileStore;
 
   constructor(ctx: Context, config: AcpusModeConfig = {}) {
     super(ctx, "acpusMode", { namespace: "acpus" });
@@ -88,9 +107,11 @@ export class AcpusMode extends TypertRemoteService {
     this.presetOptions = { dshHome };
     this.runtimes = new RuntimePool(
       join(stateDir, "runtime"),
-      { namedAgentLaunches: createDshAgentLaunches(dshHome) },
+      {
+        namedAgentLaunches: createDshAgentLaunches(dshHome),
+        agentPresetProvider: dshAgentPresetProvider,
+      },
     );
-    this.profiles = new AgentProfileStore(join(stateDir, "agent-profiles.json"));
     this.links = new RunLinkStore(
       join(stateDir, "run-links.json"),
     );
@@ -173,6 +194,20 @@ export class AcpusMode extends TypertRemoteService {
       request.input === undefined ? {} : request.input,
     );
     if (normalized.status === "invalid") return normalized;
+    const agents = normalizeAgentInjections(
+      request.agents ?? {},
+      prepared.prepared.ir.agents,
+    );
+    if (agents.status === "invalid") return agents;
+    const presetCatalog = hasPresetInjections(agents.agents)
+      ? await this.agentPresetCatalog(workspace)
+      : undefined;
+    const bindings = await preflightAgentBindings(
+      prepared.prepared.ir.agents,
+      agents.agents,
+      presetCatalog,
+    );
+    if (bindings.status === "invalid") return bindings;
     let link = await this.links.provisional(identity);
     if (link.runId === undefined) {
       const recovered = await runtime.findAdmission(admissionRequestId);
@@ -185,6 +220,7 @@ export class AcpusMode extends TypertRemoteService {
       runtime,
       prepared: prepared.prepared,
       normalizedInput: normalized.input,
+      agentInjections: agents.agents,
       admissionRequestId,
       link,
       links: this.links,
@@ -203,12 +239,53 @@ export class AcpusMode extends TypertRemoteService {
     return opened.value.runtime;
   }
 
-  agentProfiles(): Promise<AgentProfile[]> {
-    return this.profiles.read();
+  async trustedAgentPresetChoices(): Promise<AgentPresetView[]> {
+    return this.loadAgentPresetChoices(undefined, ["host", "global"]);
   }
 
-  updateAgentProfiles(input: UpdateAgentProfilesInput): Promise<UpdateAgentProfilesResult> {
-    return this.profiles.update(input);
+  agentPresetChoices(workspace: string): Promise<AgentPresetView[]> {
+    return this.loadAgentPresetChoices(workspace);
+  }
+
+  async applyAgentPresets(
+    input: ApplyAgentPresetsRequest,
+  ): Promise<ApplyAgentPresetsResult> {
+    const applied = await applyAgentPresetChanges({
+      workspaceDir: input.workspace,
+      scope: input.scope,
+      changes: input.changes,
+    });
+    return applied.match(
+      () => ({ status: "applied" }),
+      failure => ({ status: "rejected", reason: failure.type }),
+    );
+  }
+
+  private async loadAgentPresetChoices(
+    workspace: string | undefined,
+    scopes?: readonly AgentPresetScope[],
+  ): Promise<AgentPresetView[]> {
+    return (await this.agentPresetCatalog(workspace, scopes)).choices
+      .map(toAgentPresetView);
+  }
+
+  private async agentPresetCatalog(
+    workspace: string | undefined,
+    scopes?: readonly AgentPresetScope[],
+  ): Promise<AgentPresetCatalog> {
+    const loaded = await loadAgentPresetCatalog({
+      ...(workspace === undefined ? {} : { workspaceDir: workspace }),
+      hostProvider: dshAgentPresetProvider,
+      ...(scopes === undefined ? {} : { scopes }),
+    });
+    if (loaded.isErr()) {
+      throw new AcpusOperationError(
+        "Acpus could not read the Agent Preset catalog.",
+        "ACPUS_AGENT_PRESET_CATALOG_FAILED",
+        { cause: loaded.error },
+      );
+    }
+    return loaded.value;
   }
 
   tasks(sessionId: string, name?: string): Promise<AcpusTasksResult> {
@@ -300,16 +377,10 @@ export class AcpusMode extends TypertRemoteService {
   }
 
   @Remote
-  async readAgentProfiles(
-    _input: ReadAgentProfilesRequest,
-  ): Promise<ReadAgentProfilesResult> {
-    const profiles = await this.profiles.read();
-    return {
-      profiles: effectiveAgentProfiles(profiles).map((profile, index) => ({
-        ...profile,
-        builtIn: index === 0,
-      })),
-    };
+  async readAgentPresets(
+    _input: ReadAgentPresetsRequest,
+  ): Promise<ReadAgentPresetsResult> {
+    return { presets: await this.trustedAgentPresetChoices() };
   }
 
   @Remote
@@ -564,7 +635,7 @@ function agentHoverDetail(
     ? view.invocation
     : undefined;
   const model = invocation?.model
-    ?? view.definition.override?.model
+    ?? view.definition.binding.effective.model
     ?? view.definition.profile.model;
   const result = hoverResult(view.result);
   return {

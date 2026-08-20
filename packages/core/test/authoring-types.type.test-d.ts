@@ -3,6 +3,7 @@ import {
   defineWorkflow,
   task,
   z,
+  type AgentDeclarationSpec,
   type AgentDefinitionSpec,
   type AgentMap,
   type AgentStepSpec,
@@ -44,6 +45,10 @@ test("agent tokens are typed from top-level agent keys", () => {
 
   assertType<AgentDefinitionSpec>({ use: "codex", permissionMode: "approve-reads", config: { mode: "agent" } });
   assertType<AgentDefinitionSpec>({ command: "acpx worker", model: "gpt-5.4", permissionMode: "approve-all", config: { model: "gpt-5.4", mode: "bypassPermissions" } });
+  assertType<AgentDeclarationSpec>({});
+  assertType<AgentDeclarationSpec>({ model: "gpt-5.4", permissionMode: "deny-all" });
+  // @ts-expect-error an Agent definition is concrete; selector-free declarations are slots.
+  assertType<AgentDefinitionSpec>({});
   // @ts-expect-error agent definitions must use either use or command, not both.
   assertType<AgentDefinitionSpec>({ use: "codex", command: "acpx worker" });
   // @ts-expect-error agentMode was replaced by the config map.

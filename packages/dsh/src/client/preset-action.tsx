@@ -7,23 +7,22 @@ import {
   useState,
   type KeyboardEvent,
 } from "react";
-import type { AgentProfileView } from "../remote/types.js";
+import type { AgentPresetView } from "../remote/types.js";
 import acpusDshLogo from "../../assets/logo-with-dsh.svg";
-import { agentIcon } from "./agent-icons.js";
 import type { AcpusClientState } from "./state.js";
 
-type ProfileCatalogReader = Pick<AcpusClientState, "readAgentProfiles">;
+type PresetCatalogReader = Pick<AcpusClientState, "readAgentPresets">;
 
-export type AcpusProfileActionProps =
+export type AcpusPresetActionProps =
   & PropsRuntime<"conversation.session.header.actions">
-  & { acpus: ProfileCatalogReader };
+  & { acpus: PresetCatalogReader };
 
 export type AcpusBrandLabelProps =
   PropsRuntime<"conversation.session.header.actions">;
 
-type ProfileReadState =
+type PresetReadState =
   | { status: "idle" | "loading" | "error" }
-  | { status: "ready"; profiles: AgentProfileView[] };
+  | { status: "ready"; presets: AgentPresetView[] };
 
 export function AcpusBrandLabel({
   sessionId,
@@ -43,16 +42,16 @@ export function AcpusBrandLabel({
   );
 }
 
-export function AcpusProfileAction({
+export function AcpusPresetAction({
   acpus,
   sessionId,
   useSessions,
-}: AcpusProfileActionProps) {
+}: AcpusPresetActionProps) {
   const enabled = useSessions(
     sessions => sessions.byId[sessionId]?.agentPreset === "acpus",
   );
   const [open, setOpen] = useState(false);
-  const [read, setRead] = useState<ProfileReadState>({ status: "idle" });
+  const [read, setRead] = useState<PresetReadState>({ status: "idle" });
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const request = useRef(0);
@@ -60,9 +59,9 @@ export function AcpusProfileAction({
   const load = useCallback(() => {
     const current = ++request.current;
     setRead({ status: "loading" });
-    void acpus.readAgentProfiles().then(
-      profiles => {
-        if (request.current === current) setRead({ status: "ready", profiles });
+    void acpus.readAgentPresets().then(
+      presets => {
+        if (request.current === current) setRead({ status: "ready", presets });
       },
       () => {
         if (request.current === current) setRead({ status: "error" });
@@ -106,13 +105,13 @@ export function AcpusProfileAction({
   return (
     <div
       ref={rootRef}
-      className="acpus-profile-action"
+      className="acpus-preset-action"
       onKeyDown={onKeyDown}
     >
       <button
         ref={triggerRef}
         type="button"
-        className="acpus-profile-trigger"
+        className="acpus-preset-trigger"
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => {
@@ -125,29 +124,29 @@ export function AcpusProfileAction({
         }}
       >
         <IconUserOutline16 size={14} />
-        <span>Agent Profiles</span>
+        <span>Agent Presets</span>
       </button>
       {open && (
         <div
-          className="acpus-profile-popover"
+          className="acpus-preset-popover"
           role="dialog"
-          aria-label="Agent Profiles"
+          aria-label="Agent Presets"
         >
           {read.status === "loading" && (
-            <div className="acpus-profile-read-state" role="status">
-              加载 Agent Profiles…
+            <div className="acpus-preset-read-state" role="status">
+              加载 Agent Presets…
             </div>
           )}
           {read.status === "error" && (
-            <div className="acpus-profile-read-state is-error" role="alert">
-              <span>Agent Profiles 加载失败</span>
+            <div className="acpus-preset-read-state is-error" role="alert">
+              <span>Agent Presets 加载失败</span>
               <button type="button" onClick={load}>重试</button>
             </div>
           )}
           {read.status === "ready" && (
-            <ul className="acpus-profile-list">
-              {read.profiles.map(profile => (
-                <ProfileRow key={profile.id} profile={profile} />
+            <ul className="acpus-preset-list">
+              {read.presets.map(preset => (
+                <PresetRow key={preset.id} preset={preset} />
               ))}
             </ul>
           )}
@@ -157,30 +156,15 @@ export function AcpusProfileAction({
   );
 }
 
-function ProfileRow({ profile }: { profile: AgentProfileView }) {
-  const icon = agentIcon(profile.use);
+function PresetRow({ preset }: { preset: AgentPresetView }) {
   return (
-    <li className="acpus-profile-row">
-      <span
-        className="acpus-profile-agent-icon"
-        role="img"
-        aria-label={`Agent: ${icon.name}`}
-        title={icon.name}
-      >
-        <img src={icon.source} alt="" />
-      </span>
-      <span className="acpus-profile-content">
-        <span className="acpus-profile-heading">
-          <code>{profile.id}</code>
-          {profile.builtIn && <span className="acpus-profile-builtin">内置</span>}
+    <li className="acpus-preset-row">
+      <span className="acpus-preset-content">
+        <span className="acpus-preset-heading">
+          <code>{preset.id}</code>
+          {preset.scope === "host" && <span className="acpus-preset-builtin">内置</span>}
         </span>
-        <span className="acpus-profile-meta">
-          <span><b>use</b><code>{profile.use}</code></span>
-          {profile.model !== undefined && (
-            <span><b>model</b><code>{profile.model}</code></span>
-          )}
-        </span>
-        <span className="acpus-profile-guidance">{profile.guidance}</span>
+        <span className="acpus-preset-guidance">{preset.guidance}</span>
       </span>
     </li>
   );

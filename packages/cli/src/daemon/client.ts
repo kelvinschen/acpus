@@ -12,7 +12,7 @@ import {
   requestDaemonSubmitAndObserve,
   requestPredecessorDaemonShutdown,
   tryLoadRuntimeConfiguration,
-  type AgentOverrideMap,
+  type AgentInjectionMap,
   type DaemonClientFailure,
   type DaemonControlIntent,
   type DaemonControlResult,
@@ -74,7 +74,7 @@ export type DaemonSubmitInput = {
   requestId: string;
   prepared: PreparedRunWorkflow;
   input: JsonValue;
-  agentOverrides?: AgentOverrideMap;
+  agentInjections?: AgentInjectionMap;
   until: DaemonRunObservationUntil;
 };
 
@@ -246,7 +246,7 @@ export async function* sendDaemonSubmitAndObserve(
       requestId: input.requestId,
       prepared: input.prepared,
       input: input.input,
-      ...(input.agentOverrides === undefined ? {} : { agentOverrides: input.agentOverrides }),
+      ...(input.agentInjections === undefined ? {} : { agentInjections: input.agentInjections }),
       until: input.until,
     }, options);
     for await (const result of stream) {

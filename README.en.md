@@ -227,57 +227,13 @@ Use Hooks to run local commands at specific points in the Workflow lifecycle. Fo
 
 A Hook command that fails or times out does not change the Workflow state or output.
 
-Write project Hooks to `.acpus/hooks.json`. Write Hooks that apply to every project to `~/.acpus/hooks.json`. The following configuration runs a project notification script when a Run is waiting for input:
-
-```json
-{
-  "run.awaiting": [
-    {
-      "id": "notify-me",
-      "command": "./scripts/notify-acpus.sh",
-      "timeout": "10s"
-    }
-  ]
-}
-```
-
-The command runs in the Workflow workspace and receives the event as JSON on stdin. Hook event data can include Agent prompts, Task inputs, and outputs.
-
-Validate and inspect the saved configuration:
-
-```sh
-acpus hooks validate
-acpus hooks list
-```
-
-Acpus reads the Hook configuration when it starts. Changes take effect the next time it starts. See [Runtime Hooks Configuration](packages/cli/skills/acpus/references/hooks-json.md) for the complete event list, matching rules, and input format.
+Acpus manages Hooks through its unified configuration. See [Acpus Configuration](packages/cli/skills/acpus/references/configuration.md#runtime-hooks) for locations, the complete shape, events, matching, validation commands, input, and loading behavior.
 
 You can also ask your Agent to configure a Hook.
 
 ## Configure Agents
 
-Acpus uses the stable ACP v1 session interface from `@acpus/acp`. For
-`{ use: "name" }`, each Agent Attempt resolves its named launch in this order:
-
-1. A Host-provided named launch
-2. `.acpus/agents.json` in the Attempt's effective working directory
-3. `~/.acpus/agents.json`
-4. The Acpus built-in Agent catalog
-
-Add or override an Agent with `.acpus/agents.json`:
-
-```json
-{
-  "agents": {
-    "my-agent": "node ./scripts/agent-acp-bridge.mjs"
-  }
-}
-```
-
-Commands run as written through the current platform shell; use the shell's
-quoting rules when needed. Project configuration overrides a same-named global
-entry. Invalid configuration or an unknown name fails the Attempt with a
-configuration error. An explicit `{ command: "..." }` bypasses named lookup.
+Acpus uses the stable ACP v1 session interface from `@acpus/acp`. See [Acpus Configuration](packages/cli/skills/acpus/references/configuration.md) for named Agents, Presets, project/global scopes, launch precedence, and loading behavior. An explicit `{ command: "..." }` bypasses named lookup.
 
 An Agent profile may also declare `model` and string-valued ACP `config`
 options, for example

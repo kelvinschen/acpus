@@ -50,15 +50,9 @@ export default defineWorkflow({
     maxRounds: z.number().default(3),
   }),
   agents: {
-    researcher: { use: "trae" },
-    controller: {
-      use: "codex",
-      config: { model: "gpt-5.6-sol" },
-    },
-    synthesizer: {
-      use: "codex",
-      config: { model: "gpt-5.6-sol" },
-    },
+    researcher: {},
+    controller: {},
+    synthesizer: {},
   },
 }).build(({ input, agents, meta, step }) => {
   const roundLimit = input.maxRounds;

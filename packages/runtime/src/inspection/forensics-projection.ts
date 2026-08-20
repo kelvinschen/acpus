@@ -110,12 +110,12 @@ function definition(frozen: FrozenRun, node: NodeIR | undefined): ForensicsDefin
   }
   switch (node.kind) {
     case "agent": {
-      const { profile, override } = frozenAgentProfile(frozen, node.run.agent);
+      const { profile, binding } = frozenAgentProfile(frozen, node.run.agent);
       return {
         kind: "agent",
         agent: node.run.agent,
         profile,
-        ...(override === undefined ? {} : { override }),
+        binding,
         prompt: formatExpression(node.run.prompt),
         ...(node.run.permissionMode === undefined ? {} : { permissionMode: node.run.permissionMode }),
         ...(node.run.sessionKey === undefined ? {} : { sessionKey: formatExpression(node.run.sessionKey) }),
@@ -202,12 +202,13 @@ function definition(frozen: FrozenRun, node: NodeIR | undefined): ForensicsDefin
 
 function frozenAgentProfile(frozen: FrozenRun, name: string): {
   profile: FrozenRun["ir"]["agents"][string];
-  override?: FrozenRun["agentOverrides"][string];
+  binding: FrozenRun["agentBindings"][string];
 } {
   const profile = Object.hasOwn(frozen.ir.agents, name) ? frozen.ir.agents[name] : undefined;
   if (!profile) throw new Error(`Agent '${name}' is missing from frozen IR.`);
-  const override = Object.hasOwn(frozen.agentOverrides, name) ? frozen.agentOverrides[name] : undefined;
-  return { profile, ...(override === undefined ? {} : { override }) };
+  const binding = Object.hasOwn(frozen.agentBindings, name) ? frozen.agentBindings[name] : undefined;
+  if (!binding) throw new Error(`Agent '${name}' is missing from frozen bindings.`);
+  return { profile, binding };
 }
 
 function scopeDefinition(scope: ScopeIR): ForensicsScopeDefinition {
@@ -231,11 +232,11 @@ function invocation(
   const unavailable = () => unavailableInvocation(details, selected, context, status);
   if (node.kind === "agent") {
     if (!selected.attempt) return unavailable();
-    const metadata = executionMetadata(details, selected.attempt.attemptId, "agent_invocation");
+    const metadata = executionMetadata(details, selected.attempt.attemptId, "agent_invocation", "first");
     if (!metadata) return unavailable();
     const prompt = requiredString(metadata, "prompt");
     const promptOrigin = requiredString(metadata, "promptOrigin");
-    if (promptOrigin !== "authored" && promptOrigin !== "steering") {
+    if (promptOrigin !== "authored" && promptOrigin !== "steering" && promptOrigin !== "repair") {
       throw new Error("Agent invocation prompt origin is invalid.");
     }
     const permissionMode = requiredString(metadata, "permissionMode");
@@ -262,7 +263,7 @@ function invocation(
   }
   if (node.kind === "task") {
     if (!selected.attempt) return unavailable();
-    const metadata = executionMetadata(details, selected.attempt.attemptId, "task_attempt");
+    const metadata = executionMetadata(details, selected.attempt.attemptId, "task_attempt", "latest");
     if (!metadata || !isJsonValue(metadata.input)) return unavailable();
     const cwd = optionalString(metadata, "cwd");
     if (cwd === undefined || metadata.env === undefined) return unavailable();
@@ -376,10 +377,15 @@ function resolutionFailed(details: ResolvedTargetState, selected: SelectedTarget
   return reasons.some(value => typeof value === "string" && (value === "expression_failed" || value === "expression_resolution_failed"));
 }
 
-function executionMetadata(details: ResolvedTargetState, attemptId: string, kind: string): Record<string, unknown> | undefined {
+function executionMetadata(
+  details: ResolvedTargetState,
+  attemptId: string,
+  kind: string,
+  selection: "first" | "latest",
+): Record<string, unknown> | undefined {
   const metadata = [...details.executionMetadata]
     .filter(candidate => candidate.attemptId === attemptId && candidate.kind === kind)
-    .sort((left, right) => right.id - left.id)[0];
+    .sort((left, right) => selection === "first" ? left.id - right.id : right.id - left.id)[0];
   return record(metadata?.metadata);
 }
 

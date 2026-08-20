@@ -71,9 +71,9 @@ dsh web
 
 Supervisor 根据任务规模创建 Workflow。界面显示 Workflow 拓扑和运行状态。常规进度不会重复写入对话。
 
-## 配置 Agent Profile
+## 配置 Agent Preset
 
-Agent Profile 告诉 Supervisor 应为某类任务选择哪个 Agent。配置时只需说明 Agent、可选模型和主要用途。Supervisor 负责生成内部名称和选择规则。
+Agent Preset 把用途说明和一份可复用的 Agent 配置绑定起来。Supervisor 按用途选择 Preset，Acpus Runtime 在任务准入时展开并冻结实际 Agent 配置，Workflow 本身不必绑定某个具体后端。
 
 Acpus 模式始终提供内建 DSH Agent。该配置不可修改或删除。它使用当前 DSH home 的模型设置和凭据，无需额外配置。
 
@@ -86,17 +86,13 @@ Acpus 模式始终提供内建 DSH Agent。该配置不可修改或删除。它�
 
 也可以在对话中按用途更新或删除配置。
 
-会话标题栏中的 **Agent Profiles** 入口只显示当前配置。请通过对话修改配置。修改只影响后续 Workflow。
+会话标题栏中的 **Agent Presets** 入口显示内建和全局配置。项目 Preset 只在 Supervisor 为当前工作目录按需查询时出现，避免把仓库提供的用途文本自动提升到 System Prompt。请通过对话修改配置；持久化变更需要明确说明项目或全局作用域，并且只影响后续任务准入。
 
-常用 Agent 已在 Acpus 内建目录中。其他具名 Agent 在 `~/.acpus/agents.json` 或工作目录的 `.acpus/agents.json` 中配置 Shell 命令：`{"agents":{"my-agent":"my-acp-server --stdio"}}`。项目同名项优先；配置后告诉 DSH 该名称和用途。
+具名 Agent、Preset 和项目/全局作用域统一按 [Acpus 配置](../cli/skills/acpus/references/configuration.md) 管理；配置后告诉 DSH 对应名称和用途。
 
-在使用 Profile 前，先安装对应 Agent，并完成该 Agent 的登录或凭据配置。保存 Profile 时不会检测可执行文件、网络、凭据或模型是否可用。
+在使用 Preset 前，先安装对应 Agent，并完成该 Agent 的登录或凭据配置。保存 Preset 时不会检测可执行文件、网络、凭据或模型是否可用。
 
-用户 Profile 默认保存在：
-
-```text
-${DSH_HOME:-$HOME/.dsh}/.acpus-dsh/agent-profiles.json
-```
+Host 内建 `dsh` 始终优先且不可修改。
 
 ## 开发
 
@@ -123,7 +119,7 @@ dsh plugin --profile web remove @acpus/dsh
 
 将 `web` 替换为安装插件时使用的 profile。preset 清理只删除带有 `@acpus/dsh` 所有权标记的文件。
 
-卸载不会删除 `${DSH_HOME:-$HOME/.dsh}/.acpus-dsh` 中的运行历史和用户 Profile。
+卸载不会删除 `${DSH_HOME:-$HOME/.dsh}/.acpus-dsh` 中的运行历史，也不会删除 `~/.acpus` 或项目中的 Agent Preset。
 
 ## 技术边界
 

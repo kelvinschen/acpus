@@ -92,7 +92,7 @@ function entry(runId: string, overrides: Partial<HookJournalEntry> = {}): HookJo
     triggerOrder: 1,
     event: "run.completed",
     source: "project",
-    sourcePath: "/workspace/.acpus/hooks.json",
+    sourcePath: "/workspace/.acpus/config.json",
     handlerId: "notify",
     status: "completed",
     exitCode: 0,

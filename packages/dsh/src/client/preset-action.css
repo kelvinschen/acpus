@@ -10,11 +10,11 @@
   display: none;
 }
 
-.acpus-profile-action {
+.acpus-preset-action {
   position: relative;
 }
 
-.acpus-profile-trigger {
+.acpus-preset-trigger {
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -30,18 +30,18 @@
   cursor: pointer;
 }
 
-.acpus-profile-trigger:hover,
-.acpus-profile-trigger:focus-visible,
-.acpus-profile-trigger[aria-expanded="true"] {
+.acpus-preset-trigger:hover,
+.acpus-preset-trigger:focus-visible,
+.acpus-preset-trigger[aria-expanded="true"] {
   background: var(--dsw-alias-interactive-bg-hover);
   color: var(--dsw-alias-label-secondary);
 }
 
-.acpus-profile-trigger svg {
+.acpus-preset-trigger svg {
   flex: none;
 }
 
-.acpus-profile-popover {
+.acpus-preset-popover {
   position: absolute;
   top: calc(100% + 5px);
   left: 0;
@@ -59,7 +59,7 @@
   --dsh-scrollbar-thumb-hover: var(--dsw-alias-scrollbar-hover-l2);
 }
 
-.acpus-profile-read-state {
+.acpus-preset-read-state {
   display: flex;
   min-height: 72px;
   align-items: center;
@@ -69,12 +69,12 @@
   font-size: 13px;
 }
 
-.acpus-profile-read-state.is-error {
+.acpus-preset-read-state.is-error {
   flex-direction: column;
   gap: 10px;
 }
 
-.acpus-profile-read-state button {
+.acpus-preset-read-state button {
   padding: 4px 10px;
   border: 1px solid var(--dsw-alias-border-l2);
   border-radius: 7px;
@@ -83,7 +83,7 @@
   cursor: pointer;
 }
 
-.acpus-profile-list {
+.acpus-preset-list {
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -92,7 +92,7 @@
   list-style: none;
 }
 
-.acpus-profile-row {
+.acpus-preset-row {
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -102,26 +102,11 @@
   color: var(--dsw-alias-label-primary);
 }
 
-.acpus-profile-row:hover {
+.acpus-preset-row:hover {
   background: var(--dsw-alias-interactive-bg-hover);
 }
 
-.acpus-profile-agent-icon {
-  display: inline-flex;
-  flex: none;
-  width: 20px;
-  height: 20px;
-  align-items: center;
-  justify-content: center;
-}
-
-.acpus-profile-agent-icon img {
-  display: block;
-  width: 18px;
-  height: 18px;
-}
-
-.acpus-profile-content {
+.acpus-preset-content {
   display: flex;
   flex: 1;
   flex-direction: column;
@@ -129,19 +114,17 @@
   min-width: 0;
 }
 
-.acpus-profile-heading,
-.acpus-profile-meta,
-.acpus-profile-meta > span {
+.acpus-preset-heading {
   display: flex;
   align-items: center;
 }
 
-.acpus-profile-heading {
+.acpus-preset-heading {
   gap: 7px;
   min-height: 20px;
 }
 
-.acpus-profile-heading code {
+.acpus-preset-heading code {
   overflow: hidden;
   font-size: 13px;
   font-weight: 600;
@@ -149,7 +132,7 @@
   white-space: nowrap;
 }
 
-.acpus-profile-builtin {
+.acpus-preset-builtin {
   flex: none;
   padding: 0 5px;
   border-radius: 5px;
@@ -159,27 +142,7 @@
   line-height: 17px;
 }
 
-.acpus-profile-meta {
-  flex-wrap: wrap;
-  gap: 5px 10px;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-}
-
-.acpus-profile-meta > span {
-  gap: 4px;
-  min-width: 0;
-}
-
-.acpus-profile-meta b {
-  font-weight: 500;
-}
-
-.acpus-profile-meta code {
-  overflow-wrap: anywhere;
-}
-
-.acpus-profile-guidance {
+.acpus-preset-guidance {
   color: var(--dsw-alias-label-tertiary);
   font-size: 12px;
   line-height: 17px;

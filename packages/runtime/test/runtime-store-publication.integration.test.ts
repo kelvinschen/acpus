@@ -41,7 +41,7 @@ describe("runtime run directory publication", () => {
     vi.useRealTimers();
   });
 
-  it("returns tagged prepared, input, and Agent override failures without mutation", async () => {
+  it("returns tagged prepared, input, and Agent injection failures without mutation", async () => {
     await withRuntimeWorkspace("runtime-admission-tagged-failures", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
       const store = await openRuntimeStore(workspace);
@@ -72,8 +72,8 @@ describe("runtime run directory publication", () => {
           prepared,
           cwd: workspace,
           input: { ready: true },
-          agentOverrides: { missing: { use: "codex" } },
-        }))._unsafeUnwrapErr()).toMatchObject({ type: "agent-overrides-invalid" });
+          agentInjections: { missing: { use: "codex" } },
+        }))._unsafeUnwrapErr()).toMatchObject({ type: "agent-injections-invalid" });
 
         expect(store.listRuns()).toEqual([]);
         await expect(readdir(runtimeRunsRoot(workspace))).resolves.toEqual([]);

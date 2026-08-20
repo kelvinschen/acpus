@@ -12,11 +12,11 @@ vi.mock("@deepseek-ai/dsh-client-ui-primitives", () => ({
 
 import {
   AcpusBrandLabel,
-  AcpusProfileAction,
+  AcpusPresetAction,
   type AcpusBrandLabelProps,
-  type AcpusProfileActionProps,
-} from "../src/client/profile-action.js";
-import type { AgentProfileView } from "../src/remote/types.js";
+  type AcpusPresetActionProps,
+} from "../src/client/preset-action.js";
+import type { AgentPresetView } from "../src/remote/types.js";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -51,7 +51,7 @@ afterEach(async () => {
   }
 });
 
-describe("Acpus Agent Profiles header action", () => {
+describe("Acpus Agent Presets header action", () => {
   it("replaces the Acpus preset label with a non-interactive co-brand lockup", async () => {
     await renderBrand("default");
     expect(container.childElementCount).toBe(0);
@@ -65,59 +65,57 @@ describe("Acpus Agent Profiles header action", () => {
   });
 
   it("renders only for Acpus sessions and shows the complete read-only catalog", async () => {
-    const readAgentProfiles = vi.fn(async () => profiles());
-    await renderAction(readAgentProfiles, "default");
+    const readAgentPresets = vi.fn(async () => presets());
+    await renderAction(readAgentPresets, "default");
     expect(container.childElementCount).toBe(0);
 
-    await renderAction(readAgentProfiles);
-    const trigger = button("Agent Profiles");
+    await renderAction(readAgentPresets);
+    const trigger = button("Agent Presets");
     expect(trigger).toBeDefined();
     expect(trigger?.querySelector("svg")).not.toBeNull();
     expect(trigger?.getAttribute("aria-haspopup")).toBe("dialog");
 
     await act(async () => trigger?.click());
     const dialog = container.querySelector<HTMLElement>('[role="dialog"]');
-    expect(readAgentProfiles).toHaveBeenCalledOnce();
+    expect(readAgentPresets).toHaveBeenCalledOnce();
     expect(dialog?.textContent).toContain("dsh");
     expect(dialog?.textContent).toContain("内置");
     expect(dialog?.textContent).toContain("codex-review");
-    expect(dialog?.textContent).toContain("gpt-5.6-sol");
     expect(dialog?.textContent).toContain("Review implementation details.");
-    expect(dialog?.querySelector('[aria-label="Agent: codex"]')).not.toBeNull();
     expect(dialog?.querySelectorAll("button")).toHaveLength(0);
   });
 
   it("reloads on every open, retries failures, and ignores a closed read", async () => {
-    const first = deferred<AgentProfileView[]>();
-    const readAgentProfiles = vi.fn(async () => profiles())
+    const first = deferred<AgentPresetView[]>();
+    const readAgentPresets = vi.fn(async () => presets())
       .mockReturnValueOnce(first.promise)
       .mockRejectedValueOnce(new Error("unavailable"));
-    await renderAction(readAgentProfiles);
+    await renderAction(readAgentPresets);
 
-    await act(async () => button("Agent Profiles")?.click());
+    await act(async () => button("Agent Presets")?.click());
     expect(container.querySelector('[role="status"]')?.textContent)
-      .toContain("加载 Agent Profiles");
-    await act(async () => button("Agent Profiles")?.click());
-    await act(async () => button("Agent Profiles")?.click());
+      .toContain("加载 Agent Presets");
+    await act(async () => button("Agent Presets")?.click());
+    await act(async () => button("Agent Presets")?.click());
     expect(container.querySelector('[role="alert"]')?.textContent)
       .toContain("加载失败");
 
-    const stale = [{ ...profiles()[0]!, id: "stale" }];
+    const stale = [{ ...presets()[0]!, id: "stale" }];
     await act(async () => first.resolve(stale));
     expect(container.textContent).not.toContain("stale");
 
     await act(async () => button("重试")?.click());
-    expect(readAgentProfiles).toHaveBeenCalledTimes(3);
+    expect(readAgentPresets).toHaveBeenCalledTimes(3);
     expect(container.textContent).toContain("codex-review");
 
-    await act(async () => button("Agent Profiles")?.click());
-    await act(async () => button("Agent Profiles")?.click());
-    expect(readAgentProfiles).toHaveBeenCalledTimes(4);
+    await act(async () => button("Agent Presets")?.click());
+    await act(async () => button("Agent Presets")?.click());
+    expect(readAgentPresets).toHaveBeenCalledTimes(4);
   });
 
   it("dismisses outside and restores trigger focus after Escape", async () => {
-    await renderAction(vi.fn(async () => profiles()));
-    const trigger = button("Agent Profiles")!;
+    await renderAction(vi.fn(async () => presets()));
+    const trigger = button("Agent Presets")!;
     trigger.focus();
     await act(async () => trigger.click());
 
@@ -140,17 +138,17 @@ describe("Acpus Agent Profiles header action", () => {
 });
 
 async function renderAction(
-  readAgentProfiles: () => Promise<AgentProfileView[]>,
+  readAgentPresets: () => Promise<AgentPresetView[]>,
   agentPreset = "acpus",
 ) {
   const props = {
-    acpus: { readAgentProfiles },
+    acpus: { readAgentPresets },
     sessionId: "session-1",
     useSessions: (selector: (state: unknown) => unknown) => selector({
       byId: { "session-1": { agentPreset } },
     }),
-  } as unknown as AcpusProfileActionProps;
-  await act(async () => root.render(React.createElement(AcpusProfileAction, props)));
+  } as unknown as AcpusPresetActionProps;
+  await act(async () => root.render(React.createElement(AcpusPresetAction, props)));
 }
 
 async function renderBrand(agentPreset = "acpus") {
@@ -168,18 +166,15 @@ function button(label: string): HTMLButtonElement | undefined {
     .find(candidate => candidate.textContent?.trim() === label);
 }
 
-function profiles(): AgentProfileView[] {
+function presets(): AgentPresetView[] {
   return [{
     id: "dsh",
-    use: "dsh",
     guidance: "Built-in DSH fallback.",
-    builtIn: true,
+    scope: "host",
   }, {
     id: "codex-review",
-    use: "codex",
-    model: "gpt-5.6-sol",
     guidance: "Review implementation details.",
-    builtIn: false,
+    scope: "global",
   }];
 }
 

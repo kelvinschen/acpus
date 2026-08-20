@@ -84,7 +84,7 @@ export function initializeRuntimeSchema(db: DatabaseSync): void {
       workflow_ir_path TEXT NOT NULL,
       workflow_ir_digest TEXT NOT NULL,
       input_json TEXT NOT NULL,
-      agent_overrides_json TEXT NOT NULL DEFAULT '{}',
+      agent_bindings_json TEXT NOT NULL DEFAULT '{}',
       output_json TEXT,
       lock_path TEXT NOT NULL,
       lock_digest TEXT NOT NULL,

@@ -4,7 +4,7 @@ import type { Resolvable } from "@acpus/expression";
 import type { z } from "zod";
 import { err, ok, type Result } from "neverthrow";
 import { toSchemaIR, type Schema } from "../schema/index.js";
-import { agentToken, buildAgentNode, lowerAgentDefinitions, type AgentDefinitionSpec, type AgentStepSpec, type AgentToken } from "../nodes/leaf/agent.js";
+import { agentToken, buildAgentNode, lowerAgentDefinitions, type AgentDeclarationSpec, type AgentStepSpec, type AgentToken } from "../nodes/leaf/agent.js";
 import {
   buildTaskNode,
   TaskCompilationAbort,
@@ -46,7 +46,7 @@ import { validateWorkflowIR } from "../ir/validator.js";
 export type { AgentStepSpec } from "../nodes/leaf/agent.js";
 export type { TaskStepSpec } from "../nodes/leaf/task.js";
 export type { SignalStepSpec } from "../nodes/leaf/signal.js";
-export type AgentMap = Record<string, AgentDefinitionSpec>;
+export type AgentMap = Record<string, AgentDeclarationSpec>;
 type AgentRegistry<Agents extends AgentMap | undefined = AgentMap | undefined> = Agents extends AgentMap
   ? { readonly [K in Extract<keyof Agents, string>]: AgentToken<K> }
   : {};
@@ -403,7 +403,7 @@ function lowerWorkflowDefinition(
   }
 
   const ir = stripUndefined({
-    irVersion: 7,
+    irVersion: 8,
     name: definition.config.name,
     description: definition.config.description,
     inputSchema: definition.config.inputSchema ? toSchemaIR(definition.config.inputSchema) : undefined,

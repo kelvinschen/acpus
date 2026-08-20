@@ -53,6 +53,7 @@ export type {
   WorkflowContext,
   WorkflowFileEntry,
   WorkflowFiles,
+  WorkflowVisualizationContext,
   WorkflowVisualizationResult,
   WorkflowVisualizationSource,
 } from "../api-types.js";

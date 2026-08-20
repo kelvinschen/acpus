@@ -14,7 +14,7 @@ export default defineWorkflow({
   name: "my-workflow",
   description: "demo",
   inputSchema: z.object({ topic: z.string() }),
-  agents: { worker: { use: "codex" } },
+  agents: { worker: {} },
 }).build(({ input, agents, step }) => {
   const result = step("work").agent({
     agent: agents.worker,
@@ -210,5 +210,5 @@ Only look up declaration when the above rules and examples don't already answer 
 2. Read only the relevant symbol and nearby signature from its reported `typesPath`.
 
 ## Advance
-- Read `advanced-authoring.md` only for Agent session reuse, reusable/prebuilt Tasks, imports, artifacts, Task process controls, cancellation, or Agent tracing.
-- Read `signal-authoring.md` only for parallel waits, payload, or timeout semantics.
+- Read `advanced-authoring.md` ONLY for Agent session reuse, reusable/prebuilt Tasks, imports, artifacts, Task process controls, cancellation, or Agent tracing.
+- Read `signal-authoring.md` ONLY for parallel waits, payload, or timeout semantics.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WorkflowIR } from "@acpus/core/ir";
+import type { AdmittedWorkflowIR } from "@acpus/core/ir";
 import { resolveTargetState } from "../src/inspection/projection.js";
 import {
   deriveOccurrenceRef,
@@ -344,9 +344,9 @@ function thirteenOccurrencesRun(): RunDetails {
   return run;
 }
 
-function taskWorkflow(): WorkflowIR {
+function taskWorkflow(): AdmittedWorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "resolved-task",
     agents: {},
     root: {
@@ -364,9 +364,9 @@ function taskWorkflow(): WorkflowIR {
   };
 }
 
-function agentWorkflow(): WorkflowIR {
+function agentWorkflow(): AdmittedWorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "resolved-agent",
     agents: {
       reviewer: {
@@ -425,7 +425,7 @@ function singleNodeRun(nodeId: string, nodeKey: string): RunDetails {
   };
 }
 
-function resolvedState(ir: WorkflowIR, run: RunDetails, target: string) {
+function resolvedState(ir: AdmittedWorkflowIR, run: RunDetails, target: string) {
   const details = resolveTargetState({ ir, run, target, artifacts: [] });
   if (!details) throw new Error(`Expected target '${target}' to resolve.`);
   return details;

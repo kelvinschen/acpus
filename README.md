@@ -231,56 +231,13 @@ fence 并 drain 当前 Turn，再在同一 Session 的 replacement Turn 中使�
 
 Hook 命令失败或超时不会改变 Workflow 的状态和输出。
 
-项目级 Hook 写在 `.acpus/hooks.json`，对所有项目生效的 Hook 写在 `~/.acpus/hooks.json`。下面的配置会在 Run 等待输入时执行项目中的通知脚本：
-
-```json
-{
-  "run.awaiting": [
-    {
-      "id": "notify-me",
-      "command": "./scripts/notify-acpus.sh",
-      "timeout": "10s"
-    }
-  ]
-}
-```
-
-命令会在 Workflow 的工作目录中运行，并从标准输入收到本次事件的 JSON, Hook 事件的传参包含 Agent Prompt、Task 输入和输出等。
-
-保存后检查配置：
-
-```sh
-acpus hooks validate
-acpus hooks list
-```
-
-Acpus 启动时读取 Hook 配置，修改后的配置会在下次启动时生效。完整的事件列表、筛选方式和输入格式见 [Runtime Hooks 配置](packages/cli/skills/acpus/references/hooks-json.md)。
+Acpus 通过统一配置管理 Hook。文件位置、完整结构、事件、筛选、验证命令、输入格式和加载时机见 [Acpus 配置](packages/cli/skills/acpus/references/configuration.md#runtime-hooks)。
 
 你也可以让你的 Agent 来配置 Hook。
 
 ## 配置 Agent
 
-Acpus 通过 `@acpus/acp` 使用稳定的 ACP v1 会话接口。对于 Workflow 中的
-`{ use: "name" }`，每个 Agent Attempt 按以下优先级解析具名启动命令：
-
-1. Host 提供的具名启动项
-2. Attempt 有效工作目录中的 `.acpus/agents.json`
-3. `~/.acpus/agents.json`
-4. Acpus 内置 Agent 目录
-
-在有效工作目录中创建 `.acpus/agents.json` 即可添加或覆盖 Agent：
-
-```json
-{
-  "agents": {
-    "my-agent": "node ./scripts/agent-acp-bridge.mjs"
-  }
-}
-```
-
-命令通过当前平台的 Shell 原样执行；需要时使用对应 Shell 的 quoting。项目配置覆盖
-同名全局配置；配置无效或所有来源都没有该名称时，Attempt 会以配置错误失败。显式
-`{ command: "..." }` 会绕过上述具名解析。
+Acpus 通过 `@acpus/acp` 使用稳定的 ACP v1 会话接口。具名 Agent、Preset、项目/全局作用域、解析优先级和加载时机统一见 [Acpus 配置](packages/cli/skills/acpus/references/configuration.md)。显式 `{ command: "..." }` 会绕过具名解析。
 
 Workflow Agent profile 还可声明 `model` 和字符串到字符串的 `config` 选项，例如
 `{ use: "my-agent", model: "model-id", config: { reasoning_effort: "high" } }`。

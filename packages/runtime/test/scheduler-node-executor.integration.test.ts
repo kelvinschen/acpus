@@ -1,5 +1,6 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow, z } from "@acpus/core";
+import type { WorkflowIR } from "@acpus/core/ir";
 import { lift } from "@acpus/expression";
 import { errAsync } from "neverthrow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,12 +25,12 @@ beforeEach(() => {
   taskAttemptHarness = createInlineTaskAttemptHarness();
   taskMocks.runTaskAttempt.mockReset().mockImplementation(input => taskAttemptHarness.runAttempt(input));
 });
-type TestRuntimeNodeExecutorInput = Omit<RuntimeNodeExecutorInput, "agentHostPolicy"> & { taskAttemptRunner?: TaskAttemptRunner };
+type TestRuntimeNodeExecutorInput = Omit<RuntimeNodeExecutorInput, "agentHostPolicy" | "ir"> & { ir: WorkflowIR; taskAttemptRunner?: TaskAttemptRunner };
 const taskOnlyAgentHostPolicy: AgentHostPolicy = { responseRepair: { type: "valid", max: 0 } };
 function createRuntimeNodeExecutor(input: TestRuntimeNodeExecutorInput) {
   const { taskAttemptRunner, ...productionInput } = input;
   if (taskAttemptRunner) taskMocks.runTaskAttempt.mockImplementation(taskAttemptRunner);
-  const executor = createRuntimeNodeExecutorProduction({ ...productionInput, agentHostPolicy: taskOnlyAgentHostPolicy });
+  const executor = createRuntimeNodeExecutorProduction({ ...productionInput, agentHostPolicy: taskOnlyAgentHostPolicy } as RuntimeNodeExecutorInput);
   return {
     execute(context: Parameters<typeof executor.execute>[0]) {
       ensureTestInstance(input.store, context.runId, context.nodeKey, context.nodeId);

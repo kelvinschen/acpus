@@ -324,7 +324,7 @@ export class RunExecutionSessions {
       ...(intent.target === undefined ? {} : { target: intent.target }),
       ...(intent.prepared === undefined ? {} : { prepared: intent.prepared }),
       ...(intent.input === undefined ? {} : { input: intent.input }),
-      ...(intent.agentOverrides === undefined ? {} : { agentOverrides: intent.agentOverrides }),
+      ...(intent.agentInjections === undefined ? {} : { agentInjections: intent.agentInjections }),
     });
     if (fork.isErr()) return err(fork.error);
     if (fork.value.forkCreated) this.triggerHooks(fork.value.id);

@@ -22,7 +22,7 @@ export default defineWorkflow({
     ),
   }),
   agents: {
-    planner: { use: "codex" },
+    planner: {},
   },
 }).build(({ input, agents, meta, step }) => {
   const initial = step("draft_plan").agent({

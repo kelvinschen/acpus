@@ -92,7 +92,7 @@ describe("hooks config", () => {
     const workspace = await tempDir("hooks-empty-object-");
     const home = await tempDir("hooks-empty-object-home-");
     await mkdir(join(workspace, ".acpus"), { recursive: true });
-    await writeFile(join(workspace, ".acpus", "hooks.json"), "{}");
+    await writeFile(join(workspace, ".acpus", "config.json"), "{}");
 
     const loaded = await loadHooksConfig(workspace, { homeDir: home });
 
@@ -104,12 +104,27 @@ describe("hooks config", () => {
     const workspace = await tempDir("hooks-invalid-config-");
     const home = await tempDir("hooks-invalid-config-home-");
     await mkdir(join(workspace, ".acpus"), { recursive: true });
-    await writeFile(join(workspace, ".acpus", "hooks.json"), JSON.stringify({ "run.completed": [{ command: "" }] }));
+    await writeFile(join(workspace, ".acpus", "config.json"), JSON.stringify({ hooks: { "run.completed": [{ command: "" }] } }));
 
     const loaded = await loadHooksConfig(workspace, { homeDir: home });
 
     expect(loaded.isErr()).toBe(true);
     expect(loaded._unsafeUnwrapErr()).toMatchObject({ type: "invalid-config", source: "project" });
+  });
+
+  it("rejects Hooks consumption when another config section is invalid", async () => {
+    const workspace = await tempDir("hooks-invalid-agent-section-");
+    const home = await tempDir("hooks-invalid-agent-home-");
+    await mkdir(join(workspace, ".acpus"), { recursive: true });
+    await writeFile(join(workspace, ".acpus", "config.json"), JSON.stringify({
+      agents: { broken: "" },
+      hooks: { "run.completed": [{ command: "echo must-not-load" }] },
+    }));
+
+    expect((await loadHooksConfig(workspace, { homeDir: home }))._unsafeUnwrapErr()).toMatchObject({
+      type: "invalid-config",
+      source: "project",
+    });
   });
 
   it("allows signal identity matchers on run.awaiting", () => {
@@ -125,15 +140,15 @@ describe("hooks config", () => {
     const home = await tempDir("hooks-home-");
     await mkdir(join(workspace, ".acpus"), { recursive: true });
     await mkdir(join(home, ".acpus"), { recursive: true });
-    await writeFile(join(workspace, ".acpus", "hooks.json"), JSON.stringify({
+    await writeFile(join(workspace, ".acpus", "config.json"), JSON.stringify({ hooks: {
       "run.completed": [
         { id: "same", command: "echo project" },
         { id: "same", command: "echo project again" },
       ],
-    }));
-    await writeFile(join(home, ".acpus", "hooks.json"), JSON.stringify({
+    } }));
+    await writeFile(join(home, ".acpus", "config.json"), JSON.stringify({ hooks: {
       "run.completed": [{ id: "same", command: "echo global" }],
-    }));
+    } }));
 
     const loaded = await loadHooksConfig(workspace, { homeDir: home });
 
@@ -149,9 +164,9 @@ describe("hooks config", () => {
     const workspace = await tempDir("hooks-default-id-");
     const home = await tempDir("hooks-default-id-home-");
     await mkdir(join(workspace, ".acpus"), { recursive: true });
-    await writeFile(join(workspace, ".acpus", "hooks.json"), JSON.stringify({
+    await writeFile(join(workspace, ".acpus", "config.json"), JSON.stringify({ hooks: {
       "node.failed": [{ command: "echo first" }, { command: "echo second" }],
-    }));
+    } }));
 
     const loaded = await loadHooksConfig(workspace, { homeDir: home });
 
@@ -169,8 +184,8 @@ describe("hooks config", () => {
 
     expect(loaded.isOk()).toBe(true);
     expect(loaded._unsafeUnwrap()).toEqual([
-      { source: "project", path: join(workspace, ".acpus", "hooks.json"), hooks: [] },
-      { source: "global", path: join(home, ".acpus", "hooks.json"), hooks: [] },
+      { source: "project", path: join(workspace, ".acpus", "config.json"), hooks: [] },
+      { source: "global", path: join(home, ".acpus", "config.json"), hooks: [] },
     ]);
   });
 
@@ -178,12 +193,12 @@ describe("hooks config", () => {
     const workspace = await tempDir("hooks-invalid-json-");
     const home = await tempDir("hooks-invalid-home-");
     await mkdir(join(workspace, ".acpus"), { recursive: true });
-    await writeFile(join(workspace, ".acpus", "hooks.json"), "{");
+    await writeFile(join(workspace, ".acpus", "config.json"), "{");
 
     const loaded = await loadHooksConfig(workspace, { homeDir: home });
 
     expect(loaded.isErr()).toBe(true);
-    expect(loaded._unsafeUnwrapErr()).toMatchObject({ type: "invalid-json", source: "project" });
+    expect(loaded._unsafeUnwrapErr()).toMatchObject({ type: "invalid-config", source: "project" });
   });
 });
 

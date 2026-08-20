@@ -18,7 +18,7 @@ export default defineWorkflow({
     repoPath: z.string().describe("Repository path where the triage agent should inspect context."),
   }),
   agents: {
-    triager: { use: "codex" },
+    triager: {},
   },
 }).build(({ input, agents, meta, step }) => {
   const triaged = step("triage_issues").fanout({

@@ -4,7 +4,7 @@ import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, writeFile
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { isSha256Digest, sha256Digest, sha256DigestHex } from "@acpus/core/content-identity";
-import { walkNodes, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
+import { walkNodes, type AdmittedWorkflowIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { staticExprShape, type JsonValue, type StaticExprShape } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { resolveArtifactRegistrationPath } from "../artifacts/registration-path.js";
@@ -12,14 +12,22 @@ import { parseArtifactUri } from "../artifacts/reference.js";
 import type { ArtifactRecord, RegisterArtifactInput } from "../artifacts/types.js";
 import { rewriteArtifactValue, type ArtifactRewriteFailure } from "../artifacts/rewrite.js";
 import {
-  normalizeAgentOverrides,
-  parseAgentOverrideMap,
-  tryParseAgentOverrideMap,
-  tryValidateAgentOverrides,
-  withAgentOverrides,
-  type AgentOverrideMap,
-  type AgentOverrideValidationFailure,
-} from "../control/agent-overrides.js";
+  finalizeAgentBindings,
+  hasPresetInjections,
+  parseFrozenAgentBindingMap,
+  rebuildFrozenAgentBindings,
+  tryParseAgentInjectionMap,
+  withAgentBindings,
+  type AgentBindingFailure,
+  type AgentInjectionMap,
+  type FinalizedAgentBindings,
+  type FrozenAgentBindingMap,
+} from "../agents/injections.js";
+import {
+  loadAgentPresetCatalog,
+  type AgentPresetCatalogFailure,
+  type AgentPresetProvider,
+} from "../acpus-config.js";
 import { requirePersistedDeadline } from "../deadline.js";
 import { AgentObservationLog } from "../observations/log.js";
 import type { HookJournalEntry } from "../hooks/journal.js";
@@ -105,7 +113,8 @@ export type RunStatus = SchedulerRunStatus;
 
 export type AdmitRunFailure = PreparedRunValidationFailure
   | SchemaNormalizationFailure
-  | AgentOverrideValidationFailure
+  | AgentBindingFailure
+  | AgentPresetCatalogFailure
   | { type: "admission-request-conflict"; requestId: string; message: string };
 
 export type RuntimeReadFailure =
@@ -123,7 +132,8 @@ export type RuntimeReadSession = {
 };
 
 export type ForkRunFailure = PreparedRunValidationFailure
-  | AgentOverrideValidationFailure
+  | AgentBindingFailure
+  | AgentPresetCatalogFailure
   | SchemaNormalizationFailure
   | ForkReplayFailure
   | ArtifactRewriteFailure
@@ -284,7 +294,7 @@ type AdmitRunInput = {
   prepared: PreparedRunWorkflow;
   input: JsonValue;
   cwd: string;
-  agentOverrides?: AgentOverrideMap;
+  agentInjections?: AgentInjectionMap;
   requestId?: string;
 };
 
@@ -307,7 +317,6 @@ type ForkRunRecord = RunRecord & {
 export type RunDetails = RunRecord & {
   input: JsonValue;
   output?: JsonValue;
-  agentOverrides?: AgentOverrideMap;
   fork?: RunForkInfo;
   hooks: HookJournalEntry[];
   eventCount: number;
@@ -366,9 +375,9 @@ export type RuntimeAuthorityDiagnostics = {
 };
 
 export type FrozenRun = {
-  ir: WorkflowIR;
+  ir: AdmittedWorkflowIR;
   input: JsonValue;
-  agentOverrides: AgentOverrideMap;
+  agentBindings: FrozenAgentBindingMap;
   sourceRoot?: string;
   meta: Record<string, string>;
 };
@@ -414,7 +423,7 @@ type ControlOptions = {
   requestId?: string;
   prepared?: PreparedRunWorkflow;
   input?: JsonValue;
-  agentOverrides?: AgentOverrideMap;
+  agentInjections?: AgentInjectionMap;
   target?: string;
 };
 
@@ -450,7 +459,7 @@ type RunInputRow = {
   workflow_ir_path: string;
   workflow_ir_digest: string;
   input_json: string;
-  agent_overrides_json: string;
+  agent_bindings_json: string;
   lock_path: string;
   lock_digest: string;
   output_json: string | null;
@@ -461,8 +470,8 @@ type RunInputRow = {
 type FrozenSourceRow =
   & Pick<RunInputRow, "workflow_ir_path" | "workflow_ir_digest" | "lock_path" | "lock_digest" | "source_json">
   & Pick<RunRow, "id" | "name" | "workflow_entry" | "source_graph_digest">;
-type FrozenWorkflowRow = FrozenSourceRow & Pick<RunInputRow, "input_json" | "agent_overrides_json">;
-type RunDetailsInputRow = Pick<RunInputRow, "input_json" | "agent_overrides_json" | "output_json">;
+type FrozenWorkflowRow = FrozenSourceRow & Pick<RunInputRow, "input_json" | "agent_bindings_json">;
+type RunDetailsInputRow = Pick<RunInputRow, "input_json" | "output_json">;
 
 type CountRow = {
   count: number;
@@ -494,7 +503,12 @@ export async function openRuntimeStore(cwd: string): Promise<RuntimeStore> {
 
 export async function openRuntimeStoreAtLayout(
   layout: RuntimeLayout,
-  options: { lock?: boolean | RuntimeSharedLock; prevalidated?: boolean; unpublished?: boolean } = {},
+  options: {
+    lock?: boolean | RuntimeSharedLock;
+    prevalidated?: boolean;
+    unpublished?: boolean;
+    agentPresetProvider?: AgentPresetProvider;
+  } = {},
 ): Promise<RuntimeStore> {
   if (!options.prevalidated) {
     await inspectRuntimeGeneration(layout);
@@ -512,7 +526,7 @@ export async function openRuntimeStoreAtLayout(
     db = await openRuntimeDatabase(layout.databasePath);
     await setPrivateFileMode(layout.databasePath, layout.platform);
     initializeRuntimeDatabase(db, layout.databasePath);
-    const store = new SqliteRuntimeStore(db, layout, lock);
+    const store = new SqliteRuntimeStore(db, layout, lock, options.agentPresetProvider);
     await reconcileTrash(store, db);
     return store;
   } catch (error) {
@@ -965,6 +979,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     private readonly db: DatabaseSync,
     private readonly layout: RuntimeLayout,
     private readonly runtimeLock?: RuntimeSharedLock,
+    private readonly agentPresetProvider?: AgentPresetProvider,
   ) {
     this.cwd = layout.canonicalPath;
     this.generation = new OpenedRuntimeGeneration(layout);
@@ -1040,8 +1055,8 @@ class SqliteRuntimeStore implements RuntimeStore {
     if (prepared.isErr()) return err(prepared.error);
     const normalizedInput = tryNormalizeWorkflowInput(prepared.value.ir, input.input);
     if (normalizedInput.isErr()) return err(normalizedInput.error);
-    const agentOverrides = tryValidateAgentOverrides(prepared.value.ir, input.agentOverrides);
-    if (agentOverrides.isErr()) return err(agentOverrides.error);
+    const agentInjections = tryParseAgentInjectionMap(input.agentInjections ?? {}, prepared.value.ir.agents);
+    if (agentInjections.isErr()) return err(agentInjections.error);
     if (realpathSync(resolve(input.cwd)) !== realpathSync(resolve(this.cwd))) {
       throw new Error("Admission workspace does not match the runtime store workspace.");
     }
@@ -1049,7 +1064,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     const requestFingerprint = admissionRequestFingerprint(
       prepared.value,
       normalizedInput.value,
-      agentOverrides.value,
+      agentInjections.value,
     );
     if (requestKey) {
       const existing = this.db.prepare(`
@@ -1071,6 +1086,8 @@ class SqliteRuntimeStore implements RuntimeStore {
         return ok(admitted);
       }
     }
+    const finalized = await this.resolveAgentBindings(prepared.value.ir, agentInjections.value);
+    if (finalized.isErr()) return err(finalized.error);
     await publishWorkflowSource(prepared.value, this.layout, this.generation.sourcesRoot);
     const runId = newRunId();
     const now = new Date().toISOString();
@@ -1079,7 +1096,6 @@ class SqliteRuntimeStore implements RuntimeStore {
     const eventPayload = {
       workflow: summarizeWorkflowForEvent(prepared.value.ir),
       input: normalizedInput.value,
-      ...(Object.keys(agentOverrides.value).length > 0 ? { agentOverrides: agentOverrides.value } : {}),
       ...(requestKey ? { requestFingerprint } : {}),
     };
     const publishedRun = await publishRunDirectory({
@@ -1103,7 +1119,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       `).run(runId, prepared.value.ir.name, workflowEntry, prepared.value.sourceGraphDigest, now, now);
       this.db.prepare(`
         INSERT INTO run_inputs (
-          run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, lock_path, lock_digest, package_lock_digest, source_json
+          run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_bindings_json, lock_path, lock_digest, package_lock_digest, source_json
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
@@ -1111,7 +1127,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         "workflow.ir.json",
         sha256Digest(prepared.value.irJson),
         stableJsonLine(normalizedInput.value),
-        stableJsonLine(agentOverrides.value),
+        stableJsonLine(finalized.value.bindings),
         "lock.json",
         sha256Digest(lockJson),
         prepared.value.packageLockDigest ?? null,
@@ -1149,6 +1165,28 @@ class SqliteRuntimeStore implements RuntimeStore {
     return ok(record);
   }
 
+  private async resolveAgentBindings(
+    ir: WorkflowIR,
+    agentInjections: AgentInjectionMap,
+    inherited?: FrozenAgentBindingMap,
+  ): Promise<Result<FinalizedAgentBindings, AgentBindingFailure | AgentPresetCatalogFailure>> {
+    let presetCatalog;
+    if (hasPresetInjections(agentInjections)) {
+      const loaded = await loadAgentPresetCatalog({
+        workspaceDir: this.cwd,
+        ...(this.agentPresetProvider === undefined ? {} : { hostProvider: this.agentPresetProvider }),
+      });
+      if (loaded.isErr()) return err(loaded.error);
+      presetCatalog = loaded.value;
+    }
+    return finalizeAgentBindings({
+      declarations: ir.agents,
+      injections: agentInjections,
+      ...(inherited === undefined ? {} : { inherited }),
+      ...(presetCatalog === undefined ? {} : { presetCatalog }),
+    });
+  }
+
   getFrozenRun(runId: string): FrozenRun | undefined {
     return this.readFrozenRun(runId, true);
   }
@@ -1174,7 +1212,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     const row = this.db.prepare(`
       SELECT runs.id, runs.name, runs.workflow_entry, runs.source_graph_digest,
         run_inputs.workflow_ir_path, run_inputs.workflow_ir_digest, run_inputs.input_json,
-        run_inputs.agent_overrides_json, run_inputs.lock_path, run_inputs.lock_digest, run_inputs.source_json
+        run_inputs.agent_bindings_json, run_inputs.lock_path, run_inputs.lock_digest, run_inputs.source_json
       FROM run_inputs
       JOIN runs ON runs.id = run_inputs.run_id
       WHERE run_inputs.run_id = ?
@@ -1449,6 +1487,11 @@ class SqliteRuntimeStore implements RuntimeStore {
       if (prepared.isErr()) return err(prepared.error);
       options = { ...options, prepared: prepared.value };
     }
+    if (options.agentInjections !== undefined) {
+      const parsed = tryParseAgentInjectionMap(options.agentInjections);
+      if (parsed.isErr()) return err(parsed.error);
+      options = { ...options, agentInjections: parsed.value };
+    }
     const forkRequestKey = options.requestId === undefined ? undefined : `fork-request:${options.requestId}`;
     const requestFingerprint = forkRequestFingerprint(runId, options);
     if (forkRequestKey) {
@@ -1469,13 +1512,6 @@ class SqliteRuntimeStore implements RuntimeStore {
         return ok({ ...this.requireRun(existing.run_id), forkCreated: false });
       }
     }
-    const matchingFork = (this.db.prepare(`
-      SELECT run_id, payload_json
-      FROM run_events
-      WHERE type = 'run.forked'
-    `).all() as Array<{ run_id: string; payload_json: string }>)
-      .find(row => (JSON.parse(row.payload_json) as Record<string, unknown>).requestFingerprint === requestFingerprint);
-    if (matchingFork) return ok({ ...this.requireRun(matchingFork.run_id), forkCreated: false });
     const sourceSnapshotResult = this.scheduler.tryLoadRunSnapshot(runId);
     if (sourceSnapshotResult.isErr()) {
       if (sourceSnapshotResult.error.type === "run-not-found") return err(sourceSnapshotResult.error);
@@ -1485,14 +1521,11 @@ class SqliteRuntimeStore implements RuntimeStore {
     const source = this.getRunRecord(runId);
     if (!source) return err({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
     const input = this.db.prepare(`
-      SELECT workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, lock_path, lock_digest, output_json, package_lock_digest, source_json
+      SELECT workflow_ir_path, workflow_ir_digest, input_json, agent_bindings_json, lock_path, lock_digest, output_json, package_lock_digest, source_json
       FROM run_inputs
       WHERE run_id = ?
     `).get(runId) as RunInputRow | undefined;
     if (!input) throw new Error(`Run '${runId}' has no frozen input.`);
-    if (options.prepared) {
-      await publishWorkflowSource(options.prepared, this.layout, this.generation.sourcesRoot);
-    }
     const sourceRun = this.generation.run(runId);
     const sourceRunDir = sourceRun.verify();
     const sourceWorkflowIrJson = frozenWorkflowIrJson(sourceRunDir, input);
@@ -1506,13 +1539,11 @@ class SqliteRuntimeStore implements RuntimeStore {
     const sourceLockJson = persisted.lockJson;
     const forkIrJson = options.prepared?.irJson ?? sourceWorkflowIrJson;
     const forkIr = options.prepared?.ir ?? JSON.parse(forkIrJson) as WorkflowIR;
-    if (options.agentOverrides !== undefined) {
-      const agentOverrides = tryParseAgentOverrideMap(options.agentOverrides, forkIr.agents);
-      if (agentOverrides.isErr()) return err(agentOverrides.error);
-      options = { ...options, agentOverrides: agentOverrides.value };
-    }
-    const sourceAgentOverrides = parseAgentOverrides(input.agent_overrides_json);
-    const forkAgentOverrides = normalizeAgentOverrides(forkIr, options.agentOverrides, sourceAgentOverrides);
+    const agentInjections = tryParseAgentInjectionMap(options.agentInjections ?? {}, forkIr.agents);
+    if (agentInjections.isErr()) return err(agentInjections.error);
+    const sourceAgentBindings = parseAgentBindings(input.agent_bindings_json);
+    const finalized = await this.resolveAgentBindings(forkIr, agentInjections.value, sourceAgentBindings);
+    if (finalized.isErr()) return err(finalized.error);
     let forkInput = options.input;
     if (forkInput !== undefined || options.prepared) {
       const normalized = tryNormalizeWorkflowInput(
@@ -1524,6 +1555,20 @@ class SqliteRuntimeStore implements RuntimeStore {
       forkInput = normalized.value;
     }
     const forkInputJson = forkInput === undefined ? input.input_json : stableJsonLine(forkInput);
+    const semanticFingerprint = forkSemanticFingerprint({
+      runId,
+      ...(options.prepared === undefined ? {} : { prepared: options.prepared }),
+      input: JSON.parse(forkInputJson) as JsonValue,
+      agentBindings: finalized.value.bindings,
+      ...(options.target === undefined ? {} : { target: options.target }),
+    });
+    const matchingFork = (this.db.prepare(`
+      SELECT run_id, payload_json
+      FROM run_events
+      WHERE type = 'run.forked'
+    `).all() as Array<{ run_id: string; payload_json: string }>)
+      .find(row => (JSON.parse(row.payload_json) as Record<string, unknown>).semanticFingerprint === semanticFingerprint);
+    if (matchingFork) return ok({ ...this.requireRun(matchingFork.run_id), forkCreated: false });
     const forkLockJson = options.prepared ? stableJsonLine(options.prepared.lock) : sourceLockJson;
     const forkPackageLockDigest = options.prepared?.packageLockDigest ?? input.package_lock_digest ?? null;
     const forkSource = options.prepared?.source ?? persisted.source;
@@ -1591,7 +1636,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       child: {
         runId: forkId,
         frozen: {
-          ir: withAgentOverrides(forkIr, forkAgentOverrides),
+          ir: withAgentBindings(forkIr, finalized.value),
           input: JSON.parse(forkInputJson) as JsonValue,
           meta: {
             runId: forkId,
@@ -1641,6 +1686,9 @@ class SqliteRuntimeStore implements RuntimeStore {
           })),
       });
     }
+    if (options.prepared) {
+      await publishWorkflowSource(options.prepared, this.layout, this.generation.sourcesRoot);
+    }
     sourceRun.verify();
     const publishedFork = await publishRunDirectory({
       runsRoot: this.generation.runsRoot,
@@ -1685,7 +1733,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       `).run(forkId, forkName, "pending", forkWorkflowEntry, forkSourceGraphDigest, now, now);
       this.db.prepare(`
         INSERT INTO run_inputs (
-          run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, output_json, lock_path, lock_digest, package_lock_digest, source_json
+          run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_bindings_json, output_json, lock_path, lock_digest, package_lock_digest, source_json
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
@@ -1693,7 +1741,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         "workflow.ir.json",
         sha256Digest(forkIrJson),
         forkInputJson,
-        stableJsonLine(forkAgentOverrides),
+        stableJsonLine(finalized.value.bindings),
         null,
         "lock.json",
         sha256Digest(forkLockJson),
@@ -1706,11 +1754,11 @@ class SqliteRuntimeStore implements RuntimeStore {
       `).run(forkId, stableJsonLine({
         sourceRunId: runId,
         requestFingerprint,
+        semanticFingerprint,
         ...(options.target === undefined ? {} : {
           target: options.target,
           replayBeforeSequence: checkpoint.value.replayBeforeSequence,
         }),
-        ...(Object.keys(forkAgentOverrides).length > 0 ? { agentOverrides: forkAgentOverrides } : {}),
       }), now, forkRequestKey ?? `fork:${forkId}:${runId}`);
       this.db.prepare(`
         INSERT INTO scheduler_projection_checkpoints (run_id, event_sequence, projection_json, updated_at)
@@ -2392,12 +2440,11 @@ class SqliteRuntimeStore implements RuntimeStore {
     const run = this.getRunRecord(runId);
     if (!run) return undefined;
     const input = this.db.prepare(`
-      SELECT input_json, agent_overrides_json, output_json
+      SELECT input_json, output_json
       FROM run_inputs
       WHERE run_id = ?
     `).get(runId) as RunDetailsInputRow | undefined;
     if (!input) throw new Error(`Run '${runId}' has no frozen input.`);
-    const agentOverrides = parseAgentOverrides(input.agent_overrides_json);
     const eventCount = this.count("run_events", runId);
     const nodeCount = this.count("node_states", runId);
     const dynamic = this.inspectionReadModel.getDynamicDetails(runId);
@@ -2406,7 +2453,6 @@ class SqliteRuntimeStore implements RuntimeStore {
       ...run,
       input: JSON.parse(input.input_json) as JsonValue,
       ...(input.output_json ? { output: JSON.parse(input.output_json) as JsonValue } : {}),
-      ...(Object.keys(agentOverrides).length > 0 ? { agentOverrides } : {}),
       ...(fork ? { fork } : {}),
       hooks: isTerminalRunStatus(run.status) ? this.getHookJournal(runId) : [],
       eventCount,
@@ -2628,8 +2674,8 @@ function isTerminalRunStatus(status: RunStatus): boolean {
   return status === "completed" || status === "failed" || status === "canceled";
 }
 
-function parseAgentOverrides(json: string): AgentOverrideMap {
-  return parseAgentOverrideMap(JSON.parse(json) as unknown);
+function parseAgentBindings(json: string): FrozenAgentBindingMap {
+  return parseFrozenAgentBindingMap(JSON.parse(json) as unknown);
 }
 
 
@@ -3137,11 +3183,18 @@ function decodeFrozenRun(
 ): FrozenRun {
   const workflowIrJson = frozenWorkflowIrJson(runDir, row);
   const { source } = verifiedFrozenWorkflowSource(runDir, row);
-  const agentOverrides = parseAgentOverrides(row.agent_overrides_json);
+  const authoredIr = JSON.parse(workflowIrJson) as WorkflowIR;
+  const agentBindings = parseAgentBindings(row.agent_bindings_json);
+  const declaredNames = Object.keys(authoredIr.agents).sort();
+  const boundNames = Object.keys(agentBindings).sort();
+  if (stableJsonLine(declaredNames) !== stableJsonLine(boundNames)) {
+    throw new Error("Frozen Agent bindings do not match the authored workflow declarations.");
+  }
+  const rebuilt = rebuildFrozenAgentBindings(authoredIr.agents, agentBindings);
   return {
-    ir: withAgentOverrides(JSON.parse(workflowIrJson) as WorkflowIR, agentOverrides),
+    ir: withAgentBindings(authoredIr, rebuilt),
     input: JSON.parse(row.input_json) as JsonValue,
-    agentOverrides,
+    agentBindings,
     ...(resolveSourceRoot === undefined ? {} : { sourceRoot: resolveSourceRoot(source) }),
     meta: {
       runId: row.id,
@@ -3329,7 +3382,7 @@ function acceptedForkCompletion(projection: SchedulerProjection, nodeKey: string
 }
 
 function forkRequestFingerprint(runId: string, options: ControlOptions): string {
-  return stableJsonLine({
+  return sha256Digest(stableJsonLine({
     runId,
     ...(options.prepared === undefined ? {} : {
       prepared: {
@@ -3339,15 +3392,15 @@ function forkRequestFingerprint(runId: string, options: ControlOptions): string 
       },
     }),
     ...(options.input === undefined ? {} : { input: options.input }),
-    ...(options.agentOverrides === undefined ? {} : { agentOverrides: options.agentOverrides }),
+    ...(options.agentInjections === undefined ? {} : { agentInjections: options.agentInjections }),
     ...(options.target === undefined ? {} : { target: options.target }),
-  });
+  }));
 }
 
 function admissionRequestFingerprint(
   prepared: PreparedRunWorkflow,
   input: JsonValue,
-  agentOverrides: AgentOverrideMap,
+  agentInjections: AgentInjectionMap,
 ): string {
   return sha256Digest(stableJsonLine({
     prepared: {
@@ -3357,7 +3410,29 @@ function admissionRequestFingerprint(
       ...(prepared.packageLockDigest === undefined ? {} : { packageLockDigest: prepared.packageLockDigest }),
     },
     input,
-    agentOverrides,
+    agentInjections,
+  }));
+}
+
+function forkSemanticFingerprint(semantic: {
+  runId: string;
+  prepared?: PreparedRunWorkflow;
+  input: JsonValue;
+  agentBindings: FrozenAgentBindingMap;
+  target?: string;
+}): string {
+  return sha256Digest(stableJsonLine({
+    runId: semantic.runId,
+    ...(semantic.prepared === undefined ? {} : {
+      prepared: {
+        source: semantic.prepared.source,
+        irFileDigest: semantic.prepared.lock.ir.digest,
+        sourceGraphDigest: semantic.prepared.sourceGraphDigest,
+      },
+    }),
+    input: semantic.input,
+    agentBindings: semantic.agentBindings,
+    ...(semantic.target === undefined ? {} : { target: semantic.target }),
   }));
 }
 

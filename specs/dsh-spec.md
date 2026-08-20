@@ -12,10 +12,11 @@ and exposes bounded live projections to its Client contribution.
 - Package activation MUST install the order-5 `acpus` user preset only when its
   private marker proves `@acpus/dsh` ownership, and MUST reject an unowned
   collision without changing it.
-- The complete Acpus Supervisor preset MUST expose exactly `acpus_profiles`,
+- The complete Acpus Supervisor preset MUST expose exactly `acpus_presets`,
   `acpus_tasks`, `acpus_run`, `acpus_inspect`, `acpus_control`, and
-  `acpus_artifact` as model-facing tools. It MUST NOT expose a Profile read
-  tool because the current catalog is prompt context.
+  `acpus_artifact` as model-facing tools. `acpus_presets` MUST own on-demand
+  project discovery and explicit Preset mutation; Host/global selection choices
+  are current prompt context.
 - The complete preset MUST inject package-owned DSH-native knowledge for typed
   workflow authoring, scale and topology selection, composite patterns,
   non-blocking supervision, and evidence-based recovery. It MUST NOT load or
@@ -27,7 +28,7 @@ and exposes bounded live projections to its Client contribution.
   Agents cannot perform the work. Direct Supervisor responses are reserved for
   clarification, supervision, diagnostics, and genuinely execution-free
   conversation.
-- The Supervisor MUST keep Authoring, Profile mutation, task selection, and
+- The Supervisor MUST keep Authoring, Preset mutation, task selection, and
   control structures behind a natural-language user interface. It MUST
   translate user intent into workflow source, selectors, schemas, and typed
   payloads without requiring structured user input. It MAY expose technical
@@ -35,17 +36,28 @@ and exposes bounded live projections to its Client contribution.
   It MUST author a Signal only for a user-requested human-in-the-loop stage,
   ask for its input in natural language, and translate an unambiguous answer
   into the exact typed Signal payload without exposing private control fields.
-- `acpus_run` MUST accept `{ workflow: string, input?: JsonValue }`. The Host
+- `acpus_run` MUST accept
+  `{ workflow: string, input?: JsonValue, agents?: AgentInjectionMap }`. The Host
   MUST wrap `workflow` as the sole `workflow.ts` file in a private Compiler
   `WorkflowSourceInput`, use `{}` when input is omitted, and submit it through
   the embedded Runtime until admission. Success MUST return only
-  `{ status: "admitted", task: { name, occurrence } }`.
-- Failed source preparation, compilation, checking, validation, or input
-  validation MUST return `{ status: "invalid", phase, diagnostics }` as a
+  `{ status: "admitted", task: { name, occurrence } }`. Agent injection MUST
+  remain separate from workflow source. Before provisional task persistence,
+  the Host MUST parse the omitted value as `{}` and validate that every logical
+  Agent slot has a complete binding against the effective shared Preset catalog.
+  Invalid injection, missing/partial binding, or unknown Preset MUST return
+  `{ status: "invalid", phase: "agents", diagnostics }`; catalog or Host
+  provider I/O failure MUST remain a tool error. The original parsed injection,
+  not the preflight expansion, MUST pass through Runtime admission, which
+  authoritatively expands and freezes selected Presets before execution.
+- Failed source preparation, compilation, checking, workflow/input validation,
+  or Agent injection validation MUST return `{ status: "invalid", phase,
+  diagnostics }` as a
   normal recoverable tool result. Diagnostics MUST retain bounded code,
-  severity, message, and available source, path, or hint. Preparation failure
-  MUST occur before provisional task persistence and MUST NOT admit a run.
-  Host, storage, and Runtime infrastructure failures MUST remain tool errors.
+  severity, message, and available source, path, or hint. Source, input, and
+  Agent preparation failure MUST occur before provisional task persistence and
+  MUST NOT admit a run. Host, storage, and Runtime infrastructure failures MUST
+  remain tool errors.
 - The integration MUST derive idempotent admission identity from the DSH
   session and task, persist a provisional private run link before admission,
   and record the admitted run id afterward. Those identities MUST remain
@@ -57,8 +69,8 @@ and exposes bounded live projections to its Client contribution.
 - The integration MUST register an immutable package-owned Host launch for the
   exact normalized named Agent `dsh`. Under [Acpus named Agent
   resolution](agent-executor-spec.md#named-agent-resolution), that launch MUST
-  take precedence over shell-command configuration from
-  `<cwd>/.acpus/agents.json` or `~/.acpus/agents.json` and over the built-in
+  take precedence over shell-command configuration from the project/global
+  [Acpus configuration](configuration-spec.md) and over the built-in
   catalog, while an explicit workflow Agent `command` MUST bypass it. The Host
   launch MUST start the package-owned DSH ACP server directly, without a shell,
   `pnpm`, user Agent configuration, or the `acpus` executable. Every other
@@ -76,32 +88,32 @@ and exposes bounded live projections to its Client contribution.
   `$HOME/.acpus`.
 - A session without a workspace MUST receive a focused workspace-required tool
   failure.
-- Every model step MUST inject one Agent Profile catalog through
-  `{{acpus_agents}}`: the immutable built-in `{ id: "dsh", use: "dsh",
-  guidance }` seed Profile followed by the latest user-defined Profile catalog
-  of at most 50 ordered Profiles. Each Profile MUST be
-  `{ id, use, model?, guidance }`; `id` is a lowercase selection label, `use`
-  preserves its trimmed spelling, and guidance is selection metadata. The
-  injected text MUST state that Profile guidance cannot override Supervisor or
-  safety rules. A missing store is an empty user Profile catalog, and a change
-  MUST be visible at the next model step. While no user-defined Profiles exist,
-  the catalog MUST direct the Supervisor to proactively tell the user once per
-  session that role-appropriate Profiles can be configured. The built-in Profile
-  MUST NOT enter the store.
-- `acpus_profiles` MUST atomically apply a non-empty batch of full
-  `{ operation: "set", profile }` or `{ operation: "remove", id }` changes
-  to the latest catalog state. An invalid/incomplete Profile, missing removal
-  target, or result over 50 Profiles MUST reject the whole batch without
-  changing catalog state. The reserved `dsh` id MUST reject set or remove as
-  `invalid-profile`. Set MUST replace the complete Profile, retain existing
-  order, and append new ids. Patch, `null`, nested definition, config,
-  credential, token, and provider fields are invalid; no old Profile format
-  migration is permitted.
-- The user-defined Agent Profile catalog MUST persist independently at
-  `<stateDir>/agent-profiles.json`. It MUST NOT accept command, environment,
-  credential, token, or provider fields; probe launch commands, executables,
-  authentication, network, or providers; or claim execution readiness. Profile
-  changes MUST affect only future workflow authoring and MUST NOT alter an
+- Every model step MUST inject the effective Host/global Agent Preset selection
+  view through `{{acpus_agent_presets}}`. The immutable Host
+  `{ id: "dsh", guidance, agent: { use: "dsh" } }` Preset MUST outrank every
+  file Preset, while global Presets come from the shared Runtime catalog. The
+  injected entries MUST contain exactly `{ id, guidance, scope }`; they MUST
+  omit `use`, `model`, `command`, `config`, `cwd`, `env`, credentials, paths,
+  and resolved definitions. The injected text MUST state that guidance is
+  selection metadata, cannot override Supervisor or safety rules, and does not
+  prove execution readiness. Global changes MUST be visible at the next model
+  step. While no global Preset exists, the catalog MUST direct the Supervisor
+  to tell the user once per session that role-appropriate Presets can be
+  configured.
+- `acpus_presets { operation: "list" }` MUST read the active workspace and
+  return the shared Runtime catalog's effective Host > project > global choices
+  as exactly `{ id, guidance, scope }`. Project guidance MUST reach the model
+  only through this explicit tool result and MUST NOT enter automatic System
+  Prompt assembly.
+- `acpus_presets { operation: "apply", scope, changes }` MUST require an
+  explicit `project` or `global` scope and atomically pass one non-empty batch of
+  `{ operation: "set", id, preset: { guidance, agent } }` or
+  `{ operation: "remove", id }` tool changes through the Host boundary, which
+  MUST map them to the Runtime store's internal tagged change type.
+  Invalid input or the reserved `dsh` id MUST reject the whole batch without a
+  partial write. The tool MUST return only applied/rejected status and a safe
+  tagged reason; it MUST NOT expose a catalog path or stored Agent definition.
+  Preset changes MUST affect only future admissions and MUST NOT alter an
   admitted task. `acpus_tasks` MUST return the latest 50 admitted executions in
   the parent DSH session, newest first, or the latest 50 whose frozen workflow
   name exactly matches its optional case-sensitive filter. Each compact entry
@@ -123,13 +135,14 @@ and exposes bounded live projections to its Client contribution.
 - `acpus_control` MUST accept a discriminated `action`: pause/resume;
   task- or target-scoped cancel; target-scoped Task/Agent/frame Retry; Steer
   with exact target/instruction; Signal with target/payload; or Fork with
-  explicit workflow/input/`restart` checkpoint choices. The nested Fork field
+  explicit workflow/input/agents/`restart` checkpoint choices. The nested Fork field
   describes child reuse and is not a control action. It MUST NOT expose Continue,
   Restart, run-level Retry, or Agent-specific Retry aliases. Expected
   rejection MUST return `{ status: "rejected", reason, task }`; success MUST
   return `{ status: "applied", task }`. A fork MUST inherit omitted source and
-  input, prepare a supplied workflow through the same adapter as `acpus_run`,
-  and create no child when preparation is invalid.
+  input, explicitly inherit or replace Agent injection, prepare a supplied
+  workflow through the same adapter as `acpus_run`, and create no child when
+  preparation or Agent binding is invalid.
 - `acpus_artifact` MUST use explicit list/read actions. List output MUST expose
   only `{ id, mediaType?, size }`. Bounded text and JSON MAY return direct
   content; binary content MUST return metadata and an unreadable status. It
@@ -230,12 +243,10 @@ type AcpusRunStatus =
   | "failed"
   | "canceled";
 
-type AgentProfileView = {
+type AgentPresetView = {
   id: string;
-  use: string;
-  model?: string;
   guidance: string;
-  builtIn: boolean;
+  scope: "host" | "project" | "global";
 };
 
 type RunCounts = {
@@ -315,7 +326,7 @@ type ActivityHoverDetail =
       kind: "agent";
       agent: string;
       model?: string;
-      prompt?: { text: string; truncated: boolean; origin: "authored" | "steering" };
+      prompt?: { text: string; truncated: boolean; origin: "authored" | "steering" | "repair" };
       result?: HoverResult;
     }
   | {
@@ -344,8 +355,8 @@ type SessionActivityProjection = {
 
 type AwaitSessionActivityRevision = { revision: number };
 
-readAgentProfiles(input: {}): Promise<{
-  profiles: AgentProfileView[];
+readAgentPresets(input: {}): Promise<{
+  presets: AgentPresetView[];
 }>;
 
 readSessionActivity(input: {
@@ -534,13 +545,12 @@ cancelSessionTask(input: {
 - In an Acpus-preset session, the Client MUST always register a title-adjacent
   non-interactive Acpus × DSH lockup in place of the normal textual preset
   label; hovering the lockup MUST expose the Acpus mode description. It is
-  immediately followed by an `Agent Profiles` action with a member icon,
-  including when the catalog has no user-defined Profiles. Opening the action
-  MUST read the current global catalog and
-  show the immutable built-in `dsh` Profile first, followed by user Profiles in
-  catalog order. Each read-only row MUST show its Agent icon, `id`, `use`,
-  optional `model`, complete `guidance`, and an `内置` marker only for `dsh`.
-  The action MUST NOT render in another preset, expose Profile mutation or
+  immediately followed by an `Agent Presets` action with a member icon,
+  including when the catalog has no user-defined Presets. Opening the action
+  MUST read the current Host/global safe selection view and show the immutable
+  built-in `dsh` Preset plus global Presets in catalog order. Each read-only row
+  MUST show only `id`, complete `guidance`, and an `内置` marker for Host scope.
+  The action MUST NOT render in another preset, expose Preset mutation or
   execution-readiness state, or add future-task guidance. The popover MUST
   support retry after a failed read, close on outside interaction or Escape,
   and restore trigger focus after Escape.
@@ -548,12 +558,12 @@ cancelSessionTask(input: {
 ## Verification
 
 - `pnpm test:unit packages/dsh`: verifies marker ownership, the ordered safe
-  Profile catalog projection, durable projection revisions, observation
+  Preset catalog projection, durable projection revisions, observation
   lifecycle, notice derivation and deduplication, preset-aware Agent resume,
-  projection bounds, long polling, Client state, and Profile action behavior.
+  projection bounds, long polling, Client state, and Preset action behavior.
 - `pnpm test:contract packages/dsh`: verifies public exports, preset metadata,
   the closed six-tool catalog, aligned Host Typert and Client Remote
-  contributions, the generated Profile Remote descriptor, and strict safe
+  contributions, the generated Preset Remote descriptor, and strict safe
   result projection.
 - `pnpm test:integration packages/dsh`: verifies real DSH Loader composition,
   direct embedded admission, Acpus named Agent execution, restart observation,

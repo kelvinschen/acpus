@@ -28,7 +28,8 @@ describe("workflow import contracts", () => {
         expect(imported.exitCode).toBe(0);
         expect(imported.stdout).toBe([
           "Workflow imported.",
-          "Catalog: project/static-import",
+          "Catalog workflow: static-import",
+          "Catalog scope: project",
           "Catalog status: available",
           `Catalog package: ${join(workspace, ".acpus", "workflows", "static-import")}`,
           `Catalog entry: ${join(workspace, ".acpus", "workflows", "static-import", "workflow.ts")}`,

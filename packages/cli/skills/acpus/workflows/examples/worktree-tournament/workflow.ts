@@ -21,8 +21,8 @@ export default defineWorkflow({
     ),
   }),
   agents: {
-    implementer: { use: "codex" },
-    judge: { use: "codex" },
+    implementer: {},
+    judge: {},
   },
 }).build(({ input, agents, meta, step }) => {
   const candidates = step("candidate_worktrees").fanout({

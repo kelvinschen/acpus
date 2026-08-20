@@ -139,7 +139,7 @@ describe.concurrent("runtime scheduler task process", () => {
         });
         const executor = createRuntimeNodeExecutor({
           cwd: workspace,
-          ir: prepared.ir,
+          ir: store.getFrozenRun(run.id)!.ir,
           scope: {},
           store,
           agentHostPolicy: loadAgentHostPolicy(process.env),
@@ -283,7 +283,12 @@ describe.concurrent("runtime scheduler task process", () => {
         `, fork.id)).toEqual(sourceArtifacts);
         expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.attempts)).toEqual([]);
 
-        const guarded = (await store.forkRun(source.id, { agentOverrides: {} }))._unsafeUnwrap();
+        executeRuntimeSql(workspace, `
+          UPDATE run_events
+          SET payload_json = json_set(payload_json, '$.semanticFingerprint', 'test-consumed')
+          WHERE run_id = ? AND type = 'run.forked'
+        `, fork.id);
+        const guarded = (await store.forkRun(source.id, { agentInjections: {} }))._unsafeUnwrap();
         await expect(advanceFrozenRun({
           cwd: workspace,
           runId: guarded.id,

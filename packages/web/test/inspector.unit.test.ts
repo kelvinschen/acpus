@@ -257,6 +257,29 @@ describe("Inspector primitives", () => {
     expect(container.querySelector(".json-viewer")).toBeNull();
   });
 
+  it("identifies an authored Agent slot as unbound", async () => {
+    await render(React.createElement(NodeDefinitionSection, {
+      detail: {
+        kind: "agent",
+        agent: "reviewer",
+        model: "gpt-5.6-luna",
+        unbound: true,
+      },
+      agentProfile: {
+        kind: "agent_slot",
+        model: "gpt-5.6-luna",
+      },
+      runtimeModel: undefined,
+      lastObserved: undefined,
+    }));
+
+    expect([...container.querySelectorAll(".key-value")].map(row => row.textContent)).toEqual([
+      "Namereviewer",
+      "BindingUnbound Agent slot",
+      "Effective modelgpt-5.6-luna",
+    ]);
+  });
+
   it("keeps the node-kind discriminant out of non-Agent Definition JSON", async () => {
     await render(React.createElement(NodeDefinitionSection, {
       detail: { kind: "task", input: "input.topic", target: "inline" },

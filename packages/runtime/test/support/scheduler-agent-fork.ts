@@ -48,9 +48,9 @@ export async function forkRuntimeRun(
   return result.value;
 }
 
-export function overrideAgentWorkflow() {
+export function injectedAgentWorkflow() {
   return defineWorkflow({
-    name: "scheduler-node-executor-agent-override",
+    name: "scheduler-node-executor-agent-injection",
     description: "Review a change with configured agents.",
     agents: {
       reviewer: {

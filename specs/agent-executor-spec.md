@@ -17,16 +17,18 @@ surface.
 
 ### Named Agent Resolution
 
-- Command selectors MUST bypass Host launches, file configuration, and the
+- Command selectors MUST bypass Host launches, configured resolution, and the
   built-in catalog.
-- Named selection precedence MUST be immutable Host registry, project
-  `.acpus/agents.json`, global `.acpus/agents.json`, then the package catalog.
-- Registry and configured names MUST normalize by trim plus lowercase;
-  normalized collisions and malformed present files MUST fail closed.
-- Each configured entry MUST be a non-empty shell command string and resolve
-  through the platform shell without Acpus tokenization or normalization. A
-  missing file contributes no entries; malformed JSON, invalid entries, and
-  read failures are non-retryable resolution failures.
+- Named selection precedence MUST be immutable Host registry, the optional
+  Runtime-provided configured-command resolver, then the package catalog. The
+  resolver MUST preserve the project-over-global composition owned by the
+  [Configuration](configuration-spec.md) contract.
+- Registry and configured names MUST normalize by trim plus lowercase. The
+  Executor MUST request the exact normalized name before its canonical alias
+  in one configured-resolution call.
+- Each configured command MUST resolve through the platform shell without
+  Acpus tokenization or normalization. Configuration failures returned by the
+  resolver MUST be non-retryable resolution failures.
 - Resolution MUST complete before a Process Capsule or ownership manifest is
   created. One Session lease resolves once; a later lease resolves current
   configuration again. Resolved launch data MUST NOT be persisted here.

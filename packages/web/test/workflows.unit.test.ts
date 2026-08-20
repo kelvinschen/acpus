@@ -99,7 +99,7 @@ describe("workflow visualization helpers", () => {
       agents: {
         reviewer: { kind: "agent_definition", use: "codex", model: "gpt-5" },
       },
-      irVersion: 7,
+      irVersion: 8,
       nodeCount: 3,
     });
     expect(bundle.contract).toEqual({
@@ -120,6 +120,33 @@ describe("workflow visualization helpers", () => {
       ["fallback", "assert"],
     ]));
     expect(bundle.sourceGraphDigest).toBe(sourceGraphDigest);
+  });
+
+  it("preserves an unbound Agent slot in static visualization", () => {
+    const ir = workflowIr();
+    ir.agents = {
+      reviewer: { kind: "agent_slot", model: "gpt-5.6-luna" },
+    };
+    ir.root.nodes = [{
+      id: "review",
+      kind: "agent",
+      run: {
+        agent: "reviewer",
+        prompt: { kind: "literal", value: "Review." },
+      },
+    }];
+
+    const bundle = embeddedVisualization(renderWorkflowVizHtml({ ir, sourceGraphDigest }));
+
+    expect(bundle.workflow.agents).toEqual({
+      reviewer: { kind: "agent_slot", model: "gpt-5.6-luna" },
+    });
+    expect(bundle.graph.nodes[0]?.detail).toMatchObject({
+      kind: "agent",
+      agent: "reviewer",
+      model: "gpt-5.6-luna",
+      unbound: true,
+    });
   });
 
   it("renders an offline HTML shell that fences authored and embedded raw text", () => {
@@ -146,7 +173,7 @@ const hostileDescription = "Prepared </script><script>globalThis.compromised = t
 
 function workflowIr(): WorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: hostileName,
     description: hostileDescription,
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },

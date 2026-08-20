@@ -108,14 +108,14 @@ function committedRow(sequence: number, mapped = false) {
 function frozenRun(): FrozenRun {
   return {
     ir: {
-      irVersion: 7,
+      irVersion: 8,
       name: "hooks",
       agents: {},
       root: { nodes: [], output: { kind: "literal", value: null } },
       diagnostics: [],
     },
     input: {},
-    agentOverrides: {},
+    agentBindings: {},
     meta: { runId, workflowName: "hooks", workflowPath: "workflow.ts", workspaceDir: "/workspace" },
   };
 }

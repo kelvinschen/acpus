@@ -297,7 +297,7 @@ const _acpus_dsh_acpus_readActivityDetail_result$schema = z.union([z.object({
   'text': z.string(),
   'truncated': z.boolean(),
 }), z.object({
-  'origin': z.union([z.literal("authored"), z.literal("steering")]),
+  'origin': z.union([z.literal("authored"), z.literal("steering"), z.literal("repair")]),
 })).optional(),
   'result': z.union([z.object({
   'kind': z.literal("output"),
@@ -340,14 +340,12 @@ const _acpus_dsh_acpus_readActivityDetail_result$schema = z.union([z.object({
   'status': z.literal("rejected"),
   'reason': z.union([z.literal("task-unavailable"), z.literal("node-unavailable"), z.literal("detail-unavailable"), z.literal("temporarily-unavailable")]),
 })])
-const _acpus_dsh_acpus_readAgentProfiles_parameter_0$schema = z.object({})
-const _acpus_dsh_acpus_readAgentProfiles_result$schema = z.object({
-  'profiles': z.array(z.object({
+const _acpus_dsh_acpus_readAgentPresets_parameter_0$schema = z.object({})
+const _acpus_dsh_acpus_readAgentPresets_result$schema = z.object({
+  'presets': z.array(z.object({
   'id': z.string(),
-  'use': z.string(),
-  'model': z.string().optional(),
   'guidance': z.string(),
-  'builtIn': z.boolean(),
+  'scope': z.union([z.literal("host"), z.literal("project"), z.literal("global")]),
 })),
 })
 const _acpus_dsh_acpus_readSessionActivity_parameter_0$schema = z.object({
@@ -488,7 +486,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#AwaitSessionActivityRevisionResult',
         schema: _acpus_dsh_acpus_awaitSessionActivityRevision_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":375,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":446,"column":3},
     },
     {
       id: '@acpus/dsh#acpus/cancelSessionTask',
@@ -513,7 +511,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#CancelSessionTaskResult',
         schema: _acpus_dsh_acpus_cancelSessionTask_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":387,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":458,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readActivityDetail',
@@ -538,13 +536,13 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#ReadActivityDetailResult',
         schema: _acpus_dsh_acpus_readActivityDetail_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":323,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":394,"column":9},
     },
     {
-      id: '@acpus/dsh#acpus/readAgentProfiles',
+      id: '@acpus/dsh#acpus/readAgentPresets',
       service: 'acpusMode',
       namespace: 'acpus',
-      method: 'readAgentProfiles',
+      method: 'readAgentPresets',
       invocation: { kind: 'direct' },
       parameters: [
         {
@@ -553,17 +551,17 @@ export const TYPERT = {
           source: 'json',
           codec: {
             mode: 'strict',
-            typeSymbol: '@acpus/dsh/projection#ReadAgentProfilesRequest',
-            schema: _acpus_dsh_acpus_readAgentProfiles_parameter_0$schema,
+            typeSymbol: '@acpus/dsh/projection#ReadAgentPresetsRequest',
+            schema: _acpus_dsh_acpus_readAgentPresets_parameter_0$schema,
           },
         },
       ],
       result: {
         mode: 'strict',
-        typeSymbol: '@acpus/dsh/projection#ReadAgentProfilesResult',
-        schema: _acpus_dsh_acpus_readAgentProfiles_result$schema,
+        typeSymbol: '@acpus/dsh/projection#ReadAgentPresetsResult',
+        schema: _acpus_dsh_acpus_readAgentPresets_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":303,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":380,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readSessionActivity',
@@ -588,7 +586,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#SessionActivityProjection',
         schema: _acpus_dsh_acpus_readSessionActivity_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":316,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":387,"column":3},
     },
   ],
   model: {
@@ -610,13 +608,18 @@ export const TYPERT = {
           },
           {
             "kind": "method",
-            "name": "agentProfiles",
-            "signature": "agentProfiles(): Promise<AgentProfile[]>"
+            "name": "trustedAgentPresetChoices",
+            "signature": "async trustedAgentPresetChoices(): Promise<AgentPresetView[]>"
           },
           {
             "kind": "method",
-            "name": "updateAgentProfiles",
-            "signature": "updateAgentProfiles(input: UpdateAgentProfilesInput): Promise<UpdateAgentProfilesResult>"
+            "name": "agentPresetChoices",
+            "signature": "agentPresetChoices(workspace: string): Promise<AgentPresetView[]>"
+          },
+          {
+            "kind": "method",
+            "name": "applyAgentPresets",
+            "signature": "async applyAgentPresets( input: ApplyAgentPresetsRequest, ): Promise<ApplyAgentPresetsResult>"
           },
           {
             "kind": "method",
@@ -640,8 +643,8 @@ export const TYPERT = {
           },
           {
             "kind": "method",
-            "name": "readAgentProfiles",
-            "signature": "@Remote async readAgentProfiles( _input: ReadAgentProfilesRequest, ): Promise<ReadAgentProfilesResult>"
+            "name": "readAgentPresets",
+            "signature": "@Remote async readAgentPresets( _input: ReadAgentPresetsRequest, ): Promise<ReadAgentPresetsResult>"
           },
           {
             "kind": "method",
@@ -681,7 +684,7 @@ export const TYPERT = {
           },
           {
             "name": "AcpusRunRequest",
-            "declaration": "export type AcpusRunRequest = { workspace: string; sessionId: string; toolCallId: string; workflow: string; input?: JsonValue; signal?: AbortSignal; };"
+            "declaration": "export type AcpusRunRequest = { workspace: string; sessionId: string; toolCallId: string; workflow: string; input?: JsonValue; agents?: JsonValue; signal?: AbortSignal; };"
           },
           {
             "name": "AcpusRunStatus",
@@ -697,7 +700,7 @@ export const TYPERT = {
           },
           {
             "name": "ActivityHoverDetail",
-            "declaration": "export type ActivityHoverDetail = { kind: \"agent\"; agent: string; model?: string; prompt?: BoundedHoverText & { origin: \"authored\" | \"steering\"; }; result?: HoverResult; } | { kind: \"task\"; input: BoundedHoverText & { format: \"text\" | \"json\"; }; result?: HoverResult; };"
+            "declaration": "export type ActivityHoverDetail = { kind: \"agent\"; agent: string; model?: string; prompt?: BoundedHoverText & { origin: \"authored\" | \"steering\" | \"repair\"; }; result?: HoverResult; } | { kind: \"task\"; input: BoundedHoverText & { format: \"text\" | \"json\"; }; result?: HoverResult; };"
           },
           {
             "name": "ActivityNode",
@@ -716,16 +719,16 @@ export const TYPERT = {
             "declaration": "export type AgentActivity = { name?: string; phase?: \"starting\" | \"responding\" | \"reported-thought\" | \"planning\" | \"tool\" | \"output-repair\" | \"settling\" | \"settled\"; turn?: number; tool?: { name: string; title?: string; state: \"running\" | \"completed\" | \"failed\" | \"canceled\"; }; telemetry?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; contextWindow?: { used: number; size: number; }; }; };"
           },
           {
-            "name": "AgentProfile",
-            "declaration": "export type AgentProfile = { id: string; use: string; model?: string; guidance: string; };"
+            "name": "AgentPresetView",
+            "declaration": "export type AgentPresetView = { id: string; guidance: string; scope: \"host\" | \"project\" | \"global\"; };"
           },
           {
-            "name": "AgentProfileChange",
-            "declaration": "export type AgentProfileChange = { operation: \"set\"; profile: AgentProfile; } | { operation: \"remove\"; id: string; };"
+            "name": "ApplyAgentPresetsRequest",
+            "declaration": "export type ApplyAgentPresetsRequest = { workspace: string; scope: WritableAgentPresetScope; changes: readonly AgentPresetChange[]; };"
           },
           {
-            "name": "AgentProfileView",
-            "declaration": "export type AgentProfileView = { id: string; use: string; model?: string; guidance: string; builtIn: boolean; };"
+            "name": "ApplyAgentPresetsResult",
+            "declaration": "export type ApplyAgentPresetsResult = { status: \"applied\"; } | { status: \"rejected\"; reason: string; };"
           },
           {
             "name": "AvailabilityCommitResult",
@@ -804,12 +807,12 @@ export const TYPERT = {
             "declaration": "export type ReadActivityDetailResult = { status: \"available\"; detail: ActivityHoverDetail; } | { status: \"rejected\"; reason: \"task-unavailable\" | \"node-unavailable\" | \"detail-unavailable\" | \"temporarily-unavailable\"; };"
           },
           {
-            "name": "ReadAgentProfilesRequest",
-            "declaration": "export type ReadAgentProfilesRequest = {};"
+            "name": "ReadAgentPresetsRequest",
+            "declaration": "export type ReadAgentPresetsRequest = {};"
           },
           {
-            "name": "ReadAgentProfilesResult",
-            "declaration": "export type ReadAgentProfilesResult = { profiles: AgentProfileView[]; };"
+            "name": "ReadAgentPresetsResult",
+            "declaration": "export type ReadAgentPresetsResult = { presets: AgentPresetView[]; };"
           },
           {
             "name": "ReadSessionActivityRequest",
@@ -862,14 +865,6 @@ export const TYPERT = {
           {
             "name": "SupervisorStateStore",
             "declaration": "export interface SupervisorStateStore {\n    listLinks(): Promise<RunLink[]>;\n    listReconciliationLinks(): Promise<RunLink[]>;\n    readSession(sessionId: string): Promise<StoredSessionProjection>;\n    commitObservation(input: ObservationCommit): Promise<CommitResult>;\n    setRunUnavailable(input: { link: RunLink; unavailable?: NonNullable<StoredRunProjection[\"unavailable\"]>; }): Promise<AvailabilityCommitResult>;\n    pendingNotices(): Promise<StoredNotice[]>;\n    markNoticeDelivered(noticeId: string): Promise<void>;\n    prepareCancel(input: { sessionId: string; generation: number; actor: \"user\" | \"model\"; requestId?: string; }): Promise<{ status: \"ready\"; control: StoredControl; link: AdmittedRunLink; } | { status: \"rejected\"; reason: \"task-unavailable\" | \"already-terminal\"; }>;\n    settleCancel(input: { controlId: string; outcome: \"applied\" | \"rejected\"; taskStatus: StoredRunProjection[\"status\"]; reason?: ControlRejectionReason; }): Promise<void>;\n    pendingControls(): Promise<StoredControl[]>;\n}"
-          },
-          {
-            "name": "UpdateAgentProfilesInput",
-            "declaration": "export type UpdateAgentProfilesInput = { changes: AgentProfileChange[]; };"
-          },
-          {
-            "name": "UpdateAgentProfilesResult",
-            "declaration": "export type UpdateAgentProfilesResult = { status: \"applied\"; } | { status: \"rejected\"; reason: \"profile-not-found\" | \"invalid-profile\" | \"profile-limit\"; };"
           },
           {
             "name": "WorkflowDiagnostic",

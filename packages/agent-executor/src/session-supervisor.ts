@@ -108,10 +108,11 @@ async function useSessionLeaseUnderGuard<T, E>(
     if (unavailable !== undefined) return err({ type: "acquire", error: unavailable });
     const resolved = await resolveAcpAgentLaunch({
       agent: input.session.agent,
-      cwd: input.session.cwd,
-      env: input.session.env,
       ...(input.session.configuration.model === undefined ? {} : { model: input.session.configuration.model }),
       ...(state.options.namedAgentLaunches === undefined ? {} : { namedAgentLaunches: state.options.namedAgentLaunches }),
+      ...(state.options.configuredAgentCommand === undefined
+        ? {}
+        : { configuredAgentCommand: state.options.configuredAgentCommand }),
     });
     if (resolved.isErr()) {
       return err({

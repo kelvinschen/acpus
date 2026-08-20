@@ -286,6 +286,7 @@ describe("inspection text surface", () => {
         kind: "agent",
         agent: "reviewer",
         profile: { kind: "agent_definition", use: "codex" },
+        binding: { source: { kind: "workflow" }, effective: { kind: "agent_definition", use: "codex" } },
         prompt: "input.prompt",
       },
       invocation: {
@@ -328,6 +329,7 @@ describe("inspection text surface", () => {
         kind: "agent",
         agent: "reviewer",
         profile: { kind: "agent_definition", use: "codex" },
+        binding: { source: { kind: "workflow" }, effective: { kind: "agent_definition", use: "codex" } },
         prompt: "\"review\"",
       },
       invocation: {

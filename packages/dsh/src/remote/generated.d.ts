@@ -3,21 +3,21 @@ import type {
   RemoteResult,
   TypertRemoteContribution,
 } from '@deepseek-ai/dsh-typert-protocol'
-import type { AwaitSessionActivityRevisionRequest, AwaitSessionActivityRevisionResult, CancelSessionTaskRequest, CancelSessionTaskResult, ReadActivityDetailRequest, ReadActivityDetailResult, ReadAgentProfilesRequest, ReadAgentProfilesResult, ReadSessionActivityRequest, SessionActivityProjection } from '@acpus/dsh/projection'
+import type { AwaitSessionActivityRevisionRequest, AwaitSessionActivityRevisionResult, CancelSessionTaskRequest, CancelSessionTaskResult, ReadActivityDetailRequest, ReadActivityDetailResult, ReadAgentPresetsRequest, ReadAgentPresetsResult, ReadSessionActivityRequest, SessionActivityProjection } from '@acpus/dsh/projection'
 
 declare module '@deepseek-ai/dsh-typert-protocol' {
   interface TypertRemoteNamespace$6163707573 {
     awaitSessionActivityRevision: (input: AwaitSessionActivityRevisionRequest, signal?: AbortSignal) => Promise<RemoteResult<AwaitSessionActivityRevisionResult>>
     cancelSessionTask: (input: CancelSessionTaskRequest) => Promise<RemoteResult<CancelSessionTaskResult>>
     readActivityDetail: (input: ReadActivityDetailRequest) => Promise<RemoteResult<ReadActivityDetailResult>>
-    readAgentProfiles: (_input: ReadAgentProfilesRequest) => Promise<RemoteResult<ReadAgentProfilesResult>>
+    readAgentPresets: (_input: ReadAgentPresetsRequest) => Promise<RemoteResult<ReadAgentPresetsResult>>
     readSessionActivity: (input: ReadSessionActivityRequest) => Promise<RemoteResult<SessionActivityProjection>>
   }
   interface TypertRemoteMap {
     'acpus/awaitSessionActivityRevision': (input: AwaitSessionActivityRevisionRequest, signal?: AbortSignal) => Promise<RemoteResult<AwaitSessionActivityRevisionResult>>
     'acpus/cancelSessionTask': (input: CancelSessionTaskRequest) => Promise<RemoteResult<CancelSessionTaskResult>>
     'acpus/readActivityDetail': (input: ReadActivityDetailRequest) => Promise<RemoteResult<ReadActivityDetailResult>>
-    'acpus/readAgentProfiles': (_input: ReadAgentProfilesRequest) => Promise<RemoteResult<ReadAgentProfilesResult>>
+    'acpus/readAgentPresets': (_input: ReadAgentPresetsRequest) => Promise<RemoteResult<ReadAgentPresetsResult>>
     'acpus/readSessionActivity': (input: ReadSessionActivityRequest) => Promise<RemoteResult<SessionActivityProjection>>
   }
   interface TypertRemoteNamespaceMap {

@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as wait } from "node:timers/promises";
 import { defineWorkflow, z } from "@acpus/core";
+import type { WorkflowIR } from "@acpus/core/ir";
 import { createAgentSessionSupervisor, type AgentSessionSupervisor } from "@acpus/agent-executor";
 import { lift, template } from "@acpus/expression";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -55,7 +56,8 @@ function advanceFrozenRun(input: AdvanceFrozenRunInput & { executeAgentTurn?: (r
     ?? ensureTestRuntimeAuthority(productionInput.store, productionInput.runId);
   return advanceFrozenRunProduction({ ...productionInput, runtimeOwnerEpoch, agentSessionSupervisor });
 }
-type TestAgentExecutorOptions = Omit<Parameters<typeof executeAgentNodeProduction>[2], "hostPolicy"> & {
+type TestAgentExecutorOptions = Omit<Parameters<typeof executeAgentNodeProduction>[2], "hostPolicy" | "agents"> & {
+  agents: WorkflowIR["agents"];
   hostPolicy?: AgentHostPolicy;
   executeTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
   runtimeOwnerEpoch?: number;
@@ -84,7 +86,10 @@ async function executeAgentNode(node: Parameters<typeof executeAgentNodeProducti
       : Object.assign(new Error(`${result.error.failure.code}: ${result.error.message}`), { failure: result.error.failure });
   throw error;
 }
-type TestRuntimeNodeExecutorInput = Omit<RuntimeNodeExecutorInput, "agentHostPolicy"> & { agentHostPolicy?: AgentHostPolicy; executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult> };
+function admittedAgents(agents: WorkflowIR["agents"]): Parameters<typeof executeAgentNodeProduction>[2]["agents"] {
+  return agents as Parameters<typeof executeAgentNodeProduction>[2]["agents"];
+}
+type TestRuntimeNodeExecutorInput = Omit<RuntimeNodeExecutorInput, "agentHostPolicy" | "ir"> & { ir: WorkflowIR; agentHostPolicy?: AgentHostPolicy; executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult> };
 function createRuntimeNodeExecutor(input: TestRuntimeNodeExecutorInput) {
   const { executeAgentTurn, agentHostPolicy = loadAgentHostPolicy(process.env), agentSessionSupervisor = testAgentSessionSupervisor(executeAgentTurn), ...productionInput } = input;
   return {
@@ -92,7 +97,7 @@ function createRuntimeNodeExecutor(input: TestRuntimeNodeExecutorInput) {
       const attempt = ensureTestAttempt(input.store, context.runId, context.nodeKey, context.nodeId, context.attemptId);
       const runtimeOwnerEpoch = productionInput.runtimeOwnerEpoch
         ?? ensureTestRuntimeAuthority(input.store, context.runId);
-      const executor = createRuntimeNodeExecutorProduction({ ...productionInput, runtimeOwnerEpoch, agentHostPolicy, agentSessionSupervisor });
+      const executor = createRuntimeNodeExecutorProduction({ ...productionInput, runtimeOwnerEpoch, agentHostPolicy, agentSessionSupervisor } as RuntimeNodeExecutorInput);
       return executor.execute({ ...context, ...attempt });
     },
   };
@@ -482,7 +487,7 @@ describe("agent node execution", () => {
               cwd: workspace,
               runId: run.id,
               nodeKey: "review",
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               store,
               executeTurn: async () => {
                 await rename(runDir, `${runDir}.opened`);
@@ -535,7 +540,7 @@ describe("agent node execution", () => {
               cwd: workspace,
               runId: run.id,
               nodeKey: "review",
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               store,
               executeTurn: async () => completedAgentTurn(taggedAgentOutput("{\"ok\":true}")),
             })).rejects.toBe(checkpointFailure);
@@ -563,7 +568,7 @@ describe("agent node execution", () => {
               cwd: workspace,
               runId: run.id,
               nodeKey: "review",
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               store,
               executeTurn: async request => {
                 request.onObservation?.({
@@ -632,7 +637,7 @@ describe("agent node execution", () => {
 
         await expect(executeAgentNode(node, {}, {
           cwd: workspace,
-          agents: prepared.ir.agents,
+          agents: admittedAgents(prepared.ir.agents),
           agentSessionSupervisor,
         })).rejects.toMatchObject({
           failure: {
@@ -1021,7 +1026,7 @@ describe("agent node execution", () => {
           try {
             await expect(executeAgentNode(node, {}, {
               cwd: workspace,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               executeTurn: async request => completedAgentTurn(taggedAgentOutput(JSON.stringify({
                 runId: request.env.ACPUS_RUNTIME_RUN_ID ?? null,
                 nodeId: request.env.ACPUS_RUNTIME_NODE_ID ?? null,
@@ -1056,7 +1061,7 @@ describe("agent node execution", () => {
 
           await expect(executeAgentNode(node, {}, {
             cwd: workspace,
-            agents: prepared.ir.agents,
+            agents: admittedAgents(prepared.ir.agents),
             executeTurn: async () => segmentedCompletedAgentTurn(["intermediate", "plain text"], "plain text"),
           })).resolves.toBe("plain text");
         });
@@ -1076,7 +1081,7 @@ describe("agent node execution", () => {
 
           await expect(executeAgentNode(node, {}, {
             cwd: workspace,
-            agents: prepared.ir.agents,
+            agents: admittedAgents(prepared.ir.agents),
             executeTurn: async () => segmentedCompletedAgentTurn(["intermediate"], ""),
           })).resolves.toBe("");
         });
@@ -1091,7 +1096,7 @@ describe("agent node execution", () => {
 
           await expect(withImmediateAgentRepairs(() => executeAgentNode(node, {}, {
             cwd: workspace,
-            agents: prepared.ir.agents,
+            agents: admittedAgents(prepared.ir.agents),
             hostPolicy: loadAgentHostPolicy({ ACPUS_AGENT_RESPONSE_REPAIR_MAX: "1" }),
             executeTurn: async request => {
               turns.push(request);
@@ -1113,7 +1118,7 @@ describe("agent node execution", () => {
 
           await expect(executeAgentNode(node, {}, {
             cwd: workspace,
-            agents: prepared.ir.agents,
+            agents: admittedAgents(prepared.ir.agents),
             executeTurn: async () => segmentedCompletedAgentTurn(["invalid earlier response", finalResponse], finalResponse),
           })).resolves.toEqual({ ok: true });
         });
@@ -1134,7 +1139,7 @@ describe("agent node execution", () => {
 
           await expect(executeAgentNode(node, {}, {
             cwd: workspace,
-            agents: prepared.ir.agents,
+            agents: admittedAgents(prepared.ir.agents),
             initialPrompt: { kind: "steer", steerId: "test-steer", instruction: "Focus on the failing assertion." },
             executeTurn: async request => {
               turns.push(request);
@@ -1155,7 +1160,7 @@ describe("agent node execution", () => {
 
           await expect(executeAgentNode(node, {}, {
             cwd: workspace,
-            agents: prepared.ir.agents,
+            agents: admittedAgents(prepared.ir.agents),
             initialPrompt: { kind: "steer", steerId: "test-steer", instruction: "Return the attempt as a string." },
             executeTurn: async request => {
               turns.push(request);
@@ -1175,7 +1180,7 @@ describe("agent node execution", () => {
           const turns: AgentTurnRequest[] = [];
           await expect(withImmediateAgentRepairs(() => executeAgentNode(node, {}, {
               cwd: workspace,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               initialPrompt: {
                 kind: "steer",
                 steerId: "steer-must-remain-internal",
@@ -1215,7 +1220,7 @@ describe("agent node execution", () => {
             attemptId: "attempt_fenced",
             attemptNo: 1,
             ownerEpoch: 1,
-            agents: prepared.ir.agents,
+            agents: admittedAgents(prepared.ir.agents),
             hostPolicy: loadAgentHostPolicy(process.env),
             agentSessionSupervisor: testAgentSessionSupervisor(),
             progressWriter: { writeNodeProgress },
@@ -1250,7 +1255,7 @@ describe("agent node execution", () => {
 
           const result = await executeAgentNodeProduction(node, {}, {
             cwd: workspace,
-            agents: prepared.ir.agents,
+            agents: admittedAgents(prepared.ir.agents),
             hostPolicy: loadAgentHostPolicy(process.env),
             agentSessionSupervisor,
             signal: controller.signal,
@@ -1279,7 +1284,7 @@ describe("agent node execution", () => {
           const invalid = { ...node, run: { ...node.run, prompt: { kind: "literal", value: 42 } } } as typeof node;
           const result = await executeAgentNodeProduction(invalid, {}, {
             cwd: workspace,
-            agents: prepared.ir.agents,
+            agents: admittedAgents(prepared.ir.agents),
             hostPolicy: loadAgentHostPolicy(process.env),
           });
 
@@ -1357,7 +1362,7 @@ describe("agent node execution", () => {
               nodeKey: "review",
               attemptId: "attempt_review",
               attemptNo: 1,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               store,
               executeTurn,
             })).resolves.toBe("done");
@@ -1381,7 +1386,7 @@ describe("agent node execution", () => {
               nodeKey: "review.foreign",
               attemptId: "attempt_review_foreign",
               attemptNo: 1,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               store,
               executeTurn,
             })).rejects.toMatchObject({ resolution: { type: "evaluation", field: "Agent node 'review' prompt" } });
@@ -1401,7 +1406,7 @@ describe("agent node execution", () => {
 
           await expect(withAgentResponseRepairMax("0", () => executeAgentNode(node, {}, {
             cwd: workspace,
-            agents: prepared.ir.agents,
+            agents: admittedAgents(prepared.ir.agents),
             executeTurn: async request => {
               turns.push(request);
               return completedAgentTurn("");
@@ -1427,7 +1432,7 @@ describe("agent node execution", () => {
               attemptId: "attempt_1",
               attemptNo: 1,
               store,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               hostPolicy: loadAgentHostPolicy({
                 ACPUS_AGENT_RESPONSE_REPAIR_MAX: "1",
               }),
@@ -1472,7 +1477,7 @@ describe("agent node execution", () => {
               attemptId: "attempt_1",
               attemptNo: 1,
               store,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               executeTurn: async () => completedAgentTurn("plain text"),
             }))).resolves.toBe("plain text");
 
@@ -1495,7 +1500,7 @@ describe("agent node execution", () => {
 
             await expect(withAgentResponseRepairMax(value, () => executeAgentNode(node, {}, {
               cwd: workspace,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               executeTurn,
             }))).rejects.toMatchObject({
               failure: {
@@ -1558,7 +1563,7 @@ describe("agent node execution", () => {
 
           await expect(withAgentResponseRepairMax("10", () => executeAgentNode(node, {}, {
             cwd: workspace,
-            agents: prepared.ir.agents,
+            agents: admittedAgents(prepared.ir.agents),
             executeTurn,
           }))).rejects.toMatchObject({ failure: { origin: "provider", code: "provider_exit" } });
           expect(executeTurn).toHaveBeenCalledOnce();
@@ -1573,7 +1578,7 @@ describe("agent node execution", () => {
 
           await expect(executeAgentNode(node, {}, {
             cwd: workspace,
-            agents: prepared.ir.agents,
+            agents: admittedAgents(prepared.ir.agents),
             executeTurn: async () => ({
               status: "failed",
               failure: {
@@ -1756,7 +1761,7 @@ describe("agent node execution", () => {
               attemptId: "requested-attempt",
               attemptNo: 1,
               store,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               executeTurn: async request => {
                 providerEntered();
                 expect(request.env.ACPUS_FORENSICS_HOST_SECRET).toBe("host-only");
@@ -1845,7 +1850,7 @@ describe("agent node execution", () => {
               attemptId: "requested-attempt",
               attemptNo: 1,
               store,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               executeTurn: provider,
             })).rejects.toBe(persistenceFailure);
 
@@ -1870,7 +1875,7 @@ describe("agent node execution", () => {
               cwd: workspace,
               runId: run.id,
               store,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               hostPolicy: loadAgentHostPolicy(process.env),
               agentSessionSupervisor: testAgentSessionSupervisor(provider),
             } as unknown as Parameters<typeof executeAgentNodeProduction>[2];
@@ -1902,7 +1907,7 @@ describe("agent node execution", () => {
               attemptId: "requested-attempt",
               attemptNo: 1,
               store,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               deadlineAt: new Date(Date.now() - 1_000).toISOString(),
               executeTurn: provider,
             })).rejects.toThrow("Agent node 'review' timed out.");
@@ -1926,7 +1931,7 @@ describe("agent node execution", () => {
           try {
             await expect(executeAgentNode(node, {}, {
               cwd: workspace,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               deadlineAt: new Date(6_000).toISOString(),
               executeTurn: async request => {
                 turns.push(request);
@@ -1953,7 +1958,7 @@ describe("agent node execution", () => {
 
             await expect(executeAgentNode(node, {}, {
               cwd: workspace,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               deadlineAt,
               executeTurn,
             })).rejects.toThrow(`Agent node 'review' has invalid persisted deadline ${JSON.stringify(deadlineAt)}.`);
@@ -2364,7 +2369,7 @@ describe("agent node execution", () => {
               attemptId: "attempt_1",
               attemptNo: 1,
               ownerEpoch: 1,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               hostPolicy: loadAgentHostPolicy(process.env),
               agentSessionSupervisor: testAgentSessionSupervisor(),
               progressWriter: { writeNodeProgress },
@@ -2401,7 +2406,7 @@ describe("agent node execution", () => {
                 attemptId: `attempt_${index + 1}`,
                 attemptNo: index + 1,
                 store,
-                agents: prepared.ir.agents,
+                agents: admittedAgents(prepared.ir.agents),
                 executeTurn: async request => {
                   turns.push(request);
                   return completedAgentTurn(taggedAgentOutput("{\"ok\":true}"));
@@ -2419,7 +2424,7 @@ describe("agent node execution", () => {
               attemptId: "attempt_second_run",
               attemptNo: 1,
               store,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               executeTurn: async request => {
                 turns.push(request);
                 return completedAgentTurn(taggedAgentOutput("{\"ok\":true}"));
@@ -2447,7 +2452,7 @@ describe("agent node execution", () => {
           try {
             await expect(executeAgentNode(node, {}, {
               cwd: workspace,
-              agents: prepared.ir.agents,
+              agents: admittedAgents(prepared.ir.agents),
               executeTurn: async () => completedAgentTurn(taggedAgentOutput("{\"runId\":null,\"nodeId\":\"inspect_agent\",\"nodeKey\":null,\"schedulerAttempt\":null}")),
             })).resolves.toMatchObject({ nodeId: "inspect_agent" });
           } finally {

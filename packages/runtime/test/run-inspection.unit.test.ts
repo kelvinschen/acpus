@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SchemaIR, WorkflowIR } from "@acpus/core/ir";
+import type { SchemaIR, AdmittedWorkflowIR } from "@acpus/core/ir";
 import {
   projectInspectionRunDecisionView,
   projectInspectionRunView,
@@ -298,8 +298,8 @@ describe("run inspection projection", () => {
   });
 
   it("projects repeated Signal aggregate counts and occurrence-exact Summary attention", () => {
-    const ir: WorkflowIR = {
-      irVersion: 7,
+    const ir: AdmittedWorkflowIR = {
+      irVersion: 8,
       name: "repeated-signal-inspection",
       agents: {},
       root: {
@@ -425,8 +425,8 @@ describe("run inspection projection", () => {
     ["failed", "failure", "expression_failed"],
     ["timed_out", "timed-out", "attempt_timeout"],
   ] as const)("keeps deep %s scope attention visible beneath its failed ancestor", (status, attention, reason) => {
-    const ir: WorkflowIR = {
-      irVersion: 7,
+    const ir: AdmittedWorkflowIR = {
+      irVersion: 8,
       name: "scope-root-cause",
       agents: {},
       root: {
@@ -484,8 +484,8 @@ describe("run inspection projection", () => {
   });
 
   it("keeps nested Fanout topology complete before folding its homogeneous repeated leaves", () => {
-    const ir: WorkflowIR = {
-      irVersion: 7,
+    const ir: AdmittedWorkflowIR = {
+      irVersion: 8,
       name: "nested-fanout",
       agents: { reviewer: { kind: "agent_definition", use: "claude" } },
       root: {
@@ -557,8 +557,8 @@ describe("run inspection projection", () => {
       .filter(entry => entry.state.status === "starting" || entry.state.status === "running"))
       .toHaveLength(6);
 
-    const assertIr: WorkflowIR = {
-      irVersion: 7,
+    const assertIr: AdmittedWorkflowIR = {
+      irVersion: 8,
       name: "repeated-assert",
       agents: {},
       root: {
@@ -665,8 +665,8 @@ describe("run inspection projection", () => {
   });
 
   it("keeps opposite conditional selections and an empty branch local to each repeated occurrence", () => {
-    const ir: WorkflowIR = {
-      irVersion: 7,
+    const ir: AdmittedWorkflowIR = {
+      irVersion: 8,
       name: "repeated-routes",
       agents: {},
       root: {
@@ -781,8 +781,8 @@ describe("run inspection projection", () => {
   });
 
   it("keeps failed Switch cases unmaterialized and orders only persisted Loop rounds", () => {
-    const routeIr: WorkflowIR = {
-      irVersion: 7,
+    const routeIr: AdmittedWorkflowIR = {
+      irVersion: 8,
       name: "failed-switch",
       agents: {},
       root: {
@@ -820,8 +820,8 @@ describe("run inspection projection", () => {
       .toEqual({ kind: "failure", summary: "Switch expression failed." });
     expect(JSON.stringify(route.tree)).not.toMatch(/first_case|second_case|default_case/);
 
-    const loopIr: WorkflowIR = {
-      irVersion: 7,
+    const loopIr: AdmittedWorkflowIR = {
+      irVersion: 8,
       name: "persisted-loop-rounds",
       agents: {},
       root: {
@@ -857,8 +857,8 @@ describe("run inspection projection", () => {
   });
 
   it("selects progress from each repeated composite group instance", () => {
-    const ir: WorkflowIR = {
-      irVersion: 7,
+    const ir: AdmittedWorkflowIR = {
+      irVersion: 8,
       name: "repeated-composite",
       agents: {},
       root: {
@@ -957,7 +957,7 @@ describe("run inspection projection", () => {
   });
 });
 
-function targetDetails(ir: WorkflowIR, run: RunDetails, target: string) {
+function targetDetails(ir: AdmittedWorkflowIR, run: RunDetails, target: string) {
   const details = resolveTargetState({ ir, run, artifacts: [], target });
   if (!details) throw new Error(`Expected target '${target}' to resolve.`);
   return details;
@@ -973,9 +973,9 @@ function taskNode() {
   };
 }
 
-function taskWorkflow(): WorkflowIR {
+function taskWorkflow(): AdmittedWorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "inspection-task",
     agents: {},
     root: {
@@ -986,9 +986,9 @@ function taskWorkflow(): WorkflowIR {
   };
 }
 
-function compositeWorkflow(): WorkflowIR {
+function compositeWorkflow(): AdmittedWorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "inspection-composite",
     agents: { reviewer: { kind: "agent_definition", use: "claude", model: "sonnet" } },
     root: {
@@ -1012,9 +1012,9 @@ function compositeWorkflow(): WorkflowIR {
   };
 }
 
-function singleAgentWorkflow(): WorkflowIR {
+function singleAgentWorkflow(): AdmittedWorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "inspection-agent",
     agents: { reviewer: { kind: "agent_definition", use: "claude", model: "sonnet" } },
     root: {
@@ -1029,9 +1029,9 @@ function singleAgentWorkflow(): WorkflowIR {
   };
 }
 
-function signalWorkflow(outputSchema: SchemaIR): WorkflowIR {
+function signalWorkflow(outputSchema: SchemaIR): AdmittedWorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "signal-inspection",
     agents: {},
     root: {

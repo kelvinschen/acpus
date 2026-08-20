@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import {
   createAgentSessionSupervisor,
   inspectAcpOwnership,
@@ -9,6 +10,10 @@ import { isAbsolute } from "node:path";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { readVerifiedArtifact } from "./artifacts/access.js";
 import type { ArtifactRecord } from "./artifacts/types.js";
+import {
+  resolveConfiguredAgentCommand,
+  type AgentPresetProvider,
+} from "./acpus-config.js";
 import {
   tryLoadRuntimeConfiguration,
   type RuntimeConfiguration,
@@ -88,6 +93,7 @@ export type WorkspaceRuntimeLocation = Readonly<{
 
 export type WorkspaceRuntimeHostDependencies = Readonly<{
   namedAgentLaunches?: NamedAcpAgentLaunchRegistry;
+  agentPresetProvider?: AgentPresetProvider;
 }>;
 
 type WorkspaceRuntimeInternalOptions = {
@@ -99,6 +105,7 @@ type WorkspaceRuntimeInternalOptions = {
   idleStopMs?: number;
   agentSessionSupervisor?: AgentSessionSupervisor;
   namedAgentLaunches?: NamedAcpAgentLaunchRegistry;
+  agentPresetProvider?: AgentPresetProvider;
   onAuthorityLost?: (runtime: OwnedWorkspaceRuntime) => void;
 };
 
@@ -156,6 +163,9 @@ export function openWorkspaceRuntime(
     ...(dependencies.namedAgentLaunches === undefined
       ? {}
       : { namedAgentLaunches: dependencies.namedAgentLaunches }),
+    ...(dependencies.agentPresetProvider === undefined
+      ? {}
+      : { agentPresetProvider: dependencies.agentPresetProvider }),
   }));
 }
 
@@ -197,7 +207,11 @@ async function openWorkspaceRuntimeValue(
     | { workspaceRealpath: string; ownerId: string; epoch: number }
     | undefined;
   try {
-    const opened = await openReadyWorkspaceRuntimeStore(cwd, runtimeLayoutOptions(options));
+    const opened = await openReadyWorkspaceRuntimeStore(
+      cwd,
+      runtimeLayoutOptions(options),
+      options.agentPresetProvider,
+    );
     store = opened.store;
     const ownerId = randomUUID();
     const ownerProcess = captureProcessIdentity();
@@ -224,6 +238,7 @@ async function openWorkspaceRuntimeValue(
     const hooksConfig = await loadHooksConfig(opened.layout.canonicalPath);
     if (hooksConfig.isErr()) throw new Error(formatHookLoadError(hooksConfig.error));
     const hookRunner = createHookRunner(hooksConfig.value, store);
+    const configHomeDir = homedir();
     const supervisorOptions = {
       workersRoot: opened.layout.acpWorkersRoot,
       sessionStateDirectoryForRun: (runId: string) => runAcpStateRoot(opened.layout, runId),
@@ -231,6 +246,14 @@ async function openWorkspaceRuntimeValue(
       ...(options.namedAgentLaunches === undefined
         ? {}
         : { namedAgentLaunches: options.namedAgentLaunches }),
+      configuredAgentCommand: (names: readonly string[]) => resolveConfiguredAgentCommand({
+        workspaceDir: opened.layout.canonicalPath,
+        homeDir: configHomeDir,
+        names,
+      }).mapErr(failure => ({
+        type: "agent-config" as const,
+        message: `Invalid Acpus config at '${failure.path}': ${failure.message}`,
+      })),
     };
     if (options.agentSessionSupervisor) {
       supervisor = options.agentSessionSupervisor;
@@ -346,7 +369,7 @@ class WorkspaceRuntimeImplementation implements OwnedWorkspaceRuntime {
           prepared: input.prepared,
           cwd: this.cwd,
           input: input.input,
-          ...(input.agentOverrides === undefined ? {} : { agentOverrides: input.agentOverrides }),
+          ...(input.agentInjections === undefined ? {} : { agentInjections: input.agentInjections }),
         });
         if (result.isErr()) {
           return err(submitFailure(
@@ -612,13 +635,14 @@ class WorkspaceRuntimeImplementation implements OwnedWorkspaceRuntime {
 async function openReadyWorkspaceRuntimeStore(
   cwd: string,
   options: RuntimeLayoutOptions,
+  agentPresetProvider?: AgentPresetProvider,
 ): Promise<{
   store: RuntimeStore;
   layout: ReturnType<typeof runtimeLayoutForGeneration>;
 }> {
   const first = await inspectRuntimeStoreInternal(cwd, options);
   if (first.isErr()) {
-    if (first.error.reason === "busy") return openPublishedWorkspaceRuntimeStore(cwd, options);
+    if (first.error.reason === "busy") return openPublishedWorkspaceRuntimeStore(cwd, options, agentPresetProvider);
     throw openReadinessError(first.error);
   }
   if (first.value.current.state === "absent") await initializeRuntimeStoreIfAbsent(cwd, options);
@@ -639,7 +663,11 @@ async function openReadyWorkspaceRuntimeStore(
       if (layout.generationId === undefined) throw openReadinessError(checked.error);
       adopted = true;
       return {
-        store: await openRuntimeStoreAtLayout(layout, { lock, prevalidated: true }),
+        store: await openRuntimeStoreAtLayout(layout, {
+          lock,
+          prevalidated: true,
+          ...(agentPresetProvider === undefined ? {} : { agentPresetProvider }),
+        }),
         layout,
       };
     }
@@ -647,7 +675,11 @@ async function openReadyWorkspaceRuntimeStore(
     const layout = runtimeLayoutForGeneration(workspace, checked.value.current.generationId);
     adopted = true;
     return {
-      store: await openRuntimeStoreAtLayout(layout, { lock, prevalidated: true }),
+      store: await openRuntimeStoreAtLayout(layout, {
+        lock,
+        prevalidated: true,
+        ...(agentPresetProvider === undefined ? {} : { agentPresetProvider }),
+      }),
       layout,
     };
   } catch (error) {
@@ -659,6 +691,7 @@ async function openReadyWorkspaceRuntimeStore(
 async function openPublishedWorkspaceRuntimeStore(
   cwd: string,
   options: RuntimeLayoutOptions,
+  agentPresetProvider?: AgentPresetProvider,
 ): Promise<{
   store: RuntimeStore;
   layout: ReturnType<typeof runtimeLayoutForGeneration>;
@@ -673,7 +706,11 @@ async function openPublishedWorkspaceRuntimeStore(
     }
     adopted = true;
     return {
-      store: await openRuntimeStoreAtLayout(layout, { lock, prevalidated: true }),
+      store: await openRuntimeStoreAtLayout(layout, {
+        lock,
+        prevalidated: true,
+        ...(agentPresetProvider === undefined ? {} : { agentPresetProvider }),
+      }),
       layout,
     };
   } finally {
@@ -758,7 +795,14 @@ function controlFailure(
     ? "RUN_NOT_FOUND"
     : failure.type === "prepared-workflow-invalid"
       || failure.type === "schema-mismatch"
-      || failure.type === "agent-overrides-invalid"
+      || failure.type === "agent-injections-invalid"
+      || failure.type === "agent-bindings-unresolved"
+      || failure.type === "agent-preset-not-found"
+      || failure.type === "agent-preset-catalog-invalid"
+      || failure.type === "acpus-config-invalid"
+      || failure.type === "acpus-config-read-failed"
+      || failure.type === "agent-preset-catalog-scope-invalid"
+      || failure.type === "agent-preset-provider-failed"
       || failure.type === "invalid-steer-instruction"
       ? "INVALID_REQUEST"
       : failure.type === "idempotency-conflict"
