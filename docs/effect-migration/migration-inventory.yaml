@@ -1,0 +1,176 @@
+# Master-maintained migration census. Verify entries against the current branch
+# before issuing a work package. This is planning data, not a product contract.
+baseline: feat/stable-acp-runtime-and-agent-orchestration
+architecture:
+  target: effect-v4
+  durable_truth: acpus-events-store-projection-fencing
+
+hotspots:
+  - path: packages/runtime/src/scheduler/advance.ts
+    work_packages: [A03, D02, D03, D04]
+    class: application-runtime
+    legacy:
+      - neverthrow-result
+      - promise-executor
+      - abort-controller-per-attempt
+      - promise-settlement-registry
+      - promise-race
+      - set-timeout
+      - set-interval-heartbeat
+      - manual-cleanup-aggregation
+    target:
+      - effect-error-channel
+      - scoped-attempt-fibers
+      - interruption-adapter-at-executor-edge
+      - effect-clock
+      - structured-settlement
+    durable_sensitive: true
+    preserve:
+      - SCH-001
+      - SCH-002
+      - SCH-003
+      - SCH-004
+      - SCH-005
+      - STORE-001
+      - STORE-002
+    races: [RACE-001, RACE-002, RACE-003, RACE-004]
+
+  - path: packages/runtime/src/scheduler/wakeup.ts
+    work_packages: [D01]
+    class: application-runtime
+    legacy: [hand-rolled-deferred, versioned-promise-wakeup]
+    target: [deferred-or-queue-with-version-semantics]
+    durable_sensitive: false
+    preserve: [LOCAL-001]
+    races: [RACE-005]
+
+  - path: packages/runtime/src/workspace-runtime.ts
+    work_packages: [A03, B04, C05]
+    class: composition-root-and-runtime
+    legacy:
+      - neverthrow-result-async
+      - set-interval-heartbeat
+      - set-interval-tick
+      - active-promise-fields
+      - close-promise
+      - manual-resource-settlement
+      - detached-close-on-authority-loss
+    target:
+      - effect-api
+      - workspace-scope
+      - scoped-heartbeat-and-tick-fibers
+      - layer-composition-root
+    durable_sensitive: true
+    preserve: [AUTH-001, AUTH-002, LIFE-001, LIFE-002]
+    races: [RACE-006, RACE-007]
+
+  - path: packages/runtime/src/daemon/mutation-queue.ts
+    work_packages: [D01]
+    class: application-runtime
+    legacy: [promise-tail-serialization]
+    target: [queue-single-owner-consumer]
+    durable_sensitive: false
+    preserve: [LOCAL-002]
+
+  - path: packages/runtime/src/hooks/runner.ts
+    work_packages: [C01]
+    class: platform-lifecycle
+    legacy: [child-process, timer-timeout, manual-signal-escalation]
+    target: [scoped-process, effect-clock, explicit-termination-policy]
+    durable_sensitive: false
+    preserve: [PROC-001, LIFE-003]
+
+  - path: packages/agent-executor/src/process-capsule.ts
+    work_packages: [A04, B02, C02]
+    class: platform-lifecycle
+    legacy:
+      - neverthrow-result
+      - raw-child-process
+      - abort-signal-listeners
+      - multiple-timeout-handles
+      - promise-ready-closed
+      - promise-manifest-write-chain
+      - cleanup-promise
+    target:
+      - scoped-process-capsule
+      - process-capability
+      - effect-clock
+      - interruption-bridge
+      - structured-child-resources
+    durable_sensitive: true
+    preserve: [PROC-002, PROC-003, ACP-001, LIFE-004]
+    races: [RACE-008, RACE-009, RACE-010]
+
+  - path: packages/agent-executor/src/session-supervisor.ts
+    work_packages: [A04, C04]
+    class: application-runtime
+    legacy: [neverthrow-result, mutable-session-registry, promise-guards, manual-drain-shutdown]
+    target: [effect-service, scope-owned-sessions, structured-supervision]
+    durable_sensitive: true
+    preserve: [ACP-002, ACP-003, LIFE-005]
+    races: [RACE-011]
+
+  - path: packages/acp/src/session.ts
+    work_packages: [A04, B03, C03]
+    class: sdk-lifecycle
+    legacy: [neverthrow-result-async, child-process, abort-signal-listeners, manual-turn-and-close-state]
+    target: [effect-native-session, scoped-connection-and-process, sdk-adapter-leaves]
+    durable_sensitive: true
+    preserve: [ACP-004, ACP-005, LIFE-006]
+    races: [RACE-012, RACE-013]
+
+  - path: packages/acp/src/reverse-rpc.ts
+    work_packages: [B03, C03]
+    class: sdk-lifecycle
+    legacy: [terminal-registry, pending-permission-state, promise-all-settled-cleanup, file-handle-lifecycle]
+    target: [session-child-scopes, structured-pending-operations]
+    durable_sensitive: false
+    preserve: [ACP-006, LIFE-007]
+
+  - path: packages/runtime/src/store/store.ts
+    work_packages: [A03, B01]
+    class: persistence-adapter
+    legacy: [neverthrow-result-boundaries, synchronous-sqlite]
+    target: [runtime-store-effect-capability, scoped-store-lifetime]
+    durable_sensitive: true
+    preserve: [STORE-001, STORE-002, STORE-003, AUTH-001]
+
+  - path: packages/runtime/src/scheduler/transitions.ts
+    work_packages: []
+    class: pure-domain
+    target: [remain-pure]
+    durable_sensitive: true
+    preserve: [SCH-006]
+    notes: do-not-effectify
+
+  - path: packages/runtime/src/scheduler/control-plan.ts
+    work_packages: []
+    class: pure-domain
+    target: [remain-pure]
+    durable_sensitive: true
+    notes: do-not-effectify-merely-for-uniformity
+
+  - path: packages/agent-executor/src/turn-reducer.ts
+    work_packages: []
+    class: pure-domain
+    target: [remain-pure]
+    notes: do-not-effectify
+
+repository_wide_census_queries:
+  - neverthrow
+  - ResultAsync
+  - new Promise
+  - new AbortController
+  - setTimeout
+  - setInterval
+  - Promise.all
+  - Promise.race
+  - Promise.allSettled
+  - closePromise
+  - AggregateError
+  - child_process
+
+maintenance_rule: >-
+  An execution agent must search its owned scope again before editing. If the
+  census is stale, update this inventory or report the delta to the master;
+  never silently design around stale planning data.

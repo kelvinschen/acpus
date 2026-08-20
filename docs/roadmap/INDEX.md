@@ -16,4 +16,6 @@ and release tags; they are not retained in the current documentation tree.
 
 ## Active Roadmaps
 
-None.
+- [Effect Runtime Migration](effect-runtime-migration.md) — repository-wide
+  convergence on Effect for process-local runtime/application concerns while
+  preserving Acpus durable orchestration semantics.
