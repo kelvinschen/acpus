@@ -90,6 +90,7 @@ describe("daemon run execution sessions", () => {
   it("bridges steer to the scheduler and returns its durable receipt without replacing the session", async () => {
     const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a"), undefined, runtimeConfiguration());
     sessions.start("run-a");
+    const abort = registerAgentTurn();
     applySchedulerControlIntent.mockReturnValue(ok({
       snapshot: {} as SchedulerSnapshot,
       effect: {
@@ -98,6 +99,7 @@ describe("daemon run execution sessions", () => {
         steerId: "steer-1",
         requestedTarget: "review",
         target: "review~000000000001",
+        delivery: "interrupt_continue",
         fencedAttemptId: "attempt-1",
         continuation: "queued",
       },
@@ -122,16 +124,24 @@ describe("daemon run execution sessions", () => {
         instruction: "Focus on the failing assertion.",
       },
       1,
+      {
+        agentSessionId: "session-1",
+        attemptId: "attempt-1",
+        turnId: "turn-1",
+        sessionLeaseId: "lease-1",
+      },
     );
     expect(result._unsafeUnwrap()).toMatchObject({
       type: "steer",
       steerId: "steer-1",
       target: "review~000000000001",
+      delivery: "interrupt_continue",
       fencedAttemptId: "attempt-1",
       continuation: "queued",
     });
     expect(executions[0]!.wake).toHaveBeenCalledOnce();
     expect(executions[0]!.stop).not.toHaveBeenCalled();
+    expect(abort).toHaveBeenCalledWith("steer");
     await sessions.stopExecutors(100);
   });
 
@@ -144,6 +154,7 @@ describe("daemon run execution sessions", () => {
     });
     const sessions = new RunExecutionSessions("/workspace", store, undefined, runtimeConfiguration());
     sessions.start("run-a");
+    registerAgentTurn();
     executions[0]!.wake = vi.fn(() => {
       order.push("wake");
     });
@@ -157,6 +168,7 @@ describe("daemon run execution sessions", () => {
           steerId: "steer-1",
           requestedTarget: "review",
           target: "review~000000000001",
+          delivery: "interrupt_continue",
           fencedAttemptId: "attempt-1",
           continuation: "queued",
         },
@@ -190,7 +202,8 @@ describe("daemon run execution sessions", () => {
     await sessions.stopExecutors(100);
   });
 
-  it.each(["resume", "retry"] as const)("does not replace an active execution for a no-op %s", async type => {
+  it("does not replace an active execution for a no-op resume", async () => {
+    const type = "resume" as const;
     const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a"), undefined, runtimeConfiguration());
     sessions.start("run-a");
     applySchedulerControlIntent.mockReturnValue(ok({
@@ -361,7 +374,40 @@ function runtimeStore(...runIds: string[]): RuntimeStore {
     getRunEventVersion: (runId: string) => runs.get(runId)?.eventCount,
     writeNodeProgress: vi.fn(),
     observationLog: { markFenced: vi.fn(() => Promise.resolve()) },
+    scheduler: {
+      claimRun: vi.fn((runId: string, ownerId: string) => ({
+        runId,
+        ownerId,
+        ownerEpoch: 2,
+        leaseExpiresAt: "2026-07-12T00:01:00.000Z",
+      })),
+      releaseRun: vi.fn(() => true),
+      tryPlanAgentSteer: vi.fn((runId: string) => ok({
+        runId,
+        attemptId: "attempt-1",
+        nodeKey: "review~000000000001",
+        nodeId: "review",
+        attemptNo: 1,
+      })),
+    },
   } as unknown as RuntimeStore;
+}
+
+function registerAgentTurn() {
+  const registry = createRuntimeRunScheduler.mock.calls[0]?.[0].agentTurnRegistry;
+  if (!registry) throw new Error("Expected Agent Turn registry.");
+  const abort = vi.fn();
+  registry.register({
+    runId: "run-a",
+    nodeKey: "review~000000000001",
+    nodeId: "review",
+    agentSessionId: "session-1",
+    attemptId: "attempt-1",
+    turnId: "turn-1",
+    sessionLeaseId: "lease-1",
+    abort,
+  });
+  return abort;
 }
 
 function run(id: string): RunDetails {

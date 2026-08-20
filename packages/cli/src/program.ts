@@ -4,8 +4,7 @@ import { createDoctorCommand } from "./doctor/command.js";
 import { createHooksCommand } from "./hooks/command.js";
 import { getCliPackageInfo } from "./platform/package-info.js";
 import { CliError, usageError } from "./presentation/errors.js";
-import { selectedJsonOutput } from "./presentation/json-output-option.js";
-import { writeJsonLine, writeResult } from "./presentation/output.js";
+import { writeResult } from "./presentation/output.js";
 import { createRunsCommand } from "./runs/command.js";
 import { createSkillCommand } from "./skill/command.js";
 import { createUpdateAwareness } from "./update/awareness.js";
@@ -31,20 +30,11 @@ export async function runCli(argv: string[], io: CliIo): Promise<number> {
     await awareness.finish(exitCode);
     return exitCode;
   } catch (error) {
-    const json = selectedJsonOutput(program);
     if (error instanceof CliError) {
-      if (json) {
-        writeJsonLine(io.stdout, { schemaVersion: 1, ...error.result });
-        return error.exitCode;
-      }
       return writeResult(error.result, io, error.exitCode);
     }
     if (error instanceof CommanderError) {
       if (error.code === "commander.helpDisplayed") return error.exitCode;
-      if (json) {
-        writeJsonLine(io.stdout, { schemaVersion: 1, ...usageError(error.message).result });
-        return 2;
-      }
       return 2;
     }
     throw error;
@@ -111,19 +101,17 @@ function createProgram(
     ...io,
   }));
 
-  configureCommandTree(program, program, io);
+  configureCommandTree(program, io);
 
   return program;
 }
 
-function configureCommandTree(command: Command, program: Command, io: CliIo): void {
+function configureCommandTree(command: Command, io: CliIo): void {
   command.helpCommand(false);
   command.configureOutput({
     writeOut: text => io.stdout.write(text),
-    writeErr: text => {
-      if (!selectedJsonOutput(program)) io.stderr.write(text);
-    },
+    writeErr: text => io.stderr.write(text),
     outputError: (text, write) => write(text),
   });
-  for (const child of command.commands) configureCommandTree(child, program, io);
+  for (const child of command.commands) configureCommandTree(child, io);
 }

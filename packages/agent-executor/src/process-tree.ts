@@ -5,24 +5,58 @@ export const PROCESS_TREE_CLEANUP_BUDGET_MS = 5_000;
 
 const TERM_GRACE_MS = 1_000;
 
+export type ProcessIdentityLiveness = "match" | "absent" | "mismatch" | "unverified";
+export type ProcessGroupLiveness = "live" | "dead" | "unverified";
+
 export async function stopProcessTree(pid: number, deadline: number): Promise<boolean> {
-  if (!await treeAlive(pid)) return false;
+  return (await stopProcessTreeWithDisposition(pid, deadline)).alive;
+}
+
+export async function stopProcessTreeWithDisposition(
+  pid: number,
+  deadline: number,
+): Promise<Readonly<{
+  alive: boolean;
+  disposition: "cooperative" | "term" | "kill" | "unverified";
+}>> {
+  const initial = await processGroupLiveness(pid);
+  if (initial === "dead") return { alive: false, disposition: "cooperative" };
+  if (initial === "unverified") return { alive: true, disposition: "unverified" };
   terminateProcessTree(pid, "SIGTERM");
   await waitForTreeDeath(pid, Math.min(TERM_GRACE_MS, remaining(deadline)));
-  if (!await treeAlive(pid)) return false;
+  if (await processGroupLiveness(pid) === "dead") return { alive: false, disposition: "term" };
   terminateProcessTree(pid, "SIGKILL");
   await waitForTreeDeath(pid, remaining(deadline));
-  return await treeAlive(pid);
+  const liveness = await processGroupLiveness(pid);
+  return { alive: liveness !== "dead", disposition: liveness === "dead" ? "kill" : "unverified" };
 }
 
 export async function matchesProcessStartToken(
   pid: number,
   expected: string | undefined,
 ): Promise<boolean | undefined> {
-  if (expected === undefined) return await processAlive(pid) ? undefined : false;
+  const liveness = await processIdentityLiveness(pid, expected);
+  return liveness === "match" ? true : liveness === "absent" || liveness === "mismatch" ? false : undefined;
+}
+
+export async function processIdentityLiveness(
+  pid: number,
+  expected: string | undefined,
+): Promise<ProcessIdentityLiveness> {
+  const existence = probeProcess(pid);
+  if (existence === "dead") return "absent";
+  if (existence === "unverified") return "unverified";
+  if (expected === undefined) return "unverified";
   const actual = await processStartToken(pid);
-  if (actual === undefined) return await processAlive(pid) ? undefined : false;
-  return actual === expected;
+  return actual === undefined ? "unverified" : actual === expected ? "match" : "mismatch";
+}
+
+export async function processGroupLiveness(pgid: number): Promise<ProcessGroupLiveness> {
+  if (process.platform === "win32") {
+    const process = probeProcess(pgid);
+    return process === "alive" ? "live" : process;
+  }
+  return probeSignalTarget(-pgid);
 }
 
 export async function processStartToken(pid: number): Promise<string | undefined> {
@@ -52,34 +86,26 @@ function terminateProcessTree(pid: number, signal: NodeJS.Signals): void {
   }
 }
 
-async function processAlive(pid: number): Promise<boolean> {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    const code = typeof error === "object" && error !== null && "code" in error
-      ? (error as { code?: unknown }).code
-      : undefined;
-    return code === "EPERM";
-  }
+function probeProcess(pid: number): "alive" | "dead" | "unverified" {
+  const process = probeSignalTarget(pid);
+  return process === "live" ? "alive" : process;
 }
 
-async function treeAlive(pid: number): Promise<boolean> {
-  if (process.platform === "win32") return processAlive(pid);
+function probeSignalTarget(pid: number): ProcessGroupLiveness {
   try {
-    process.kill(-pid, 0);
-    return true;
+    process.kill(pid, 0);
+    return "live";
   } catch (error) {
     const code = typeof error === "object" && error !== null && "code" in error
       ? (error as { code?: unknown }).code
       : undefined;
-    return code === "EPERM";
+    return code === "EPERM" ? "live" : code === "ESRCH" ? "dead" : "unverified";
   }
 }
 
 async function waitForTreeDeath(pid: number, timeoutMs: number): Promise<void> {
   const deadline = performance.now() + timeoutMs;
-  while (performance.now() < deadline && await treeAlive(pid)) {
+  while (performance.now() < deadline && await processGroupLiveness(pid) === "live") {
     await new Promise(resolve => setTimeout(resolve, Math.min(50, Math.max(1, deadline - performance.now()))));
   }
 }

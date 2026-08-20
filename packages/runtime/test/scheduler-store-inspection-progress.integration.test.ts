@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import * as occurrenceRefs from "../src/scheduler/occurrence-ref.js";
 import { openRuntimeStore, withRunInspectionSnapshot } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
-import { throwingSchedulerStore } from "./support/scheduler-store.js";
+import { throwingSchedulerStore, tryRetryStore } from "./support/scheduler-store.js";
 import { awaitingSignal, dbRow, dbRun, dbScalar, readyNode } from "./support/store-port-fixtures.js";
 
 describe("scheduler store inspection, progress, and validation", () => {
@@ -534,11 +534,6 @@ describe("scheduler store inspection, progress, and validation", () => {
         if (alreadyResumed.isErr()) throw new Error("expected already-resumed success");
         expect(alreadyResumed.value.projection.run.status).toBe("pending");
 
-        const invalidRunRetry = store.scheduler.tryRetryRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:run-retry" });
-        expect(invalidRunRetry.isErr()).toBe(true);
-        if (invalidRunRetry.isOk()) throw new Error("expected invalid run retry target");
-        expect(invalidRunRetry.error).toMatchObject({ type: "invalid-retry-target", runId: run.id, status: "pending" });
-
         readyNode(store, run.id, claim, "typed:ready");
         const appendConflict = store.scheduler.tryAppendSchedulerEvents({
           runId: run.id,
@@ -551,12 +546,12 @@ describe("scheduler store inspection, progress, and validation", () => {
         if (appendConflict.isOk()) throw new Error("expected append idempotency conflict");
         expect(appendConflict.error).toMatchObject({ type: "idempotency-conflict", idempotencyKey: "typed:ready", runId: run.id });
 
-        const invalidNodeRetry = store.scheduler.tryRetry({ runId: run.id, target: "require_ready~1", ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:node-retry" });
+        const invalidNodeRetry = tryRetryStore(store.scheduler, { runId: run.id, target: "require_ready~1", ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:node-retry" });
         expect(invalidNodeRetry.isErr()).toBe(true);
         if (invalidNodeRetry.isOk()) throw new Error("expected invalid node retry target");
         expect(invalidNodeRetry.error).toMatchObject({ type: "invalid-retry-target", runId: run.id, targetKey: "require_ready~1", status: "ready" });
 
-        const missingRetry = store.scheduler.tryRetry({ runId: run.id, target: "missing~1", ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:missing-retry" });
+        const missingRetry = tryRetryStore(store.scheduler, { runId: run.id, target: "missing~1", ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:missing-retry" });
         expect(missingRetry.isErr()).toBe(true);
         if (missingRetry.isOk()) throw new Error("expected missing retry target");
         expect(missingRetry.error).toMatchObject({ type: "missing-retry-target", runId: run.id, targetKey: "missing~1" });

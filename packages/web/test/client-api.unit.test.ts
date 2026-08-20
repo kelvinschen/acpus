@@ -1101,6 +1101,7 @@ function nodeInspection(): NodeInspection {
     nodeKey: "review#node",
     frameKey: "review#frame",
     cancelTarget: "review#node",
+    availableControls: [{ type: "cancel", target: "review#node" }],
     staticKind: "agent",
     timing: {
       startedAt: "2026-07-27T00:00:00.000Z",
@@ -1164,7 +1165,7 @@ function nodeExecution(): NodeExecutionInspection {
     available: true,
     summary: {
       status: "running",
-      sessionName: "review-session",
+      agentSessionId: "review-session",
       turnCount: 2,
       message: "working",
     },

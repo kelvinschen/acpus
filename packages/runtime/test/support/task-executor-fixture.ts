@@ -56,7 +56,7 @@ export async function withTaskExecutorWorkspace<T>(
               registerArtifact(input);
               return ok(undefined);
             },
-            writeExecutionMetadata: () => {},
+            writeExecutionMetadata: () => ok(undefined),
           },
         };
       },

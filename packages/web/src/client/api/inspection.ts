@@ -72,6 +72,9 @@ function isNodeInspection(value: unknown): value is NodeInspection {
       "nodeKey",
       "frameKey",
       "cancelTarget",
+      "availableControls",
+      "agentSession",
+      "steer",
       "staticKind",
       "timing",
       "latestAttempt",
@@ -88,6 +91,10 @@ function isNodeInspection(value: unknown): value is NodeInspection {
     && isOptionalString(value.nodeKey)
     && isOptionalString(value.frameKey)
     && (value.cancelTarget === undefined || isControlTarget(value.cancelTarget))
+    && Array.isArray(value.availableControls)
+    && value.availableControls.every(isInspectionControl)
+    && (value.agentSession === undefined || isAgentSession(value.agentSession))
+    && (value.steer === undefined || isSteer(value.steer))
     && isOptionalString(value.staticKind)
     && (value.timing === undefined || isNodeTiming(value.timing))
     && (value.latestAttempt === undefined || isRecord(value.latestAttempt)
@@ -117,6 +124,81 @@ function isNodeInspection(value: unknown): value is NodeInspection {
       && hasOnlyKeys(value.awaitingSignal, ["target", "prompt"])
       && isControlTarget(value.awaitingSignal.target)
       && isOptionalString(value.awaitingSignal.prompt));
+}
+
+function isInspectionControl(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  if (value.type === "retry") {
+    return hasOnlyKeys(value, ["type", "target"]) && isControlTarget(value.target);
+  }
+  if (value.type === "steer") {
+    return hasOnlyKeys(value, ["type", "target", "delivery", "effect"])
+      && isControlTarget(value.target)
+      && value.delivery === "interrupt_continue"
+      && value.effect === "cancel_drain_then_continue";
+  }
+  return value.type === "cancel"
+    && hasOnlyKeys(value, ["type", "target"])
+    && (value.target === undefined || isControlTarget(value.target));
+}
+
+function isAgentSession(value: unknown): boolean {
+  if (!isRecord(value)
+    || (value.scope !== "node" && value.scope !== "shared")
+    || !isNonNegativeInteger(value.generation)) return false;
+  return hasOnlyKeys(value, [
+      "scope", "agentSessionId", "generation", "lifecycle", "ownershipHealth",
+      "bindingDigest", "reportedVersion", "currentBinding", "checkpoint",
+    ])
+    && isControlTarget(value.agentSessionId)
+    && (value.bindingDigest === undefined
+      || typeof value.bindingDigest === "string" && /^sha256:[0-9a-f]{64}$/u.test(value.bindingDigest))
+    && (value.reportedVersion === undefined
+      || typeof value.reportedVersion === "string"
+        && value.reportedVersion.length > 0
+        && value.reportedVersion.length <= 256)
+    && (value.lifecycle === "active" || value.lifecycle === "abandoned")
+    && (value.ownershipHealth === undefined
+      || value.ownershipHealth === "healthy"
+      || value.ownershipHealth === "quarantined"
+      || value.ownershipHealth === "unverified")
+    && isRecord(value.currentBinding)
+    && hasOnlyKeys(value.currentBinding, ["attemptId", "operation", "promptOrigin"])
+    && isControlTarget(value.currentBinding.attemptId)
+    && ["start", "continue", "safe_retry"].includes(String(value.currentBinding.operation))
+    && isPromptOrigin(value.currentBinding.promptOrigin)
+    && isRecord(value.checkpoint)
+    && hasOnlyKeys(value.checkpoint, ["value", "attemptId", "turnId", "promptOrigin"])
+    && [
+      "not_dispatched", "dispatch_intent", "owned_in_flight", "provider_observed",
+      "terminal_observed", "acceptance_unknown", "terminal_unknown",
+    ].includes(String(value.checkpoint.value))
+    && isControlTarget(value.checkpoint.attemptId)
+    && isOptionalString(value.checkpoint.turnId)
+    && isPromptOrigin(value.checkpoint.promptOrigin);
+}
+
+function isPromptOrigin(value: unknown): boolean {
+  return value === "authored" || value === "steering" || value === "repair";
+}
+
+function isSteer(value: unknown): boolean {
+  if (!isRecord(value)
+    || !hasOnlyKeys(value, [
+      "steerId", "delivery", "fencedAttemptId", "phase", "replacementAttemptId", "blockedCheckpoint",
+    ])
+    || !isControlTarget(value.steerId)
+    || value.delivery !== "interrupt_continue"
+    || !isControlTarget(value.fencedAttemptId)) return false;
+  if (value.phase === "draining" || value.phase === "queued") {
+    return value.replacementAttemptId === undefined && value.blockedCheckpoint === undefined;
+  }
+  if (value.phase === "replacement_started") {
+    return isControlTarget(value.replacementAttemptId) && value.blockedCheckpoint === undefined;
+  }
+  return value.phase === "blocked"
+    && value.replacementAttemptId === undefined
+    && (value.blockedCheckpoint === "acceptance_unknown" || value.blockedCheckpoint === "terminal_unknown");
 }
 
 function isNodeRuntimeValues(value: unknown): value is NodeRuntimeValues {
@@ -226,9 +308,9 @@ function isNodeExecutionInspection(value: unknown): value is NodeExecutionInspec
 
 function isExecutionSummary(value: unknown): boolean {
   return isRecord(value)
-    && hasOnlyKeys(value, ["status", "sessionName", "turnCount", "message"])
+    && hasOnlyKeys(value, ["status", "agentSessionId", "turnCount", "message"])
     && isExecutionStatus(value.status)
-    && isOptionalString(value.sessionName)
+    && isOptionalString(value.agentSessionId)
     && isOptionalNonNegativeInteger(value.turnCount)
     && isOptionalString(value.message);
 }

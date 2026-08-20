@@ -8,6 +8,8 @@ import type {
   RunForkInfo,
   RunStatus,
 } from "../store/store.js";
+import type { RuntimeAgentSessionInspection } from "../scheduler/store-port.js";
+import type { RuntimeSteerProjection } from "../scheduler/steer-lifecycle.js";
 
 export type InspectNodeQuery = { runId: string; target: string };
 export type InspectAgentExecutionQuery = { runId: string; target: string };
@@ -29,6 +31,7 @@ export type RunInspectionRunSummary = {
     attempts: number;
     turns: number;
   };
+  agentSessions?: readonly RuntimeAgentSessionInspection[];
 };
 
 export type RunInspectionStatus =
@@ -239,10 +242,13 @@ export type RunInspectionTargetSummary = {
   agentDefinition?: AgentDefinitionIR;
   signal?: RunInspectionItem["signal"];
   artifacts: ArtifactRecord[];
+  agentSession?: RuntimeAgentSessionInspection;
+  steer?: RuntimeSteerProjection;
 };
 
 export type RunInspectionControl =
-  | { type: "retry" | "steer"; target: string }
+  | { type: "retry"; target: string }
+  | { type: "steer"; target: string; delivery: "interrupt_continue"; effect: "cancel_drain_then_continue" }
   | { type: "cancel"; target?: string };
 
 /** Web's one-target read. The resolved dossier remains private to Runtime. */
@@ -315,7 +321,7 @@ export type RunInspectionAgentExecutionDocument = ({
   subject: RunInspectionSubject;
   summary: {
     status: RunInspectionStatus;
-    sessionName?: string;
+    agentSessionId?: string;
     turnCount?: number;
     message?: string;
   };
@@ -379,7 +385,7 @@ export type AgentCurrentActivity = {
   attemptNo?: number;
   postFence?: true;
   turn?: number;
-  turnKind?: "task" | "continuation" | "steer" | "repair";
+  turnKind?: "task" | "steer" | "repair";
   phase: RunInspectionPulse["phase"];
   updatedAt: string;
   response?: RunInspectionExcerpt;
@@ -629,6 +635,7 @@ export type InspectionRun = {
   fork?: {
     sourceRunId: string;
   };
+  agentSessions?: readonly RuntimeAgentSessionInspection[];
 };
 
 type InspectionRunRef = {
@@ -772,7 +779,7 @@ export type ForensicsInvocation =
   | (ForensicsResolvedInvocationBase & {
       kind: "agent";
       attempt: number;
-      promptOrigin: "authored" | "steering" | "continuation";
+      promptOrigin: "authored" | "steering";
       prompt: string;
       cwd: string;
       env: Record<string, string>;
@@ -992,6 +999,9 @@ export type InspectionView =
       attention?: InspectionAttention;
       visibility?: InspectionVisibility;
       occurrences?: InspectionCounts;
+      agentSession?: RuntimeAgentSessionInspection;
+      steer?: RuntimeSteerProjection;
+      availableControls?: RunInspectionControl[];
     }
   | {
       kind: "target";

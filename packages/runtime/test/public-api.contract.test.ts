@@ -35,6 +35,7 @@ describe("@acpus/runtime public API", () => {
       "readInspection",
       "repairRuntimeStore",
       "requestDaemonControl",
+      "requestDaemonInspection",
       "requestDaemonShutdown",
       "requestDaemonStatus",
       "requestDaemonStatusProbe",

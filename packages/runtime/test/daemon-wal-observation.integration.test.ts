@@ -48,10 +48,12 @@ describe("daemon WAL-backed observation", () => {
         walProgressWorkflow({ agentReady, agentRelease, taskReady, taskRelease }),
       );
       await initializeRuntimeStoreForTest(workspace);
+      const incidents: unknown[] = [];
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 10,
         idleStopMs: 60_000,
         packageVersion: "test",
+        onRunIncident: incident => incidents.push(incident),
       });
       let observationTimer: ReturnType<typeof vi.spyOn> | undefined;
       try {
@@ -70,6 +72,7 @@ describe("daemon WAL-backed observation", () => {
         expect(admitted).toMatchObject({ kind: "admitted", run: { id: expect.any(String) } });
         if (admitted.kind !== "admitted") throw new Error("Expected daemon admission.");
         const attached = frame(await iterator.next());
+        if (attached.kind === "error") throw new Error(JSON.stringify(attached));
         expect(attached).toMatchObject({
           kind: "observation",
           observation: { kind: "attached" },
@@ -124,6 +127,9 @@ describe("daemon WAL-backed observation", () => {
           remaining.push(nextFrame);
           if (nextFrame.kind === "observation" && nextFrame.observation.kind === "closed") break;
         }
+        if (remaining.at(-1)?.kind === "error") {
+          throw new Error(JSON.stringify({ frame: remaining.at(-1), incidents }, errorJson));
+        }
         expect(remaining.at(-1)).toMatchObject({
           kind: "observation",
           observation: {
@@ -145,6 +151,12 @@ describe("daemon WAL-backed observation", () => {
     });
   }, 15_000);
 });
+
+function errorJson(_key: string, value: unknown): unknown {
+  return value instanceof Error
+    ? { name: value.name, message: value.message, stack: value.stack }
+    : value;
+}
 
 function walProgressWorkflow(paths: {
   agentReady: string;

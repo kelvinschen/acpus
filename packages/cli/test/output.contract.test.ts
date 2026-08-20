@@ -93,6 +93,7 @@ describe("CLI result output contracts", () => {
         runId: "run_1",
         steerId: "cli:steer-1",
         target: "@1a2b3c4d5e6f",
+        delivery: "interrupt_continue",
         continuation: "queued",
       },
       run: {
@@ -123,7 +124,7 @@ describe("CLI result output contracts", () => {
     expect(stderr.text).toBe("");
   });
 
-  it("renders targeted and run-level retry without inventing a root target", () => {
+  it("renders targeted retry without inventing a root target", () => {
     const run = {
       id: "run_1",
       name: "retry",
@@ -136,7 +137,6 @@ describe("CLI result output contracts", () => {
     };
     for (const [control, targetLine] of [
       [{ type: "retry", state: "applied", runId: "run_1", target: "@1a2b3c4d5e6f" } as const, "Target: @1a2b3c4d5e6f\n"],
-      [{ type: "retry", state: "applied", runId: "run_1" } as const, ""],
     ] as const) {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
@@ -144,7 +144,6 @@ describe("CLI result output contracts", () => {
       expect(stdout.text).toBe(`Retry applied.\nRun: run_1\n${targetLine}Status: pending\nWorkflow entry: retry.workflow.ts\nNext: acpus runs inspect run_1 --await-decision\n`);
       expect(stdout.text).not.toContain("retryd");
       expect(stdout.text).not.toContain("retried");
-      if (targetLine === "") expect(stdout.text).not.toContain("Target:");
       expect(stderr.text).toBe("");
     }
   });

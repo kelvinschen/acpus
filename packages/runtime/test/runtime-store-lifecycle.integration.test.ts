@@ -224,7 +224,7 @@ describe.concurrent("Runtime store repair", () => {
 
   it("leaves a newer store untouched", async () => {
     await withStorageWorkspace("runtime-repair-newer", async workspace => {
-      await createLegacyStore(workspace, 11);
+      await createLegacyStore(workspace, RUNTIME_STORAGE_VERSION + 1);
       const home = resolveRuntimeWorkspaceLayout(workspace).home;
       const before = await treeFingerprint(home);
 
@@ -449,7 +449,7 @@ async function createInterruptedTransition(workspace: string, checkpoint: Transi
     await writeFile(next.generationMetadataPath, `${JSON.stringify({
       schemaVersion: 1,
       id: nextGenerationId,
-      storageVersion: 10,
+      storageVersion: RUNTIME_STORAGE_VERSION,
       createdAt: startedAt,
     }, null, 2)}\n`);
     const store = await openRuntimeStoreAtLayout(next, {

@@ -19,7 +19,8 @@ import { parseArtifactUri } from "../artifacts/reference.js";
 import { resolveAgentSessionIdentity } from "../execution/agent-session.js";
 import { createVersionedWakeup } from "./wakeup.js";
 import { isReplayLeaf, replayEvaluation } from "./fork-replay.js";
-import type { ManagedAcpExecutor } from "@acpus/agent-executor";
+import type { AgentSessionSupervisor } from "@acpus/agent-executor";
+import type { AgentTurnExecutionRegistry } from "../execution/agent-turn-registry.js";
 
 export type AdvanceFrozenRunInput = {
   cwd: string;
@@ -28,6 +29,7 @@ export type AdvanceFrozenRunInput = {
   store: RuntimeStore;
   maxLeafConcurrency?: number;
   agentHostPolicy?: AgentHostPolicy;
+  runtimeOwnerEpoch?: number;
   onClaim?: AdvanceRunInput["onClaim"];
   onRelease?: AdvanceRunInput["onRelease"];
   wakeup?: AdvanceRunInput["wakeup"];
@@ -36,7 +38,8 @@ export type AdvanceFrozenRunInput = {
   shouldDispatchHooks?: (runId: string) => boolean;
   onHookIncident?: (runId: string, error: unknown) => void;
   progressWriter?: NodeProgressWriter;
-  managedAcpExecutor?: ManagedAcpExecutor;
+  agentSessionSupervisor?: AgentSessionSupervisor;
+  agentTurnRegistry?: AgentTurnExecutionRegistry;
 };
 
 type RunExecutionExitStatus = "completed" | "failed" | "canceled" | "paused" | "awaiting" | "lease_lost";
@@ -67,11 +70,13 @@ export function createRuntimeRunScheduler(input: {
   store: RuntimeStore;
   maxLeafConcurrency: number;
   agentHostPolicy: AgentHostPolicy;
+  runtimeOwnerEpoch?: number;
   hookRunner?: HookRunner;
   shouldDispatchHooks?: (runId: string) => boolean;
   onHookIncident?: (runId: string, error: unknown) => void;
   progressWriter?: NodeProgressWriter;
-  managedAcpExecutor?: ManagedAcpExecutor;
+  agentSessionSupervisor?: AgentSessionSupervisor;
+  agentTurnRegistry?: AgentTurnExecutionRegistry;
 }): RuntimeRunScheduler {
   return {
     start: identity => {
@@ -93,6 +98,7 @@ export function createRuntimeRunScheduler(input: {
             ownerId: identity.ownerId,
             maxLeafConcurrency: input.maxLeafConcurrency,
             agentHostPolicy: input.agentHostPolicy,
+            ...(input.runtimeOwnerEpoch === undefined ? {} : { runtimeOwnerEpoch: input.runtimeOwnerEpoch }),
             wakeup,
             shouldStop: () => stopped,
             onClaim: claim => settleOwner(claim.ownerEpoch),
@@ -100,7 +106,8 @@ export function createRuntimeRunScheduler(input: {
             ...(input.shouldDispatchHooks === undefined ? {} : { shouldDispatchHooks: input.shouldDispatchHooks }),
             ...(input.onHookIncident === undefined ? {} : { onHookIncident: input.onHookIncident }),
             ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
-            ...(input.managedAcpExecutor === undefined ? {} : { managedAcpExecutor: input.managedAcpExecutor }),
+            ...(input.agentSessionSupervisor === undefined ? {} : { agentSessionSupervisor: input.agentSessionSupervisor }),
+            ...(input.agentTurnRegistry === undefined ? {} : { agentTurnRegistry: input.agentTurnRegistry }),
           });
           return ok(runExecutionExit(identity.runId, advanced));
         } catch (error) {
@@ -160,7 +167,7 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
       if (!node || node.kind !== "agent") return undefined;
       const attemptScope = scopeForNodeAttempt(scope, projection, instance.nodeKey);
       return resolveAgentSessionIdentity(node, attemptScope, input.runId, instance.nodeKey)
-        .map(identity => identity.sessionName)
+        .map(identity => identity.agentSessionId)
         .unwrapOr(undefined);
     },
     replayEvaluationFor: (instance, projection) => {
@@ -234,6 +241,12 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
     afterOwnershipRecovery: async () => {
       const recovered = await input.store.observationLog.reconcileInterruptedTurns(input.runId);
       if (recovered.isErr()) throw recovered.error;
+      if (input.runtimeOwnerEpoch !== undefined) {
+        throwSchedulerStoreResult(input.store.scheduler.tryReconcileAgentSteers({
+          runId: input.runId,
+          runtimeOwnerEpoch: input.runtimeOwnerEpoch,
+        }));
+      }
     },
     onCheckpoint: () => dispatchHooksAtCheckpoint({ ...input, frozen }),
     executor: createRuntimeNodeExecutor({
@@ -243,8 +256,10 @@ export async function advanceFrozenRun(input: AdvanceFrozenRunInput): Promise<Ad
       store: input.store,
       sourceRoot: frozen.sourceRoot ?? input.cwd,
       agentHostPolicy,
+      ...(input.runtimeOwnerEpoch === undefined ? {} : { runtimeOwnerEpoch: input.runtimeOwnerEpoch }),
       ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
-      ...(input.managedAcpExecutor === undefined ? {} : { managedAcpExecutor: input.managedAcpExecutor }),
+      ...(input.agentSessionSupervisor === undefined ? {} : { agentSessionSupervisor: input.agentSessionSupervisor }),
+      ...(input.agentTurnRegistry === undefined ? {} : { agentTurnRegistry: input.agentTurnRegistry }),
     }),
   });
   dispatchHooksAtCheckpoint({ ...input, frozen });

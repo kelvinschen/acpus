@@ -132,16 +132,20 @@ describe.concurrent("runtime hook integration", () => {
             relativePath,
             new Date().toISOString(),
           );
+          db.prepare(`
+            INSERT INTO execution_metadata (run_id, attempt_id, kind, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(
+            run.id,
+            completed.attempt_id,
+            "agent_attempt",
+            JSON.stringify({ turns: [{ turnArtifact: { artifactId, mediaType: "application/json" } }] }),
+            new Date().toISOString(),
+          );
           db.prepare("UPDATE hook_dispatch_cursors SET event_sequence = ? WHERE run_id = ?").run(completed.sequence - 1, run.id);
         } finally {
           db.close();
         }
-        store.writeExecutionMetadata({
-          runId: run.id,
-          attemptId: completed.attempt_id,
-          kind: "agent_attempt",
-          metadata: { turns: [{ turnArtifact: { artifactId, mediaType: "application/json" } }] },
-        });
         await writeFile(artifactPath, '{"prompt":"tampered"}');
 
         expect(() => dispatchCommittedHooksForRun({ cwd: workspace, store, runId: run.id, hookRunner: hooks })).toThrow("size/digest verification");

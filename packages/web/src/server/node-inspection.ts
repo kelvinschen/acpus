@@ -129,6 +129,9 @@ export async function projectNodeInspection(
     ...(summary.nodeKey === undefined ? {} : { nodeKey: summary.nodeKey }),
     ...(summary.frameKey === undefined ? {} : { frameKey: summary.frameKey }),
     ...(cancelTarget === undefined ? {} : { cancelTarget }),
+    availableControls: inspection.availableControls,
+    ...(summary.agentSession === undefined ? {} : { agentSession: summary.agentSession }),
+    ...(summary.steer === undefined ? {} : { steer: summary.steer }),
     ...(summary.staticKind === undefined ? {} : { staticKind: summary.staticKind }),
     ...(inspection.state.startedAt === undefined ? {} : {
       timing: {
@@ -231,7 +234,7 @@ export function projectNodeExecution(
   const projection = {
     summary: {
       status: execution.summary.status,
-      ...(execution.summary.sessionName === undefined ? {} : { sessionName: execution.summary.sessionName }),
+      ...(execution.summary.agentSessionId === undefined ? {} : { agentSessionId: execution.summary.agentSessionId }),
       ...(execution.summary.turnCount === undefined ? {} : { turnCount: execution.summary.turnCount }),
       ...(execution.summary.message === undefined ? {} : { message: execution.summary.message }),
     },

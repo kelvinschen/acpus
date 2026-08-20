@@ -144,6 +144,71 @@ describe("scheduler store format", () => {
     }
   });
 
+  it("requires execution metadata to reference an Attempt", () => {
+    const db = new DatabaseSync(resolveRuntimeLayout(dir).databasePath, { readOnly: true });
+    try {
+      const columns = db.prepare("PRAGMA table_info(execution_metadata)").all() as Array<{ name: string; notnull: number }>;
+      expect(columns.find(column => column.name === "attempt_id")).toMatchObject({ notnull: 1 });
+      expect(db.prepare("PRAGMA foreign_key_list(execution_metadata)").all()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ table: "node_attempts", from: "attempt_id", to: "attempt_id", on_delete: "CASCADE" }),
+      ]));
+    } finally {
+      db.close();
+    }
+  });
+
+  it("stores Agent Session authority and immutable Attempt lineage separately", () => {
+    const db = new DatabaseSync(resolveRuntimeLayout(dir).databasePath, { readOnly: true });
+    try {
+      expect(tableColumns(db, "agent_sessions")).toEqual([
+        "agent_session_id",
+        "run_id",
+        "scope_digest",
+        "generation",
+        "explicit_shared",
+        "binding_digest",
+        "reported_version",
+        "lifecycle",
+        "checkpoint",
+        "checkpoint_attempt_id",
+        "checkpoint_turn_id",
+        "checkpoint_session_lease_id",
+        "checkpoint_prompt_origin",
+        "checkpoint_input_digest",
+        "checkpoint_at",
+        "created_at",
+        "updated_at",
+      ]);
+      expect(tableColumns(db, "agent_attempt_sessions")).toEqual([
+        "attempt_id",
+        "run_id",
+        "agent_session_id",
+        "operation",
+        "session_open_mode",
+        "predecessor_attempt_id",
+        "steer_event_sequence",
+        "initial_prompt_origin",
+        "input_digest",
+        "admitted_from_checkpoint",
+        "created_at",
+      ]);
+      expect(db.prepare("PRAGMA foreign_key_list(agent_attempt_sessions)").all()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ table: "runs", from: "run_id", to: "id", on_delete: "CASCADE" }),
+        expect.objectContaining({ table: "agent_sessions", from: "agent_session_id", to: "agent_session_id", on_delete: "CASCADE" }),
+      ]));
+      expect(db.prepare("PRAGMA foreign_key_list(agent_attempt_sessions)").all())
+        .not.toEqual(expect.arrayContaining([expect.objectContaining({ table: "node_attempts" })]));
+      const activeIndex = db.prepare(`
+        SELECT sql
+        FROM sqlite_schema
+        WHERE type = 'index' AND name = 'idx_agent_sessions_active_scope'
+      `).get() as { sql: string };
+      expect(activeIndex.sql).toContain("WHERE lifecycle = 'active'");
+    } finally {
+      db.close();
+    }
+  });
+
   it("rejects storage v6 without a compatibility read path", async () => {
     store?.close();
     store = undefined;

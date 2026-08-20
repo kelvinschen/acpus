@@ -1,6 +1,10 @@
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { JsonObject, JsonValue, StaticExprShape } from "@acpus/expression/ir";
-import type { RunInspectionStatus } from "@acpus/runtime";
+import type {
+  RunInspectionControl,
+  RunInspectionNodeDocument,
+  RunInspectionStatus,
+} from "@acpus/runtime";
 import type { WorkflowPreparationFailure } from "@acpus/workflow-compiler";
 import type { WebGraph } from "./graph-types.js";
 
@@ -28,6 +32,7 @@ export type WebControlCommand =
   | { type: "pause" }
   | { type: "resume" }
   | { type: "retry"; target: string }
+  | { type: "steer"; target: string; instruction: string }
   | { type: "cancel"; target?: string }
   | { type: "signal"; target: string; payload: JsonValue };
 
@@ -75,6 +80,9 @@ export type NodeInspection = {
   nodeKey?: string;
   frameKey?: string;
   cancelTarget?: string;
+  availableControls: RunInspectionControl[];
+  agentSession?: RunInspectionNodeDocument["summary"]["agentSession"];
+  steer?: RunInspectionNodeDocument["summary"]["steer"];
   staticKind?: string;
   timing?: {
     startedAt: string;
@@ -146,7 +154,7 @@ export type NodeExecutionInspection = ({
 }) & {
   summary: {
     status: RunInspectionStatus;
-    sessionName?: string;
+    agentSessionId?: string;
     turnCount?: number;
     message?: string;
   };

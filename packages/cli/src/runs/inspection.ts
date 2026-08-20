@@ -2,8 +2,12 @@ import { Command } from "commander";
 import {
   listRuns,
   readInspection,
+  requestDaemonInspection,
+  type DaemonClientFailure,
   type InspectionError,
+  type InspectionRead,
   type InspectionViewQuery,
+  type ObservableInspectionViewQuery,
 } from "@acpus/runtime";
 import { notFoundError, usageError } from "../presentation/errors.js";
 import { canPrompt } from "../presentation/prompt.js";
@@ -47,14 +51,42 @@ async function inspectRun(ctx: RunsCommandContext, runId: string, options: Inspe
     return;
   }
 
-  const inspected = await readInspection(ctx.cwd, inspectionViewQuery(runId, options));
-  if (inspected.isErr()) throw inspectionError(inspected.error);
-  const document = inspected.value;
+  const document = await readOneShotInspection(ctx.cwd, inspectionViewQuery(runId, options));
   if (document.kind === "archived-run") return renderArchivedRun(ctx, document.run);
   ctx.stdout.write(document.kind === "candidates"
     ? formatInspectionCandidates(document, options.forensics ? "forensics" : options.timeline ? "timeline" : "summary")
     : formatInspectionView(document));
   ctx.setExitCode(0);
+}
+
+async function readOneShotInspection(cwd: string, view: InspectionViewQuery): Promise<InspectionRead> {
+  if (isObservableView(view)) {
+    const live = await requestDaemonInspection(cwd, view);
+    if (live.isOk()) return live.value;
+    if (!allowsOfflineInspection(live.error)) {
+      throw inspectionError({
+        type: live.error.type === "rejected" && live.error.code === "INVALID_REQUEST"
+          ? "invalid-query"
+          : "inspection-read-failed",
+        ...(live.error.type === "rejected" && live.error.code === "INVALID_REQUEST"
+          ? {}
+          : { runId: view.runId }),
+        message: live.error.message,
+      } as InspectionError);
+    }
+  }
+  const inspected = await readInspection(cwd, view);
+  if (inspected.isErr()) throw inspectionError(inspected.error);
+  return inspected.value;
+}
+
+function isObservableView(view: InspectionViewQuery): view is ObservableInspectionViewQuery {
+  return view.kind === "run" || view.detail !== "forensics";
+}
+
+function allowsOfflineInspection(error: DaemonClientFailure): boolean {
+  return error.type === "transport" && (error.reason === "not-found" || error.reason === "refused")
+    || error.type === "rejected" && error.code === "RUN_NOT_FOUND";
 }
 
 async function inspectRunCommand(

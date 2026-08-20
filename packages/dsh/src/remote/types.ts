@@ -143,7 +143,7 @@ export type ActivityHoverDetail =
       agent: string;
       model?: string;
       prompt?: BoundedHoverText & {
-        origin: "authored" | "steering" | "continuation";
+        origin: "authored" | "steering";
       };
       result?: HoverResult;
     }

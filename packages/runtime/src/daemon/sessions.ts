@@ -1,4 +1,4 @@
-import { applySchedulerControlIntent, type RunControlIntent, type SchedulerControlEffect, type SchedulerControlFailure } from "../scheduler/control.js";
+import { applySchedulerControlIntent, type RunControlIntent, type SchedulerControlEffect, type SchedulerControlFailure, type SchedulerControlResult } from "../scheduler/control.js";
 import {
   createRuntimeRunScheduler,
   type RunExecution,
@@ -13,8 +13,9 @@ import type { RuntimeControlIntent, RuntimeControlResult } from "../runtime-cont
 import { CoalescingNodeProgressWriter } from "../progress/writer.js";
 import type { RuntimeConfiguration } from "../configuration.js";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
-import type { ManagedAcpExecutor } from "@acpus/agent-executor";
+import type { AgentSessionSupervisor } from "@acpus/agent-executor";
 import { randomUUID } from "node:crypto";
+import { AgentTurnExecutionRegistry, type AgentTurnProof } from "../execution/agent-turn-registry.js";
 
 type ActiveRunSession = {
   execution: RunExecution;
@@ -38,7 +39,8 @@ export type RunIncident = {
 
 export type RunSessionControlFailure = SchedulerControlFailure
   | ForkRunFailure
-  | { type: "run-not-controllable"; runId: string; message: string };
+  | { type: "run-not-controllable"; runId: string; message: string }
+  | { type: "agent-session-neutralization-failed"; runId: string; message: string };
 
 export class RunExecutionSessions {
   private readonly sessions = new Map<string, ActiveRunSession>();
@@ -46,6 +48,7 @@ export class RunExecutionSessions {
   private readonly hookFailures = new Map<string, IncidentFence>();
   private readonly progressWriter: CoalescingNodeProgressWriter;
   private readonly scheduler: RuntimeRunScheduler;
+  private readonly agentTurnRegistry = new AgentTurnExecutionRegistry();
 
   constructor(
     private readonly cwd: string,
@@ -53,7 +56,8 @@ export class RunExecutionSessions {
     private readonly hookRunner: HookRunner | undefined,
     runtimeConfiguration: RuntimeConfiguration,
     private readonly onRunIncident: (incident: RunIncident) => void = () => undefined,
-    managedAcpExecutor?: ManagedAcpExecutor,
+    private readonly agentSessionSupervisor?: AgentSessionSupervisor,
+    runtimeOwnerEpoch = 0,
     private readonly runtimeAuthorityOwnerId = randomUUID(),
   ) {
     this.progressWriter = new CoalescingNodeProgressWriter(store);
@@ -62,7 +66,9 @@ export class RunExecutionSessions {
       store,
       maxLeafConcurrency: runtimeConfiguration.runMaxLeafConcurrency,
       agentHostPolicy: runtimeConfiguration.agentHostPolicy,
-      ...(managedAcpExecutor === undefined ? {} : { managedAcpExecutor }),
+      runtimeOwnerEpoch,
+      ...(agentSessionSupervisor === undefined ? {} : { agentSessionSupervisor }),
+      agentTurnRegistry: this.agentTurnRegistry,
       ...(hookRunner === undefined ? {} : { hookRunner }),
       shouldDispatchHooks: runId => this.shouldDispatchHooks(runId),
       onHookIncident: (runId, error) => this.recordHookIncident(runId, error),
@@ -76,6 +82,10 @@ export class RunExecutionSessions {
 
   hookActiveCount(): number {
     return this.hookRunner?.activeCount() ?? 0;
+  }
+
+  provesAgentTurn(proof: AgentTurnProof): boolean {
+    return this.agentTurnRegistry.proves(proof);
   }
 
   async drainHooks(): Promise<void> {
@@ -140,7 +150,9 @@ export class RunExecutionSessions {
     if (ownerEpoch === undefined) {
       return err({ type: "run-not-controllable", runId: intent.runId, message: `Control '${intent.type}' could not be applied to run '${intent.runId}'.` });
     }
-    const applied = applySchedulerControlIntent(this.store, controlIntent(intent), ownerEpoch);
+    const applied = intent.type === "retry"
+      ? await this.applyRetry(intent, ownerEpoch)
+      : this.applyControl(intent, ownerEpoch);
     if (applied.isErr()) return err(applied.error);
     const control = applied.value;
     const { effect, reopened } = control;
@@ -199,7 +211,9 @@ export class RunExecutionSessions {
     let reopened = false;
     try {
       if (intent.type === "fork") return await this.fork(intent);
-      const applied = applySchedulerControlIntent(this.store, controlIntent(intent), claim.ownerEpoch);
+      const applied = intent.type === "retry"
+        ? await this.applyRetry(intent, claim.ownerEpoch)
+        : this.applyControl(intent, claim.ownerEpoch);
       if (applied.isErr()) return err(applied.error);
       const control = applied.value;
       reopened = control.reopened;
@@ -213,12 +227,95 @@ export class RunExecutionSessions {
     } finally {
       this.store.scheduler.releaseRun(claim);
     }
-    if ((continuesAfterShortControl(intent) || reopened)
-      && !this.sessions.has(intent.runId)
-      && !isTerminal(result.run.status)) {
-      this.start(intent.runId);
+    if (!this.sessions.has(intent.runId)) {
+      if (reopened) this.startExecution(intent.runId);
+      else if (continuesAfterShortControl(intent) && !isTerminal(result.run.status)) this.start(intent.runId);
     }
     return ok(result);
+  }
+
+  private async applyRetry(
+    intent: Extract<RuntimeControlIntent, { type: "retry" }>,
+    ownerEpoch: number,
+  ): Promise<Result<SchedulerControlResult, RunSessionControlFailure>> {
+    const idempotencyKey = `scheduler:control:${intent.requestId}`;
+    const planned = this.store.scheduler.tryPlanRetry({
+      runId: intent.runId,
+      idempotencyKey,
+      target: intent.target,
+    });
+    if (planned.isErr()) return err(planned.error);
+    if (planned.value.duplicate) {
+      return ok({
+        snapshot: planned.value.snapshot,
+        reopened: false,
+        effect: { type: "retry", state: "applied", target: intent.target },
+      });
+    }
+    if (planned.value.sessions.length > 0 && !this.agentSessionSupervisor) {
+      return err({
+        type: "agent-session-neutralization-failed",
+        runId: intent.runId,
+        message: "Agent Session supervisor is unavailable.",
+      });
+    }
+    const commit = (neutralizedAgentSessionIds: readonly string[]) => this.store.scheduler.tryCommitRetry({
+      runId: intent.runId,
+      ownerEpoch,
+      expectedVersion: planned.value.snapshot.version,
+      idempotencyKey,
+      target: intent.target,
+      neutralizedAgentSessionIds,
+    });
+    if (planned.value.sessions.length === 0) {
+      const committed = commit([]);
+      if (committed.isErr()) return err(committed.error);
+      return ok({
+        snapshot: committed.value,
+        reopened: committed.value.version > planned.value.snapshot.version,
+        effect: { type: "retry", state: "applied", target: intent.target },
+      });
+    }
+    const committed = await this.agentSessionSupervisor!.withSessionsNeutralized(
+      { sessions: planned.value.sessions, signal: new AbortController().signal },
+      evidence => commit(evidence.map(item => item.session.agentSessionId)),
+    );
+    if (committed.isErr()) {
+      if (committed.error.type === "commit") return err(committed.error.error);
+      const message = committed.error.type === "acquire"
+        ? committed.error.error.message
+        : committed.error.type === "neutralize"
+          ? committed.error.errors.map(error => error.message).join("; ")
+          : committed.error.message;
+      return err({ type: "agent-session-neutralization-failed", runId: intent.runId, message });
+    }
+    return ok({
+      snapshot: committed.value,
+      reopened: committed.value.version > planned.value.snapshot.version,
+      effect: { type: "retry", state: "applied", target: intent.target },
+    });
+  }
+
+  private applyControl(
+    intent: Exclude<RuntimeControlIntent, { type: "retry" | "fork" }>,
+    ownerEpoch: number,
+  ): Result<import("../scheduler/control.js").SchedulerControlResult, RunSessionControlFailure> {
+    if (intent.type !== "steer") return applySchedulerControlIntent(this.store, controlIntent(intent), ownerEpoch);
+    const planned = this.store.scheduler.tryPlanAgentSteer(intent.runId, intent.target);
+    const execution = planned.isOk() ? this.agentTurnRegistry.get(planned.value.attemptId) : undefined;
+    const proof = planned.isOk()
+      && execution?.runId === planned.value.runId
+      && execution.nodeKey === planned.value.nodeKey
+      ? {
+          agentSessionId: execution.agentSessionId,
+          attemptId: execution.attemptId,
+          turnId: execution.turnId,
+          sessionLeaseId: execution.sessionLeaseId,
+        }
+      : undefined;
+    const applied = applySchedulerControlIntent(this.store, controlIntent(intent), ownerEpoch, proof);
+    if (applied.isOk() && execution) execution.abort("steer");
+    return applied;
   }
 
   private async fork(intent: Extract<RuntimeControlIntent, { type: "fork" }>): Promise<Result<RuntimeControlResult, RunSessionControlFailure>> {
@@ -269,7 +366,7 @@ function continuesAfterShortControl(intent: RuntimeControlIntent): boolean {
     || intent.type === "cancel" && intent.target !== undefined;
 }
 
-function controlIntent(intent: RuntimeControlIntent): RunControlIntent {
+function controlIntent(intent: Exclude<RuntimeControlIntent, { type: "retry" | "fork" }>): RunControlIntent {
   if (intent.type === "signal") {
     return {
       requestId: intent.requestId,
@@ -282,7 +379,6 @@ function controlIntent(intent: RuntimeControlIntent): RunControlIntent {
   }
   if (intent.type === "pause") return { requestId: intent.requestId, runId: intent.runId, type: "pause" };
   if (intent.type === "resume") return { requestId: intent.requestId, runId: intent.runId, type: "resume" };
-  if (intent.type === "retry") return { requestId: intent.requestId, runId: intent.runId, type: "retry", ...(intent.target === undefined ? {} : { target: intent.target }) };
   if (intent.type === "cancel") return { requestId: intent.requestId, runId: intent.runId, type: "cancel", ...(intent.target === undefined ? {} : { target: intent.target }) };
   if (intent.type === "steer") {
     return {

@@ -210,11 +210,15 @@ acpus runs inspect <run-id> --follow
 acpus runs pause <run-id>
 acpus runs resume <run-id>
 acpus runs retry <run-id> --target <node-or-@ref>
+acpus runs steer <run-id> --target <active-agent-or-@ref> --instruction '<update>'
 acpus runs signal <run-id> --target <signal-or-@ref> --payload '{"approved":true}'
 acpus runs fork <run-id> --workflow workflow.ts
 ```
 
-`retry` 重试当前 Run 中失败的部分。
+`retry` 可以重试失败或超时的 Task、Agent 和 frame。local Agent Retry 会先清理并放弃受影响
+的 Session generation，再以 authored prompt 创建下一代；若范围碰到显式共享 Session，
+Runtime 会拒绝并给出对应的 `fork --target` 命令。`steer` 采用 Interrupt & Continue：先
+fence 并 drain 当前 Turn，再在同一 Session 的 replacement Turn 中使用新指令。
 `fork` 创建新 Run。
 新 Run 只会复用与新 Workflow 兼容、且依赖未变化的已完成工作。
 
@@ -257,7 +261,7 @@ Acpus 启动时读取 Hook 配置，修改后的配置会在下次启动时生�
 ## 配置 Agent
 
 Acpus 通过 `@acpus/acp` 使用稳定的 ACP v1 会话接口。对于 Workflow 中的
-`{ use: "name" }`，每个 Agent Attempt 按以下优先级解析具名的结构化 `argv` 启动项：
+`{ use: "name" }`，每个 Agent Attempt 按以下优先级解析具名启动命令：
 
 1. Host 提供的具名启动项
 2. Attempt 有效工作目录中的 `.acpus/agents.json`
@@ -269,13 +273,13 @@ Acpus 通过 `@acpus/acp` 使用稳定的 ACP v1 会话接口。对于 Workflow 
 ```json
 {
   "agents": {
-    "my-agent": { "argv": ["node", "./scripts/agent-acp-bridge.mjs"] }
+    "my-agent": "node ./scripts/agent-acp-bridge.mjs"
   }
 }
 ```
 
-`argv` 首项是可执行程序，其余每项都是一个独立参数。项目配置覆盖同名全局配置；
-配置无效或所有来源都没有该名称时，Attempt 会以配置错误失败。显式
+命令通过当前平台的 Shell 原样执行；需要时使用对应 Shell 的 quoting。项目配置覆盖
+同名全局配置；配置无效或所有来源都没有该名称时，Attempt 会以配置错误失败。显式
 `{ command: "..." }` 会绕过上述具名解析。
 
 Workflow Agent profile 还可声明 `model` 和字符串到字符串的 `config` 选项，例如
@@ -337,8 +341,6 @@ Acpus 0.5 使用 YAML Workflow Spec，并采用不同的节点模型和 CLI。
 ## 文档
 
 - [内置 Acpus Skill](packages/cli/skills/acpus/SKILL.md)
-- [ACP Session Runtime 架构](docs/acp-session-runtime.md)
-- [ACP Session Supervisor 重构 Roadmap](docs/roadmap/acp-session-supervisor-redesign.md)
 - [迁移指南](docs/migrate-to-next.md)
 - [发布指南](docs/releasing.md)
 - [Specs 索引](specs/INDEX.md)

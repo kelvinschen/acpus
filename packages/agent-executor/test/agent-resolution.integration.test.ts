@@ -60,15 +60,15 @@ describe("Acpus named Agent resolution", () => {
   it("checks a project canonical alias before an exact global alias", async () => {
     const fixture = await configFixture();
     await writeConfig(fixture.globalConfig, {
-      agents: { factorydroid: { argv: ["global-exact"] } },
+      agents: { factorydroid: "global-exact --stdio" },
     });
     await writeConfig(fixture.projectConfig, {
-      agents: { droid: { argv: ["project-canonical"] } },
+      agents: { droid: "project-canonical --stdio" },
     });
 
     expect((await resolveNamed(" FACTORYDROID ", fixture))._unsafeUnwrap()).toEqual({
-      kind: "argv",
-      argv: ["project-canonical"],
+      kind: "command",
+      command: "project-canonical --stdio",
       name: "factorydroid",
     });
   });
@@ -77,26 +77,26 @@ describe("Acpus named Agent resolution", () => {
     const fixture = await configFixture();
     await writeConfig(fixture.projectConfig, {
       agents: {
-        factorydroid: { argv: ["exact-alias"] },
-        droid: { argv: ["canonical-alias"] },
+        factorydroid: "exact-alias --stdio",
+        droid: "canonical-alias --stdio",
       },
     });
 
     expect((await resolveNamed("factorydroid", fixture))._unsafeUnwrap()).toEqual({
-      kind: "argv",
-      argv: ["exact-alias"],
+      kind: "command",
+      command: "exact-alias --stdio",
       name: "factorydroid",
     });
   });
 
   it("lets normalized project config override global config and a built-in", async () => {
     const fixture = await configFixture();
-    await writeConfig(fixture.globalConfig, { agents: { codex: { argv: ["global-codex"] } } });
-    await writeConfig(fixture.projectConfig, { agents: { " CoDeX ": { argv: ["project-codex"] } } });
+    await writeConfig(fixture.globalConfig, { agents: { codex: "global-codex --stdio" } });
+    await writeConfig(fixture.projectConfig, { agents: { " CoDeX ": "project-codex --stdio" } });
 
     expect((await resolveNamed(" CODEX ", fixture))._unsafeUnwrap()).toEqual({
-      kind: "argv",
-      argv: ["project-codex"],
+      kind: "command",
+      command: "project-codex --stdio",
       name: "codex",
     });
   });
@@ -138,10 +138,10 @@ describe("Acpus named Agent resolution", () => {
   it("validates every entry in each present config before resolving", async () => {
     const fixture = await configFixture();
     await writeConfig(fixture.globalConfig, {
-      agents: { unrelated: { command: "invalid" } },
+      agents: { unrelated: { argv: ["legacy"] } },
     });
     await writeConfig(fixture.projectConfig, {
-      agents: { codex: { argv: ["project-codex"] } },
+      agents: { codex: "project-codex --stdio" },
     });
 
     const result = await resolveNamed("codex", fixture);
@@ -176,17 +176,17 @@ describe("Acpus named Agent resolution", () => {
 
   it("resolves each attempt against current config", async () => {
     const fixture = await configFixture();
-    await writeConfig(fixture.projectConfig, { agents: { custom: { argv: ["first"] } } });
+    await writeConfig(fixture.projectConfig, { agents: { custom: "first --stdio" } });
     expect((await resolveNamed("custom", fixture))._unsafeUnwrap()).toEqual({
-      kind: "argv",
-      argv: ["first"],
+      kind: "command",
+      command: "first --stdio",
       name: "custom",
     });
 
-    await writeConfig(fixture.projectConfig, { agents: { custom: { argv: ["second"] } } });
+    await writeConfig(fixture.projectConfig, { agents: { custom: "second --stdio" } });
     expect((await resolveNamed("custom", fixture))._unsafeUnwrap()).toEqual({
-      kind: "argv",
-      argv: ["second"],
+      kind: "command",
+      command: "second --stdio",
       name: "custom",
     });
   });

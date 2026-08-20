@@ -4,7 +4,11 @@ import { isAbsolute, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
 import { lift, template } from "@acpus/expression";
-import type { AgentTurnRequest, AgentTurnResult, ManagedAcpExecutor } from "@acpus/agent-executor";
+import type { AgentSessionSupervisor } from "@acpus/agent-executor";
+import type {
+  FixtureAgentTurnRequest as AgentTurnRequest,
+  FixtureAgentTurnResult as AgentTurnResult,
+} from "./support/agent-turn.js";
 import { describe, expect, it } from "vitest";
 import { tryBindArtifactRef } from "../src/artifacts/access.js";
 import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
@@ -16,6 +20,7 @@ import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { rootFrameStarted } from "./support/scheduler.js";
 import { loadAgentHostPolicy } from "../src/configuration.js";
 import { observedCompletedAgentTurn, taggedAgentOutput } from "./support/agent-turn.js";
+import { testAgentSessionSupervisor } from "./support/agent-session-supervisor.js";
 
 describe.concurrent("runtime scheduler task process", () => {
   it("boots a frozen root task into durable scheduler projection and executes it", async () => {
@@ -231,7 +236,7 @@ describe.concurrent("runtime scheduler task process", () => {
       const prepared = await prepareSyntheticWorkflow(workspace, artifactUriSessionWorkflow());
       const store = await openRuntimeStore(workspace);
       const turns: AgentTurnRequest[] = [];
-      const managedAcpExecutor = managedAgent(async request => {
+      const agentSessionSupervisor = managedAgent(async request => {
         turns.push(request);
         return observedCompletedAgentTurn(request, taggedAgentOutput("{\"ok\":true}"));
       });
@@ -242,7 +247,7 @@ describe.concurrent("runtime scheduler task process", () => {
           runId: source.id,
           ownerId: "source-owner",
           store,
-          managedAcpExecutor,
+          agentSessionSupervisor,
         })).resolves.toMatchObject({ status: "completed", started: 3, completed: 3 });
         const sourceArtifacts = runtimeRows(workspace, `
           SELECT artifacts.digest
@@ -264,7 +269,7 @@ describe.concurrent("runtime scheduler task process", () => {
           runId: fork.id,
           ownerId: "fork-owner",
           store,
-          managedAcpExecutor,
+          agentSessionSupervisor,
         })).resolves.toMatchObject({ status: "completed", started: 0, completed: 3 });
 
         expect(turns).toHaveLength(2);
@@ -284,7 +289,7 @@ describe.concurrent("runtime scheduler task process", () => {
           runId: guarded.id,
           ownerId: "guarded-owner-a",
           store,
-          managedAcpExecutor,
+          agentSessionSupervisor,
           shouldStop: () => runtimeRows(workspace, `
             SELECT replayed_count
             FROM fork_replay_session_groups
@@ -300,7 +305,7 @@ describe.concurrent("runtime scheduler task process", () => {
           runId: guarded.id,
           ownerId: "guarded-owner-b",
           store,
-          managedAcpExecutor,
+          agentSessionSupervisor,
         })).rejects.toThrow(/attempted to execute member.*after 1 member/);
         expect(turns).toHaveLength(2);
         expect(runtimeRows(workspace, `
@@ -422,11 +427,8 @@ function artifactUriSessionWorkflow() {
   });
 }
 
-function managedAgent(execute: (request: AgentTurnRequest) => Promise<AgentTurnResult>): ManagedAcpExecutor {
-  return {
-    withAttempt: async (_input, use) => use({ runTurn: execute }),
-    shutdown: async () => {},
-  };
+function managedAgent(execute: (request: AgentTurnRequest) => Promise<AgentTurnResult>): AgentSessionSupervisor {
+  return testAgentSessionSupervisor(execute);
 }
 
 function executeRuntimeSql(workspace: string, sql: string, ...params: string[]): void {

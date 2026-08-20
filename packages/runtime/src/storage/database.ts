@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 export const RUNTIME_APPLICATION_ID = 0x41435055;
-export const RUNTIME_STORAGE_VERSION = 10;
+export const RUNTIME_STORAGE_VERSION = 16;
 
 export type RuntimeDatabaseFormat = {
   applicationId: number;

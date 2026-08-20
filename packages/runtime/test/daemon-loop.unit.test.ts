@@ -2,9 +2,9 @@ import { access, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { ResultAsync } from "neverthrow";
+import { err, ok, ResultAsync } from "neverthrow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ManagedAcpExecutor } from "@acpus/agent-executor";
+import type { AgentSessionSupervisor } from "@acpus/agent-executor";
 import { daemonEndpoint } from "../src/daemon/client.js";
 import type { DaemonHandlers } from "../src/daemon/server.js";
 import { RunExecutionSessions } from "../src/daemon/sessions.js";
@@ -51,17 +51,22 @@ vi.mock("@acpus/agent-executor", async importOriginal => {
   const actual = await importOriginal<typeof import("@acpus/agent-executor")>();
   return {
     ...actual,
-    createManagedAcpExecutor: async (...args: Parameters<typeof actual.createManagedAcpExecutor>): Promise<ManagedAcpExecutor> => {
-      const executor = await actual.createManagedAcpExecutor(...args);
+    createAgentSessionSupervisor: async (...args: Parameters<typeof actual.createAgentSessionSupervisor>) => {
+      const created = await actual.createAgentSessionSupervisor(...args);
+      if (created.isErr()) return created;
+      const executor = created.value;
       const shutdown = executor.shutdown.bind(executor);
-      return {
+      const wrapped: AgentSessionSupervisor = {
         ...executor,
-        shutdown: async () => {
+        shutdown: () => new ResultAsync((async () => {
           cleanupTrace.calls.push("executor:shutdown");
-          await shutdown();
-          if (cleanupTrace.executorFailure) throw cleanupTrace.executorFailure;
-        },
+          const settled = await shutdown();
+          return cleanupTrace.executorFailure
+            ? err({ type: "shutdown_failed" as const, errors: [], message: cleanupTrace.executorFailure.message })
+            : settled;
+        })()),
       };
+      return ok(wrapped);
     },
   };
 });

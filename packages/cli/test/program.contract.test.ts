@@ -226,33 +226,6 @@ describe("CLI program usage contracts", () => {
       }
     });
   });
-  it("keeps JSON on artifact leaves and Doctor text-only", async () => {
-    for (const argv of [["runs", "artifact", "--help"], ["runs", "artifacts", "--help"]]) {
-      const stdout = new CaptureStream();
-      const stderr = new CaptureStream();
-      expect(await runCli(argv, { cwd: process.cwd(), stdout, stderr })).toBe(0);
-      expect(stdout.text).toContain("--json");
-      expect(stderr.text).toBe("");
-    }
-
-    const helpStdout = new CaptureStream();
-    const helpStderr = new CaptureStream();
-    expect(await runCli(["doctor", "--help"], {
-      cwd: process.cwd(), stdout: helpStdout, stderr: helpStderr,
-    })).toBe(0);
-    expect(helpStdout.text).toContain("--fix");
-    expect(helpStdout.text).not.toContain("--json");
-    expect(helpStderr.text).toBe("");
-
-    const invalidStdout = new CaptureStream();
-    const invalidStderr = new CaptureStream();
-    expect(await runCli(["doctor", "--json"], {
-      cwd: process.cwd(), stdout: invalidStdout, stderr: invalidStderr,
-    })).toBe(2);
-    expect(invalidStdout.text).toBe("");
-    expect(invalidStderr.text).toContain("unknown option '--json'");
-  });
-
   it("documents compact text-only inspection and explicit blocking intents", async () => {
     const inspectStdout = new CaptureStream();
     const inspectStderr = new CaptureStream();

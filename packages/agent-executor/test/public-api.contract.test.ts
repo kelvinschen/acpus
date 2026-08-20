@@ -2,11 +2,10 @@ import * as api from "@acpus/agent-executor";
 import { describe, expect, it } from "vitest";
 
 describe("@acpus/agent-executor public API", () => {
-  it("exposes the managed attempt executor", () => {
+  it("exposes only the Session Supervisor ownership seam", () => {
     expect(Object.keys(api).sort()).toEqual([
-      "createManagedAcpExecutor",
+      "createAgentSessionSupervisor",
       "inspectAcpOwnership",
-      "recoverAcpOwnership",
     ]);
   });
 });

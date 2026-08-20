@@ -32,6 +32,7 @@ export type RuntimeControlTarget = {
 
 export type RetryControlPlan = {
   resolvedTarget: string;
+  reexecutedNodeKeys: string[];
   events: SchedulerEvent[];
 };
 
@@ -82,8 +83,16 @@ export function planRetryControl(
     const plan = materializeRetryPlan(assessRetry(snapshot, target, context));
     // Mutation admission retains the reducer's invariant check. Batch
     // capability projection stops at the equivalent pure assessment.
-    applySchedulerEvents(snapshot.projection, plan.events);
-    return plan;
+    const next = applySchedulerEvents(snapshot.projection, plan.events);
+    const reexecutedNodeKeys = Object.values(snapshot.projection.instances)
+      .filter(instance => {
+        const retried = next.instances[instance.nodeKey];
+        return retried === undefined
+          || retried.status === "ready" && instance.status !== "ready";
+      })
+      .map(instance => instance.nodeKey)
+      .sort();
+    return { ...plan, reexecutedNodeKeys };
   });
 }
 
@@ -323,7 +332,7 @@ function assessRetry(
   };
 }
 
-function materializeRetryPlan(assessment: RetryAssessment): RetryControlPlan {
+function materializeRetryPlan(assessment: RetryAssessment): Omit<RetryControlPlan, "reexecutedNodeKeys"> {
   const retryDependencyMemberKeys = assessment.ancestors.flatMap(plan =>
     plan.dependencies.map(dependency => dependency.memberKey));
   const dependencies = retryDependencyMemberKeys.length === 0
@@ -479,7 +488,7 @@ function rejectBlockedTargetedRetry(runId: string, targetKey: string, reason: st
     runId,
     targetKey,
     status: "blocked",
-    message: `Target '${targetKey}' cannot make progress because ${reason}; use run-level retry or fork.`,
+    message: `Target '${targetKey}' cannot make progress because ${reason}; use Restart or fork.`,
   });
 }
 
@@ -525,7 +534,7 @@ function assessRetryAncestorGroups(
         runId,
         targetKey,
         status: "blocked",
-        message: `Target '${targetKey}' cannot make progress because group '${group.groupKey}' would immediately become ${blocker.status} (${blocker.reason}); use run-level retry or fork.`,
+        message: `Target '${targetKey}' cannot make progress because group '${group.groupKey}' would immediately become ${blocker.status} (${blocker.reason}); use Restart or fork.`,
       });
     }
     plans.push(groupPlan);

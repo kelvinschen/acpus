@@ -6,12 +6,14 @@ import { CaptureStream } from "./support/capture-stream.js";
 
 const runtime = vi.hoisted(() => ({
   readInspection: vi.fn(),
+  requestDaemonInspection: vi.fn(),
 }));
 const follow = vi.hoisted(() => ({ followRun: vi.fn() }));
 
 vi.mock("@acpus/runtime", async importOriginal => ({
   ...await importOriginal<typeof import("@acpus/runtime")>(),
   readInspection: runtime.readInspection,
+  requestDaemonInspection: runtime.requestDaemonInspection,
 }));
 vi.mock("../src/runs/follow.js", async importOriginal => ({
   ...await importOriginal<typeof import("../src/runs/follow.js")>(),
@@ -21,6 +23,11 @@ vi.mock("../src/runs/follow.js", async importOriginal => ({
 describe("runs inspect observation grammar", () => {
   beforeEach(() => {
     runtime.readInspection.mockReset().mockResolvedValue(ok(runView()));
+    runtime.requestDaemonInspection.mockReset().mockResolvedValue({
+      isOk: () => false,
+      isErr: () => true,
+      error: { type: "transport", reason: "not-found", method: "inspect", message: "offline" },
+    });
     follow.followRun.mockReset().mockResolvedValue({
       kind: "closed",
       reason: "subject-terminal",
@@ -32,8 +39,22 @@ describe("runs inspect observation grammar", () => {
     const result = await runCommand(["inspect", "run_1"]);
 
     expect(result.exitCode).toBe(0);
+    expect(runtime.requestDaemonInspection).toHaveBeenCalledWith("/workspace", { kind: "run", runId: "run_1" });
     expect(runtime.readInspection).toHaveBeenCalledWith("/workspace", { kind: "run", runId: "run_1" });
     expect(result.stdout).toContain("Tree:");
+  });
+
+  it("prefers the daemon authority for live one-shot controls", async () => {
+    runtime.requestDaemonInspection.mockResolvedValueOnce({
+      isOk: () => true,
+      isErr: () => false,
+      value: runView(),
+    });
+
+    const result = await runCommand(["inspect", "run_1"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(runtime.readInspection).not.toHaveBeenCalled();
   });
 
   it("renders every ambiguous Timeline candidate and preserves detail", async () => {

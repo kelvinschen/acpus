@@ -15,7 +15,7 @@ const hangingOpen = scenarios.has("hang-initialize") || scenarios.has("hang-new"
 if (process.env.ACP_FIXTURE_PID_PATH !== undefined) {
   writeFileSync(process.env.ACP_FIXTURE_PID_PATH, `${process.pid}\n`);
 }
-if (hangingOpen) {
+if (scenarios.has("hang-initialize")) {
   process.on("SIGTERM", () => {});
 }
 

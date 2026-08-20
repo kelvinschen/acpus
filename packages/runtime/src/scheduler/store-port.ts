@@ -1,6 +1,15 @@
+import type { Sha256Digest } from "@acpus/core/content-identity";
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
 import { err, ok, type Result } from "neverthrow";
+import type {
+  AgentAttemptOperationPlan,
+  AgentOperationPlanError,
+  AgentSessionCheckpoint,
+  AgentSessionCheckpointValue,
+} from "../execution/agent-operation-plan.js";
+import type { AgentPromptOrigin } from "../execution/agent-prompt.js";
 import type { SchedulerEvent } from "./events.js";
+import type { RuntimeSteerProjection } from "./steer-lifecycle.js";
 import type { SchedulerProjection } from "./types.js";
 import type { ReplayIdentity } from "./types.js";
 
@@ -41,9 +50,24 @@ export type SchedulerStoreError =
   | { type: "invalid-steer-target"; runId: string; targetKey: string; status: string; message: string }
   | { type: "steer-session-conflict"; runId: string; targetKey: string; candidateKeys: string[]; message: string }
   | { type: "invalid-steer-instruction"; runId: string; message: string }
+  | { type: "agent-session-not-found"; runId: string; agentSessionId: string; message: string }
+  | { type: "agent-session-binding-conflict"; runId: string; attemptId: string; message: string }
+  | { type: "agent-session-checkpoint-conflict"; runId: string; agentSessionId: string; message: string }
+  | { type: "agent-session-generation-conflict"; runId: string; scopeDigest: string; message: string }
+  | { type: "agent-session-settlement-authority-mismatch"; runId: string; agentSessionId: string; attemptId: string; message: string }
+  | { type: "retry-neutralization-mismatch"; runId: string; expectedAgentSessionIds: string[]; actualAgentSessionIds: string[]; message: string }
+  | { type: "shared-session-retry-requires-fork"; runId: string; target: string; message: string }
   | { type: "deadline-out-of-range"; runId: string; nodeKey: string; message: string };
 
 export type SchedulerStoreResult<T> = Result<T, SchedulerStoreError>;
+
+export type WriteExecutionMetadataInput = {
+  runId: string;
+  attemptId: string;
+  ownerEpoch: number;
+  kind: string;
+  metadata: JsonValue;
+};
 
 export class SchedulerStoreException extends Error {
   constructor(readonly failure: SchedulerStoreError) {
@@ -170,11 +194,18 @@ export type SchedulerRetryInput = {
   target: string;
 };
 
-export type SchedulerRunRetryInput = {
-  runId: string;
-  ownerEpoch: number;
-  idempotencyKey: string;
-};
+export type SchedulerRetryPlan = Readonly<{
+  snapshot: SchedulerSnapshot;
+  requestedTarget: string;
+  resolvedTarget: string;
+  duplicate: boolean;
+  sessions: readonly Readonly<{ runId: string; agentSessionId: string }>[];
+}>;
+
+export type SchedulerRetryCommitInput = SchedulerRetryInput & Readonly<{
+  expectedVersion: number;
+  neutralizedAgentSessionIds: readonly string[];
+}>;
 
 export type SchedulerCancelInput = {
   runId: string;
@@ -190,7 +221,23 @@ export type SchedulerSteerInput = {
   steerId: string;
   target: string;
   instruction: string;
+  proof?: SchedulerSteerProof;
 };
+
+export type SchedulerSteerProof = Readonly<{
+  agentSessionId: string;
+  attemptId: string;
+  turnId: string;
+  sessionLeaseId: string;
+}>;
+
+export type SchedulerSteerTarget = Readonly<{
+  runId: string;
+  attemptId: string;
+  nodeKey: string;
+  nodeId: string;
+  attemptNo: number;
+}>;
 
 export type SchedulerSteerResult = {
   snapshot: SchedulerSnapshot;
@@ -201,6 +248,150 @@ export type SchedulerSteerResult = {
   fenceEventSequence: number;
   fencedAt: string;
 };
+
+export type AgentSessionCheckpointTransitionCause =
+  | "begin_repair"
+  | "local_call_pending"
+  | "provider_activity"
+  | "provider_terminal"
+  | "loss_without_new_provider_evidence"
+  | "inbound_local_failure";
+
+export type BindAgentAttemptSessionInput = Readonly<{
+  runId: string;
+  attemptId: string;
+  ownerEpoch: number;
+  agentSessionId: string;
+  scopeDigest: Sha256Digest;
+  generation: number;
+  explicitShared: boolean;
+  operation: "start" | "continue" | "safe_retry";
+  sessionOpenMode: "new_or_empty" | "existing_required";
+  predecessorAttemptId?: string;
+  steerEventSequence?: number;
+  promptOrigin: AgentPromptOrigin;
+  inputDigest: Sha256Digest;
+  admittedFromCheckpoint?: AgentSessionCheckpoint;
+  now?: Date;
+}>;
+
+export type AdvanceAgentSessionCheckpointInput = Readonly<{
+  runId: string;
+  ownerEpoch: number;
+  agentSessionId: string;
+  attemptId: string;
+  expected: AgentSessionCheckpointValue;
+  next: AgentSessionCheckpointValue;
+  cause: AgentSessionCheckpointTransitionCause;
+  now?: Date;
+}>;
+
+export type RecordAgentSessionBindingInput = Readonly<{
+  runId: string;
+  attemptId: string;
+  ownerEpoch: number;
+  agentSessionId: string;
+  bindingDigest: Sha256Digest;
+  reportedVersion?: string;
+  now?: Date;
+}>;
+
+export type CommitAgentTurnDispatchInput = Readonly<{
+  runId: string;
+  ownerEpoch: number;
+  agentSessionId: string;
+  attemptId: string;
+  turnId: string;
+  sessionLeaseId: string;
+  expected: Extract<AgentSessionCheckpointValue, { checkpoint: "not_dispatched" }>;
+  invocationMetadata: JsonValue;
+  now?: Date;
+}>;
+
+export type SettleFencedAgentSessionCheckpointInput = Readonly<{
+  runId: string;
+  runtimeOwnerEpoch: number;
+  agentSessionId: string;
+  attemptId: string;
+  turnId: string;
+  sessionLeaseId: string;
+  expected: AgentSessionCheckpoint;
+  next: "provider_observed" | "terminal_observed" | "acceptance_unknown" | "terminal_unknown";
+  cause: Extract<
+    AgentSessionCheckpointTransitionCause,
+    "provider_activity" | "provider_terminal" | "loss_without_new_provider_evidence" | "inbound_local_failure"
+  >;
+  observedAt: Date;
+}>;
+
+export type ReconcileAgentSteersInput = Readonly<{
+  runId: string;
+  runtimeOwnerEpoch: number;
+  now?: Date;
+}>;
+
+export type RuntimeAgentSessionInspection = Readonly<{
+  scope: "node" | "shared";
+  agentSessionId: string;
+  generation: number;
+  lifecycle: "active" | "abandoned";
+  bindingDigest?: Sha256Digest;
+  reportedVersion?: string;
+  ownershipHealth?: "healthy" | "quarantined" | "unverified";
+  currentBinding: Readonly<{
+    attemptId: string;
+    operation: "start" | "continue" | "safe_retry";
+    promptOrigin: AgentPromptOrigin;
+  }>;
+  checkpoint: Readonly<{
+    value: AgentSessionCheckpoint;
+    attemptId: string;
+    turnId?: string;
+    promptOrigin: AgentPromptOrigin;
+  }>;
+}>;
+
+export type RuntimeAgentControlInspection = Readonly<{
+  agentSessions: readonly RuntimeAgentSessionInspection[];
+  steers: readonly Readonly<{ nodeKey: string; projection: RuntimeSteerProjection }>[];
+  turnProofs: readonly Readonly<{
+    runId: string;
+    nodeKey: string;
+    agentSessionId: string;
+    attemptId: string;
+    turnId: string;
+    sessionLeaseId: string;
+  }>[];
+}>;
+
+export type AgentAttemptSessionBinding = Readonly<{
+  attemptId: string;
+  runId: string;
+  agentSessionId: string;
+  operation: "start" | "continue" | "safe_retry";
+  sessionOpenMode: "new_or_empty" | "existing_required";
+  predecessorAttemptId?: string;
+  steerEventSequence?: number;
+  initialPromptOrigin: AgentPromptOrigin;
+  inputDigest: Sha256Digest;
+  admittedFromCheckpoint?: AgentSessionCheckpoint;
+}>;
+
+export type PlanAgentAttemptAdmissionInput = Readonly<{
+  runId: string;
+  attemptId: string;
+  ownerEpoch: number;
+  target: string;
+  scopeDigest: Sha256Digest;
+  explicitShared: boolean;
+  authored: Readonly<{ promptOrigin: "authored"; inputDigest: Sha256Digest }>;
+  steering?: Readonly<{
+    steerId: string;
+    instruction: string;
+    promptOrigin: "steering";
+    inputDigest: Sha256Digest;
+  }>;
+}>;
 
 export type SchedulerStorePort = {
   claimRun(runId: string, ownerId: string, leaseMs: number): RunOwnerClaim | undefined;
@@ -215,9 +406,18 @@ export type SchedulerStorePort = {
   tryConsumeSignal(input: SignalConsumeInput): SchedulerStoreResult<SchedulerSnapshot>;
   tryPauseRun(input: SchedulerPauseInput): SchedulerStoreResult<SchedulerSnapshot>;
   tryResumeRun(input: SchedulerResumeInput): SchedulerStoreResult<SchedulerSnapshot>;
-  tryRetryRun(input: SchedulerRunRetryInput): SchedulerStoreResult<SchedulerSnapshot>;
-  tryRetry(input: SchedulerRetryInput): SchedulerStoreResult<SchedulerSnapshot>;
+  tryPlanRetry(input: Omit<SchedulerRetryInput, "ownerEpoch">): SchedulerStoreResult<SchedulerRetryPlan>;
+  tryCommitRetry(input: SchedulerRetryCommitInput): SchedulerStoreResult<SchedulerSnapshot>;
   tryCancel(input: SchedulerCancelInput): SchedulerStoreResult<SchedulerSnapshot>;
+  tryPlanAgentSteer(runId: string, target: string): SchedulerStoreResult<SchedulerSteerTarget>;
   trySteerAgent(input: SchedulerSteerInput): SchedulerStoreResult<SchedulerSteerResult>;
+  planAgentAttemptAdmission(input: PlanAgentAttemptAdmissionInput): Result<AgentAttemptOperationPlan, AgentOperationPlanError>;
+  tryBindAgentAttemptSession(input: BindAgentAttemptSessionInput): SchedulerStoreResult<AgentAttemptSessionBinding>;
+  tryRecordAgentSessionBinding(input: RecordAgentSessionBindingInput): SchedulerStoreResult<Sha256Digest>;
+  tryAdvanceAgentSessionCheckpoint(input: AdvanceAgentSessionCheckpointInput): SchedulerStoreResult<AgentSessionCheckpointValue>;
+  tryCommitAgentTurnDispatch(input: CommitAgentTurnDispatchInput): SchedulerStoreResult<AgentSessionCheckpointValue>;
+  trySettleFencedAgentSessionCheckpoint(input: SettleFencedAgentSessionCheckpointInput): SchedulerStoreResult<AgentSessionCheckpointValue>;
+  tryReconcileAgentSteers(input: ReconcileAgentSteersInput): SchedulerStoreResult<number>;
+  readAgentControlInspection(runId: string): RuntimeAgentControlInspection;
   tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerStoreResult<SchedulerSnapshot>;
 };

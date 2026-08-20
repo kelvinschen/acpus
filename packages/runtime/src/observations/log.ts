@@ -1,8 +1,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
-  type AgentTurnObservation,
-  type AgentTurnRequest,
-  type AgentTurnResult,
+  type AgentTurnEvent,
+  type AgentTurnSnapshot,
 } from "@acpus/agent-executor";
 import { ResultAsync } from "neverthrow";
 import {
@@ -38,6 +37,12 @@ export type AgentObservationTurnContext = {
   promptKind: AgentPromptKind;
   signal?: AbortSignal;
 };
+
+export type AgentObservationTerminal = Readonly<{
+  status: "completed" | "failed" | "cancelled" | "timed_out";
+  snapshot: AgentTurnSnapshot;
+  finalResponse?: string;
+}>;
 
 export type AgentObservationFenceInput = {
   runId: string;
@@ -173,11 +178,12 @@ export class AgentObservationLog {
 
   constructor(private readonly db: DatabaseSync) {}
 
-  async captureTurn(
+  async captureTurn<Request, TurnResult extends AgentObservationTerminal>(
     context: AgentObservationTurnContext,
-    request: AgentTurnRequest,
-    runTurn: (request: AgentTurnRequest) => Promise<AgentTurnResult>,
-  ): Promise<AgentTurnResult> {
+    request: Request & Readonly<{ onEvent?: (event: AgentTurnEvent) => unknown }>,
+    runTurn: (request: Request & Readonly<{ onEvent?: (event: AgentTurnEvent) => unknown }>) => Promise<TurnResult>,
+    cancelled: () => TurnResult,
+  ): Promise<TurnResult> {
     const writer = new AgentTurnWriter(this, context);
     const key = activeKey(context.runId, context.attemptId, context.turn);
     if (this.active.has(key)) {
@@ -186,18 +192,19 @@ export class AgentObservationLog {
     this.active.set(key, writer);
     try {
       writer.start();
-      return await this.captureStartedTurn(writer, context, request, runTurn);
+      return await this.captureStartedTurn(writer, context, request, runTurn, cancelled);
     } finally {
       this.active.delete(key);
     }
   }
 
-  private async captureStartedTurn(
+  private async captureStartedTurn<Request, TurnResult extends AgentObservationTerminal>(
     writer: AgentTurnWriter,
     context: AgentObservationTurnContext,
-    request: AgentTurnRequest,
-    runTurn: (request: AgentTurnRequest) => Promise<AgentTurnResult>,
-  ): Promise<AgentTurnResult> {
+    request: Request & Readonly<{ onEvent?: (event: AgentTurnEvent) => unknown }>,
+    runTurn: (request: Request & Readonly<{ onEvent?: (event: AgentTurnEvent) => unknown }>) => Promise<TurnResult>,
+    cancelled: () => TurnResult,
+  ): Promise<TurnResult> {
     const onAbort = (): void => {
       void writer.markFallbackFenced("runtime_abort", new Date().toISOString()).catch(() => {});
     };
@@ -208,14 +215,14 @@ export class AgentObservationLog {
         await writer.markFallbackFenced("runtime_abort");
       }
       const result = writer.fenced
-        ? cancelledBeforeProviderDispatch()
+        ? cancelled()
         : await runTurn({
             ...request,
-            onObservation: observation => {
-              writer.observe(observation);
-              notifyObserver(request.onObservation, observation);
+            onEvent: (event: AgentTurnEvent) => {
+              writer.observe(event);
+              notifyObserver(request.onEvent, event);
             },
-          });
+          } as Request & Readonly<{ onEvent?: (event: AgentTurnEvent) => unknown }>);
       writer.finish(result);
       return result;
     } catch (error) {
@@ -385,12 +392,12 @@ export class AgentObservationLog {
 
   finishTurn(
     writer: AgentTurnWriter,
-    result: AgentTurnResult,
+    result: AgentObservationTerminal,
     mutation: SemanticMutation,
   ): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const version = this.advanceObservationVersion(writer.context.runId, result.timing.finishedAt);
+      const version = this.advanceObservationVersion(writer.context.runId, result.snapshot.timing.finishedAt);
       this.insertSemanticEntries(writer.context, mutation.entries, version);
       this.updateCurrent(writer, mutation.current, version);
       this.db.prepare(`
@@ -407,7 +414,7 @@ export class AgentObservationLog {
         writer.providerEventCount,
         writer.unknownEventCount,
         providerOutcome(result),
-        result.timing.finishedAt,
+        result.snapshot.timing.finishedAt,
         writer.context.runId,
         writer.context.attemptId,
         writer.context.turn,
@@ -1040,7 +1047,6 @@ class AgentTurnWriter {
   private maxSourceSequence = -1;
   private readonly reducer: AgentObservationSemanticReducer;
   private failure: unknown;
-  private terminalMutation: SemanticMutation | undefined;
   private durableFenceSequence?: number;
   private boundaryClosed = false;
   private finished = false;
@@ -1064,8 +1070,8 @@ class AgentTurnWriter {
     return this.reducer.initialCurrent(observedAt);
   }
 
-  observe(observation: AgentTurnObservation): void {
-    this.maxSourceSequence = Math.max(this.maxSourceSequence, observation.event.sequence);
+  observe(observation: AgentTurnEvent): void {
+    this.maxSourceSequence = Math.max(this.maxSourceSequence, observation.sequence);
     this.providerEventCount += 1;
     if (observation.event.type === "unknown") {
       this.unknownEventCount += 1;
@@ -1073,10 +1079,6 @@ class AgentTurnWriter {
     }
     try {
       const mutation = this.reducer.observe(observation, this.degraded);
-      if (observation.event.type === "turn_end") {
-        this.terminalMutation = mutation;
-        return;
-      }
       if (!mutation.checkpoint && mutation.entries.length === 0) return;
       this.log.persistObservation(this, mutation);
     } catch (error) {
@@ -1095,19 +1097,17 @@ class AgentTurnWriter {
     return this.applyFence(undefined, observedAt, reason);
   }
 
-  finish(result: AgentTurnResult): void {
+  finish(result: AgentObservationTerminal): void {
     if (this.finished) return;
     if (this.failure !== undefined) throw this.failure;
-    const remainder = this.reducer.terminal(result, this.degraded);
-    const mutation = this.terminalMutation
-      ? {
-          entries: [...this.terminalMutation.entries, ...remainder.entries],
-          checkpoint: true,
-          current: remainder.current,
-          observedAt: result.timing.finishedAt,
-        }
-      : remainder;
-    this.log.finishTurn(this, result, mutation);
+    const remainder = this.reducer.terminal(
+      result.snapshot,
+      this.degraded,
+      result.status === "completed" && result.finalResponse !== undefined
+        ? { finalResponse: result.finalResponse }
+        : undefined,
+    );
+    this.log.finishTurn(this, result, remainder);
     this.finished = true;
   }
 
@@ -1327,28 +1327,8 @@ function observationTurn(row: TurnRow): AgentObservationTurn {
   };
 }
 
-function cancelledBeforeProviderDispatch(): AgentTurnResult {
-  const observedAt = new Date().toISOString();
-  return {
-    status: "cancelled",
-    message: "Agent turn was fenced before provider dispatch.",
-    responses: [],
-    stderr: "",
-    summary: {
-      eventCount: 0,
-      availability: { context: "unavailable", tokenUsage: "unavailable" },
-      tools: { totalToolCallCount: 0, calls: [] },
-    },
-    timing: {
-      startedAt: observedAt,
-      finishedAt: observedAt,
-      elapsedMs: 0,
-    },
-  };
-}
-
-function providerOutcome(result: AgentTurnResult): NonNullable<AgentObservationTurn["providerStatus"]> {
-  return result.status === "failed" && result.failure.kind === "timeout" ? "timed_out" : result.status;
+function providerOutcome(result: AgentObservationTerminal): NonNullable<AgentObservationTurn["providerStatus"]> {
+  return result.status;
 }
 
 function activeKey(runId: string, attemptId: string, turn: number): string {
@@ -1356,8 +1336,8 @@ function activeKey(runId: string, attemptId: string, turn: number): string {
 }
 
 function notifyObserver(
-  observer: AgentTurnRequest["onObservation"],
-  observation: AgentTurnObservation,
+  observer: ((event: AgentTurnEvent) => unknown) | undefined,
+  observation: AgentTurnEvent,
 ): void {
   if (!observer) return;
   try {

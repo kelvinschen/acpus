@@ -30,7 +30,7 @@ import { resolveOccurrenceRef } from "../scheduler/occurrence-ref.js";
 import { createSchedulerProjection } from "../scheduler/transitions.js";
 import { ancestorGroupMembersForNode } from "../scheduler/membership.js";
 import { planForkReplay } from "../scheduler/fork-replay-plan.js";
-import { SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type SchedulerStorePort, type SchedulerStoreResult } from "../scheduler/store-port.js";
+import { SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type SchedulerStorePort, type SchedulerStoreResult, type WriteExecutionMetadataInput } from "../scheduler/store-port.js";
 import type { SchedulerProjection, SchedulerRunStatus } from "../scheduler/types.js";
 import { nextFrozenRunTransitionEvents } from "../scheduler/settle.js";
 import { decodeSchedulerPayload } from "../scheduler/event-codec.js";
@@ -235,7 +235,7 @@ export type RuntimeStore = {
   registerArtifact(input: RegisterArtifactInput): SchedulerStoreResult<void>;
   getArtifact(runId: string, artifactId: string): ArtifactRecord | undefined;
   listArtifacts(runId: string, limit?: number): ArtifactRecord[];
-  writeExecutionMetadata(input: WriteExecutionMetadataInput): void;
+  writeExecutionMetadata(input: WriteExecutionMetadataInput): SchedulerStoreResult<void>;
   getExecutionMetadata(runId: string): RunExecutionMetadata[];
   writeNodeProgress(input: WriteNodeProgressInput): void;
   getRun(runId: string): RunDetails | undefined;
@@ -255,6 +255,7 @@ export type RunInspectionStoreRead = {
     observationVersion: number;
   };
   events: CommittedRuntimeEventRow[];
+  agentControl: import("../scheduler/store-port.js").RuntimeAgentControlInspection;
 };
 
 /**
@@ -417,12 +418,6 @@ type ControlOptions = {
   target?: string;
 };
 
-type WriteExecutionMetadataInput = {
-  runId: string;
-  attemptId?: string;
-  kind: string;
-  metadata: JsonValue;
-};
 export type WriteNodeProgressInput = {
   runId: string;
   nodeKey: string;
@@ -2104,6 +2099,9 @@ class SqliteRuntimeStore implements RuntimeStore {
       const events = run && afterEventSequence !== undefined
         ? this.getCommittedRuntimeEventsAfter(runId, afterEventSequence)
         : [];
+      const agentControl = run
+        ? this.scheduler.readAgentControlInspection(runId)
+        : { agentSessions: [], steers: [], turnProofs: [] };
       if (ownsTransaction) this.db.exec("COMMIT");
       return {
         ...(run ? { run } : {}),
@@ -2115,6 +2113,7 @@ class SqliteRuntimeStore implements RuntimeStore {
           observationVersion: observation?.observation_version ?? 0,
         },
         events,
+        agentControl,
       };
     } catch (error) {
       if (ownsTransaction && this.db.isTransaction) this.db.exec("ROLLBACK");
@@ -2235,17 +2234,58 @@ class SqliteRuntimeStore implements RuntimeStore {
     };
   }
 
-  writeExecutionMetadata(input: WriteExecutionMetadataInput): void {
-    this.db.prepare(`
-      INSERT INTO execution_metadata (run_id, attempt_id, kind, metadata_json, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(
-      input.runId,
-      input.attemptId ?? null,
-      input.kind,
-      stableJsonLine(input.metadata),
-      new Date().toISOString(),
-    );
+  writeExecutionMetadata(input: WriteExecutionMetadataInput): SchedulerStoreResult<void> {
+    return schedulerStoreResult(() => this.insertExecutionMetadata(input));
+  }
+
+  private insertExecutionMetadata(input: WriteExecutionMetadataInput): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const attempt = this.db.prepare(`
+        SELECT run_id, owner_epoch, status
+        FROM node_attempts
+        WHERE attempt_id = ?
+      `).get(input.attemptId) as { run_id: string; owner_epoch: number; status: string } | undefined;
+      if (!attempt || attempt.run_id !== input.runId) {
+        throwSchedulerStoreError({
+          type: "attempt-not-found",
+          attemptId: input.attemptId,
+          message: `Attempt '${input.attemptId}' does not match execution metadata for run '${input.runId}'.`,
+        });
+      }
+      if (attempt.owner_epoch !== input.ownerEpoch) {
+        throwSchedulerStoreError({
+          type: "owner-epoch-stale",
+          runId: input.runId,
+          attemptId: input.attemptId,
+          ownerEpoch: input.ownerEpoch,
+          message: `Attempt '${input.attemptId}' owner epoch is stale.`,
+        });
+      }
+      requireActiveOwnerEpoch(this.db, input.runId, input.ownerEpoch);
+      if (attempt.status !== "started") {
+        throwSchedulerStoreError({
+          type: "terminal-attempt",
+          attemptId: input.attemptId,
+          status: attempt.status,
+          message: `Attempt '${input.attemptId}' is already ${attempt.status}.`,
+        });
+      }
+      this.db.prepare(`
+        INSERT INTO execution_metadata (run_id, attempt_id, kind, metadata_json, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(
+        input.runId,
+        input.attemptId,
+        input.kind,
+        stableJsonLine(input.metadata),
+        new Date().toISOString(),
+      );
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   getExecutionMetadata(runId: string): RunExecutionMetadata[] {

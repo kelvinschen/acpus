@@ -75,6 +75,9 @@ export function projectInspectionTargetSummaryView(input: {
     ...(input.details.summary.counts
       ? { occurrences: inspectionCounts(input.details.summary.counts) }
       : {}),
+    ...(input.details.summary.agentSession === undefined ? {} : { agentSession: input.details.summary.agentSession }),
+    ...(input.details.summary.steer === undefined ? {} : { steer: input.details.summary.steer }),
+    availableControls: input.details.availableControls,
   };
 }
 

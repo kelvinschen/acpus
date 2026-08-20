@@ -85,34 +85,36 @@ describe("Acpus Supervisor tool contract", () => {
     });
   });
 
-  it("maps explicit task and Target retry scopes without broadening", async () => {
-    const control = vi.fn(async () => success({ type: "retry" }));
+  it("maps generic Retry and Agent Steer without aliases", async () => {
+    const control = vi.fn(async (intent: { type: string }) => success({ type: intent.type }));
     const reconcileTask = vi.fn(async () => undefined);
     const { tools } = registerTools({
       resolveTask: vi.fn(async () => selected({ control })),
       reconcileTask,
     });
-    const retry = tool(tools, "acpus_control");
+    const runtimeControl = tool(tools, "acpus_control");
 
-    await retry.execute({
+    await runtimeControl.execute({
       task: { name: "workflow", occurrence: 1 },
-      action: { type: "retry", scope: "task" },
-    }, execution("task-retry"));
-    await retry.execute({
-      task: { name: "workflow", occurrence: 1 },
-      action: { type: "retry", scope: "target", target: "@target" },
+      action: { type: "retry", scope: "target", target: "@task" },
     }, execution("target-retry"));
+    await runtimeControl.execute({
+      task: { name: "workflow", occurrence: 1 },
+      action: { type: "steer", target: "@active-agent", instruction: "Focus on the failure." },
+    }, execution("agent-steer"));
 
     expect(control).toHaveBeenNthCalledWith(1, {
-      requestId: "dsh-control:task-retry",
-      type: "retry",
-      runId: "run-1",
-    });
-    expect(control).toHaveBeenNthCalledWith(2, {
       requestId: "dsh-control:target-retry",
       type: "retry",
       runId: "run-1",
-      target: "@target",
+      target: "@task",
+    });
+    expect(control).toHaveBeenNthCalledWith(2, {
+      requestId: "dsh-control:agent-steer",
+      type: "steer",
+      runId: "run-1",
+      target: "@active-agent",
+      instruction: "Focus on the failure.",
     });
     expect(reconcileTask).toHaveBeenCalledTimes(2);
   });

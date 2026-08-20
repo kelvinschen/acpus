@@ -1,48 +1,31 @@
 import { expectTypeOf } from "vitest";
 import {
-  createManagedAcpExecutor,
+  createAgentSessionSupervisor,
   type AcpOwnershipManifest,
-  type AgentBackendFailure,
-  type AgentTurnSummary,
-  type AgentTurnProgress,
-  type AgentTurnRequest,
-  type AgentTurnResult,
-  type ManagedAcpAttempt,
-  type ManagedAcpAttemptInput,
-  type ManagedAcpExecutor,
-  type ManagedAcpExecutorOptions,
+  type AgentSessionSupervisor,
+  type AgentSessionSupervisorOptions,
+  type AgentSessionLease,
+  type TurnInput,
 } from "@acpus/agent-executor";
 
-expectTypeOf(createManagedAcpExecutor).returns.resolves.toEqualTypeOf<ManagedAcpExecutor>();
-expectTypeOf<ManagedAcpAttempt["runTurn"]>().toEqualTypeOf<(request: AgentTurnRequest) => Promise<AgentTurnResult>>();
-expectTypeOf<ManagedAcpAttemptInput["signal"]>().toEqualTypeOf<AbortSignal | undefined>();
-expectTypeOf<AgentTurnProgress["responses"]>().toEqualTypeOf<readonly string[]>();
-expectTypeOf<"owner">().toMatchTypeOf<keyof ManagedAcpExecutorOptions>();
-expectTypeOf<"daemon">().not.toMatchTypeOf<keyof ManagedAcpExecutorOptions>();
-expectTypeOf<AcpOwnershipManifest["schemaVersion"]>().toEqualTypeOf<2>();
-expectTypeOf<"owner">().toMatchTypeOf<keyof AcpOwnershipManifest>();
-expectTypeOf<"daemon">().not.toMatchTypeOf<keyof AcpOwnershipManifest>();
-expectTypeOf<NonNullable<AgentBackendFailure["upstream"]>["source"]>()
-  .toEqualTypeOf<"acp">();
-expectTypeOf<NonNullable<AgentBackendFailure["upstream"]>["operation"]>()
-  .toEqualTypeOf<"open_session" | "configure_session" | "run_turn">();
-expectTypeOf<AgentTurnSummary["sessionProjectionPath"]>()
-  .toEqualTypeOf<string | undefined>();
-expectTypeOf<"providerRecordId">().not.toMatchTypeOf<keyof AgentTurnSummary>();
+expectTypeOf(createAgentSessionSupervisor).returns.resolves.toMatchTypeOf<
+  import("neverthrow").Result<AgentSessionSupervisor, unknown>
+>();
+expectTypeOf<AcpOwnershipManifest["schemaVersion"]>().toEqualTypeOf<3>();
+expectTypeOf<"owner">().toMatchTypeOf<keyof AgentSessionSupervisorOptions>();
+expectTypeOf<"withAttempt">().not.toMatchTypeOf<keyof AgentSessionSupervisor>();
+expectTypeOf<"interrupt">().not.toMatchTypeOf<keyof AgentSessionSupervisor>();
+expectTypeOf<"steer">().not.toMatchTypeOf<keyof AgentSessionSupervisor>();
+expectTypeOf<AgentSessionLease["runTurn"]>().parameters.toEqualTypeOf<[TurnInput<unknown>]>();
+expectTypeOf<AgentSessionLease["reportedVersion"]>().toEqualTypeOf<string | undefined>();
+expectTypeOf<"onEvent">().toMatchTypeOf<keyof TurnInput<unknown>>();
+expectTypeOf<"onObservation">().not.toMatchTypeOf<keyof TurnInput<unknown>>();
 
-createManagedAcpExecutor({
+createAgentSessionSupervisor({
   workersRoot: "/tmp/workers",
   sessionStateDirectoryForRun: runId => `/tmp/runs/${runId}`,
-  owner: { generation: 1 },
+  owner: { epoch: 1, pid: process.pid },
 });
 
-type CompletedTurn = Extract<AgentTurnResult, { status: "completed" }>;
-type FailedTurn = Extract<AgentTurnResult, { status: "failed" }>;
-type CancelledTurn = Extract<AgentTurnResult, { status: "cancelled" }>;
-
-expectTypeOf<CompletedTurn["finalResponse"]>().toEqualTypeOf<string>();
-expectTypeOf<"finalResponse">().not.toMatchTypeOf<keyof FailedTurn>();
-expectTypeOf<"finalResponse">().not.toMatchTypeOf<keyof CancelledTurn>();
-
-// @ts-expect-error Turn dispatch belongs to a managed attempt, not a package-level helper.
-createManagedAcpExecutor({});
+// @ts-expect-error owner identity requires the Runtime epoch and pid.
+createAgentSessionSupervisor({ workersRoot: "/tmp/workers", sessionStateDirectoryForRun: () => "/tmp/run", owner: {} });

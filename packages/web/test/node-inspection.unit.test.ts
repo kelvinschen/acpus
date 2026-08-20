@@ -168,6 +168,7 @@ describe("node inspection projection", () => {
       nodeId: "review",
       nodeKey: "review~abc",
       cancelTarget: "review~abc",
+      availableControls: [{ type: "cancel", target: "review~abc" }],
       staticKind: "agent",
       timing: { startedAt: "2026-07-01T00:00:01.000Z" },
       latestAttempt: { attemptNo: 1, status: "started" },
@@ -231,6 +232,7 @@ describe("node inspection projection", () => {
       nodeId: "review",
       nodeKey: "review~abc",
       staticKind: "agent",
+      availableControls: [],
       artifacts: [],
     });
   });
@@ -418,7 +420,7 @@ describe("node execution inspection", () => {
       lastObservedAt: "2026-07-01T00:00:02.000Z",
       summary: {
         status: "running",
-        sessionName: "review-session",
+        agentSessionId: "review-session",
         turnCount: 2,
         message: "working",
       },
@@ -484,7 +486,7 @@ function executionInspection(): RunInspectionAgentExecutionDocument {
     available: true,
     summary: {
       status: "running",
-      sessionName: "review-session",
+      agentSessionId: "review-session",
       turnCount: 2,
       message: "working",
     },

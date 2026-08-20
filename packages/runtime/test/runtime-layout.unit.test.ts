@@ -78,7 +78,7 @@ describe("runtime layout", () => {
       expect(JSON.parse(await readFile(layout.generationMetadataPath, "utf8"))).toEqual({
         schemaVersion: 1,
         id: layout.generationId,
-        storageVersion: 10,
+        storageVersion: 16,
         createdAt: "2026-07-24T00:00:00.000Z",
       });
       expect(resolveRuntimeLayout(workspace)).toEqual(layout);

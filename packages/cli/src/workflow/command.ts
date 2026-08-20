@@ -250,12 +250,13 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   );
 
   if (until === "admitted") {
-    ctx.setExitCode(writeResult({
+    const result = {
       ok: true,
       phase: "run",
       diagnostics: prepared.ir.diagnostics,
       run: toRunRecord(submitted.run),
-    }, ctx, 0));
+    } as const;
+    ctx.setExitCode(writeResult(result, ctx, 0));
     return;
   }
   if (submitted.kind === "detached") {

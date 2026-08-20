@@ -28,6 +28,7 @@ export type NodeAttemptContext = {
   attemptStartReason?: "control_retry" | "pause_resume";
   steer?: { steerId: string; instruction: string };
   signal: AbortSignal;
+  abort?(reason: "steer"): void;
 };
 
 export type NodeExecutor = {
@@ -566,6 +567,7 @@ function launchExecution(input: {
       ...(startReason === undefined ? {} : { attemptStartReason: startReason }),
       ...(input.steer === undefined ? {} : { steer: input.steer }),
       signal: controller.signal,
+      abort: reason => controller.abort(reason),
     }))
     .then(
       result => {

@@ -41,7 +41,7 @@ describe("runs artifacts", () => {
   });
 
   it("lists all artifact metadata as id, media type, and absolute path", async () => {
-    const result = await runCommand(["artifacts", "run_1"], false);
+    const result = await runCommand(["artifacts", "run_1"]);
 
     expect(result).toEqual({
       exitCode: 0,
@@ -52,72 +52,39 @@ describe("runs artifacts", () => {
     expect(runtime.inspectTargetArtifacts).not.toHaveBeenCalled();
   });
 
-  it("emits the stable JSON envelope without reading artifact bodies", async () => {
-    const result = await runCommand(["artifacts", "run_1"], true);
-    const expected = {
-      schemaVersion: 1,
-      ok: true,
-      phase: "inspect",
-      runId: "run_1",
-      artifacts,
-    };
-
-    expect(JSON.parse(result.stdout)).toEqual(expected);
-    expect(result.stdout).toBe(`${JSON.stringify(expected)}\n`);
-    expect(result.stderr).toBe("");
-    expect(result.stdout).not.toContain("artifact body contents");
-  });
-
   it("reuses target inspection for static, dynamic, frame, and attempt targets", async () => {
-    const result = await runCommand(["artifacts", "run_1", "--target", "attempt_1"], true);
+    const result = await runCommand(["artifacts", "run_1", "--target", "attempt_1"]);
 
     expect(runtime.inspectTargetArtifacts).toHaveBeenCalledWith("/workspace", {
       runId: "run_1",
       target: "attempt_1",
     });
-    expect(JSON.parse(result.stdout)).toEqual({
-      schemaVersion: 1,
-      ok: true,
-      phase: "inspect",
-      runId: "run_1",
-      target: "attempt_1",
-      artifacts,
-    });
+    expect(result.stdout).toBe(`artifact_1 application/json ${artifacts[0]!.path}\n`);
     expect(runtime.listArtifacts).not.toHaveBeenCalled();
   });
 
   it("prints a successful empty result", async () => {
     runtime.listArtifacts.mockResolvedValue(okList([]));
 
-    await expect(runCommand(["artifacts", "run_1"], false)).resolves.toEqual({
+    await expect(runCommand(["artifacts", "run_1"])).resolves.toEqual({
       exitCode: 0,
       stdout: "No artifacts.\n",
       stderr: "",
     });
-    expect(JSON.parse((await runCommand(["artifacts", "run_1"], true)).stdout)).toMatchObject({
-      ok: true,
-      artifacts: [],
-    });
   });
 
-  it("reports missing runs through the structured error envelope", async () => {
+  it("reports missing runs as text", async () => {
     runtime.listArtifacts.mockResolvedValue(okList(undefined));
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
-    expect(await runCli(["runs", "artifacts", "missing", "--json"], {
+    expect(await runCli(["runs", "artifacts", "missing"], {
       cwd: "/workspace",
       stdout,
       stderr,
     })).toBe(1);
-    expect(JSON.parse(stdout.text)).toMatchObject({
-      schemaVersion: 1,
-      ok: false,
-      phase: "inspect",
-      errorCode: "RUN_NOT_FOUND",
-    });
-    expect(stdout.text).toBe(`${stdout.text.trimEnd()}\n`);
-    expect(stdout.text.trimEnd()).not.toContain("\n");
-    expect(stderr.text).toBe("");
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toContain("Run 'missing' was not found.");
+    expect(stderr.text).toContain("Error code: RUN_NOT_FOUND");
   });
 
   it("reports missing targets through inspect errors", async () => {
@@ -125,7 +92,7 @@ describe("runs artifacts", () => {
       isErr: () => true,
       error: { type: "target-not-found", runId: "run_1", target: "missing", message: "Run target 'missing' was not found." },
     });
-    await expect(runCommand(["artifacts", "run_1", "--target", "missing"], true)).rejects.toMatchObject({
+    await expect(runCommand(["artifacts", "run_1", "--target", "missing"])).rejects.toMatchObject({
       exitCode: 1,
       result: { phase: "inspect", errorCode: "TARGET_NOT_FOUND" },
     });
@@ -138,7 +105,7 @@ describe("runs artifact", () => {
   });
 
   it("locates one verified local source without reading its body", async () => {
-    const result = await runCommand(["artifact", resolvedArtifact.uri], false);
+    const result = await runCommand(["artifact", resolvedArtifact.uri]);
 
     expect(result).toEqual({
       exitCode: 0,
@@ -156,57 +123,34 @@ describe("runs artifact", () => {
     expect(result.stdout).not.toContain("artifact body contents");
   });
 
-  it("emits the resolved artifact in a stable JSON envelope", async () => {
-    const result = await runCommand(["artifact", resolvedArtifact.uri], true);
-    const expected = {
-      schemaVersion: 1,
-      ok: true,
-      phase: "inspect",
-      artifact: resolvedArtifact,
-    };
-
-    expect(result).toEqual({
-      exitCode: 0,
-      stderr: "",
-      stdout: `${JSON.stringify(expected)}\n`,
-    });
-  });
-
-  it("uses a text placeholder and omits absent media type in JSON", async () => {
+  it("uses a text placeholder for an absent media type", async () => {
     const { mediaType: _mediaType, ...withoutMediaType } = resolvedArtifact;
     runtime.resolveArtifact.mockResolvedValue(okArtifact(withoutMediaType));
 
-    expect((await runCommand(["artifact", withoutMediaType.uri], false)).stdout).toContain("Media-Type: -\n");
-    expect(JSON.parse((await runCommand(["artifact", withoutMediaType.uri], true)).stdout).artifact)
-      .not.toHaveProperty("mediaType");
+    expect((await runCommand(["artifact", withoutMediaType.uri])).stdout).toContain("Media-Type: -\n");
   });
 
   it.each([
     ["invalid-artifact-ref", "usage", 2, undefined],
     ["artifact-not-found", "inspect", 1, "ARTIFACT_NOT_FOUND"],
     ["artifact-path-invalid", "inspect", 1, "ARTIFACT_PATH_INVALID"],
-  ])("maps %s failures to quiet JSON", async (type, phase, exitCode, errorCode) => {
+  ])("maps %s failures to text errors", async (type, _phase, exitCode, errorCode) => {
     runtime.resolveArtifact.mockResolvedValue(errArtifact(type));
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
 
-    expect(await runCli(["runs", "artifact", resolvedArtifact.uri, "--json"], {
+    expect(await runCli(["runs", "artifact", resolvedArtifact.uri], {
       cwd: "/workspace",
       stdout,
       stderr,
     })).toBe(exitCode);
-    expect(JSON.parse(stdout.text)).toMatchObject({
-      schemaVersion: 1,
-      ok: false,
-      phase,
-      ...(errorCode === undefined ? {} : { errorCode }),
-    });
-    expect(stdout.text).toBe(`${stdout.text.trimEnd()}\n`);
-    expect(stderr.text).toBe("");
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toContain("Artifact lookup failed.");
+    if (errorCode !== undefined) expect(stderr.text).toContain(`Error code: ${errorCode}`);
   });
 });
 
-async function runCommand(argv: string[], json: boolean): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+async function runCommand(argv: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   const stdout = new CaptureStream();
   const stderr = new CaptureStream();
   let exitCode = -1;
@@ -217,7 +161,7 @@ async function runCommand(argv: string[], json: boolean): Promise<{ exitCode: nu
     stderr,
     setExitCode: code => { exitCode = code; },
   });
-  await command.parseAsync([...argv, ...(json ? ["--json"] : [])], { from: "user" });
+  await command.parseAsync(argv, { from: "user" });
   return { exitCode, stdout: stdout.text, stderr: stderr.text };
 }
 

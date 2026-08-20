@@ -72,7 +72,10 @@ describe("task executor rules", () => {
     taskProcessMocks.runTaskAttempt.mockReturnValue(okAsync({ ok: true }));
     const metadata: unknown[] = [];
     const options = taskOptions(`run_${_name}`);
-    options.store.writeExecutionMetadata = entry => metadata.push(entry);
+    options.store.writeExecutionMetadata = entry => {
+      metadata.push(entry);
+      return ok(undefined);
+    };
 
     const result = await executeTaskNode(
       inlineTask("exact_input", "async () => ({ ok: true })", { input: authoredInput }),
@@ -253,6 +256,7 @@ describe("task executor rules", () => {
     const options = taskOptions("run_setup_timeout");
     options.store.writeExecutionMetadata = () => {
       now += 100;
+      return ok(undefined);
     };
 
     const result = await executeTaskNode(
@@ -298,7 +302,7 @@ function taskOptions(
       }),
       getArtifact: () => undefined,
       registerArtifact: (_input: RegisterArtifactInput) => ok(undefined),
-      writeExecutionMetadata: () => {},
+      writeExecutionMetadata: () => ok(undefined),
     },
   };
 }

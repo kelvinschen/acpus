@@ -403,45 +403,6 @@ describe("scheduler store controls, idempotency, and public projection", () => {
     });
   });
 
-  it("bridges scheduler run-level retry back to a clean public pending run", async () => {
-    await withRuntimeWorkspace("scheduler-store-run-retry", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-
-        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
-          runId: run.id,
-          expectedVersion: 1,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "public:fail-before-retry",
-          events: [
-            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root", scope: { require_ready: "require_ready~1" } } },
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "require_ready~1", nodeId: "require_ready", instancePath: [{ kind: "node", nodeId: "require_ready" }], parentFrameKey: "root", readinessSequence: 1 } },
-            { type: "instance.failed", payload: { nodeKey: "require_ready~1", error: { reason: "bad" } } },
-            { type: "frame.failed", payload: { frameKey: "root", error: { reason: "bad" }, terminalReason: "root_failed" } },
-          ],
-        });
-
-        expect(store.getRun(run.id)).toMatchObject({ status: "failed" });
-        expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_states WHERE run_id = ?", run.id)).toBeGreaterThan(0);
-
-        const retried = throwingSchedulerStore(store.scheduler).retryRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "public:run-retry" });
-
-        expect(retried.projection).toMatchObject({ run: { status: "pending", paused: false }, frames: {}, instances: {} });
-        expect(store.getRun(run.id)).toMatchObject({ status: "pending" });
-        expect(store.getRun(run.id)?.output).toBeUndefined();
-        expect(dbScalar(workspace, "SELECT COUNT(*) FROM scheduler_frames WHERE run_id = ?", run.id)).toBe(0);
-        expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_instances WHERE run_id = ?", run.id)).toBe(0);
-        expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_states WHERE run_id = ?", run.id)).toBe(0);
-        expect(() => throwingSchedulerStore(store.scheduler).retryRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "public:run-retry-again" })).toThrow("Cannot retry run from pending.");
-      } finally {
-        store.close();
-      }
-    });
-  });
-
   it("bridges scheduler node retry out of a failed public run", async () => {
     await withRuntimeWorkspace("scheduler-store-node-retry-failed-run", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());

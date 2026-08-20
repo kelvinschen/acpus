@@ -1,6 +1,11 @@
 import { defineWorkflow, z } from "@acpus/core";
 import type { WorkflowDefinition } from "@acpus/core/workflow";
-import type { AgentTurnObservation, AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
+import type {
+  FixtureAgentTurnObservation as AgentTurnObservation,
+  FixtureAgentTurnRequest as AgentTurnRequest,
+  FixtureAgentTurnResult as AgentTurnResult,
+} from "./support/agent-turn.js";
+import { fixtureEvent, type FixtureObservationEvent } from "./support/agent-turn.js";
 import type { JsonValue } from "@acpus/expression/ir";
 import { observeInspection, readInspection, type InspectionError, type InspectionObservation } from "@acpus/runtime";
 import type { Result } from "neverthrow";
@@ -123,7 +128,8 @@ describe("coherent inspection observation boundaries", () => {
       const ready = new Promise<void>(resolve => {
         requestReady = resolve;
       });
-      let capture: Promise<AgentTurnResult> | undefined;
+      type CaptureTerminal = { status: "completed" | "cancelled"; finalResponse?: string; snapshot: { responses: readonly string[]; summary: AgentTurnResult["summary"]; timing: AgentTurnResult["timing"] } };
+      let capture: Promise<CaptureTerminal> | undefined;
       try {
         const review = instance(started.store, started.runId, "review");
         const attempt = Object.values(throwingSchedulerStore(started.store.scheduler).loadRunSnapshot(started.runId).projection.attempts)
@@ -143,45 +149,58 @@ describe("coherent inspection observation boundaries", () => {
           turn: 1,
           promptKind: "task",
         }, {
-          agent: { kind: "named", name: "mock" },
+          agent: { kind: "named" as const, name: "mock" },
           prompt: "Review.",
           cwd: workspace,
           env: {},
-          sessionName: attempt.attemptId,
-          permissionMode: "deny-all",
-        }, async value => {
+          agentSessionId: attempt.attemptId,
+          permissionMode: "deny-all" as const,
+        }, async (value): Promise<CaptureTerminal> => {
           request = value;
           requestReady();
           await providerRelease;
           return {
             status: "completed",
-            responses: ["done"],
             finalResponse: "done",
-            stderr: "",
+            snapshot: {
+              responses: ["done"],
+              summary,
+              timing: {
+                startedAt: "2026-08-03T00:00:00.000Z",
+                finishedAt: "2026-08-03T00:00:03.000Z",
+                elapsedMs: 3_000,
+              },
+            },
+          };
+        }, () => ({
+          status: "cancelled",
+          snapshot: {
+            responses: [],
             summary,
             timing: {
               startedAt: "2026-08-03T00:00:00.000Z",
-              finishedAt: "2026-08-03T00:00:03.000Z",
-              elapsedMs: 3_000,
+              finishedAt: "2026-08-03T00:00:00.000Z",
+              elapsedMs: 0,
             },
-          };
-        });
+          },
+        }));
         await ready;
         const selector = deriveOccurrenceRef(review.instancePath);
         const treeSelector = `${selector}#${attempt.attemptNo}`;
         const observe = (
           sequence: number,
           payload: ObservationEventInput,
-        ) => request.onObservation?.({
-          event: {
+        ) => {
+          const observedAt = `2026-08-03T00:00:0${sequence + 1}.000Z`;
+          const projected = fixtureEvent({
             schemaVersion: 1,
             sequence,
-            observedAt: `2026-08-03T00:00:0${sequence + 1}.000Z`,
+            observedAt,
             elapsedMs: (sequence + 1) * 1_000,
             ...payload,
-          } as Parameters<NonNullable<AgentTurnRequest["onObservation"]>>[0]["event"],
-          progress: { responses: [], summary, updatedAt: `2026-08-03T00:00:0${sequence + 1}.000Z` },
-        });
+          } as FixtureObservationEvent);
+          if (projected) request.onEvent?.({ sequence, observedAt, elapsedMs: (sequence + 1) * 1_000, event: projected });
+        };
 
         const controller = new AbortController();
         const iterator = observeInspection(workspace, {
@@ -300,7 +319,10 @@ describe("coherent inspection observation boundaries", () => {
 
         const next = iterator.next();
         await vi.advanceTimersByTimeAsync(0);
-        const fenced = fenceAndCompleteReplacement(started);
+        const replacedAttemptId = Object.values(throwingSchedulerStore(started.store.scheduler).loadRunSnapshot(started.runId).projection.attempts)
+          .find(candidate => candidate.status === "started")?.attemptId;
+        if (!replacedAttemptId) throw new Error("Expected started inspection observation Agent attempt.");
+        const replacement = automaticallyReplaceAndComplete(workspace, started);
         await vi.advanceTimersByTimeAsync(1_000);
 
         expect(observation(await next)).toMatchObject({
@@ -311,8 +333,8 @@ describe("coherent inspection observation boundaries", () => {
             state: { status: "cancelled" },
           },
         });
-        expect(fenced.replacement.attemptNo).toBe(2);
-        expect(fenced.fencedAttemptId).toBe(fenced.replacedAttemptId);
+        expect(replacement.attemptNo).toBe(2);
+        expect(replacement.attemptId).not.toBe(replacedAttemptId);
       } finally {
         started.store.close();
       }
@@ -578,37 +600,6 @@ function automaticallyReplaceAndComplete(workspace: string, started: ObservedRun
     idempotencyKey: "inspection-observation:replacement:complete",
   });
   return replacement;
-}
-
-function fenceAndCompleteReplacement(started: ObservedRun) {
-  const scheduler = throwingSchedulerStore(started.store.scheduler);
-  const review = instance(started.store, started.runId, "review");
-  const replaced = Object.values(scheduler.loadRunSnapshot(started.runId).projection.attempts)
-    .find(candidate => candidate.nodeKey === review.nodeKey && candidate.status === "started");
-  if (!replaced) throw new Error("Expected started inspection observation Agent attempt.");
-  const fenced = scheduler.steerAgent({
-    runId: started.runId,
-    ownerEpoch: started.claim.ownerEpoch,
-    idempotencyKey: "inspection-observation:fence",
-    steerId: "inspection-observation:fence",
-    target: replaced.attemptId,
-    instruction: "Use the supplied context.",
-  });
-  const replacement = scheduler.startAttempt({
-    runId: started.runId,
-    nodeKey: review.nodeKey,
-    nodeId: review.nodeId,
-    ownerEpoch: started.claim.ownerEpoch,
-    idempotencyKey: "inspection-observation:fence:replacement:start",
-  });
-  scheduler.commitAttemptResult({
-    runId: started.runId,
-    attemptId: replacement.attemptId,
-    ownerEpoch: started.claim.ownerEpoch,
-    result: { status: "completed", output: { ok: true } },
-    idempotencyKey: "inspection-observation:fence:replacement:complete",
-  });
-  return { replacement, fencedAttemptId: fenced.fencedAttemptId, replacedAttemptId: replaced.attemptId };
 }
 
 function awaitSignal(

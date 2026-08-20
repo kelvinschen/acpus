@@ -85,6 +85,20 @@ function ensureTestInstance(store: RuntimeStore, runId: string, nodeKey: string,
   }
 }
 
+function startTestAttempt(store: RuntimeStore, runId: string, nodeKey: string, nodeId: string) {
+  ensureTestInstance(store, runId, nodeKey, nodeId);
+  const claim = testRunClaims.get(store)?.get(runId);
+  if (!claim) throw new Error(`Expected test claim for run '${runId}'.`);
+  const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
+    runId,
+    nodeKey,
+    nodeId,
+    ownerEpoch: claim.ownerEpoch,
+    idempotencyKey: `task-test:${runId}:${nodeKey}:attempt`,
+  });
+  return { ...attempt, ownerEpoch: claim.ownerEpoch };
+}
+
 describe("scheduler task and signal leaf executor", () => {
   it("runs one task invocation per scheduler-visible attempt", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-single-attempt", async workspace => {
@@ -98,14 +112,15 @@ describe("scheduler task and signal leaf executor", () => {
             scope: {},
             store,
           });
+          const attempt = startTestAttempt(store, run.id, "retry_task.dynamic", "retry_task");
 
           await expect(executor.execute({
             runId: run.id,
             nodeId: "retry_task",
             nodeKey: "retry_task.dynamic",
-            attemptId: "attempt_1",
-            attemptNo: 1,
-            ownerEpoch: 1,
+            attemptId: attempt.attemptId,
+            attemptNo: attempt.attemptNo,
+            ownerEpoch: attempt.ownerEpoch,
             signal: new AbortController().signal,
           })).resolves.toEqual({ status: "failed", reason: "first invocation fails" });
           expect(taskAttemptHarness.calls).toHaveLength(1);
@@ -275,14 +290,15 @@ describe("scheduler task and signal leaf executor", () => {
             store,
             taskAttemptRunner: () => errAsync({ type: "timed_out", message: "task attempt deadline elapsed" }),
           });
+          const attempt = startTestAttempt(store, run.id, "timeout_task.dynamic", "timeout_task");
 
           await expect(executor.execute({
             runId: run.id,
             nodeId: "timeout_task",
             nodeKey: "timeout_task.dynamic",
-            attemptId: "attempt_timeout",
-            attemptNo: 2,
-            ownerEpoch: 1,
+            attemptId: attempt.attemptId,
+            attemptNo: attempt.attemptNo,
+            ownerEpoch: attempt.ownerEpoch,
             signal: new AbortController().signal,
           })).resolves.toEqual({ status: "timed_out", reason: "task attempt deadline elapsed" });
         } finally {
@@ -300,21 +316,22 @@ describe("scheduler task and signal leaf executor", () => {
           const executor = createRuntimeNodeExecutor({ cwd: workspace, ir: prepared.ir, scope: {}, store });
           const controller = new AbortController();
           controller.abort();
+          const attempt = startTestAttempt(store, run.id, "abort_task.dynamic", "abort_task");
 
           await expect(executor.execute({
             runId: run.id,
             nodeId: "abort_task",
             nodeKey: "abort_task.dynamic",
-            attemptId: "attempt_abort",
-            attemptNo: 3,
-            ownerEpoch: 1,
+            attemptId: attempt.attemptId,
+            attemptNo: attempt.attemptNo,
+            ownerEpoch: attempt.ownerEpoch,
             signal: controller.signal,
           })).resolves.toEqual({ status: "cancelled", reason: "paused" });
           expect(taskAttemptHarness.calls).toHaveLength(1);
           expect(taskAttemptHarness.calls[0]).toMatchObject({
             nodeId: "abort_task",
             nodeKey: "abort_task.dynamic",
-            attempt: 3,
+            attempt: attempt.attemptNo,
             input: null,
             cwd: workspace,
             signal: controller.signal,

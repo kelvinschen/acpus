@@ -48,7 +48,7 @@ export type AcpAgentResolutionFailure = {
   message: string;
 };
 
-export type AcpAgentConfig = ReadonlyMap<string, readonly [string, ...string[]]>;
+export type AcpAgentConfig = ReadonlyMap<string, string>;
 
 export class AcpAgentResolutionSystemError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -102,7 +102,7 @@ export function parseAcpAgentConfig(content: string, path: string): Result<AcpAg
     return err(configFailure(`Invalid Agent config at '${path}': expected exactly {"agents": {...}}.`));
   }
 
-  const agents = new Map<string, readonly [string, ...string[]]>();
+  const agents = new Map<string, string>();
   const sourceNames = new Map<string, string>();
   for (const [sourceName, entry] of Object.entries(parsed.agents)) {
     const name = normalizeAgentName(sourceName);
@@ -115,13 +115,13 @@ export function parseAcpAgentConfig(content: string, path: string): Result<AcpAg
         `Invalid Agent config at '${path}': Agent names ${JSON.stringify(collidingName)} and ${JSON.stringify(sourceName)} both normalize to '${name}'.`,
       ));
     }
-    if (!record(entry) || !hasExactKeys(entry, ["argv"]) || !agentArgv(entry.argv)) {
+    if (typeof entry !== "string" || entry.trim().length === 0) {
       return err(configFailure(
-        `Invalid Agent config at '${path}' for Agent ${JSON.stringify(sourceName)}: expected exactly {"argv": ["executable", ...]}.`,
+        `Invalid Agent config at '${path}' for Agent ${JSON.stringify(sourceName)}: expected a non-empty shell command string.`,
       ));
     }
     sourceNames.set(name, sourceName);
-    agents.set(name, [...entry.argv]);
+    agents.set(name, entry);
   }
   return ok(agents);
 }
@@ -139,20 +139,20 @@ async function resolveNamedAcpAgentLaunchValue(input: {
   const [project, global] = await Promise.all([
     readAgentConfig(projectPath),
     globalPath === undefined
-      ? Promise.resolve(ok(new Map<string, readonly [string, ...string[]]>()))
+      ? Promise.resolve(ok(new Map<string, string>()))
       : readAgentConfig(globalPath),
   ]);
   if (project.isErr()) return err(project.error);
   if (global.isErr()) return err(global.error);
 
   const configured = resolveConfiguredAgent(project.value, name) ?? resolveConfiguredAgent(global.value, name);
-  if (configured !== undefined) return ok({ kind: "argv", argv: copyArgv(configured), name });
+  if (configured !== undefined) return ok({ kind: "command", command: configured, name });
 
   const builtIn = resolveBuiltInAgent(name);
   if (builtIn !== undefined) return ok({ kind: "argv", argv: copyArgv(builtIn), name });
 
   return err(configFailure(
-    `Named Agent '${name}' is not configured or built in. Add it to '${projectPath}' with a structured argv or use an explicit command selector.`,
+    `Named Agent '${name}' is not configured or built in. Add it to '${projectPath}' with a shell command string or use an explicit command selector.`,
   ));
 }
 
@@ -170,7 +170,7 @@ async function readAgentConfig(path: string): Promise<Result<AcpAgentConfig, Acp
 function resolveConfiguredAgent(
   config: AcpAgentConfig,
   name: string,
-): readonly [string, ...string[]] | undefined {
+): string | undefined {
   return config.get(name) ?? config.get(canonicalAgentName(name));
 }
 

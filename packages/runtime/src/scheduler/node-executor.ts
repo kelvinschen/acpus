@@ -12,7 +12,8 @@ import { scopeForNodeAttempt } from "./scope.js";
 import { throwSchedulerStoreResult, type AttemptCommitInput } from "./store-port.js";
 import { indexNodes } from "./ir-walk.js";
 import type { AgentHostPolicy } from "../configuration.js";
-import type { ManagedAcpExecutor } from "@acpus/agent-executor";
+import type { AgentSessionSupervisor } from "@acpus/agent-executor";
+import type { AgentTurnExecutionRegistry } from "../execution/agent-turn-registry.js";
 
 export type RuntimeNodeExecutorInput = {
   cwd: string;
@@ -21,7 +22,9 @@ export type RuntimeNodeExecutorInput = {
   scope: EvaluationScope;
   store: RuntimeStore;
   agentHostPolicy: AgentHostPolicy;
-  managedAcpExecutor?: ManagedAcpExecutor;
+  runtimeOwnerEpoch?: number;
+  agentSessionSupervisor?: AgentSessionSupervisor;
+  agentTurnRegistry?: AgentTurnExecutionRegistry;
   progressWriter?: NodeProgressWriter;
 };
 
@@ -110,10 +113,8 @@ async function executeTask(
 
 async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: NodeAttemptContext, input: RuntimeNodeExecutorInput, agentHostPolicy: AgentHostPolicy) {
   const initialPrompt = context.steer
-    ? { kind: "steer" as const, instruction: context.steer.instruction }
-    : context.attemptStartReason === "control_retry" || context.attemptStartReason === "pause_resume"
-      ? { kind: "continuation" as const }
-      : { kind: "task" as const };
+    ? { kind: "steer" as const, steerId: context.steer.steerId, instruction: context.steer.instruction }
+    : { kind: "task" as const };
   return executeAgentNode(node, scope, {
     cwd: input.cwd,
     runId: context.runId,
@@ -123,11 +124,14 @@ async function executeAgent(node: AgentNodeIR, scope: EvaluationScope, context: 
     attemptId: context.attemptId,
     attemptNo: context.attemptNo,
     ownerEpoch: context.ownerEpoch,
+    runtimeOwnerEpoch: input.runtimeOwnerEpoch ?? 0,
     ...(context.deadlineAt === undefined ? {} : { deadlineAt: context.deadlineAt }),
     store: input.store,
     ...(input.progressWriter === undefined ? {} : { progressWriter: input.progressWriter }),
-    ...(input.managedAcpExecutor === undefined ? {} : { managedAcpExecutor: input.managedAcpExecutor }),
+    ...(input.agentSessionSupervisor === undefined ? {} : { agentSessionSupervisor: input.agentSessionSupervisor }),
     initialPrompt,
     signal: context.signal,
+    ...(context.abort === undefined ? {} : { abortAttempt: context.abort }),
+    ...(input.agentTurnRegistry === undefined ? {} : { agentTurnRegistry: input.agentTurnRegistry }),
   });
 }

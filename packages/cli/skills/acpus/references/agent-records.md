@@ -13,9 +13,9 @@ Start with [CLI Operations](cli-operations.md).
 | `acp/sessions/<record-id>.json` | Session-wide ACP semantic projection for low-frequency analysis. |
 | `turn-<NNN>.stderr.log` | Non-empty provider stderr for a writable attempt. |
 
-Response repair creates another turn in the same scheduler attempt and ACP
-session. Retry or steering creates another managed worker that resumes the same
-run-local session identity.
+Response repair creates another Turn in the same Attempt and Agent Session.
+Steer creates a replacement Attempt in the same Session. Retry of a local
+Agent starts a new Session generation.
 
 ## Locate A Session Projection
 
@@ -44,7 +44,7 @@ final response. Node output and schema conformance use only `finalResponse`.
 
 ## Session Projection Semantics
 
-The JSON file is the Acpus-owned `acpus.acp-session.v1` projection. It preserves
+The JSON file is the Acpus-owned `acpus.acp-session.v2` projection. It preserves
 bounded User and Agent messages, including text, thought, tool calls, and each
 tool result's compact content. It omits the much larger raw tool-result output.
 
@@ -59,6 +59,7 @@ It is a semantic conversation record, not a raw ACP stream:
 - it is not a source for reconstructing exact response segments or a final
   response;
 - raw ACP protocol data is not retained.
+- raw launch, cwd, model, options, environment, and secrets are not retained.
 
 Copy and transform the projection when a benchmark needs a stable snapshot or
 a narrower dataset.

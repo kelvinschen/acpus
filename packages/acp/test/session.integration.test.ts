@@ -8,6 +8,7 @@ import {
   type AcpError,
   type AcpEvent,
   type AcpSession,
+  type AgentSessionBindingFingerprintV1,
   type OpenAcpSessionInput,
 } from "@acpus/acp";
 import type { Result } from "neverthrow";
@@ -113,19 +114,20 @@ describe("@acpus/acp session process integration", () => {
       recordId: "record/semantic",
       scenarios: ["events"],
       argvSessionId: "argv session with spaces",
+      configuration: { model: null, options: { alpha: "first-explicit" } },
     });
 
     expect(session).toMatchObject({
-      recordId: "record/semantic",
+      agentSessionId: "record/semantic",
       sessionId: "argv session with spaces",
       projectionPath: "sessions/record%2Fsemantic.json",
+      reportedVersion: "1.0.0",
     });
 
     const firstEvents: AcpEvent[] = [];
     const secondEvents: AcpEvent[] = [];
     const first = await runTurn(session, {
       prompt: "first prompt",
-      configuration: { options: { alpha: "first-explicit" } },
       onEvent: event => firstEvents.push(event),
     });
     const second = await runTurn(session, {
@@ -148,14 +150,12 @@ describe("@acpus/acp session process integration", () => {
 
     const projection = await readProjection(fixture, session);
     expect(projection).toMatchObject({
-      schema: "acpus.acp-session.v1",
-      recordId: "record/semantic",
-      cwd: fixture.cwd,
+      schema: "acpus.acp-session.v2",
+      agentSessionId: "record/semantic",
       backend: {
         sessionId: "argv session with spaces",
         capabilities: { resume: false, load: false },
       },
-      desiredConfiguration: { options: { alpha: "first-explicit" } },
       conversation: [
         { type: "message", role: "user", content: "first prompt" },
         { type: "thought", content: "thought:1" },
@@ -252,6 +252,7 @@ describe("@acpus/acp session process integration", () => {
       scenarios: ["resume"],
       logPath: restartLog,
       sessionId: "replacement-must-not-be-used",
+      sessionOpenMode: "existing_required",
     });
     const events: AcpEvent[] = [];
     expect(resumed.sessionId).toBe("fixture-session");
@@ -273,6 +274,88 @@ describe("@acpus/acp session process integration", () => {
     });
   });
 
+  it("rejects a binding mismatch before spawning the Provider", async () => {
+    const fixture = await createFixture();
+    const first = await openSession(fixture, { recordId: "binding-mismatch" });
+    await closeTracked(first);
+    const expected = fixtureBinding();
+    const logPath = join(fixture.root, "binding-mismatch.ndjson");
+    const pidPath = join(fixture.root, "binding-mismatch.pid");
+
+    const reopened = await openAcpSession(inputFor(fixture, {
+      recordId: "binding-mismatch",
+      logPath,
+      env: { ACP_FIXTURE_PID_PATH: pidPath },
+      bindingFingerprint: {
+        ...expected,
+        digest: `sha256:${"5".repeat(64)}`,
+        components: { ...expected.components, launch: `sha256:${"6".repeat(64)}` },
+      },
+    }));
+
+    expect(errorOf(reopened)).toMatchObject({
+      type: "session_binding",
+      operation: "open_session",
+      origin: "persistence",
+      providerEvidence: "none",
+      categories: ["launch"],
+      retryable: false,
+    });
+    expect(await pathExists(logPath)).toBe(false);
+    expect(await pathExists(pidPath)).toBe(false);
+  });
+
+  it("requires an existing projection before spawning for existing_required", async () => {
+    const fixture = await createFixture();
+    const pidPath = join(fixture.root, "missing-existing.pid");
+    const opened = await openAcpSession(inputFor(fixture, {
+      recordId: "missing-existing",
+      sessionOpenMode: "existing_required",
+      env: { ACP_FIXTURE_PID_PATH: pidPath },
+    }));
+
+    expect(errorOf(opened)).toMatchObject({
+      type: "persistence",
+      operation: "open_session",
+      origin: "persistence",
+      providerEvidence: "none",
+      code: "validate",
+      retryable: false,
+    });
+    expect(await pathExists(fixture.logPath)).toBe(false);
+    expect(await pathExists(pidPath)).toBe(false);
+    expect(await stateFiles(fixture)).toEqual([]);
+  });
+
+  it("rejects a non-empty projection before spawning for new_or_empty", async () => {
+    const fixture = await createFixture();
+    const first = await openSession(fixture, { recordId: "non-empty-new" });
+    await runTurn(first, { prompt: "persisted history" });
+    await closeTracked(first);
+    const projectionPath = join(fixture.stateDirectory, first.projectionPath);
+    const original = await readFile(projectionPath, "utf8");
+    const logPath = join(fixture.root, "non-empty-new.ndjson");
+    const pidPath = join(fixture.root, "non-empty-new.pid");
+
+    const reopened = await openAcpSession(inputFor(fixture, {
+      recordId: "non-empty-new",
+      logPath,
+      env: { ACP_FIXTURE_PID_PATH: pidPath },
+    }));
+
+    expect(errorOf(reopened)).toMatchObject({
+      type: "persistence",
+      operation: "open_session",
+      origin: "persistence",
+      providerEvidence: "none",
+      code: "validate",
+      retryable: false,
+    });
+    expect(await pathExists(logPath)).toBe(false);
+    expect(await pathExists(pidPath)).toBe(false);
+    expect(await readFile(projectionPath, "utf8")).toBe(original);
+  });
+
   it("falls back to load and keeps replay updates out of the next turn callback", async () => {
     const fixture = await createFixture();
     const first = await openSession(fixture, { recordId: "load-record", scenarios: ["load"] });
@@ -284,6 +367,7 @@ describe("@acpus/acp session process integration", () => {
       recordId: "load-record",
       scenarios: ["load", "load-replay"],
       logPath: loadLog,
+      sessionOpenMode: "existing_required",
     });
     const turnEvents: AcpEvent[] = [];
     expect(await runTurn(loaded, { prompt: "current turn", onEvent: event => turnEvents.push(event) }))
@@ -313,6 +397,7 @@ describe("@acpus/acp session process integration", () => {
       recordId: "unsupported",
       logPath: unsupportedLog,
       sessionId: "must-not-be-created",
+      sessionOpenMode: "existing_required",
     }));
 
     expect(opened.isErr()).toBe(true);
@@ -503,7 +588,7 @@ describe("@acpus/acp session process integration", () => {
     const releasePath = join(fixture.root, "release-close");
     const session = await openSession(fixture, {
       recordId: "close-active",
-      scenarios: ["cancel-late"],
+      scenarios: ["cancel-late", "close-session"],
       env: { ACP_FIXTURE_RELEASE_PATH: releasePath },
     });
     const turn = session.runTurn({ prompt: "close while active" });
@@ -523,6 +608,7 @@ describe("@acpus/acp session process integration", () => {
     if (turnResult.isErr()) throw new Error(JSON.stringify(turnResult.error));
     expect(turnResult.value).toMatchObject({ status: "cancelled" });
     expect(valueOf(await closing)).toBeUndefined();
+    expect(methods(await requestLog(fixture.logPath))).toContain("session/close");
     const projection = await readProjection(fixture, session);
     expect(projection).toMatchObject({ lastStop: { stopReason: "cancelled" } });
     const index = openSessions.indexOf(session);
@@ -534,7 +620,7 @@ describe("@acpus/acp session process integration", () => {
     const pidPath = join(fixture.root, "ignore-cancel.pid");
     const session = await openSession(fixture, {
       recordId: "ignore-cancel-close",
-      scenarios: ["cancel-late", "ignore-cancel", "close-session", "ignore-close"],
+      scenarios: ["cancel-late", "ignore-cancel"],
       env: { ACP_FIXTURE_PID_PATH: pidPath },
     });
     const turn = session.runTurn({ prompt: "ignore cancellation" });
@@ -545,7 +631,6 @@ describe("@acpus/acp session process integration", () => {
 
     expect(valueOf(closed)).toBeUndefined();
     expect(providerGroupExists(pid)).toBe(false);
-    expect(methods(await requestLog(fixture.logPath))).toContain("session/close");
     expect(valueOf(await turn)).toEqual({ status: "cancelled", stopReason: "cancelled" });
     const index = openSessions.indexOf(session);
     if (index >= 0) openSessions.splice(index, 1);
@@ -584,7 +669,7 @@ describe("@acpus/acp session process integration", () => {
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const providerExit = await openAcpSession({
         ...providerExitInput,
-        recordId: `provider-exit-${attempt}`,
+        agentSessionId: `provider-exit-${attempt}`,
       });
       expect(errorOf(providerExit)).toMatchObject({
         type: "provider_exit",
@@ -601,13 +686,13 @@ describe("@acpus/acp session process integration", () => {
     const first = await openSession(fixture, {
       recordId: "configuration",
       scenarios: ["config", "resume"],
-    });
-    expect(await runTurn(first, {
-      prompt: "configured",
       configuration: {
         model: "model-explicit",
         options: { zeta: "last", alpha: "first", middle: "middle" },
       },
+    });
+    expect(await runTurn(first, {
+      prompt: "configured",
     })).toMatchObject({ status: "completed" });
     expect(await runTurn(first, { prompt: "retain configuration" })).toMatchObject({ status: "completed" });
 
@@ -635,6 +720,11 @@ describe("@acpus/acp session process integration", () => {
       recordId: "configuration",
       scenarios: ["config", "resume"],
       logPath: replayLog,
+      sessionOpenMode: "existing_required",
+      configuration: {
+        model: "model-explicit",
+        options: { zeta: "last", alpha: "first", middle: "middle" },
+      },
     });
     expect(await runTurn(resumed, { prompt: "after replay" })).toMatchObject({ status: "completed" });
     const replayRequests = await requestLog(replayLog);
@@ -650,31 +740,32 @@ describe("@acpus/acp session process integration", () => {
     expect(configRequests(replayRequests)).toEqual(configRequests(firstRequests));
   });
 
-  it("replaces a complete option map by resetting removed advertised options", async () => {
+  it("rejects an attempt to mutate the Session configuration", async () => {
     const fixture = await createFixture();
     const session = await openSession(fixture, {
       recordId: "configuration-replacement",
       scenarios: ["config"],
+      configuration: { model: null, options: { alpha: "alpha-explicit", zeta: "zeta-explicit" } },
     });
 
-    await runTurn(session, {
-      prompt: "initial options",
-      configuration: { options: { alpha: "alpha-explicit", zeta: "zeta-explicit" } },
-    });
-    await runTurn(session, {
+    await runTurn(session, { prompt: "initial options" });
+    const mutation = await session.runTurn({
       prompt: "replacement options",
       configuration: { options: { alpha: "alpha-replaced" } },
     });
 
+    expect(errorOf(mutation)).toMatchObject({
+      type: "configuration",
+      operation: "configure_session",
+      providerEvidence: "none",
+      retryable: false,
+    });
     expect(configRequests(await requestLog(fixture.logPath))).toEqual([
       { sessionId: "fixture-session", configId: "alpha", value: "alpha-explicit" },
       { sessionId: "fixture-session", configId: "zeta", value: "zeta-explicit" },
-      { sessionId: "fixture-session", configId: "alpha", value: "alpha-replaced" },
-      { sessionId: "fixture-session", configId: "zeta", value: "zeta-default" },
     ]);
-    expect(await readProjection(fixture, session)).toMatchObject({
-      desiredConfiguration: { options: { alpha: "alpha-replaced" } },
-    });
+    expect(methods(await requestLog(fixture.logPath)).filter(method => method === "session/prompt"))
+      .toHaveLength(1);
   });
 
   it("completes one reverse permission, filesystem, and terminal cooperation path", async () => {
@@ -698,6 +789,7 @@ describe("@acpus/acp session process integration", () => {
       .toMatchObject({ status: "completed", stopReason: "end_turn" });
     expect(await readFile(target, "utf8")).toBe("fixture-written\n");
     expect(events.map(event => event.type === "activity" ? event.operation : event.type)).toEqual([
+      "session/request_permission",
       "fs/read_text_file",
       "fs/write_text_file",
       "terminal/create",
@@ -756,6 +848,9 @@ function inputFor(
     logPath?: string;
     env?: NodeJS.ProcessEnv;
     permissionMode?: OpenAcpSessionInput["permissionMode"];
+    configuration?: OpenAcpSessionInput["configuration"];
+    bindingFingerprint?: AgentSessionBindingFingerprintV1;
+    sessionOpenMode?: OpenAcpSessionInput["sessionOpenMode"];
     signal?: AbortSignal;
   },
 ): OpenAcpSessionInput {
@@ -765,7 +860,9 @@ function inputFor(
     ...(options.argvSessionId === undefined ? [] : [`--session-id=${options.argvSessionId}`]),
   ] as [string, ...string[]];
   return {
-    recordId: options.recordId,
+    agentSessionId: options.recordId,
+    bindingFingerprint: options.bindingFingerprint ?? fixtureBinding(),
+    sessionOpenMode: options.sessionOpenMode ?? "new_or_empty",
     stateDirectory: fixture.stateDirectory,
     launch: { kind: "argv", argv, name: "integration-fixture" },
     cwd: fixture.cwd,
@@ -778,7 +875,21 @@ function inputFor(
       ...options.env,
     },
     permissionMode: options.permissionMode ?? "deny-all",
+    configuration: options.configuration ?? { model: null, options: {} },
     ...(options.signal === undefined ? {} : { signal: options.signal }),
+  };
+}
+
+function fixtureBinding(): AgentSessionBindingFingerprintV1 {
+  return {
+    version: 1,
+    digest: `sha256:${"0".repeat(64)}`,
+    components: {
+      launch: `sha256:${"1".repeat(64)}`,
+      cwd: `sha256:${"2".repeat(64)}`,
+      model: `sha256:${"3".repeat(64)}`,
+      options: `sha256:${"4".repeat(64)}`,
+    },
   };
 }
 

@@ -1,7 +1,7 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow, z } from "@acpus/core";
 import { template } from "@acpus/expression";
-import type { AgentTurnRequest } from "@acpus/agent-executor";
+import type { FixtureAgentTurnRequest as AgentTurnRequest } from "./support/agent-turn.js";
 import { describe, expect, it } from "vitest";
 import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { openRuntimeStore } from "../src/store/store.js";
@@ -330,7 +330,7 @@ describe.concurrent("scheduler agent overrides and forks", () => {
             .resolves.toMatchObject({ status: "completed", started: 0, completed: 2 });
 
           expect(turns).toHaveLength(2);
-          expect(turns[1]!.sessionName).toBe(turns[0]!.sessionName);
+          expect(turns[1]!.agentSessionId).toBe(turns[0]!.agentSessionId);
           expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.attempts)).toEqual([]);
           expect(store.getRun(fork.id)?.dynamic?.nodeInstances).toEqual([
             expect.objectContaining({ nodeId: "first_review", reusedFromRunId: source.id }),

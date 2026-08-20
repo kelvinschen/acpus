@@ -33,8 +33,9 @@ type InspectionTreeEntry = Extract<InspectionRead, { kind: "run" }>["tree"][numb
 
 type ControlAction =
   | { type: "pause" | "resume" }
-  | { type: "cancel" | "retry"; scope: "task" }
-  | { type: "cancel" | "retry"; scope: "target"; target: string }
+  | { type: "cancel"; scope: "task" }
+  | { type: "cancel"; scope: "target"; target: string }
+  | { type: "retry"; scope: "target"; target: string }
   | { type: "steer"; target: string; instruction: string }
   | { type: "signal"; target: string; payload: DshJsonValue }
   | {
@@ -243,9 +244,6 @@ function controlTool(ctx: Context) {
           actionSchema("cancel", {
             scope: { type: "string", const: "target", required: true },
             target: { type: "string", required: true },
-          }),
-          actionSchema("retry", {
-            scope: { type: "string", const: "task", required: true },
           }),
           actionSchema("retry", {
             scope: { type: "string", const: "target", required: true },
@@ -474,7 +472,6 @@ function controlIntent(
     case "pause":
     case "resume":
       return { requestId, type: action.type, runId };
-    case "retry":
     case "cancel":
       return {
         requestId,
@@ -482,6 +479,8 @@ function controlIntent(
         runId,
         ...(action.scope === "target" ? { target: action.target } : {}),
       };
+    case "retry":
+      return { requestId, type: action.type, runId, target: action.target };
     case "steer":
       return { requestId, type: "steer", runId, target: action.target, instruction: action.instruction };
     case "signal":

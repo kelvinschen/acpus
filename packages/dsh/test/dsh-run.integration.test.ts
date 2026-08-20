@@ -42,7 +42,11 @@ describe("Acpus run through a real DSH Loader composition", () => {
     await Promise.all([
       writeFile(cliManifest, "{}\n"),
       writeFile(join(workspace, ".acpus", "agents.json"), `${JSON.stringify({
-        agents: { fixture: { argv: [process.execPath, fixtureAgent, "named-acp-agent", agentSentinel] } },
+        agents: {
+          fixture: [process.execPath, fixtureAgent, "named-acp-agent", agentSentinel]
+            .map(shellQuote)
+            .join(" "),
+        },
       })}\n`),
       writeFile(join(bin, "acpus"), `#!/bin/sh\nprintf invoked > ${shellQuote(sentinel)}\nexit 97\n`),
     ]);

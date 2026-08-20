@@ -26,7 +26,9 @@ export default defineWorkflow({
 
 ## Mental Model
 
-`build` declares a static graph; it does not execute it. `input`, `meta`, composite locals, and node outputs are opaque `Expr<T>` values resolved during a run. Composite callbacks declare static subgraphs that runtime loop rounds, fanout items, or branches instantiate.
+- `build` declares a static graph; it does not execute it.
+- `input`, `meta`, composite locals, and node outputs are opaque `Expr<T>` values resolved during a run.
+- Composite callbacks declare static subgraphs instantiated by branches, fanout items, and loop rounds.
 
 Choose the operation by intent:
 
@@ -71,8 +73,10 @@ const canRelease = and(eq(input.kind, "release"), gte(input.score, 80));
 const prompt = md`Review ${label}: ${summary}`;
 ```
 
-Unary, two-value, and three-value positional `lift` forms are supported; use the named-object form for more dependencies. Return only durable data.
-`lift` callbacks **MUST** be inline synchronous arrows. Pass runtime data as dependencies; **NEVER** capture workflow values or helpers such as `md`. Return plain data, then render outside `lift`.
+- Use positional `lift` for one to three values; use the named-object form for more dependencies.
+- `lift` callbacks **MUST** be inline synchronous arrows.
+- Pass runtime data as dependencies; **NEVER** capture workflow values or helpers such as `md`.
+- Return plain durable data, then render outside `lift`.
 
 Graph boundaries support the documented Zod 4 subset; Use `z.infer` when a TypeScript annotation must stabilize the same shape:
 
@@ -91,7 +95,7 @@ Keep authored data JSON-compatible. A top-level scope value or array element mus
 
 > Basic Rules
 > - Return durable primitives, `null`, arrays, plain objects, `ArtifactRef`, or expressions. Never return a `NodeRef`, promise, class instance, or raw `undefined`
-> - Use static step IDs. Runtime derives distinct `nodeKey` values for loop/fanout instances.
+> - Use static step IDs. Acpus distinguishes loop and fanout occurrences automatically.
 > - Give an Agent an `outputSchema` only when deterministic workflow code reads its fields; keep Agent-to-Agent handoffs as prose.
 > - No `outputSchema` in task and composites.
 
@@ -166,7 +170,10 @@ const reviews = step("reviews").fanout({
 ```
 
 ```ts
-// **Loop is do-while and returns its final state through `.output`. Its `do` callback receives `{ state, round }`;** declare child nodes through the enclosing `step`. A transition replaces the complete state, never merges partial objects. Widen empty arrays, `null`, and literal fields with an explicit state type:
+// Loop is do-while and returns final state through `.output`.
+// `do` receives `{ state, round }`; declare child nodes through the enclosing `step`.
+// Each transition replaces the complete state; it never merges partial objects.
+// Widen empty arrays, `null`, and literal fields with an explicit state type.
 const initial: State = { items: [], note: null };
 const rounds = step("rounds").loop({
   state: initial,

@@ -95,9 +95,15 @@ describe("mountStaticAssets", () => {
     await mkdir(assetsDir, { recursive: true });
     await symlink("loop.js", join(assetsDir, "loop.js"));
     const app = new Hono();
+    let assetError: unknown;
+    app.onError((error, context) => {
+      assetError = error;
+      return context.text("Internal Server Error", 500);
+    });
     mountStaticAssets(app, staticDir);
     const res = await app.request("/assets/loop.js");
     expect(res.status).toBe(500);
+    expect(assetError).toMatchObject({ code: "ELOOP" });
   });
 
   it("api routes are not shadowed by catch-all", async () => {

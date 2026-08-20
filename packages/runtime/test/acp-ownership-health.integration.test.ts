@@ -13,16 +13,25 @@ describe("ACP ownership Doctor projection", () => {
       store.close();
       const layout = resolveRuntimeLayout(workspace);
       await mkdir(layout.acpWorkersRoot, { recursive: true });
-      const path = join(layout.acpWorkersRoot, "acp_worker_dea0.json");
+      const path = join(layout.acpWorkersRoot, "acp_capsule_00000000-0000-4000-8000-000000000000.json");
       await writeFile(path, JSON.stringify({
-        schemaVersion: 2,
-        workerId: "acp_worker_dea0",
+        schemaVersion: 3,
+        hostId: "host_dea0",
+        agentSessionId: "acpus-0000000000000000000000",
+        sessionLeaseId: "lease_dea0",
         runId: "run_1",
         attemptId: "attempt_1",
-        sessionName: "session",
-        owner: { pid: 99_999_999, startToken: "pid:99999999", generation: "old" },
+        owner: { pid: 99_999_999, startToken: "pid:99999999", epoch: 1 },
         worker: { pid: 99_999_999, startToken: "pid:99999999" },
-        state: "degraded",
+        state: {
+          phase: "degraded",
+          previousPhase: "ready",
+          evidence: {
+            reason: "cleanup_unverified",
+            liveness: "live",
+            observedAt: "2026-07-30T00:00:00.000Z",
+          },
+        },
         createdAt: "2026-07-30T00:00:00.000Z",
       }));
       const before = { bytes: await readFile(path, "utf8"), mtimeMs: (await stat(path)).mtimeMs };
@@ -31,8 +40,8 @@ describe("ACP ownership Doctor projection", () => {
 
       expect(report.checks.find(check => check.area === "acp")).toMatchObject({
         status: "warn",
-        message: "ACP ownership warning: degraded=1 orphaned=0",
-        details: { degraded: 1, orphaned: 0 },
+        message: "ACP ownership warning: degraded=1 orphaned=1",
+        details: { degraded: 1, orphaned: 1 },
       });
       expect({ bytes: await readFile(path, "utf8"), mtimeMs: (await stat(path)).mtimeMs }).toEqual(before);
     });

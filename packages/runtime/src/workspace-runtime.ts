@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
-  createManagedAcpExecutor,
-  recoverAcpOwnership,
-  type ManagedAcpExecutor,
+  createAgentSessionSupervisor,
+  inspectAcpOwnership,
+  type AgentSessionSupervisor,
   type NamedAcpAgentLaunchRegistry,
 } from "@acpus/agent-executor";
 import { isAbsolute } from "node:path";
@@ -27,6 +27,11 @@ import {
   observeInspectionAtStore,
   readInspectionAtStore,
 } from "./inspection/use-cases.js";
+import {
+  ownershipHealthProjection,
+  withInspectionOwnershipHealth,
+  withObservationOwnershipHealth,
+} from "./inspection/ownership-health.js";
 import type {
   InspectionError,
   InspectionObservation,
@@ -92,7 +97,7 @@ type WorkspaceRuntimeInternalOptions = {
   onRunIncident?: (incident: RunIncident) => void;
   protocolVersion?: number;
   idleStopMs?: number;
-  managedAcpExecutor?: ManagedAcpExecutor;
+  agentSessionSupervisor?: AgentSessionSupervisor;
   namedAgentLaunches?: NamedAcpAgentLaunchRegistry;
   onAuthorityLost?: (runtime: OwnedWorkspaceRuntime) => void;
 };
@@ -187,7 +192,7 @@ async function openWorkspaceRuntimeValue(
   configuration: RuntimeConfiguration,
 ): Promise<Result<OwnedWorkspaceRuntime, WorkspaceRuntimeOpenFailure>> {
   let store: RuntimeStore | undefined;
-  let executor: ManagedAcpExecutor | undefined;
+  let supervisor: AgentSessionSupervisor | undefined;
   let authorityFence:
     | { workspaceRealpath: string; ownerId: string; epoch: number }
     | undefined;
@@ -219,23 +224,29 @@ async function openWorkspaceRuntimeValue(
     const hooksConfig = await loadHooksConfig(opened.layout.canonicalPath);
     if (hooksConfig.isErr()) throw new Error(formatHookLoadError(hooksConfig.error));
     const hookRunner = createHookRunner(hooksConfig.value, store);
-    const executorOptions = {
+    const supervisorOptions = {
       workersRoot: opened.layout.acpWorkersRoot,
       sessionStateDirectoryForRun: (runId: string) => runAcpStateRoot(opened.layout, runId),
-      owner: { generation: claim.value.epoch, ...ownerProcess },
+      owner: { epoch: claim.value.epoch, ...ownerProcess },
       ...(options.namedAgentLaunches === undefined
         ? {}
         : { namedAgentLaunches: options.namedAgentLaunches }),
     };
-    await recoverAcpOwnership(executorOptions);
-    executor = options.managedAcpExecutor ?? await createManagedAcpExecutor(executorOptions);
+    if (options.agentSessionSupervisor) {
+      supervisor = options.agentSessionSupervisor;
+    } else {
+      const created = await createAgentSessionSupervisor(supervisorOptions);
+      if (created.isErr()) throw new Error(created.error.message);
+      supervisor = created.value;
+    }
     const sessions = new RunExecutionSessions(
       opened.layout.canonicalPath,
       store,
       hookRunner,
       configuration,
       options.onRunIncident,
-      executor,
+      supervisor,
+      claim.value.epoch,
       ownerId,
     );
     await store.observationLog.reconcileTerminalTurns();
@@ -246,7 +257,7 @@ async function openWorkspaceRuntimeValue(
       layout: opened.layout,
       authority: createRuntimeAuthorityIdentity(opened.layout, claim.value.epoch),
       authorityFence,
-      executor,
+      supervisor,
       sessions,
       heartbeatMs: options.heartbeatMs ?? 1_000,
       ...(options.onAuthorityLost === undefined ? {} : { onAuthorityLost: options.onAuthorityLost }),
@@ -254,7 +265,11 @@ async function openWorkspaceRuntimeValue(
   } catch (error) {
     const failures = [error];
     await settleResources(failures, [
-      () => executor?.shutdown(),
+      async () => {
+        if (!supervisor) return;
+        const shutdown = await supervisor.shutdown();
+        if (shutdown.isErr()) throw new Error(shutdown.error.message);
+      },
       () => {
         if (store && authorityFence) store.releaseRuntimeAuthority(authorityFence);
       },
@@ -274,7 +289,7 @@ class WorkspaceRuntimeImplementation implements OwnedWorkspaceRuntime {
   private readonly store: RuntimeStore;
   private readonly layout: Awaited<ReturnType<typeof openReadyWorkspaceRuntimeStore>>["layout"];
   private readonly authorityFence: { workspaceRealpath: string; ownerId: string; epoch: number };
-  private readonly executor: ManagedAcpExecutor;
+  private readonly supervisor: AgentSessionSupervisor;
   private readonly sessions: RunExecutionSessions;
   private readonly mutations = new RuntimeMutationQueue();
   private readonly heartbeatTimer: NodeJS.Timeout;
@@ -294,7 +309,7 @@ class WorkspaceRuntimeImplementation implements OwnedWorkspaceRuntime {
     layout: Awaited<ReturnType<typeof openReadyWorkspaceRuntimeStore>>["layout"];
     authority: RuntimeAuthorityIdentity;
     authorityFence: { workspaceRealpath: string; ownerId: string; epoch: number };
-    executor: ManagedAcpExecutor;
+    supervisor: AgentSessionSupervisor;
     sessions: RunExecutionSessions;
     heartbeatMs: number;
     onAuthorityLost?: (runtime: OwnedWorkspaceRuntime) => void;
@@ -305,7 +320,7 @@ class WorkspaceRuntimeImplementation implements OwnedWorkspaceRuntime {
     this.layout = input.layout;
     this.authority = input.authority;
     this.authorityFence = input.authorityFence;
-    this.executor = input.executor;
+    this.supervisor = input.supervisor;
     this.sessions = input.sessions;
     this.onAuthorityLost = input.onAuthorityLost;
     this.heartbeatTimer = setInterval(() => {
@@ -411,7 +426,22 @@ class WorkspaceRuntimeImplementation implements OwnedWorkspaceRuntime {
       const session = await openRuntimeReadSessionAtLayout(this.layout);
       if (session.isErr()) return err({ ...session.error, runId: input.runId });
       try {
-        return await readInspectionAtStore(session.value.store, input);
+        const read = await readInspectionAtStore(
+          session.value.store,
+          input,
+          proof => this.sessions.provesAgentTurn(proof),
+        );
+        if (read.isErr()) return read;
+        const processIdentity = captureProcessIdentity();
+        const ownership = await inspectAcpOwnership({
+          workersRoot: this.layout.acpWorkersRoot,
+          owner: {
+            epoch: this.authorityFence.epoch,
+            pid: processIdentity.pid,
+            ...(processIdentity.startToken === undefined ? {} : { startToken: processIdentity.startToken }),
+          },
+        });
+        return ok(withInspectionOwnershipHealth(read.value, ownershipHealthProjection(ownership)));
       } finally {
         session.value.close();
       }
@@ -435,10 +465,25 @@ class WorkspaceRuntimeImplementation implements OwnedWorkspaceRuntime {
       return;
     }
     try {
-      yield* observeInspectionAtStore(session.value.store, {
+      for await (const observed of observeInspectionAtStore(session.value.store, {
         ...input,
         ...(signal === undefined ? {} : { signal }),
-      });
+      }, proof => this.sessions.provesAgentTurn(proof))) {
+        if (observed.isErr() || observed.value.kind === "update") {
+          yield observed;
+          continue;
+        }
+        const processIdentity = captureProcessIdentity();
+        const ownership = await inspectAcpOwnership({
+          workersRoot: this.layout.acpWorkersRoot,
+          owner: {
+            epoch: this.authorityFence.epoch,
+            pid: processIdentity.pid,
+            ...(processIdentity.startToken === undefined ? {} : { startToken: processIdentity.startToken }),
+          },
+        });
+        yield ok(withObservationOwnershipHealth(observed.value, ownershipHealthProjection(ownership)));
+      }
     } finally {
       session.value.close();
     }
@@ -496,7 +541,10 @@ class WorkspaceRuntimeImplementation implements OwnedWorkspaceRuntime {
         () => this.mutations.drain(),
         () => settleConcurrentResources(failures, [
           () => this.sessions.stopExecutors(EXECUTOR_SHUTDOWN_GRACE_MS),
-          () => this.executor.shutdown(),
+          async () => {
+            const shutdown = await this.supervisor.shutdown();
+            if (shutdown.isErr()) throw new Error(shutdown.error.message);
+          },
         ]),
         () => this.sessions.drainHooks(),
         () => this.store.releaseRuntimeAuthority(this.authorityFence),

@@ -12,6 +12,7 @@ import {
   type AcpOperation,
   type AcpPermissionMode,
   type AcpSession,
+  type AgentSessionBindingFingerprintV1,
   type AcpSessionConfiguration,
   type AcpTokenUsage,
   type AcpTurnInput,
@@ -57,6 +58,8 @@ type ExpectedAcpEvent =
 
 type ExpectedErrorBase = Readonly<{
   operation: AcpOperation;
+  origin: "input" | "persistence" | "client" | "provider" | "transport" | "process";
+  providerEvidence: "none" | "inbound_activity" | "terminal_response";
   message: string;
   retryable: boolean;
   code?: string | number;
@@ -81,7 +84,18 @@ type ExpectedAcpError =
       exitCode: number | null;
       signal: string | null;
     }>)
-  | (ExpectedErrorBase & Readonly<{ type: "client_operation" }>);
+  | (ExpectedErrorBase & Readonly<{ type: "client_operation" }>)
+  | (Omit<ExpectedErrorBase, "operation" | "origin" | "providerEvidence" | "retryable"> & Readonly<{
+      type: "session_binding";
+      operation: "open_session";
+      origin: "persistence";
+      providerEvidence: "none";
+      retryable: false;
+      categories: readonly [
+        "launch" | "cwd" | "model" | "options",
+        ...("launch" | "cwd" | "model" | "options")[],
+      ];
+    }>);
 
 test("@acpus/acp exposes the frozen stable session boundary", () => {
   expectTypeOf(openAcpSession).toEqualTypeOf<
@@ -99,16 +113,22 @@ test("@acpus/acp exposes the frozen stable session boundary", () => {
     options?: Readonly<Record<string, string>>;
   }>>();
   expectTypeOf<OpenAcpSessionInput>().toEqualTypeOf<Readonly<{
-    recordId: string;
+    agentSessionId: string;
+    bindingFingerprint: AgentSessionBindingFingerprintV1;
+    sessionOpenMode: "new_or_empty" | "existing_required";
     stateDirectory: string;
     launch: AcpLaunch;
     cwd: string;
     env?: Readonly<NodeJS.ProcessEnv>;
     permissionMode: AcpPermissionMode;
+    configuration: Readonly<{
+      model: string | null;
+      options: Readonly<Record<string, string>>;
+    }>;
     signal?: AbortSignal;
   }>>();
   expectTypeOf<keyof AcpSession>().toEqualTypeOf<
-    "recordId" | "sessionId" | "projectionPath" | "runTurn" | "close"
+    "agentSessionId" | "sessionId" | "projectionPath" | "reportedVersion" | "runTurn" | "close"
   >();
   expectTypeOf<AcpSession["runTurn"]>().toEqualTypeOf<
     (input: AcpTurnInput) => ResultAsync<AcpTurnResult, AcpError>
@@ -129,12 +149,24 @@ test("@acpus/acp exposes the frozen stable session boundary", () => {
     name: "fixture",
   } as const satisfies AcpLaunch;
   const frozenInput = {
-    recordId: "record-1",
+    agentSessionId: "session-1",
+    bindingFingerprint: {
+      version: 1,
+      digest: `sha256:${"0".repeat(64)}`,
+      components: {
+        launch: `sha256:${"1".repeat(64)}`,
+        cwd: `sha256:${"2".repeat(64)}`,
+        model: `sha256:${"3".repeat(64)}`,
+        options: `sha256:${"4".repeat(64)}`,
+      },
+    } as AgentSessionBindingFingerprintV1,
+    sessionOpenMode: "new_or_empty",
     stateDirectory: "/state",
     launch: frozenLaunch,
     cwd: "/workspace",
     env: { ACP_FIXTURE: "1" },
     permissionMode: "approve-reads",
+    configuration: { model: null, options: {} },
     signal: new AbortController().signal,
   } as const satisfies OpenAcpSessionInput;
   expectTypeOf<typeof frozenInput>().toMatchTypeOf<OpenAcpSessionInput>();
@@ -177,6 +209,8 @@ test("@acpus/acp exposes package-owned result, event, and error values", () => {
   const frozenError = {
     type: "persistence",
     operation: "open_session",
+    origin: "persistence",
+    providerEvidence: "none",
     path: "sessions/record-1.json",
     message: "Projection unavailable.",
     retryable: false,

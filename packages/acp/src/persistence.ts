@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   constants as fsConstants,
   lstatSync,
@@ -17,9 +17,12 @@ import {
   type FileHandle,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import type { AcpLaunch } from "./types.js";
+import type {
+  AgentSessionBindingCategory,
+  AgentSessionBindingFingerprintV1,
+} from "./types.js";
 
-const ACP_SESSION_PROJECTION_SCHEMA = "acpus.acp-session.v1" as const;
+const ACP_SESSION_PROJECTION_SCHEMA = "acpus.acp-session.v2" as const;
 export const ACP_SESSION_CONVERSATION_MAX_ENTRIES = 256;
 export const ACP_SESSION_CONVERSATION_MAX_BYTES = 256 * 1024;
 
@@ -30,12 +33,6 @@ type AcpProjectedJsonValue =
   | string
   | AcpProjectedJsonValue[]
   | { [key: string]: AcpProjectedJsonValue };
-
-export type AcpProjectedLaunch = Readonly<{
-  kind: "command" | "argv";
-  name?: string;
-  identity: string;
-}>;
 
 type AcpProjectedUsage = Readonly<{
   inputTokens?: number;
@@ -73,16 +70,11 @@ export type AcpProjectedConversationEntry =
 
 export type AcpSessionProjection = Readonly<{
   schema: typeof ACP_SESSION_PROJECTION_SCHEMA;
-  recordId: string;
-  cwd: string;
-  launch: AcpProjectedLaunch;
+  agentSessionId: string;
+  binding: AgentSessionBindingFingerprintV1;
   backend: Readonly<{
     sessionId: string;
     capabilities: Readonly<{ resume: boolean; load: boolean }>;
-  }>;
-  desiredConfiguration: Readonly<{
-    model?: string;
-    options: Readonly<Record<string, string>>;
   }>;
   conversation: readonly AcpProjectedConversationEntry[];
   lastStop?: Readonly<{
@@ -112,36 +104,30 @@ export class PersistenceIssue extends Error {
   }
 }
 
-export type LoadAcpSessionProjectionInput = Readonly<{
-  stateDirectory: string;
-  recordId: string;
-  cwd: string;
-  launchIdentity: AcpProjectedLaunch;
-}>;
+export class SessionBindingMismatchIssue extends Error {
+  readonly categories: readonly [AgentSessionBindingCategory, ...AgentSessionBindingCategory[]];
 
-export function acpSessionProjectionPath(recordId: string): string {
-  return `sessions/${encodeURIComponent(recordId)}.json`;
+  constructor(categories: readonly [AgentSessionBindingCategory, ...AgentSessionBindingCategory[]]) {
+    super("The ACP session projection binding does not match the requested Agent Session.");
+    this.name = "SessionBindingMismatchIssue";
+    this.categories = categories;
+  }
 }
 
-export function launchIdentity(launch: AcpLaunch): AcpProjectedLaunch {
-  const exactLaunch = launch.kind === "command"
-    ? `command\0${launch.command}`
-    : `argv\0${JSON.stringify(launch.argv)}`;
-  const identity = `sha256:${createHash("sha256")
-    .update("acpus.acp-launch.v1\0")
-    .update(exactLaunch)
-    .digest("hex")}`;
-  return {
-    kind: launch.kind,
-    ...(launch.name === undefined ? {} : { name: launch.name }),
-    identity,
-  };
+export type LoadAcpSessionProjectionInput = Readonly<{
+  stateDirectory: string;
+  agentSessionId: string;
+  bindingFingerprint: AgentSessionBindingFingerprintV1;
+}>;
+
+export function acpSessionProjectionPath(agentSessionId: string): string {
+  return `sessions/${encodeURIComponent(agentSessionId)}.json`;
 }
 
 export async function loadAcpSessionProjection(
   input: LoadAcpSessionProjectionInput,
 ): Promise<AcpSessionProjection | undefined> {
-  const relativePath = acpSessionProjectionPath(input.recordId);
+  const relativePath = acpSessionProjectionPath(input.agentSessionId);
   let source: string;
   try {
     const directory = await openProjectionDirectory(input.stateDirectory, false);
@@ -167,15 +153,10 @@ export async function loadAcpSessionProjection(
   if (!isAcpSessionProjection(value, true)) {
     throw issue("validate", relativePath, "The ACP session projection has an unsupported shape.");
   }
-  if (value.recordId !== input.recordId) {
-    throw issue("validate", relativePath, "The ACP session projection record id does not match.");
+  if (value.agentSessionId !== input.agentSessionId) {
+    throw issue("validate", relativePath, "The ACP session projection Agent Session id does not match.");
   }
-  if (value.cwd !== input.cwd) {
-    throw issue("validate", relativePath, "The ACP session projection working directory does not match.");
-  }
-  if (!sameLaunch(value.launch, input.launchIdentity)) {
-    throw issue("validate", relativePath, "The ACP session projection launch identity does not match.");
-  }
+  validateBinding(value.binding, input.bindingFingerprint, relativePath);
   return value;
 }
 
@@ -184,7 +165,7 @@ export async function saveAcpSessionProjection(
   projection: AcpSessionProjection,
   commit?: Readonly<{ beforeRename(): void; afterRename(): void }>,
 ): Promise<void> {
-  const relativePath = acpSessionProjectionPath(projection.recordId);
+  const relativePath = acpSessionProjectionPath(projection.agentSessionId);
   let serialized: string;
   try {
     if (!isAcpSessionProjection(projection, false)) {
@@ -539,25 +520,14 @@ export function boundConversation(
 function normalizeProjection(projection: AcpSessionProjection): AcpSessionProjection {
   const normalized: AcpSessionProjection = {
     schema: ACP_SESSION_PROJECTION_SCHEMA,
-    recordId: projection.recordId,
-    cwd: projection.cwd,
-    launch: {
-      kind: projection.launch.kind,
-      ...(projection.launch.name === undefined ? {} : { name: projection.launch.name }),
-      identity: projection.launch.identity,
-    },
+    agentSessionId: projection.agentSessionId,
+    binding: normalizeBinding(projection.binding),
     backend: {
       sessionId: projection.backend.sessionId,
       capabilities: {
         resume: projection.backend.capabilities.resume,
         load: projection.backend.capabilities.load,
       },
-    },
-    desiredConfiguration: {
-      ...(projection.desiredConfiguration.model === undefined
-        ? {}
-        : { model: projection.desiredConfiguration.model }),
-      options: sortedStringRecord(projection.desiredConfiguration.options),
     },
     conversation: boundConversation(projection.conversation),
     ...(projection.lastStop === undefined
@@ -582,15 +552,13 @@ function normalizeProjection(projection: AcpSessionProjection): AcpSessionProjec
 function isAcpSessionProjection(value: unknown, enforceBounds: boolean): value is AcpSessionProjection {
   if (!record(value)
     || !exactKeys(value, [
-      "schema", "recordId", "cwd", "launch", "backend",
-      "desiredConfiguration", "conversation", "createdAt", "updatedAt",
+      "schema", "agentSessionId", "binding", "backend",
+      "conversation", "createdAt", "updatedAt",
     ], ["lastStop"])
     || value.schema !== ACP_SESSION_PROJECTION_SCHEMA
-    || !nonemptyString(value.recordId)
-    || !nonemptyString(value.cwd)
-    || !projectedLaunch(value.launch)
+    || !nonemptyString(value.agentSessionId)
+    || !bindingFingerprint(value.binding)
     || !projectedBackend(value.backend)
-    || !projectedConfiguration(value.desiredConfiguration)
     || !Array.isArray(value.conversation)
     || !value.conversation.every(projectedConversationEntry)
     || !optionalOwn(value, "lastStop", projectedLastStop)
@@ -602,15 +570,6 @@ function isAcpSessionProjection(value: unknown, enforceBounds: boolean): value i
       && jsonBytes(value.conversation) <= ACP_SESSION_CONVERSATION_MAX_BYTES;
 }
 
-function projectedLaunch(value: unknown): value is AcpProjectedLaunch {
-  return record(value)
-    && exactKeys(value, ["kind", "identity"], ["name"])
-    && (value.kind === "command" || value.kind === "argv")
-    && optionalOwn(value, "name", nonemptyString)
-    && typeof value.identity === "string"
-    && /^sha256:[0-9a-f]{64}$/u.test(value.identity);
-}
-
 function projectedBackend(value: unknown): boolean {
   return record(value)
     && exactKeys(value, ["sessionId", "capabilities"])
@@ -619,13 +578,6 @@ function projectedBackend(value: unknown): boolean {
     && exactKeys(value.capabilities, ["resume", "load"])
     && typeof value.capabilities.resume === "boolean"
     && typeof value.capabilities.load === "boolean";
-}
-
-function projectedConfiguration(value: unknown): boolean {
-  return record(value)
-    && exactKeys(value, ["options"], ["model"])
-    && optionalOwn(value, "model", nonemptyString)
-    && stringRecord(value.options);
 }
 
 function projectedConversationEntry(value: unknown): value is AcpProjectedConversationEntry {
@@ -676,16 +628,51 @@ function jsonValue(value: unknown): value is AcpProjectedJsonValue {
   return record(value) && Object.values(value).every(jsonValue);
 }
 
-function sameLaunch(left: AcpProjectedLaunch, right: AcpProjectedLaunch): boolean {
-  return projectedLaunch(right)
-    && left.kind === right.kind
-    && left.name === right.name
-    && left.identity === right.identity;
+function bindingFingerprint(value: unknown): value is AgentSessionBindingFingerprintV1 {
+  return record(value)
+    && exactKeys(value, ["version", "digest", "components"])
+    && value.version === 1
+    && sha256(value.digest)
+    && record(value.components)
+    && exactKeys(value.components, ["launch", "cwd", "model", "options"])
+    && Object.values(value.components).every(sha256);
 }
 
-function sortedStringRecord(value: Readonly<Record<string, string>>): Record<string, string> {
-  return Object.fromEntries(Object.entries(value).sort(([left], [right]) =>
-    left < right ? -1 : left > right ? 1 : 0));
+function normalizeBinding(value: AgentSessionBindingFingerprintV1): AgentSessionBindingFingerprintV1 {
+  return {
+    version: 1,
+    digest: value.digest,
+    components: {
+      launch: value.components.launch,
+      cwd: value.components.cwd,
+      model: value.components.model,
+      options: value.components.options,
+    },
+  };
+}
+
+function validateBinding(
+  actual: AgentSessionBindingFingerprintV1,
+  expected: AgentSessionBindingFingerprintV1,
+  path: string,
+): void {
+  if (!bindingFingerprint(expected)) throw issue("validate", path, "The expected Agent Session binding is invalid.");
+  const categories = (["launch", "cwd", "model", "options"] as const)
+    .filter(category => actual.components[category] !== expected.components[category]);
+  const overallEqual = actual.digest === expected.digest;
+  const componentsEqual = categories.length === 0;
+  if (overallEqual && componentsEqual) return;
+  if (overallEqual || componentsEqual) {
+    throw issue("validate", path, "The ACP session projection binding fingerprint is internally inconsistent.");
+  }
+  throw new SessionBindingMismatchIssue(categories as [
+    AgentSessionBindingCategory,
+    ...AgentSessionBindingCategory[],
+  ]);
+}
+
+function sha256(value: unknown): value is `sha256:${string}` {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
 }
 
 function record(value: unknown): value is Record<string, unknown> {
@@ -719,10 +706,6 @@ function string(value: unknown): value is string {
 
 function nonemptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
-}
-
-function stringRecord(value: unknown): value is Record<string, string> {
-  return record(value) && Object.values(value).every(string);
 }
 
 function nonnegativeInteger(value: unknown): value is number {

@@ -7,17 +7,24 @@ import { CaptureStream } from "./support/capture-stream.js";
 const runtime = vi.hoisted(() => ({
   observeInspection: vi.fn(),
   readInspection: vi.fn(),
+  requestDaemonInspection: vi.fn(),
 }));
 
 vi.mock("@acpus/runtime", async importOriginal => ({
   ...await importOriginal<typeof import("@acpus/runtime")>(),
   observeInspection: runtime.observeInspection,
   readInspection: runtime.readInspection,
+  requestDaemonInspection: runtime.requestDaemonInspection,
 }));
 
 describe("runs inspect archived summaries", () => {
   beforeEach(() => {
     runtime.readInspection.mockReset().mockResolvedValue(archivedRun());
+    runtime.requestDaemonInspection.mockReset().mockResolvedValue({
+      isOk: () => false,
+      isErr: () => true,
+      error: { type: "rejected", code: "RUN_NOT_FOUND", message: "Run was not active." },
+    });
     runtime.observeInspection.mockReset().mockImplementation(() => emissions([
       err(archivedDetailUnavailable()),
     ]));

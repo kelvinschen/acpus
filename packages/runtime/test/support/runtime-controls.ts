@@ -18,9 +18,12 @@ export async function controlRun(
   type: "pause" | "resume" | "retry" | "cancel",
   target?: string,
 ): Promise<RunDetails> {
-  const intent: RunControlIntent = type === "retry" || type === "cancel"
-    ? { requestId: `${type}:${randomUUID()}`, runId, type, ...(target === undefined ? {} : { target }) }
-    : { requestId: `${type}:${randomUUID()}`, runId, type };
+  const requestId = `${type}:${randomUUID()}`;
+  const intent: RunControlIntent = type === "retry"
+    ? { requestId, runId, type, target: target ?? "root" }
+    : type === "cancel"
+      ? { requestId, runId, type, ...(target === undefined ? {} : { target }) }
+      : { requestId, runId, type };
   return await applyControl(workspace, intent);
 }
 export async function signalRun(

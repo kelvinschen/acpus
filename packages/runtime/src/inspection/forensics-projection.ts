@@ -235,7 +235,7 @@ function invocation(
     if (!metadata) return unavailable();
     const prompt = requiredString(metadata, "prompt");
     const promptOrigin = requiredString(metadata, "promptOrigin");
-    if (promptOrigin !== "authored" && promptOrigin !== "steering" && promptOrigin !== "continuation") {
+    if (promptOrigin !== "authored" && promptOrigin !== "steering") {
       throw new Error("Agent invocation prompt origin is invalid.");
     }
     const permissionMode = requiredString(metadata, "permissionMode");

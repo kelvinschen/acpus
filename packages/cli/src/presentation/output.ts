@@ -35,7 +35,8 @@ export type WorkflowSummary = {
 
 export type CliAppliedControl =
   | { type: "pause" | "resume"; state: "applied"; runId: string }
-  | { type: "retry" | "cancel"; state: "applied"; runId: string; target?: string }
+  | { type: "retry"; state: "applied"; runId: string; target: string }
+  | { type: "cancel"; state: "applied"; runId: string; target?: string }
   | { type: "fork"; state: "applied"; sourceRunId: string }
   | {
       type: "steer";
@@ -43,6 +44,7 @@ export type CliAppliedControl =
       runId: string;
       steerId: string;
       target: string;
+      delivery: "interrupt_continue";
       continuation: "queued";
     }
   | {
@@ -519,10 +521,6 @@ function writeCatalogEntries(stream: Writable, entries: WorkflowCatalogEntry[]):
   for (const row of rows) {
     stream.write(`${row.scope.padEnd(scopeWidth)}  ${row.status.padEnd(statusWidth)}  ${row.detail ? row.name.padEnd(nameWidth) : row.name}${row.detail ? `  ${row.detail}` : ""}\n`);
   }
-}
-
-export function writeJsonLine(stream: Writable, value: unknown): void {
-  stream.write(`${JSON.stringify(value)}\n`);
 }
 
 export function summarizeWorkflow(ir: WorkflowIR): WorkflowSummary {

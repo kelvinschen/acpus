@@ -1,695 +1,177 @@
+import { defineWorkflow } from "@acpus/core";
+import { sha256Digest } from "@acpus/core/content-identity";
+import { describe, expect, it } from "vitest";
 import { admitRunForTest } from "./support/runtime-store.js";
-import { DatabaseSync } from "node:sqlite";
-import { describe, expect, it, vi } from "vitest";
-import * as occurrenceRefs from "../src/scheduler/occurrence-ref.js";
+import { agentSessionIdForScope, agentSessionScopeDigest } from "../src/execution/agent-session.js";
+import type { AgentSessionCheckpointValue } from "../src/execution/agent-operation-plan.js";
 import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
-import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
-import { dbRow, dbScalar, readyNode } from "./support/store-port-fixtures.js";
 
-describe("scheduler store attempts, retry, and result commits", () => {
-  it("records attempts durably and rejects stale owner commits", async () => {
-    await withRuntimeWorkspace("scheduler-store-attempts", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+describe("Scheduler generic Agent Retry", () => {
+  it("neutralizes and abandons S1 atomically, then admits S2 with an authored Start", async () => {
+    await withRuntimeWorkspace("scheduler-agent-retry-generation", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, agentWorkflow(false));
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const first = store.scheduler.claimRun(run.id, "owner-a", 60_000);
-        readyNode(store, run.id, first!, "attempt-ready-node");
-        const admissionVersion = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version;
-        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
-          runId: run.id,
-          nodeKey: "require_ready~1",
-          nodeId: "require_ready",
-          ownerEpoch: first!.ownerEpoch,
-          expectedVersion: admissionVersion,
-          idempotencyKey: "attempt:start",
-        });
-        expect(attempt).toMatchObject({ attemptNo: 1 });
-        const replay = throwingSchedulerStore(store.scheduler).startAttempt({
-          runId: run.id,
-          nodeKey: "require_ready~1",
-          nodeId: "require_ready",
-          ownerEpoch: first!.ownerEpoch,
-          expectedVersion: admissionVersion,
-          idempotencyKey: "attempt:start",
-        });
-        expect(replay).toMatchObject({
-          attemptId: attempt.attemptId,
-          attemptNo: attempt.attemptNo,
-          disposition: "existing",
-        });
-        expect(replay.snapshot).toEqual(attempt.snapshot);
-        expect(() => throwingSchedulerStore(store.scheduler).startAttempt({
-          runId: run.id,
-          nodeKey: "other~1",
-          nodeId: "other",
-          ownerEpoch: first!.ownerEpoch,
-          expectedVersion: admissionVersion,
-          idempotencyKey: "attempt:start",
-        })).toThrow("conflicts");
-        expect(dbScalar(workspace, "SELECT status FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toBe("started");
-        expect(() => throwingSchedulerStore(store.scheduler).markExpiredOwnerAttemptsSuperseded({
-          runId: run.id,
-          currentOwnerEpoch: first!.ownerEpoch,
-          expiredOwnerEpoch: first!.ownerEpoch,
-          expectedVersion: attempt.snapshot.version,
-        })).toThrow("still active");
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        readyAgent(store, run.id, claim);
+        const first = materializeAgent(store, run.id, claim, false);
+        failAgent(store, run.id, claim, first);
 
-        const db = new DatabaseSync(runtimeDatabasePath(workspace));
-        try {
-          db.prepare("UPDATE run_leases SET lease_expires_at = ? WHERE run_id = ?").run(new Date(Date.now() - 1_000).toISOString(), run.id);
-        } finally {
-          db.close();
-        }
-
-        const second = store.scheduler.claimRun(run.id, "owner-b", 60_000);
-        expect(second).toMatchObject({ ownerEpoch: 2 });
-        expect(() => throwingSchedulerStore(store.scheduler).commitAttemptResult({
+        const plan = store.scheduler.tryPlanRetry({
           runId: run.id,
-          attemptId: attempt.attemptId,
-          ownerEpoch: first!.ownerEpoch,
-          result: { status: "completed", output: { ok: true } },
-          idempotencyKey: "attempt:late",
-        })).toThrow("owner epoch is not active");
+          target: "review~1",
+          idempotencyKey: "retry:agent",
+        })._unsafeUnwrap();
+        expect(plan.sessions).toEqual([{ runId: run.id, agentSessionId: first.agentSessionId }]);
 
-        const superseded = throwingSchedulerStore(store.scheduler).markExpiredOwnerAttemptsSuperseded({
+        expect(store.scheduler.tryCommitRetry({
           runId: run.id,
-          currentOwnerEpoch: second!.ownerEpoch,
-          expiredOwnerEpoch: first!.ownerEpoch,
-          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
+          ownerEpoch: claim.ownerEpoch,
+          expectedVersion: plan.snapshot.version,
+          target: "review~1",
+          idempotencyKey: "retry:agent",
+          neutralizedAgentSessionIds: [],
+        })._unsafeUnwrapErr()).toMatchObject({ type: "retry-neutralization-mismatch" });
+
+        const retried = store.scheduler.tryCommitRetry({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          expectedVersion: plan.snapshot.version,
+          target: "review~1",
+          idempotencyKey: "retry:agent",
+          neutralizedAgentSessionIds: [first.agentSessionId],
+        })._unsafeUnwrap();
+        expect(retried.projection.instances["review~1"]).toMatchObject({ status: "ready" });
+        expect(store.scheduler.readAgentControlInspection(run.id).agentSessions)
+          .toEqual([expect.objectContaining({ agentSessionId: first.agentSessionId, generation: 1, lifecycle: "abandoned" })]);
+
+        const secondAttempt = throwingSchedulerStore(store.scheduler).startAttempt({
+          runId: run.id,
+          nodeKey: "review~1",
+          nodeId: "review",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "retry:agent:s2",
         });
-        expect(superseded.projection.attempts[attempt.attemptId]).toMatchObject({ status: "superseded" });
-        expect(dbScalar(workspace, "SELECT status FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toBe("superseded");
+        const authored = { promptOrigin: "authored" as const, inputDigest: sha256Digest("prompt:s2") };
+        const admission = store.scheduler.planAgentAttemptAdmission({
+          runId: run.id,
+          attemptId: secondAttempt.attemptId,
+          ownerEpoch: claim.ownerEpoch,
+          target: "review~1",
+          scopeDigest: first.scopeDigest,
+          explicitShared: false,
+          authored,
+        })._unsafeUnwrap();
+        expect(admission).toMatchObject({
+          operation: "start",
+          session: { generation: 2 },
+          predecessorAttemptId: first.attemptId,
+          promptOrigin: "authored",
+        });
+        store.scheduler.tryBindAgentAttemptSession({
+          runId: run.id,
+          attemptId: secondAttempt.attemptId,
+          ownerEpoch: claim.ownerEpoch,
+          agentSessionId: admission.session.agentSessionId,
+          scopeDigest: admission.session.scopeDigest,
+          generation: admission.session.generation,
+          explicitShared: false,
+          operation: admission.operation,
+          sessionOpenMode: admission.sessionOpenMode,
+          ...(admission.predecessorAttemptId === undefined ? {} : { predecessorAttemptId: admission.predecessorAttemptId }),
+          promptOrigin: admission.promptOrigin,
+          inputDigest: admission.inputDigest,
+          ...(admission.admittedFromCheckpoint === undefined ? {} : { admittedFromCheckpoint: admission.admittedFromCheckpoint }),
+        })._unsafeUnwrap();
+        expect(store.scheduler.readAgentControlInspection(run.id).agentSessions)
+          .toEqual(expect.arrayContaining([
+            expect.objectContaining({ generation: 1, lifecycle: "abandoned" }),
+            expect.objectContaining({ generation: 2, lifecycle: "active", currentBinding: { operation: "start", attemptId: secondAttempt.attemptId, promptOrigin: "authored" } }),
+          ]));
       } finally {
         store.close();
       }
     });
   });
 
-  it("persists attempt timings from their committed scheduler events", async () => {
-    await withRuntimeWorkspace("scheduler-store-attempt-timings", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
+  it("rejects explicit shared Session Retry without writing", async () => {
+    await withRuntimeWorkspace("scheduler-shared-agent-retry", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, agentWorkflow(true));
       const store = await openRuntimeStore(workspace);
       try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        readyNode(store, run.id, claim, "attempt-timing-ready");
+        readyAgent(store, run.id, claim);
+        const first = materializeAgent(store, run.id, claim, true);
+        failAgent(store, run.id, claim, first);
+        const before = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
+        const rejected = store.scheduler.tryPlanRetry({
+          runId: run.id,
+          target: "review~1",
+          idempotencyKey: "retry:shared",
+        })._unsafeUnwrapErr();
+        expect(rejected).toMatchObject({ type: "shared-session-retry-requires-fork" });
+        expect(rejected.message).toContain(`acpus runs fork ${run.id} --target review~1`);
+        expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version).toBe(before.version);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("creates S1 after a pre-identity failure", async () => {
+    await withRuntimeWorkspace("scheduler-agent-retry-pre-identity", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, agentWorkflow(false));
+      const store = await openRuntimeStore(workspace);
+      try {
+        const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        readyAgent(store, run.id, claim);
         const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
-          nodeKey: "require_ready~1",
-          nodeId: "require_ready",
+          nodeKey: "review~1",
+          nodeId: "review",
           ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "attempt:timing:start",
+          idempotencyKey: "pre-identity:start",
         });
         throwingSchedulerStore(store.scheduler).commitAttemptResult({
           runId: run.id,
           attemptId: attempt.attemptId,
           ownerEpoch: claim.ownerEpoch,
-          result: { status: "completed", output: { ok: true } },
-          idempotencyKey: "attempt:timing:complete",
+          result: { status: "failed", reason: "spawn failed" },
+          idempotencyKey: "pre-identity:failed",
         });
-
-        const startedAt = dbScalar(workspace, "SELECT created_at FROM run_events WHERE run_id = ? AND type = 'attempt.started'", run.id);
-        const finishedAt = dbScalar(workspace, "SELECT created_at FROM run_events WHERE run_id = ? AND type = 'attempt.completed'", run.id);
-
-        expect(dbRow(workspace, "SELECT started_at, finished_at FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toEqual({
-          started_at: startedAt,
-          finished_at: finishedAt,
+        const plan = store.scheduler.tryPlanRetry({ runId: run.id, target: "review~1", idempotencyKey: "pre-identity:retry" })._unsafeUnwrap();
+        expect(plan.sessions).toEqual([]);
+        store.scheduler.tryCommitRetry({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          expectedVersion: plan.snapshot.version,
+          target: "review~1",
+          idempotencyKey: "pre-identity:retry",
+          neutralizedAgentSessionIds: [],
+        })._unsafeUnwrap();
+        const next = throwingSchedulerStore(store.scheduler).startAttempt({
+          runId: run.id,
+          nodeKey: "review~1",
+          nodeId: "review",
+          ownerEpoch: claim.ownerEpoch,
+          idempotencyKey: "pre-identity:s1",
         });
-        const dynamicAttempt = store.getRun(run.id)?.dynamic?.attempts.find(row => row.attemptId === attempt.attemptId);
-        expect(dynamicAttempt).toMatchObject({ startedAt, finishedAt });
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it("rejects heartbeat after the current owner lease has expired", async () => {
-    await withRuntimeWorkspace("scheduler-store-expired-heartbeat", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        const db = new DatabaseSync(runtimeDatabasePath(workspace));
-        try {
-          db.prepare("UPDATE run_leases SET lease_expires_at = ? WHERE run_id = ?").run(new Date(Date.now() - 1_000).toISOString(), run.id);
-        } finally {
-          db.close();
-        }
-
-        expect(store.scheduler.heartbeatRun(claim, 60_000)).toBe(false);
-        expect(store.scheduler.claimRun(run.id, "owner-b", 60_000)).toMatchObject({ ownerEpoch: 2 });
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it("pauses by cancelling started attempts and requeueing active work", async () => {
-    await withRuntimeWorkspace("scheduler-store-pause-active", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        readyGroupNode(store, run.id, claim, "pause-ready-group-node");
-        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
+        const admission = store.scheduler.planAgentAttemptAdmission({
           runId: run.id,
-          nodeKey: "require_ready~1",
-          nodeId: "require_ready",
+          attemptId: next.attemptId,
           ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "pause:attempt:start",
-        });
-
-        const paused = throwingSchedulerStore(store.scheduler).pauseRun({
-          runId: run.id,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "pause:run",
-        });
-
-        expect(paused.projection.run).toMatchObject({ status: "paused", paused: true });
-        expect(paused.projection.attempts[attempt.attemptId]).toMatchObject({ status: "cancelled", cancelReason: "paused" });
-        expect(paused.projection.instances["require_ready~1"]).toMatchObject({ status: "ready", readinessSequence: 1, statusReason: "paused" });
-        expect(paused.projection.groupMembers["require_ready~1"]).toMatchObject({ status: "running", readinessSequence: 1 });
-        expect(throwingSchedulerStore(store.scheduler).pauseRun({
-          runId: run.id,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "pause:run",
-        }).version).toBe(paused.version);
-        expect(() => throwingSchedulerStore(store.scheduler).startAttempt({
-          runId: run.id,
-          nodeKey: "require_ready~1",
-          nodeId: "require_ready",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "pause:attempt:blocked",
-        })).toThrow("is paused");
-
-        const eventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id);
-        expect(() => throwingSchedulerStore(store.scheduler).commitAttemptResult({
-          runId: run.id,
-          attemptId: attempt.attemptId,
-          ownerEpoch: claim.ownerEpoch,
-          result: { status: "completed", output: { late: true } },
-          idempotencyKey: "pause:attempt:late",
-        })).toThrow("already cancelled");
-        expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id)).toBe(eventCount);
-
-        const resumed = throwingSchedulerStore(store.scheduler).resumeRun({
-          runId: run.id,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "pause:resume",
-        });
-        expect(resumed.projection.run).toMatchObject({ status: "pending", paused: false });
-        expect(throwingSchedulerStore(store.scheduler).resumeRun({
-          runId: run.id,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "pause:resume",
-        }).version).toBe(resumed.version);
-        const restarted = throwingSchedulerStore(store.scheduler).startAttempt({
-          runId: run.id,
-          nodeKey: "require_ready~1",
-          nodeId: "require_ready",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "pause:attempt:restart",
-        });
-        expect(restarted).toMatchObject({ attemptNo: 2 });
-        const restartedSnapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
-        expect(restartedSnapshot.projection.instances["require_ready~1"]).toMatchObject({ status: "running" });
-        expect(restartedSnapshot.projection.groupMembers["require_ready~1"]).toMatchObject({ status: "running" });
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it("resolves and replays retry aliases in the store", async () => {
-    await withRuntimeWorkspace("scheduler-store-retry", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
-        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
-          runId: run.id,
-          expectedVersion: snapshot.version,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "retry:failed-state",
-          events: [
-            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "require_ready~1", nodeId: "require_ready", parentFrameKey: "root", instancePath: [{ kind: "node", nodeId: "require_ready" }], readinessSequence: 1 } },
-            { type: "instance.failed", payload: { nodeKey: "require_ready~1", error: { reason: "boom" }, statusReason: "terminal" } },
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "other~1", nodeId: "other", parentFrameKey: "root", instancePath: [{ kind: "node", nodeId: "other" }], readinessSequence: 2 } },
-            { type: "instance.failed", payload: { nodeKey: "other~1", error: { reason: "boom" }, statusReason: "terminal" } },
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "other~2", nodeId: "other", parentFrameKey: "root", instancePath: [{ kind: "fanout", nodeId: "items", itemIndex: 1 }, { kind: "node", nodeId: "other" }], readinessSequence: 3 } },
-            { type: "instance.failed", payload: { nodeKey: "other~2", error: { reason: "boom" }, statusReason: "terminal" } },
-            { type: "frame.failed", payload: { frameKey: "root", error: { reason: "boom" } } },
-          ],
-        });
-
-        expect(() => throwingSchedulerStore(store.scheduler).retry({
-          runId: run.id,
-          target: "other",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "retry:other",
-        })).toThrow("ambiguous");
-        const retried = throwingSchedulerStore(store.scheduler).retry({
-          runId: run.id,
-          target: "require_ready",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "retry:node",
-        });
-        expect(retried.projection.instances["require_ready~1"]).toMatchObject({ status: "ready", statusReason: "retry" });
-        expect(dbRow(workspace, "SELECT status, error_json FROM node_instances WHERE run_id = ? AND node_key = ?", run.id, "require_ready~1")).toMatchObject({
-          status: "ready",
-          error_json: null,
-        });
-        expect(throwingSchedulerStore(store.scheduler).retry({
-          runId: run.id,
-          target: "require_ready",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "retry:node",
-        }).version).toBe(retried.version);
-        expect(() => throwingSchedulerStore(store.scheduler).retry({
-          runId: run.id,
-          target: "require_ready~1",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "retry:node-again",
-        })).toThrow("in a completed run");
-        expect(store.scheduler.tryRetry({
-          runId: run.id,
-          target: "other",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "retry:node",
-        })._unsafeUnwrapErr()).toMatchObject({
-          type: "idempotency-conflict",
-          idempotencyKey: "retry:node",
-          runId: run.id,
-        });
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it.each(["retry", "cancel"] as const)(
-    "revalidates a %s occurrence ref inside the SQLite mutation transaction",
-    async control => {
-      await withRuntimeWorkspace(`scheduler-store-${control}-occurrence-ref-transaction`, async workspace => {
-        const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-        const store = await openRuntimeStore(workspace);
-        try {
-          const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-          const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-          const path = [{ kind: "node" as const, nodeId: "require_ready" }];
-          const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
-          throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
-            runId: run.id,
-            expectedVersion: snapshot.version,
-            ownerEpoch: claim.ownerEpoch,
-            idempotencyKey: `${control}:occurrence-ref-state`,
-            events: [
-              { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
-              {
-                type: "instance.ready",
-                payload: {
-                  runId: run.id,
-                  nodeKey: "require_ready~1",
-                  nodeId: "require_ready",
-                  parentFrameKey: "root",
-                  instancePath: path,
-                  readinessSequence: 1,
-                },
-              },
-              ...(control === "retry"
-                ? [
-                    {
-                      type: "instance.failed" as const,
-                      payload: {
-                        nodeKey: "require_ready~1",
-                        error: { reason: "boom" },
-                        statusReason: "terminal",
-                      },
-                    },
-                    {
-                      type: "frame.failed" as const,
-                      payload: { frameKey: "root", error: { reason: "boom" } },
-                    },
-                  ]
-                : []),
-            ],
-          });
-
-          const db = (store.scheduler as unknown as { db: DatabaseSync }).db;
-          const transactionStates: boolean[] = [];
-          const resolveOccurrenceRef = occurrenceRefs.resolveOccurrenceRef;
-          const resolveSpy = vi.spyOn(occurrenceRefs, "resolveOccurrenceRef").mockImplementation((...args) => {
-            transactionStates.push(db.isTransaction);
-            return resolveOccurrenceRef(...args);
-          });
-          try {
-            const input = {
-              runId: run.id,
-              target: occurrenceRefs.deriveOccurrenceRef(path),
-              ownerEpoch: claim.ownerEpoch,
-              idempotencyKey: `${control}:occurrence-ref-control`,
-            };
-            const result = control === "retry"
-              ? store.scheduler.tryRetry(input)
-              : store.scheduler.tryCancel(input);
-            expect(result.isOk()).toBe(true);
-            expect(transactionStates).toContain(true);
-          } finally {
-            resolveSpy.mockRestore();
-          }
-        } finally {
-          store.close();
-        }
-      });
-    },
-  );
-
-  it("retries failed composite frames through scheduler events", async () => {
-    await withRuntimeWorkspace("scheduler-store-frame-retry", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
-        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
-          runId: run.id,
-          expectedVersion: snapshot.version,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "retry:frame-state",
-          events: [
-            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
-            { type: "frame.started", payload: { runId: run.id, frameKey: "choose~1", frameKind: "node", nodeKey: "choose~1", nodeId: "choose", parentFrameKey: "root", instancePath: [{ kind: "node", nodeId: "choose" }] } },
-            { type: "branch.decided", payload: { frameKey: "choose~1", branchId: "then" } },
-            { type: "frame.started", payload: { runId: run.id, frameKey: "choose.then~1", frameKind: "branch", nodeId: "choose", parentFrameKey: "choose~1", instancePath: [{ kind: "branch", nodeId: "choose", branchId: "then" }] } },
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "leaf~1", nodeId: "leaf", parentFrameKey: "choose.then~1", instancePath: [{ kind: "branch", nodeId: "choose", branchId: "then" }, { kind: "node", nodeId: "leaf" }] } },
-            { type: "attempt.started", payload: { runId: run.id, attemptId: "attempt_leaf", nodeKey: "leaf~1", nodeId: "leaf", attemptNo: 1, ownerEpoch: claim.ownerEpoch } },
-            { type: "attempt.failed", payload: { attemptId: "attempt_leaf", error: { reason: "boom" } } },
-            { type: "instance.failed", payload: { nodeKey: "leaf~1", error: { reason: "boom" } } },
-            { type: "frame.failed", payload: { frameKey: "choose.then~1", error: { reason: "boom" } } },
-            { type: "frame.failed", payload: { frameKey: "choose~1", error: { reason: "boom" } } },
-            { type: "frame.failed", payload: { frameKey: "root", error: { reason: "boom" } } },
-          ],
-        });
-
-        const retried = throwingSchedulerStore(store.scheduler).retry({
-          runId: run.id,
-          target: "choose~1",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "retry:frame",
-        });
-        expect(retried.projection.run).toMatchObject({ status: "pending" });
-        expect(retried.projection.frames.root).toMatchObject({ status: "running" });
-        expect(retried.projection.frames["choose~1"]).toBeUndefined();
-        expect(retried.projection.frames["choose.then~1"]).toBeUndefined();
-        expect(retried.projection.instances["leaf~1"]).toBeUndefined();
-        expect(retried.projection.branchDecisions["choose~1"]).toBeUndefined();
-        expect(store.getRun(run.id)).toMatchObject({ status: "running" });
-        expect(dbScalar(workspace, "SELECT COUNT(*) FROM scheduler_frames WHERE run_id = ? AND frame_key = ?", run.id, "choose.then~1")).toBe(0);
-        expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_instances WHERE run_id = ? AND node_key = ?", run.id, "leaf~1")).toBe(0);
-        expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_attempts WHERE run_id = ? AND attempt_id = ?", run.id, "attempt_leaf")).toBe(0);
-        expect(dbScalar(workspace, "SELECT COUNT(*) FROM node_states WHERE run_id = ? AND node_key = ?", run.id, "leaf~1")).toBe(0);
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it("cancels a run through scheduler events and bridges the public run status", async () => {
-    await withRuntimeWorkspace("scheduler-store-cancel-run", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
-          runId: run.id,
-          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "cancel:run-state",
-          events: [
-            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "require_ready~1", nodeId: "require_ready", instancePath: [{ kind: "node", nodeId: "require_ready" }], parentFrameKey: "root", readinessSequence: 1 } },
-          ],
-        });
-
-        const canceled = throwingSchedulerStore(store.scheduler).cancel({
-          runId: run.id,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "cancel:run",
-        });
-
-        expect(canceled.projection.run).toMatchObject({ status: "canceled", paused: false });
-        expect(canceled.projection.frames.root).toMatchObject({ status: "cancelled", terminalReason: "operator_cancelled" });
-        expect(canceled.projection.instances["require_ready~1"]).toMatchObject({ status: "cancelled", statusReason: "operator_cancelled" });
-        expect(store.getRun(run.id)).toMatchObject({ status: "canceled" });
-        expect(dbScalar(workspace, "SELECT type FROM run_events WHERE run_id = ? AND type = 'run.canceled'", run.id)).toBe("run.canceled");
-        expect(throwingSchedulerStore(store.scheduler).cancel({
-          runId: run.id,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "cancel:run",
-        }).version).toBe(canceled.version);
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it("resolves and replays cancel aliases without resetting unrelated work", async () => {
-    await withRuntimeWorkspace("scheduler-store-cancel-target", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
-          runId: run.id,
-          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "cancel:target-state",
-          events: [
-            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "left~1", nodeId: "left", instancePath: [{ kind: "node", nodeId: "left" }], parentFrameKey: "root", readinessSequence: 1 } },
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "right~1", nodeId: "right", instancePath: [{ kind: "node", nodeId: "right" }], parentFrameKey: "root", readinessSequence: 2 } },
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "right~2", nodeId: "right", instancePath: [{ kind: "fanout", nodeId: "items", itemIndex: 1 }, { kind: "node", nodeId: "right" }], parentFrameKey: "root", readinessSequence: 3 } },
-          ],
-        });
-
-        const canceled = throwingSchedulerStore(store.scheduler).cancel({
-          runId: run.id,
-          target: "left",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "cancel:left",
-        });
-
-        expect(canceled.projection.run.status).toBe("pending");
-        expect(canceled.projection.instances["left~1"]).toMatchObject({ status: "cancelled", statusReason: "operator_cancelled" });
-        expect(canceled.projection.instances["right~1"]).toMatchObject({ status: "ready" });
-        expect(store.getRun(run.id)).toMatchObject({ status: "running" });
-
-        const withNewCandidates = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
-          runId: run.id,
-          expectedVersion: canceled.version,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "cancel:target-new-candidates",
-          events: [
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "left~2", nodeId: "left", instancePath: [{ kind: "fanout", nodeId: "items", itemIndex: 2 }, { kind: "node", nodeId: "left" }], parentFrameKey: "root", readinessSequence: 4 } },
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "left~3", nodeId: "left", instancePath: [{ kind: "fanout", nodeId: "items", itemIndex: 3 }, { kind: "node", nodeId: "left" }], parentFrameKey: "root", readinessSequence: 5 } },
-          ],
-        });
-        expect(throwingSchedulerStore(store.scheduler).cancel({
-          runId: run.id,
-          target: "left",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "cancel:left",
-        }).version).toBe(withNewCandidates.version);
-        expect(store.scheduler.tryCancel({
-          runId: run.id,
-          target: "right",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "cancel:left",
-        })._unsafeUnwrapErr()).toMatchObject({
-          type: "idempotency-conflict",
-          idempotencyKey: "cancel:left",
-          runId: run.id,
-        });
-        expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ? AND type = 'instance.cancelled' AND node_key = 'left~1'", run.id)).toBe(1);
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it("cancels the owning group member subtree for a grouped leaf target", async () => {
-    await withRuntimeWorkspace("scheduler-store-cancel-grouped-leaf", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
-          runId: run.id,
-          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "cancel:grouped-leaf-state",
-          events: [
-            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
-            { type: "frame.started", payload: { runId: run.id, frameKey: "parallel~1", frameKind: "node", parentFrameKey: "root", nodeKey: "parallel~1", nodeId: "parallel", strategy: "all" } },
-            { type: "group.started", payload: { runId: run.id, groupKey: "parallel~1", nodeKey: "parallel~1", nodeId: "parallel", kind: "parallel", strategy: "all" } },
-            { type: "group.member_ready", payload: { runId: run.id, groupKey: "parallel~1", memberKey: "branch~left", memberKind: "branch", branchId: "left", childFrameKey: "branch~left", readinessSequence: 1 } },
-            { type: "frame.started", payload: { runId: run.id, frameKey: "branch~left", frameKind: "branch", parentFrameKey: "parallel~1", nodeId: "parallel", strategy: "all" } },
-            { type: "instance.ready", payload: { runId: run.id, nodeKey: "leaf~1", nodeId: "leaf", instancePath: [{ kind: "branch", nodeId: "parallel", branchId: "left" }, { kind: "node", nodeId: "leaf" }], parentFrameKey: "branch~left", readinessSequence: 1 } },
-          ],
-        });
-
-        const canceled = throwingSchedulerStore(store.scheduler).cancel({
-          runId: run.id,
-          target: "leaf~1",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "cancel:grouped-leaf",
-        });
-
-        expect(canceled.projection.instances["leaf~1"]).toMatchObject({ status: "cancelled", statusReason: "operator_cancelled" });
-        expect(canceled.projection.groupMembers["branch~left"]).toMatchObject({ status: "cancelled", terminalReason: "operator_cancelled" });
-        expect(canceled.projection.frames["branch~left"]).toMatchObject({ status: "cancelled", terminalReason: "operator_cancelled" });
-        expect(canceled.projection.groups["parallel~1"]).toMatchObject({ status: "running" });
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it("exposes group member completion sequence through public run details", async () => {
-    await withRuntimeWorkspace("scheduler-store-group-member-order-read", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
-          runId: run.id,
-          expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "public:group-member-order",
-          events: [
-            { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
-            { type: "group.started", payload: { runId: run.id, groupKey: "parallel~1", nodeKey: "parallel~1", nodeId: "parallel", kind: "parallel", strategy: "race" } },
-            { type: "group.member_ready", payload: { runId: run.id, groupKey: "parallel~1", memberKey: "left", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
-            { type: "group.member_completed", payload: { memberKey: "left", completionSequence: 7, output: { ok: true } } },
-          ],
-        });
-
-        expect(store.getRun(run.id)?.dynamic?.groupMembers).toEqual([
-          expect.objectContaining({ memberKey: "left", completionSequence: 7, status: "completed" }),
-        ]);
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it("commits attempt results idempotently through reducer projection rows", async () => {
-    await withRuntimeWorkspace("scheduler-store-attempt-results", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        readyNode(store, run.id, claim, "attempt-cancel-ready-node");
-        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
-          runId: run.id,
-          nodeKey: "require_ready~1",
-          nodeId: "require_ready",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "attempt:cancel:start",
-        });
-
-        const snapshot = throwingSchedulerStore(store.scheduler).commitAttemptResult({
-          runId: run.id,
-          attemptId: attempt.attemptId,
-          ownerEpoch: claim.ownerEpoch,
-          result: { status: "cancelled", reason: "race_lost" },
-          idempotencyKey: "attempt:cancel:commit",
-        });
-        expect(snapshot.projection.attempts[attempt.attemptId]).toMatchObject({ status: "cancelled", cancelReason: "race_lost" });
-        expect(dbScalar(workspace, "SELECT cancel_reason FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toBe("race_lost");
-
-        const duplicate = throwingSchedulerStore(store.scheduler).commitAttemptResult({
-          runId: run.id,
-          attemptId: attempt.attemptId,
-          ownerEpoch: claim.ownerEpoch,
-          result: { status: "cancelled", reason: "race_lost" },
-          idempotencyKey: "attempt:cancel:commit",
-        });
-        expect(duplicate.version).toBe(snapshot.version);
-        expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE idempotency_key = ?", "attempt:cancel:commit")).toBe(1);
-        const firstTimestamps = dbRow(workspace, "SELECT started_at, finished_at FROM node_attempts WHERE attempt_id = ?", attempt.attemptId);
-        const advanced = throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
-          runId: run.id,
-          expectedVersion: snapshot.version,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "scheduler:after-attempt",
-          events: [{ type: "control.paused", payload: {} }],
-        });
-        expect(advanced.version).toBe(snapshot.version + 1);
-        expect(dbRow(workspace, "SELECT started_at, finished_at FROM node_attempts WHERE attempt_id = ?", attempt.attemptId)).toEqual(firstTimestamps);
-        expect(() => throwingSchedulerStore(store.scheduler).commitAttemptResult({
-          runId: run.id,
-          attemptId: attempt.attemptId,
-          ownerEpoch: claim.ownerEpoch,
-          result: { status: "cancelled", reason: "paused" },
-          idempotencyKey: "attempt:cancel:commit",
-        })).toThrow("conflicts");
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it("rejects stale result commits for already cancelled attempts without appending events", async () => {
-    await withRuntimeWorkspace("scheduler-store-stale-cancelled-commit", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        readyNode(store, run.id, claim, "attempt-cancelled-ready-node");
-        const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
-          runId: run.id,
-          nodeKey: "require_ready~1",
-          nodeId: "require_ready",
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "attempt:stale:start",
-        });
-        const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
-        throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
-          runId: run.id,
-          expectedVersion: snapshot.version,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "attempt:stale:derived-cancel",
-          events: [
-            { type: "attempt.cancelled", payload: { attemptId: attempt.attemptId, cancelReason: "race_lost" } },
-            { type: "instance.cancelled", payload: { nodeKey: "require_ready~1", cancelReason: "race_lost" } },
-          ],
-        });
-        const eventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id);
-
-        expect(() => throwingSchedulerStore(store.scheduler).commitAttemptResult({
-          runId: run.id,
-          attemptId: attempt.attemptId,
-          ownerEpoch: claim.ownerEpoch,
-          result: { status: "completed", output: { late: true } },
-          idempotencyKey: "attempt:stale:late",
-        })).toThrow("already cancelled");
-        expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id)).toBe(eventCount);
+          target: "review~1",
+          scopeDigest: agentSessionScopeDigest(run.id, "node", "review~1"),
+          explicitShared: false,
+          authored: { promptOrigin: "authored", inputDigest: sha256Digest("prompt") },
+        })._unsafeUnwrap();
+        expect(admission).toMatchObject({ operation: "start", session: { generation: 1 } });
       } finally {
         store.close();
       }
@@ -697,17 +179,100 @@ describe("scheduler store attempts, retry, and result commits", () => {
   });
 });
 
-function readyGroupNode(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string): void {
-  const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
+type Materialized = {
+  attemptId: string;
+  agentSessionId: string;
+  scopeDigest: ReturnType<typeof agentSessionScopeDigest>;
+  inputDigest: ReturnType<typeof sha256Digest>;
+};
+
+function readyAgent(store: RuntimeStore, runId: string, claim: RunOwnerClaim): void {
+  const current = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
   throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,
-    expectedVersion: snapshot.version,
     ownerEpoch: claim.ownerEpoch,
-    idempotencyKey,
+    expectedVersion: current.version,
+    idempotencyKey: "agent:ready",
     events: [
-      { type: "group.started", payload: { runId, groupKey: "parallel~1", nodeKey: "parallel~1", nodeId: "parallel", kind: "parallel", strategy: "all" } },
-      { type: "group.member_ready", payload: { runId, groupKey: "parallel~1", memberKey: "require_ready~1", memberKind: "branch", branchId: "left", readinessSequence: 1 } },
-      { type: "instance.ready", payload: { runId, nodeKey: "require_ready~1", nodeId: "require_ready", instancePath: [{ kind: "branch", nodeId: "parallel", branchId: "left" }, { kind: "node", nodeId: "require_ready" }], readinessSequence: 1 } },
+      { type: "frame.started", payload: { runId, frameKey: "root", frameKind: "root" } },
+      { type: "instance.ready", payload: { runId, nodeKey: "review~1", nodeId: "review", parentFrameKey: "root", instancePath: [{ kind: "node", nodeId: "review" }] } },
     ],
+  });
+}
+
+function materializeAgent(store: RuntimeStore, runId: string, claim: RunOwnerClaim, shared: boolean): Materialized {
+  const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
+    runId,
+    nodeKey: "review~1",
+    nodeId: "review",
+    ownerEpoch: claim.ownerEpoch,
+    idempotencyKey: "agent:s1",
+  });
+  const scopeDigest = agentSessionScopeDigest(runId, shared ? "key" : "node", shared ? "shared" : "review~1");
+  const agentSessionId = agentSessionIdForScope(runId, scopeDigest, 1);
+  const inputDigest = sha256Digest("prompt:s1");
+  store.scheduler.tryBindAgentAttemptSession({
+    runId,
+    attemptId: attempt.attemptId,
+    ownerEpoch: claim.ownerEpoch,
+    agentSessionId,
+    scopeDigest,
+    generation: 1,
+    explicitShared: shared,
+    operation: "start",
+    sessionOpenMode: "new_or_empty",
+    promptOrigin: "authored",
+    inputDigest,
+  })._unsafeUnwrap();
+  return { attemptId: attempt.attemptId, agentSessionId, scopeDigest, inputDigest };
+}
+
+function failAgent(store: RuntimeStore, runId: string, claim: RunOwnerClaim, session: Materialized): void {
+  store.scheduler.tryRecordAgentSessionBinding({
+    runId,
+    ownerEpoch: claim.ownerEpoch,
+    attemptId: session.attemptId,
+    agentSessionId: session.agentSessionId,
+    bindingDigest: sha256Digest(`binding:${session.agentSessionId}`),
+  })._unsafeUnwrap();
+  const intent = store.scheduler.tryCommitAgentTurnDispatch({
+    runId,
+    ownerEpoch: claim.ownerEpoch,
+    agentSessionId: session.agentSessionId,
+    attemptId: session.attemptId,
+    turnId: "turn-1",
+    sessionLeaseId: "lease-1",
+    expected: { checkpoint: "not_dispatched", attemptId: session.attemptId, promptOrigin: "authored", inputDigest: session.inputDigest },
+    invocationMetadata: {},
+  })._unsafeUnwrap() as Exclude<AgentSessionCheckpointValue, { checkpoint: "not_dispatched" }>;
+  store.scheduler.tryAdvanceAgentSessionCheckpoint({
+    runId,
+    ownerEpoch: claim.ownerEpoch,
+    agentSessionId: session.agentSessionId,
+    attemptId: session.attemptId,
+    expected: intent,
+    next: { ...intent, checkpoint: "terminal_observed" },
+    cause: "provider_terminal",
+  })._unsafeUnwrap();
+  throwingSchedulerStore(store.scheduler).commitAttemptResult({
+    runId,
+    attemptId: session.attemptId,
+    ownerEpoch: claim.ownerEpoch,
+    result: { status: "failed", reason: "provider failed" },
+    idempotencyKey: "agent:failed",
+  });
+}
+
+function agentWorkflow(shared: boolean) {
+  return defineWorkflow({
+    name: shared ? "shared-agent-retry" : "local-agent-retry",
+    agents: { reviewer: { use: "codex" } },
+  }).build(({ agents, step }) => {
+    step("review").agent({
+      agent: agents.reviewer,
+      prompt: "Review.",
+      ...(shared ? { sessionKey: "shared" } : {}),
+    });
+    return {};
   });
 }

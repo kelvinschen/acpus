@@ -72,6 +72,7 @@ export function projectInspectionRunView(input: {
   run: RunDetails;
   observations?: AgentObservationInspectionProjection;
   structure?: "materialized";
+  agentSessions?: RunInspectionRunSummary["agentSessions"];
 }): Extract<InspectionView, { kind: "run" }> {
   return projectInspectionRun(
     input.ir,
@@ -80,6 +81,7 @@ export function projectInspectionRunView(input: {
     createAgentToolActivityProjector(input.observations),
     true,
     input.structure === "materialized",
+    input.agentSessions ?? [],
   );
 }
 
@@ -87,6 +89,7 @@ export function projectInspectionRunView(input: {
 export function projectInspectionRunDecisionView(input: {
   ir: WorkflowIR;
   run: RunDetails;
+  agentSessions?: RunInspectionRunSummary["agentSessions"];
 }): Extract<InspectionView, { kind: "run" }> {
   return projectInspectionRun(
     input.ir,
@@ -95,6 +98,7 @@ export function projectInspectionRunDecisionView(input: {
     createAgentToolActivityProjector(),
     false,
     false,
+    input.agentSessions ?? [],
   );
 }
 
@@ -192,12 +196,13 @@ function projectInspectionRun(
   projectAgentToolActivity: ReturnType<typeof createAgentToolActivityProjector>,
   includePulse: boolean,
   expanded: boolean,
+  agentSessions: RunInspectionRunSummary["agentSessions"],
 ): Extract<InspectionView, { kind: "run" }> {
   const tree = occurrenceTree(ir, snapshotIndexes(run, inspectionStaticNodes(ir)));
   const summary = runSummary(ir, run, false);
   return {
     kind: "run",
-    run: inspectionRun(run, summary.failure),
+    run: inspectionRun(run, summary.failure, agentSessions),
     counts: inspectionCounts(inspectionStatusCounts(tree.executionStatuses)),
     tree: projectTree(
       tree.items,
@@ -214,6 +219,7 @@ function projectInspectionRun(
 function inspectionRun(
   run: RunDetails,
   failure?: { origin: InspectionFailure["origin"]; code?: string; message: string },
+  agentSessions: RunInspectionRunSummary["agentSessions"] = [],
 ): InspectionRun {
   const end = terminalRun(run.status) ? Date.parse(run.updatedAt) : Date.now();
   return {
@@ -228,6 +234,7 @@ function inspectionRun(
     ...(run.execution.state ? { liveness: run.execution.state } : {}),
     ...(failure ? { failure: inspectionFailure(failure) } : {}),
     ...(run.fork ? { fork: { sourceRunId: run.fork.sourceRunId } } : {}),
+    agentSessions,
   };
 }
 
@@ -641,7 +648,7 @@ function snapshotIndexes(run: RunDetails, staticNodes: RunInspectionStaticNode[]
   for (const attempts of attemptsByNodeKey.values()) attempts.sort((left, right) => right.attemptNo - left.attemptNo);
   for (const wait of dynamic?.signalWaits ?? []) waitsByNodeKey.set(wait.nodeKey, newer(waitsByNodeKey.get(wait.nodeKey), wait));
   for (const progress of dynamic?.progress ?? []) progressByNodeKey.set(progress.nodeKey, newer(progressByNodeKey.get(progress.nodeKey), progress));
-  for (const metadata of dynamic?.executionMetadata ?? []) if (metadata.attemptId) metadataByAttemptId.set(metadata.attemptId, newerCreated(metadataByAttemptId.get(metadata.attemptId), metadata));
+  for (const metadata of dynamic?.executionMetadata ?? []) metadataByAttemptId.set(metadata.attemptId, newerCreated(metadataByAttemptId.get(metadata.attemptId), metadata));
   for (const group of dynamic?.groups ?? []) groupsByNodeKey.set(group.nodeKey, group);
   for (const member of dynamic?.groupMembers ?? []) {
     addToMapArray(membersByGroupKey, member.groupKey, member);
@@ -1110,7 +1117,7 @@ function projectTarget(
     item.nodeKey === targetId
       || instanceKeys.has(item.nodeKey)
       || item.nodeId === targetId) ?? [];
-  const executionMetadata = dynamic?.executionMetadata.filter(item => item.attemptId !== undefined && attemptIds.has(item.attemptId)) ?? [];
+  const executionMetadata = dynamic?.executionMetadata.filter(item => attemptIds.has(item.attemptId)) ?? [];
   const progress = dynamic?.progress.filter(item => instanceKeys.has(item.nodeKey) || attemptIds.has(item.attemptId ?? "") || item.nodeId === targetId) ?? [];
   const targetKeys = new Set([targetId, ...instanceKeys, ...frames.map(item => item.frameKey), ...attempts.map(item => item.nodeKey)]);
   const targetArtifacts = artifacts.filter(item => targetKeys.has(item.nodeKey));
@@ -1279,7 +1286,12 @@ function targetInspectionItems(
   }];
 }
 
-function runSummary(ir: WorkflowIR, run: RunDetails, includeAgentUsage: boolean): RunInspectionRunSummary {
+function runSummary(
+  ir: WorkflowIR,
+  run: RunDetails,
+  includeAgentUsage: boolean,
+  agentSessions: RunInspectionRunSummary["agentSessions"] = [],
+): RunInspectionRunSummary {
   const agentUsage = includeAgentUsage ? runAgentUsage(ir, run) : undefined;
   const rootFrame = run.status === "failed"
     ? run.dynamic?.frames.find(frame => frame.frameKind === "root")
@@ -1296,6 +1308,7 @@ function runSummary(ir: WorkflowIR, run: RunDetails, includeAgentUsage: boolean)
     ...(rootFrame ? failureDetails(undefined, rootFrame.error, rootFrame.terminalReason) : {}),
     ...(run.fork ? { fork: run.fork } : {}),
     ...(agentUsage ? { agentUsage } : {}),
+    agentSessions,
   };
 }
 
@@ -1307,7 +1320,7 @@ function runAgentUsage(ir: WorkflowIR, run: RunDetails): NonNullable<RunInspecti
   const attempts = run.dynamic?.attempts.filter(item => agentNodeIds.has(item.nodeId)) ?? [];
   const metadataByAttempt = new Map<string, RunExecutionMetadata>();
   for (const item of run.dynamic?.executionMetadata ?? []) {
-    if (item.kind === "agent_attempt" && item.attemptId) metadataByAttempt.set(item.attemptId, item);
+    if (item.kind === "agent_attempt") metadataByAttempt.set(item.attemptId, item);
   }
   const progressByAttempt = new Map((run.dynamic?.progress ?? [])
     .filter(item => item.kind === "agent" && item.attemptId)

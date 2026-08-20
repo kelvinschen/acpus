@@ -96,6 +96,7 @@ describe("scheduler control plans", () => {
     });
     expect(planRetryControl(snapshot, "z_occurrence")._unsafeUnwrap()).toEqual({
       resolvedTarget: "z_occurrence",
+      reexecutedNodeKeys: ["z_occurrence"],
       events: [{
         type: "instance.retry_requested",
         payload: { nodeKey: "z_occurrence" },
@@ -370,6 +371,19 @@ describe("scheduler control plans", () => {
     for (const candidate of candidates) {
       expect(targets.has(candidate)).toBe(planRetryControl(snapshot, candidate).isOk());
     }
+  });
+
+  it("reports every frame descendant and restored completion dependency as reexecuted", () => {
+    const snapshot = schedulerSnapshot(nestedCompletionDependencyEvents(3));
+
+    expect(planRetryControl(snapshot, "outer")._unsafeUnwrap().reexecutedNodeKeys).toEqual([
+      "inner.item.0",
+      "inner.item.1",
+      "inner.item.2",
+      "outer.dependency.0",
+      "outer.dependency.1",
+      "outer.dependency.2",
+    ]);
   });
 
   it("projects nested completion dependencies without replaying each candidate", () => {

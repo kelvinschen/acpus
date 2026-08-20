@@ -64,7 +64,7 @@ describe.concurrent("daemon execution owner epochs", () => {
         await expect(waitForTerminalRun(workspace, admitted.id)).resolves.toMatchObject({ status: "failed" });
         const first = runtimeRows(workspace, "SELECT owner_epoch FROM node_attempts WHERE run_id = ? AND attempt_no = 1", admitted.id)[0] as { owner_epoch: number };
 
-        await expect(requestDaemonControl(workspace, { requestId: "retry-failed", type: "retry", runId: admitted.id })).resolves.toMatchObject({ type: "retry", state: "applied" });
+        await expect(requestDaemonControl(workspace, { requestId: "retry-failed", type: "retry", runId: admitted.id, target: "work" })).resolves.toMatchObject({ type: "retry", state: "applied" });
         await waitUntil(() => {
           const attempt = runtimeRows(workspace, "SELECT owner_epoch FROM node_attempts WHERE run_id = ? ORDER BY owner_epoch DESC, attempt_no DESC LIMIT 1", admitted.id)[0] as { owner_epoch?: number } | undefined;
           return attempt?.owner_epoch !== undefined && attempt.owner_epoch > first.owner_epoch;

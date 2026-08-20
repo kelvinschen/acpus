@@ -279,16 +279,6 @@ describe("scheduler control intents", () => {
         expect(targeted.snapshot.projection.instances[targetedNodeKey]).toMatchObject({ status: "ready", statusReason: "retry" });
         expect(targeted.snapshot.projection.frames.root).toMatchObject({ status: "running" });
 
-        const runRetry = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
-        seedControlTarget(store, runRetry.id, "root", "failed");
-        const retriedRun = await applySchedulerControlIntent(workspace, store, {
-          requestId: `retry-run:${runRetry.id}`,
-          runId: runRetry.id,
-          type: "retry",
-        }, { ownerId: "retry-run", advance: false });
-
-        expect(retriedRun.effect).toEqual({ type: "retry", state: "applied" });
-        expect(retriedRun.snapshot.projection).toMatchObject({ run: { status: "pending" }, frames: {}, instances: {} });
       } finally {
         store.close();
       }

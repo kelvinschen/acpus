@@ -15,6 +15,7 @@ import {
   type OwnedWorkspaceRuntime,
   type WorkspaceRuntimeOpenFailure,
 } from "../workspace-runtime.js";
+import type { InspectionError } from "../inspection/types.js";
 
 export type DaemonLoopOptions = {
   heartbeatMs?: number;
@@ -60,6 +61,16 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
       });
     },
     submitAndObserve: (request, signal) => submitAndObserve(request, signal),
+    inspect: request => {
+      if (!runtime) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
+      return new ResultAsync((async () => {
+        const inspected = await runtime!.inspect(request.view);
+        if (inspected.isErr()) return err(inspectionHandlerFailure(inspected.error));
+        return inspected.value.kind === "archived-run"
+          ? err(handlerFailure("RUN_NOT_FOUND", `Run '${request.view.runId}' was not found.`))
+          : ok(inspected.value);
+      })());
+    },
     control: intent => {
       if (!runtime) return err(handlerFailure("EXECUTION_UNAVAILABLE", "Daemon is still initializing."));
       return new ResultAsync((async () => {
@@ -206,6 +217,13 @@ export async function startDaemonLoop(cwd: string, options: DaemonLoopOptions): 
   }
 
   return { shutdown };
+}
+
+function inspectionHandlerFailure(error: InspectionError): DaemonHandlerFailure {
+  if (error.type === "invalid-query") return handlerFailure("INVALID_REQUEST", error.message);
+  if (error.type === "run-not-found") return handlerFailure("RUN_NOT_FOUND", error.message);
+  if (error.type === "runtime-store-unavailable") return handlerFailure("STORE_BUSY", error.message);
+  return handlerFailure("STORE_ERROR", error.message);
 }
 
 function handlerFailure(code: DaemonErrorCode, message: string, ambiguity?: true): DaemonHandlerFailure {

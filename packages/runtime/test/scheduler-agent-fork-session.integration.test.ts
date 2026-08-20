@@ -12,7 +12,7 @@ import { readdir } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
 import { lift, template } from "@acpus/expression";
-import type { AgentTurnRequest } from "@acpus/agent-executor";
+import type { FixtureAgentTurnRequest as AgentTurnRequest } from "./support/agent-turn.js";
 import { describe, expect, it } from "vitest";
 import { appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { openRuntimeStore } from "../src/store/store.js";
@@ -111,9 +111,9 @@ describe.concurrent("scheduler Agent fork session replay", () => {
             .resolves.toMatchObject({ status: "completed", started: 3, completed: 3 });
 
           expect(turns).toHaveLength(4);
-          expect(turns[0]!.sessionName).toBe(turns[1]!.sessionName);
-          expect(turns[2]!.sessionName).toBe(turns[3]!.sessionName);
-          expect(turns[2]!.sessionName).not.toBe(turns[0]!.sessionName);
+          expect(turns[0]!.agentSessionId).toBe(turns[1]!.agentSessionId);
+          expect(turns[2]!.agentSessionId).toBe(turns[3]!.agentSessionId);
+          expect(turns[2]!.agentSessionId).not.toBe(turns[0]!.agentSessionId);
 
           const after = await forkRuntimeRun(store, source.id, { target: "after_group" });
           await expect(advanceFrozenRun({ cwd: workspace, runId: after.id, ownerId: "after-owner", store, executeAgentTurn }))
@@ -147,9 +147,9 @@ describe.concurrent("scheduler Agent fork session replay", () => {
             .resolves.toMatchObject({ status: "completed", started: 4, completed: 4 });
 
           expect(turns).toHaveLength(6);
-          expect(new Set(turns.slice(0, 3).map(turn => turn.sessionName)).size).toBe(1);
-          expect(new Set(turns.slice(3).map(turn => turn.sessionName)).size).toBe(1);
-          expect(turns[3]!.sessionName).not.toBe(turns[0]!.sessionName);
+          expect(new Set(turns.slice(0, 3).map(turn => turn.agentSessionId)).size).toBe(1);
+          expect(new Set(turns.slice(3).map(turn => turn.agentSessionId)).size).toBe(1);
+          expect(turns[3]!.agentSessionId).not.toBe(turns[0]!.agentSessionId);
         } finally {
           store.close();
         }
@@ -245,8 +245,8 @@ describe.concurrent("scheduler Agent fork session replay", () => {
           expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === implement0)).toHaveLength(1);
           expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === implement1)).toHaveLength(1);
           expect(Object.values(projection.attempts).filter(attempt => attempt.nodeKey === review0)).toHaveLength(0);
-          expect(forkTurns[0]!.sessionName).toBe(forkTurns[1]!.sessionName);
-          expect(forkTurns[0]!.sessionName).not.toBe(sourceTurns[0]!.sessionName);
+          expect(forkTurns[0]!.agentSessionId).toBe(forkTurns[1]!.agentSessionId);
+          expect(forkTurns[0]!.agentSessionId).not.toBe(sourceTurns[0]!.agentSessionId);
         } finally {
           store.close();
         }
@@ -316,8 +316,8 @@ describe.concurrent("scheduler Agent fork session replay", () => {
           await expect(advanceFrozenRun({ cwd: workspace, runId: firstMismatch.id, ownerId: "mismatch-owner", store, executeAgentTurn }))
             .resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
           expect(turns).toHaveLength(4);
-          expect(turns[2]!.sessionName).toBe(turns[3]!.sessionName);
-          expect(turns[2]!.sessionName).not.toBe(turns[0]!.sessionName);
+          expect(turns[2]!.agentSessionId).toBe(turns[3]!.agentSessionId);
+          expect(turns[2]!.agentSessionId).not.toBe(turns[0]!.agentSessionId);
 
           const missingBeforeReplay = await forkRuntimeRun(store, source.id, { input: {} });
           executeRuntimeSql(workspace, `
@@ -330,8 +330,8 @@ describe.concurrent("scheduler Agent fork session replay", () => {
           await expect(advanceFrozenRun({ cwd: workspace, runId: missingBeforeReplay.id, ownerId: "missing-owner", store, executeAgentTurn }))
             .resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
           expect(turns).toHaveLength(6);
-          expect(turns[4]!.sessionName).toBe(turns[5]!.sessionName);
-          expect(turns[4]!.sessionName).not.toBe(turns[0]!.sessionName);
+          expect(turns[4]!.agentSessionId).toBe(turns[5]!.agentSessionId);
+          expect(turns[4]!.agentSessionId).not.toBe(turns[0]!.agentSessionId);
 
           const partial = await forkRuntimeRun(store, source.id, { agentOverrides: {} });
           executeRuntimeSql(workspace, `

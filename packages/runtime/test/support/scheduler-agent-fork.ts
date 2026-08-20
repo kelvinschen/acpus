@@ -1,4 +1,8 @@
-import type { AgentTurnRequest, AgentTurnResult, ManagedAcpExecutor } from "@acpus/agent-executor";
+import type { AgentSessionSupervisor } from "@acpus/agent-executor";
+import type {
+  FixtureAgentTurnRequest as AgentTurnRequest,
+  FixtureAgentTurnResult as AgentTurnResult,
+} from "./agent-turn.js";
 import { defineWorkflow, z } from "@acpus/core";
 import { template } from "@acpus/expression";
 import { vi } from "vitest";
@@ -8,6 +12,7 @@ import {
 } from "../../src/scheduler/runtime-runner.js";
 import { openRuntimeStore } from "../../src/store/store.js";
 import { createInlineTaskAttemptHarness, type TaskAttemptRunner } from "./task-attempt-harness.js";
+import { testAgentSessionSupervisor as createTestAgentSessionSupervisor } from "./agent-session-supervisor.js";
 
 const executorMocks = vi.hoisted(() => ({
   runTaskAttempt: vi.fn<TaskAttemptRunner>(),
@@ -29,7 +34,7 @@ export function advanceFrozenRun(
   const { executeAgentTurn, ...productionInput } = input;
   return advanceFrozenRunProduction({
     ...productionInput,
-    managedAcpExecutor: testManagedAcpExecutor(executeAgentTurn),
+    agentSessionSupervisor: testAgentSessionSupervisor(executeAgentTurn),
   });
 }
 
@@ -137,15 +142,10 @@ export function targetedForkCompletedSourceWorkflow() {
   });
 }
 
-function testManagedAcpExecutor(
+function testAgentSessionSupervisor(
   executeAgentTurn: ((request: AgentTurnRequest) => Promise<AgentTurnResult>) | undefined,
-): ManagedAcpExecutor {
-  return {
-    withAttempt: async (_input, use) => use({
-      runTurn: executeAgentTurn ?? (async request => {
-        throw new Error(`Unexpected Agent execution for '${request.sessionName}'.`);
-      }),
-    }),
-    shutdown: async () => {},
-  };
+): AgentSessionSupervisor {
+  return createTestAgentSessionSupervisor(executeAgentTurn ?? (async request => {
+    throw new Error(`Unexpected Agent execution for '${request.agentSessionId}'.`);
+  }));
 }

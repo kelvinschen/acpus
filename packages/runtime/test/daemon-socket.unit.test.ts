@@ -10,6 +10,7 @@ import type { PreparedRunWorkflow, Sha256Digest } from "@acpus/runtime";
 import {
   daemonEndpoint,
   requestDaemonControl,
+  requestDaemonInspection,
   requestDaemonShutdown,
   requestDaemonStatus,
   requestDaemonStatusProbe,
@@ -37,6 +38,39 @@ afterEach(async () => {
 });
 
 describe("daemon socket server", () => {
+  it("returns an authoritative one-shot inspection from the daemon", async () => {
+    const workspace = await testWorkspace("acpus-daemon-inspect-");
+    const inspection = {
+      kind: "target" as const,
+      detail: "summary" as const,
+      run: { id: "run_1", status: "running" as const },
+      subject: { label: "Review", kind: "agent", selector: "@123456789abc" },
+      state: { status: "running" as const },
+      availableControls: [{
+        type: "steer" as const,
+        target: "attempt-1",
+        delivery: "interrupt_continue" as const,
+        effect: "cancel_drain_then_continue" as const,
+      }],
+    };
+    const inspect = vi.fn(() => ok(inspection));
+    const server = await startDaemonServer(workspace, { ...testHandlers(), inspect });
+    try {
+      await expect(requestDaemonInspection(workspace, {
+        kind: "target",
+        runId: "run_1",
+        target: "@123456789abc",
+        detail: "summary",
+      })).resolves.toEqual(ok(inspection));
+      expect(inspect).toHaveBeenCalledWith({
+        view: { kind: "target", runId: "run_1", target: "@123456789abc", detail: "summary" },
+      });
+    } finally {
+      await server.close();
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("accepts bounded tool titles in inspection pulse frames", () => {
     expect(isDaemonRunStreamFrame({
       kind: "observation",
@@ -122,6 +156,7 @@ describe("daemon socket server", () => {
     const server = await startDaemonServer(workspace, {
       status: () => ok(daemonStatus()),
       submitAndObserve: testHandlers().submitAndObserve,
+      inspect: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
       control: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
       shutdown: () => new ResultAsync((async () => {
         shutdownStarted.resolve();
@@ -461,9 +496,9 @@ describe("daemon socket server", () => {
     });
     const mismatches = [
       { ...current, workspaceKey: "c".repeat(32) },
-      { ...current, runtimeAbi: 2 },
+      { ...current, runtimeAbi: 4 },
       { ...current, layoutVersion: 3 },
-      { ...current, storageVersion: 11 },
+      { ...current, storageVersion: 17 },
       { ...current, authorityId: "00000000-0000-4000-8000-000000000002" },
       { ...current, storeBinding: `sha256:${"c".repeat(64)}` },
       { ...current, leaseGeneration: 2 },
@@ -564,7 +599,6 @@ describe("daemon socket server", () => {
     const validControlResults = [
       { type: "pause", state: "applied", run },
       { type: "resume", state: "applied", run },
-      { type: "retry", state: "applied", run },
       { type: "retry", state: "applied", target: "root", run },
       { type: "cancel", state: "applied", target: "root", run },
       {
@@ -574,6 +608,7 @@ describe("daemon socket server", () => {
         steerId: "steer-1",
         requestedTarget: "review",
         target: "review~123456789abc",
+        delivery: "interrupt_continue",
         fencedAttemptId: "attempt-1",
         continuation: "queued",
       },
@@ -671,13 +706,13 @@ describe("daemon socket server", () => {
       ok: true,
       result: {
         ...daemonStatus(),
-        authority: { ...runtimeAuthority(), runtimeAbi: 2 },
+        authority: { ...runtimeAuthority(), runtimeAbi: 4 },
       },
     });
     try {
       await expect(requestDaemonStatusProbe(futureAbiWorkspace)).resolves.toEqual(ok({
         kind: "unknown",
-        protocolVersion: 4,
+        protocolVersion: 8,
       }));
     } finally {
       await closeRawResponseServer(futureAbiServer);
@@ -881,6 +916,7 @@ function testHandlers(): Parameters<typeof startDaemonServer>[1] {
         error: { code: "INTERNAL_ERROR", message: "not used" },
       };
     },
+    inspect: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
     control: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
     shutdown: () => ok({ status: "shutdown" }),
   };
@@ -948,9 +984,9 @@ function runDetails(): RunDetails {
 function runtimeAuthority(): RuntimeAuthorityIdentity {
   return {
     workspaceKey: "a".repeat(32),
-    runtimeAbi: 1,
+    runtimeAbi: 3,
     layoutVersion: 2,
-    storageVersion: 10,
+    storageVersion: 16,
     authorityId: "00000000-0000-4000-8000-000000000001",
     storeBinding: `sha256:${"b".repeat(64)}`,
     leaseGeneration: 1,
@@ -962,7 +998,7 @@ function daemonStatus() {
     status: "ok" as const,
     pid: process.pid,
     leaseGeneration: 1,
-    protocolVersion: 4 as const,
+    protocolVersion: 8 as const,
     packageVersion: "test",
     authority: runtimeAuthority(),
   };
@@ -1020,7 +1056,8 @@ function controlIntent(type: string): Parameters<typeof requestDaemonControl>[1]
   if (type === "signal") return { ...base, type, nodeId: "approve", payload: "ok" };
   if (type === "steer") return { ...base, type, target: "review", instruction: "focus" };
   if (type === "fork") return { ...base, type };
-  if (type === "retry" || type === "cancel") return { ...base, type };
+  if (type === "retry") return { ...base, type, target: "review" };
+  if (type === "cancel") return { ...base, type };
   if (type === "pause" || type === "resume") return { ...base, type };
   throw new Error(`Unsupported control type '${type}'.`);
 }

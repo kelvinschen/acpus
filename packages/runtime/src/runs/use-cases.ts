@@ -13,10 +13,12 @@ import type { ArtifactRecord } from "../artifacts/types.js";
 import { probeProcessIdentity } from "../process-liveness.js";
 import {
   canCancelRun,
+  planRetryControl,
   retryControlTargets,
   settleRetryControlSnapshot,
   type RuntimeControlTarget,
 } from "../scheduler/control-plan.js";
+import { planRetrySessionImpact } from "../scheduler/retry-session-impact.js";
 import { throwSchedulerStoreResult } from "../scheduler/store-port.js";
 import { createWorkflowVisualizationOverlay, type WorkflowVisualizationOverlay } from "../visualization/overlay.js";
 import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout } from "../runtime-layout.js";
@@ -211,6 +213,14 @@ export function getRunVisualizationSnapshot(
         snapshot: scheduler,
         now: new Date(),
       }).snapshot;
+      const retryTargets = retryControlTargets(retryScheduler).filter(target => {
+        const retry = planRetryControl(retryScheduler, target.target);
+        return retry.isOk() && planRetrySessionImpact({
+          frozen,
+          snapshot: retryScheduler,
+          reexecutedNodeKeys: retry.value.reexecutedNodeKeys,
+        }).isOk();
+      });
       return {
         run,
         workflow: {
@@ -221,7 +231,7 @@ export function getRunVisualizationSnapshot(
         overlay: createWorkflowVisualizationOverlay(frozen.ir, run.dynamic, { runId, status: run.status }),
         controls: {
           canCancelRun: canCancelRun(scheduler),
-          retryTargets: retryControlTargets(retryScheduler),
+          retryTargets,
         },
       };
     });
@@ -375,10 +385,10 @@ async function acpOwnershipCheck(cwd: string, authority?: RuntimeAuthorityDiagno
   try {
     const ownership = await inspectAcpOwnership({
       workersRoot: resolveRuntimeLayout(cwd).acpWorkersRoot,
-      ...(authority === undefined ? {} : {
+      ...(authority?.pid === undefined ? {} : {
         owner: {
-          generation: authority.epoch,
-          ...(authority.pid === undefined ? {} : { pid: authority.pid }),
+          epoch: authority.epoch,
+          pid: authority.pid,
           ...(authority.processStartToken === undefined ? {} : { startToken: authority.processStartToken }),
         },
       }),

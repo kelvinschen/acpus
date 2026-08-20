@@ -3,12 +3,15 @@ import { join } from "node:path";
 import { sha256Digest } from "@acpus/core/content-identity";
 import type { AgentDefinitionIR, AgentNodeIR, WorkflowIR } from "@acpus/core/ir";
 import {
-  type AgentBackendFailure,
-  type AgentTurnRequest,
-  type AgentTurnResult,
+  type AgentSelector,
+  type AgentSessionLease,
+  type AgentSessionSupervisor,
+  type AgentTurnEvent,
+  type AgentTurnFailure,
+  type AgentTurnSnapshot,
   type AgentTurnSummary,
   type AgentTurnTiming,
-  type ManagedAcpExecutor,
+  type AcpError,
 } from "@acpus/agent-executor";
 import type { JsonValue } from "@acpus/expression/ir";
 import { err, ok, ResultAsync, type Result } from "neverthrow";
@@ -29,15 +32,34 @@ import { pruneUndefined } from "../stable-json.js";
 import type { RunDirectoryToken } from "../store/path-fence.js";
 import type { RuntimeStore } from "../store/store.js";
 import {
-  buildAgentOutputPrompt,
-  buildAgentOutputRepairPrompt,
   conformAgentOutput,
   type AgentOutputProcessing,
 } from "./agent-output.js";
+import {
+  buildAuthoredAgentPrompt,
+  buildRepairAgentPrompt,
+  buildSteeringAgentPrompt,
+} from "./agent-prompt.js";
 import { resolveAgentSessionIdentity } from "./agent-session.js";
+import type { AgentAttemptOperationPlan, AgentSessionCheckpointValue } from "./agent-operation-plan.js";
+import type { AgentTurnExecutionRegistry } from "./agent-turn-registry.js";
 
-const CONTINUATION_PROMPT = "Continue the previous task from where you left off.";
 const DEFAULT_REPAIR_DELAY_MS = 5_000;
+
+type AgentBackendFailure = {
+  kind: "config" | "session_binding_mismatch" | "spawn" | "provider_exit" | "timeout" | "worker_lost" | "inactivity_stale";
+  origin?: "provider" | "runtime";
+  retryable?: boolean;
+  message: string;
+  evidence?: { failAfterMs: number; silentForMs: number; silenceStartedAt: string };
+  upstream?: { source: "acp"; operation: "open_session" | "configure_session" | "run_turn"; code?: string | number; origin?: string; data?: JsonValue };
+};
+
+type AgentTurnResult = AgentTurnSnapshot & Readonly<{ snapshot: AgentTurnSnapshot }> & (
+  | Readonly<{ status: "completed"; finalResponse: string }>
+  | Readonly<{ status: "failed"; failure: AgentBackendFailure }>
+  | Readonly<{ status: "cancelled"; message: string }>
+);
 
 export type AgentNodeFailure =
   | {
@@ -48,10 +70,11 @@ export type AgentNodeFailure =
     }
   | {
       origin: "runtime";
-      code: "invalid_agent_response_repair_max" | "agent_config_resolution_failed" | "agent_acp_inactivity_stale" | "agent_acp_worker_lost";
+      code: "invalid_agent_response_repair_max" | "agent_config_resolution_failed" | "session_binding_mismatch" | "agent_acp_inactivity_stale" | "agent_acp_worker_lost" | "agent_session_acquire_failed" | "session_checkpoint_unknown" | "safe_retry_input_mismatch" | "invalid_agent_operation_target" | "shared_session_restart_requires_run";
       message: string;
       retryable?: boolean;
       evidence?: AgentBackendFailure["evidence"];
+      upstream?: AgentBackendFailure["upstream"];
     };
 
 export type AgentAttemptFailure =
@@ -60,34 +83,55 @@ export type AgentAttemptFailure =
   | { type: "timed_out"; failure: AgentNodeFailure; message: string }
   | { type: "failed"; failure: AgentNodeFailure; message: string };
 
-export type AgentExecutorOptions = {
+type AgentExecutorOptionsBase = {
   cwd: string;
-  runId?: string;
   agents: WorkflowIR["agents"];
   hostPolicy: AgentHostPolicy;
-  nodeKey?: string;
-  attemptId?: string;
-  attemptNo?: number;
-  ownerEpoch?: number;
   deadlineAt?: string;
-  store?: RuntimeStore;
   progressWriter?: NodeProgressWriter;
-  managedAcpExecutor?: ManagedAcpExecutor;
+  agentSessionSupervisor?: AgentSessionSupervisor;
   initialPrompt?: AgentInitialPrompt;
   signal?: AbortSignal;
+  abortAttempt?: (reason: "steer") => void;
+  agentTurnRegistry?: AgentTurnExecutionRegistry;
 };
+
+export type AgentExecutorOptions = AgentExecutorOptionsBase & (
+  | {
+      store: RuntimeStore;
+      runId: string;
+      nodeKey: string;
+      attemptId: string;
+      attemptNo: number;
+      ownerEpoch: number;
+      runtimeOwnerEpoch: number;
+    }
+  | {
+      store?: undefined;
+      runId?: string;
+      nodeKey?: string;
+      attemptId?: string;
+      attemptNo?: number;
+      ownerEpoch?: number;
+    }
+);
 
 type AgentInitialPrompt =
   | { kind: "task" }
-  | { kind: "continuation" }
-  | { kind: "steer"; instruction: string };
+  | { kind: "steer"; steerId: string; instruction: string };
+
+type AgentTurnRequestRecord = {
+  turnId: string;
+  prompt: string;
+  agentSessionId: string;
+  onEvent: (event: AgentTurnEvent) => void;
+};
 
 type AgentTurnRecord = {
   turn: number;
   status: AgentTurnResult["status"];
   summary?: AgentTurnSummaryProjection;
   turnArtifact?: AgentArtifactRef;
-  stderrArtifact?: AgentArtifactRef;
   outputProcessing?: AgentOutputProcessing;
   failure?: { kind: string; message: string; upstream?: AgentBackendFailure["upstream"] };
   message?: string;
@@ -101,12 +145,11 @@ type AgentTurnArtifactBase = {
   attemptNo: number;
   turn: number;
   agentKey: string;
-  sessionName: string;
-  sessionProjectionPath?: string;
+  agentSessionId: string;
   timing: AgentTurnTiming;
   prompt: string;
   responses: string[];
-  summary: Omit<AgentTurnSummary, "sessionProjectionPath">;
+  summary: AgentTurnSummary;
 };
 
 export type AgentTurnArtifact = AgentTurnArtifactBase & (
@@ -117,7 +160,6 @@ export type AgentTurnArtifact = AgentTurnArtifactBase & (
 
 type AgentTurnSummaryProjection = Pick<AgentTurnSummary, "eventCount" | "availability" | "stopReason" | "context" | "tokenUsage"> & {
   tools: { totalToolCallCount: number };
-  cwd?: string;
 };
 
 type AgentArtifactRef = {
@@ -130,9 +172,10 @@ export function executeAgentNode(node: AgentNodeIR, scope: EvaluationScope, opti
 }
 
 async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope, options: AgentExecutorOptions): Promise<Result<JsonValue, AgentAttemptFailure>> {
+  assertStoredAgentAttemptContext(options);
   const turns: AgentTurnRecord[] = [];
   const artifactRun = agentArtifactRun(options);
-  let sessionNameForMetadata: string | undefined;
+  let agentSessionIdForMetadata: string | undefined;
   let explicitSessionKey: string | undefined;
   let responseRepairMax: number | null | undefined;
   const progressWriter = options.progressWriter ?? options.store;
@@ -158,8 +201,12 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
     message?: string,
     result?: AgentTurnResult,
   ): Promise<void> => {
-    if (result) activeProgress?.publishTerminal(status, result, message);
-    await writeAgentAttemptMetadata(node, options, sessionNameForMetadata, explicitSessionKey, responseRepairMax, status, turns, message);
+    if (result) activeProgress?.publishTerminal(status, result.snapshot, message);
+    try {
+      await writeAgentAttemptMetadata(node, options, agentSessionIdForMetadata, explicitSessionKey, responseRepairMax, status, turns, message);
+    } catch (error) {
+      if (!isAttemptFenceError(error)) throw error;
+    }
   };
   const finishFailure = async (
     failure: AgentAttemptFailure,
@@ -212,79 +259,159 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
     const session = resolveAgentSessionIdentity(node, scope, options.runId, options.nodeKey ?? node.id);
     if (session.isErr()) return finishFailure(resolutionFailure(session.error));
     explicitSessionKey = session.value.explicitSessionKey;
-    sessionNameForMetadata = session.value.sessionName;
+    agentSessionIdForMetadata = session.value.agentSessionId;
     const effectiveModel = definition.config?.model ?? definition.model;
-    const turnBase = {
-      agent: agentSelector(definition),
-      cwd: cwd.value,
-      env,
-      sessionName: session.value.sessionName,
-      permissionMode: node.run.permissionMode ?? definition.permissionMode ?? "approve-all",
-      ...(effectiveModel === undefined ? {} : { model: effectiveModel }),
-      ...(options.signal ? { signal: options.signal } : {}),
-    } satisfies Omit<AgentTurnRequest, "prompt" | "config">;
+    const permissionMode = node.run.permissionMode ?? definition.permissionMode ?? "approve-all";
     const maxRepairTurns = responseRepairMax;
+    const authoredPrompt = renderAgentPrompt(node, scope, options)
+      .map(rendered => buildAuthoredAgentPrompt(rendered, node.outputSchema));
+    if (authoredPrompt.isErr()) return finishFailure(resolutionFailure(authoredPrompt.error));
     const initialPrompt = options.initialPrompt ?? { kind: "task" };
-    const resolvedPrompt = initialPrompt.kind === "task"
-      ? renderAgentPrompt(node, scope, options)
-      : ok(initialPrompt.kind === "steer"
-        ? `<steering>${initialPrompt.instruction}</steering>`
-        : CONTINUATION_PROMPT);
-    if (resolvedPrompt.isErr()) return finishFailure(resolutionFailure(resolvedPrompt.error));
-    const renderedPrompt = resolvedPrompt.value;
-    let prompt = node.outputSchema
-      ? buildAgentOutputPrompt(renderedPrompt, node.outputSchema)
-      : renderedPrompt;
-    const managedAcpExecutor = options.managedAcpExecutor ?? unavailableManagedAcpExecutor();
-    return await managedAcpExecutor.withAttempt({
-      runId: options.runId ?? `local-${node.id}`,
+    if (!options.store && initialPrompt.kind === "steer") {
+      throw new Error("Agent Steer requires a durable Scheduler directive.");
+    }
+    const steeringPrompt = initialPrompt.kind === "steer"
+      ? buildSteeringAgentPrompt(initialPrompt.instruction, node.outputSchema)
+      : undefined;
+    const planResult = options.store
+      ? options.store.scheduler.planAgentAttemptAdmission({
+          runId: options.runId,
+          attemptId: options.attemptId,
+          ownerEpoch: options.ownerEpoch,
+          target: options.nodeKey,
+          scopeDigest: session.value.scopeDigest,
+          explicitShared: session.value.explicitShared,
+          authored: { promptOrigin: "authored", inputDigest: authoredPrompt.value.inputDigest },
+          ...(steeringPrompt === undefined || initialPrompt.kind !== "steer" ? {} : {
+            steering: {
+              steerId: initialPrompt.steerId,
+              instruction: initialPrompt.instruction,
+              promptOrigin: "steering" as const,
+              inputDigest: steeringPrompt.inputDigest,
+            },
+          }),
+        })
+      : ok<AgentAttemptOperationPlan>({
+          operation: "start",
+          session: { ...session.value, generation: 1 },
+          sessionOpenMode: "new_or_empty",
+          promptOrigin: "authored",
+          inputDigest: authoredPrompt.value.inputDigest,
+        });
+    if (planResult.isErr()) {
+      const failure: AgentNodeFailure = {
+        origin: "runtime",
+        code: planResult.error.type,
+        message: planResult.error.message,
+      };
+      return finishFailure({ type: "failed", failure, message: failure.message });
+    }
+    const plan = planResult.value;
+    agentSessionIdForMetadata = plan.session.agentSessionId;
+    const plannedPrompt = plan.promptOrigin === "authored"
+      ? authoredPrompt.value.prompt
+      : steeringPrompt?.prompt;
+    if (plannedPrompt === undefined) throw new Error(`Agent Attempt '${options.attemptId}' has no prompt for '${plan.promptOrigin}'.`);
+    let prompt: string = plannedPrompt;
+    const steerEventSequence = "steerEventSequence" in plan ? plan.steerEventSequence : undefined;
+    if (options.store) {
+      throwSchedulerStoreResult(options.store.scheduler.tryBindAgentAttemptSession({
+          runId: options.runId,
+          attemptId: options.attemptId,
+          ownerEpoch: options.ownerEpoch,
+          agentSessionId: plan.session.agentSessionId,
+          scopeDigest: plan.session.scopeDigest,
+          generation: plan.session.generation,
+          explicitShared: plan.session.explicitShared,
+          operation: plan.operation,
+          sessionOpenMode: plan.sessionOpenMode,
+          ...(plan.predecessorAttemptId === undefined ? {} : { predecessorAttemptId: plan.predecessorAttemptId }),
+          ...(steerEventSequence === undefined ? {} : { steerEventSequence }),
+          promptOrigin: plan.promptOrigin,
+          inputDigest: plan.inputDigest,
+          ...(plan.admittedFromCheckpoint === undefined ? {} : { admittedFromCheckpoint: plan.admittedFromCheckpoint }),
+        }));
+    }
+    let checkpoint: AgentSessionCheckpointValue = {
+      checkpoint: "not_dispatched",
       attemptId: options.attemptId ?? `local-${node.id}`,
-      sessionName: sessionNameForMetadata,
-      cwd: cwd.value,
-      env,
-      agent: agentSelector(definition),
-      permissionMode: turnBase.permissionMode,
-      ...(effectiveModel === undefined ? {} : { model: effectiveModel }),
-      ...(options.signal === undefined ? {} : { signal: options.signal }),
-      ...(options.hostPolicy.inactivityFailAfterMs === undefined ? {} : { inactivityFailAfterMs: options.hostPolicy.inactivityFailAfterMs }),
-      onAcpActivity: observedAt => activeProgress?.recordAcpActivity(observedAt),
-    }, async attempt => {
+      promptOrigin: plan.promptOrigin,
+      inputDigest: plan.inputDigest,
+    };
+    const supervisor = options.agentSessionSupervisor ?? unavailableAgentSessionSupervisor();
+    const supervised = await supervisor.withSessionLease({
+      attempt: {
+        runId: options.runId ?? `local-${node.id}`,
+        nodeKey: options.nodeKey ?? node.id,
+        attemptId: options.attemptId ?? `local-${node.id}`,
+        ownerEpoch: options.ownerEpoch ?? 0,
+        ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }),
+        signal: options.signal ?? new AbortController().signal,
+        ...(options.hostPolicy.inactivityFailAfterMs === undefined ? {} : { inactivityFailAfterMs: options.hostPolicy.inactivityFailAfterMs }),
+      },
+      session: {
+        agentSessionId: plan.session.agentSessionId,
+        sessionOpenMode: plan.sessionOpenMode,
+        agent: agentSelector(definition),
+        cwd: cwd.value,
+        env,
+        permissionMode,
+        configuration: {
+          ...(effectiveModel === undefined ? {} : { model: effectiveModel }),
+          options: Object.fromEntries(Object.entries(definition.config ?? {}).filter(([key]) => key !== "model")),
+        },
+      },
+    }, lease => new ResultAsync((async () => {
+      if (options.store && options.runId && options.attemptId && options.ownerEpoch !== undefined) {
+        throwSchedulerStoreResult(options.store.scheduler.tryRecordAgentSessionBinding({
+          runId: options.runId,
+          attemptId: options.attemptId,
+          ownerEpoch: options.ownerEpoch,
+          agentSessionId: lease.agentSessionId,
+          bindingDigest: lease.bindingFingerprint.digest as import("@acpus/core/content-identity").Sha256Digest,
+          ...(lease.reportedVersion === undefined ? {} : { reportedVersion: lease.reportedVersion }),
+        }));
+      }
       for (let turn = 0; turn <= maxRepairTurns; turn += 1) {
         const remaining = remainingTimeout(deadline, node.id);
         if (remaining.isErr()) return finishFailure(remaining.error);
         if (options.signal?.aborted) {
           return finishFailure(abortedTurnFailure());
         }
-        if (turn === 0) {
-          writeAgentInvocationMetadata(node, options, {
-            prompt,
-            promptOrigin: initialPrompt.kind === "task" ? "authored" : initialPrompt.kind === "steer" ? "steering" : "continuation",
-            cwd: cwd.value,
-            env: invocationEnv,
-            permissionMode: turnBase.permissionMode,
-            ...(effectiveModel === undefined ? {} : { model: effectiveModel }),
-            ...(explicitSessionKey === undefined ? {} : { sessionKey: explicitSessionKey }),
-            ...(initialPrompt.kind === "task" && definition.config !== undefined ? { config: definition.config } : {}),
-            ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }),
-          });
-        }
         activeProgress = progressContext
           ? createAgentProgressTurn({ ...progressContext, turn: turn + 1 })
           : undefined;
-        const request = {
-          ...turnBase,
+        const request: AgentTurnRequestRecord = {
+          turnId: `turn_${randomUUID()}`,
           prompt,
-          ...(remaining.value === undefined ? {} : { timeoutMs: remaining.value }),
-          ...(turn === 0 && initialPrompt.kind === "task" && definition.config !== undefined ? { config: definition.config } : {}),
-          ...(activeProgress?.callbacks ?? {}),
-        } satisfies AgentTurnRequest;
+          agentSessionId: plan.session.agentSessionId,
+          onEvent: event => activeProgress?.callbacks.onEvent(event),
+        };
         const result = await executeObservedAgentTurn(
           node,
           options,
           turn + 1,
-          turn === 0 ? initialPrompt.kind : "repair",
+          turn === 0 ? promptKindForOrigin(plan.promptOrigin) : "repair",
           request,
-          attempt.runTurn,
+          turnRequest => runLeasedAgentTurn({
+            node,
+            options,
+            lease,
+            request: turnRequest,
+            checkpoint,
+            invocation: {
+              prompt: turnRequest.prompt,
+              promptOrigin: turn === 0 ? plan.promptOrigin : "repair",
+              cwd: cwd.value,
+              env: invocationEnv,
+              permissionMode,
+              ...(effectiveModel === undefined ? {} : { model: effectiveModel }),
+              ...(explicitSessionKey === undefined ? {} : { sessionKey: explicitSessionKey }),
+              ...(turn === 0 && definition.config !== undefined ? { config: definition.config } : {}),
+              ...(options.deadlineAt === undefined ? {} : { deadlineAt: options.deadlineAt }),
+            },
+            onCheckpoint: value => { checkpoint = value; },
+          }),
         );
         activeProgress?.clearAcpActivity();
         if (options.signal?.aborted) {
@@ -338,19 +465,49 @@ async function executeAgentNodeResult(node: AgentNodeIR, scope: EvaluationScope,
         }
         const delayed = await delay(DEFAULT_REPAIR_DELAY_MS, options.signal, deadline);
         if (delayed.isErr()) return finishFailure(delayed.error);
-        prompt = buildAgentOutputRepairPrompt(node.outputSchema, rejected.phase);
+        const repair = buildRepairAgentPrompt(node.outputSchema, rejected.phase);
+        prompt = repair.prompt;
+        if (options.store) {
+          checkpoint = throwSchedulerStoreResult(options.store.scheduler.tryAdvanceAgentSessionCheckpoint({
+            runId: options.runId,
+            ownerEpoch: options.ownerEpoch,
+            agentSessionId: plan.session.agentSessionId,
+            attemptId: options.attemptId,
+            expected: checkpoint,
+            next: {
+              checkpoint: "not_dispatched",
+              attemptId: options.attemptId,
+              promptOrigin: "repair",
+              inputDigest: repair.inputDigest,
+            },
+            cause: "begin_repair",
+          }));
+        }
       }
       throw new Error(`Agent node '${node.id}' exhausted response repair.`);
-    });
+    })()));
+    if (supervised.isOk()) return ok(supervised.value);
+    if (supervised.error.type === "use") return err(supervised.error.error);
+    if (supervised.error.type === "use_and_cleanup") return err(supervised.error.use);
+    if (supervised.error.type === "acquire"
+      && supervised.error.error.type === "session_open_failed") {
+      const failure = agentNodeFailure(backendFailureFromAcp(supervised.error.error.error));
+      return finishFailure({ type: "failed", failure, message: failure.message });
+    }
+    const message = supervised.error.type === "acquire"
+      ? supervised.error.error.message
+      : supervised.error.error.message;
+    const failure: AgentNodeFailure = { origin: "runtime", code: "agent_session_acquire_failed", message };
+    return finishFailure({ type: "failed", failure, message });
 }
 
 async function executeObservedAgentTurn(
   node: AgentNodeIR,
   options: AgentExecutorOptions,
   turn: number,
-  promptKind: "task" | "continuation" | "steer" | "repair",
-  request: AgentTurnRequest,
-  runTurn: (request: AgentTurnRequest) => Promise<AgentTurnResult>,
+  promptKind: "task" | "steer" | "repair",
+  request: AgentTurnRequestRecord,
+  runTurn: (request: AgentTurnRequestRecord) => Promise<AgentTurnResult>,
 ): Promise<AgentTurnResult> {
   if (!options.store
     || !options.runId
@@ -368,10 +525,230 @@ async function executeObservedAgentTurn(
     turn,
     promptKind,
     ...(options.signal === undefined ? {} : { signal: options.signal }),
-  }, request, runTurn);
+  }, request, runTurn, () => cancelledAgentTurn("Agent Turn was fenced before Provider dispatch."));
+}
+
+async function runLeasedAgentTurn(input: {
+  node: AgentNodeIR;
+  options: AgentExecutorOptions;
+  lease: AgentSessionLease;
+  request: AgentTurnRequestRecord;
+  checkpoint: AgentSessionCheckpointValue;
+  invocation: {
+    prompt: string;
+    promptOrigin: "authored" | "steering" | "repair";
+    cwd: string;
+    env: Record<string, string>;
+    permissionMode: "approve-reads" | "approve-all" | "deny-all";
+    model?: string;
+    sessionKey?: string;
+    config?: Record<string, string>;
+    deadlineAt?: string;
+  };
+  onCheckpoint(checkpoint: AgentSessionCheckpointValue): void;
+}): Promise<AgentTurnResult> {
+  let checkpoint = input.checkpoint;
+  if (input.options.store) {
+    if (checkpoint.checkpoint !== "not_dispatched") {
+      throw new Error(`Agent Turn '${input.request.turnId}' does not start from not_dispatched.`);
+    }
+    checkpoint = throwSchedulerStoreResult(input.options.store.scheduler.tryCommitAgentTurnDispatch({
+      runId: input.options.runId,
+      ownerEpoch: input.options.ownerEpoch,
+      agentSessionId: input.lease.agentSessionId,
+      attemptId: input.options.attemptId,
+      turnId: input.request.turnId,
+      sessionLeaseId: input.lease.sessionLeaseId,
+      expected: checkpoint,
+      invocationMetadata: agentInvocationMetadata(input.node, input.options, input.invocation),
+    }));
+    input.onCheckpoint(checkpoint);
+    if (checkpoint.checkpoint === "not_dispatched") throw new Error("Dispatch commit returned not_dispatched.");
+    checkpoint = throwSchedulerStoreResult(input.options.store.scheduler.tryAdvanceAgentSessionCheckpoint({
+      runId: input.options.runId,
+      ownerEpoch: input.options.ownerEpoch,
+      agentSessionId: input.lease.agentSessionId,
+      attemptId: input.options.attemptId,
+      expected: checkpoint,
+      next: {
+        checkpoint: "owned_in_flight",
+        attemptId: checkpoint.attemptId,
+        turnId: checkpoint.turnId,
+        sessionLeaseId: checkpoint.sessionLeaseId,
+        promptOrigin: checkpoint.promptOrigin,
+        inputDigest: checkpoint.inputDigest,
+      },
+      cause: "local_call_pending",
+    }));
+    input.onCheckpoint(checkpoint);
+  }
+  let settled: Awaited<ReturnType<AgentSessionLease["runTurn"]>>;
+  const unregister = input.options.agentTurnRegistry
+    && input.options.runId
+    && input.options.nodeKey
+    && input.options.attemptId
+    ? input.options.agentTurnRegistry.register({
+    runId: input.options.runId,
+    nodeKey: input.options.nodeKey,
+    nodeId: input.node.id,
+    agentSessionId: input.lease.agentSessionId,
+    attemptId: input.options.attemptId,
+    turnId: input.request.turnId,
+    sessionLeaseId: input.lease.sessionLeaseId,
+    abort: reason => input.options.abortAttempt?.(reason),
+  }) : undefined;
+  try {
+    settled = await input.lease.runTurn({
+      turnId: input.request.turnId,
+      prompt: input.request.prompt,
+      onEvent: event => {
+        try {
+          if (input.options.store
+            && (checkpoint.checkpoint === "dispatch_intent" || checkpoint.checkpoint === "owned_in_flight")) {
+            checkpoint = advanceAgentCheckpoint(input.options, input.lease, checkpoint as Exclude<AgentSessionCheckpointValue, { checkpoint: "not_dispatched" }>, "provider_observed", "provider_activity");
+            input.onCheckpoint(checkpoint);
+          }
+          input.request.onEvent(event);
+          return ok(undefined);
+        } catch (error) {
+          return err(error);
+        }
+      },
+    });
+  } finally {
+    unregister?.();
+  }
+  if (input.options.store) {
+    if (settled.isOk() || settled.error.evidence.protocolTerminal !== undefined) {
+      checkpoint = advanceAgentCheckpoint(input.options, input.lease, checkpoint as Exclude<AgentSessionCheckpointValue, { checkpoint: "not_dispatched" }>, "terminal_observed", "provider_terminal");
+    } else if (settled.error.evidence.localFailure?.error.providerEvidence === "inbound_activity") {
+      checkpoint = advanceAgentCheckpoint(input.options, input.lease, checkpoint as Exclude<AgentSessionCheckpointValue, { checkpoint: "not_dispatched" }>, "terminal_unknown", "inbound_local_failure");
+    } else if (checkpoint.checkpoint !== "acceptance_unknown" && checkpoint.checkpoint !== "terminal_unknown") {
+      const next = checkpoint.checkpoint === "provider_observed" ? "terminal_unknown" : "acceptance_unknown";
+      checkpoint = advanceAgentCheckpoint(input.options, input.lease, checkpoint as Exclude<AgentSessionCheckpointValue, { checkpoint: "not_dispatched" }>, next, "loss_without_new_provider_evidence");
+    }
+    input.onCheckpoint(checkpoint);
+  }
+  return settled.match(
+    outcome => ({
+      status: "completed" as const,
+      finalResponse: outcome.finalResponse,
+      ...outcome.snapshot,
+      snapshot: outcome.snapshot,
+    }),
+    failure => turnResultFromSupervisorFailure(failure),
+  );
+}
+
+function advanceAgentCheckpoint(
+  options: Extract<AgentExecutorOptions, { store: RuntimeStore }>,
+  lease: AgentSessionLease,
+  expected: Exclude<AgentSessionCheckpointValue, { checkpoint: "not_dispatched" }>,
+  next: "provider_observed" | "terminal_observed" | "acceptance_unknown" | "terminal_unknown",
+  cause: "provider_activity" | "provider_terminal" | "loss_without_new_provider_evidence" | "inbound_local_failure",
+): AgentSessionCheckpointValue {
+  const ordinary = options.store.scheduler.tryAdvanceAgentSessionCheckpoint({
+    runId: options.runId,
+    ownerEpoch: options.ownerEpoch,
+    agentSessionId: lease.agentSessionId,
+    attemptId: options.attemptId,
+    expected,
+    next: { ...expected, checkpoint: next },
+    cause,
+  });
+  if (ordinary.isOk()) return ordinary.value;
+  if (ordinary.error.type !== "terminal-attempt" && ordinary.error.type !== "owner-epoch-stale" && ordinary.error.type !== "owner-epoch-inactive") {
+    return throwSchedulerStoreResult(ordinary);
+  }
+  return throwSchedulerStoreResult(options.store.scheduler.trySettleFencedAgentSessionCheckpoint({
+    runId: options.runId,
+    runtimeOwnerEpoch: options.runtimeOwnerEpoch,
+    agentSessionId: lease.agentSessionId,
+    attemptId: options.attemptId,
+    turnId: expected.turnId,
+    sessionLeaseId: expected.sessionLeaseId,
+    expected: expected.checkpoint,
+    next,
+    cause,
+    observedAt: new Date(),
+  }));
+}
+
+function turnResultFromSupervisorFailure(failure: AgentTurnFailure<unknown>): AgentTurnResult {
+  const common = {
+    ...failure.snapshot,
+    snapshot: failure.snapshot,
+  };
+  if (failure.type === "cancelled") return { status: "cancelled", message: `Agent Turn was cancelled (${failure.reason}).`, ...common };
+  if (failure.type === "acp") return { status: "failed", failure: backendFailureFromAcp(failure.error), ...common };
+  if (failure.type === "policy_timeout") {
+    return { status: "failed", failure: { kind: "timeout", origin: "runtime", message: "Agent turn exceeded its authored deadline." }, ...common };
+  }
+  if (failure.type === "inactivity_stale") {
+    return {
+      status: "failed",
+      failure: {
+        kind: "inactivity_stale",
+        origin: "runtime",
+        retryable: true,
+        message: "ACP agent was silent for the configured inactivity limit.",
+        evidence: {
+          failAfterMs: failure.failAfterMs,
+          silentForMs: failure.silentForMs,
+          silenceStartedAt: failure.silenceStartedAt,
+        },
+      },
+      ...common,
+    };
+  }
+  return {
+    status: "failed",
+    failure: {
+      kind: "worker_lost",
+      origin: "runtime",
+      retryable: failure.type !== "event_sink",
+      message: failure.type === "capsule_lost" ? failure.error.message : "Agent observation sink rejected an event.",
+    },
+    ...common,
+  };
+}
+
+function backendFailureFromAcp(error: AcpError): AgentBackendFailure {
+  const operation = error.operation === "configure_session"
+    ? "configure_session" as const
+    : ["open_session", "initialize", "new_session", "resume_session", "load_session"].includes(error.operation)
+      ? "open_session" as const
+      : "run_turn" as const;
+  const config = error.type === "invalid_input" || error.type === "persistence" || error.type === "configuration" || error.type === "capability";
+  return {
+    kind: error.type === "session_binding" ? "session_binding_mismatch" : config ? "config" : error.type === "spawn" ? "spawn" : "provider_exit",
+    origin: error.origin === "input" || error.origin === "persistence" || error.origin === "client" ? "runtime" : "provider",
+    retryable: error.retryable,
+    message: error.message,
+    upstream: {
+      source: "acp",
+      operation,
+      ...(error.code === undefined ? {} : { code: error.code }),
+      origin: error.type,
+      ...(error.type === "session_binding" ? { data: { categories: [...error.categories] } } : {}),
+    },
+  };
+}
+
+function promptKindForOrigin(origin: AgentAttemptOperationPlan["promptOrigin"]): "task" | "steer" | "repair" {
+  return origin === "authored" ? "task" : origin === "steering" ? "steer" : "repair";
 }
 
 function agentNodeFailure(failure: AgentBackendFailure): AgentNodeFailure {
+  if (failure.kind === "session_binding_mismatch") {
+    return {
+      origin: "runtime",
+      code: "session_binding_mismatch",
+      message: failure.message,
+      ...(failure.retryable === undefined ? {} : { retryable: failure.retryable }),
+      ...(failure.upstream === undefined ? {} : { upstream: failure.upstream }),
+    };
+  }
   if (failure.kind === "config" && failure.origin === "runtime") {
     return {
       origin: "runtime",
@@ -405,23 +782,21 @@ function agentNodeFailure(failure: AgentBackendFailure): AgentNodeFailure {
   };
 }
 
-function unavailableManagedAcpExecutor(): ManagedAcpExecutor {
+function unavailableAgentSessionSupervisor(): AgentSessionSupervisor {
   return {
-    withAttempt: async (_input, use) => use({
-      runTurn: async () => ({
-        status: "failed",
-        failure: { kind: "worker_lost", origin: "runtime", message: "Agent execution requires a managed ACP executor." },
-        responses: [],
-        stderr: "",
-        summary: {
-          eventCount: 0,
-          availability: { context: "unavailable", tokenUsage: "unavailable" },
-          tools: { totalToolCallCount: 0, calls: [] },
-        },
-        timing: { startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), elapsedMs: 0 },
-      }),
-    }),
-    shutdown: async () => {},
+    withSessionLease: input => new ResultAsync(Promise.resolve(err({
+      type: "acquire" as const,
+      error: {
+        type: "supervisor_closed" as const,
+        agentSessionId: input.session.agentSessionId,
+        message: "Agent execution requires an Agent Session supervisor.",
+      },
+    }))),
+    withSessionsNeutralized: () => new ResultAsync(Promise.resolve(err({
+      type: "acquire" as const,
+      error: { type: "supervisor_closed" as const, message: "Agent Session supervisor is unavailable." },
+    }))),
+    shutdown: () => new ResultAsync(Promise.resolve(ok(undefined))),
   };
 }
 
@@ -436,11 +811,32 @@ function abortedTurnFailure(result?: AgentTurnResult): AgentAttemptFailure {
   };
 }
 
+function cancelledAgentTurn(message: string): AgentTurnResult {
+  const now = new Date().toISOString();
+  const snapshot: AgentTurnSnapshot = {
+    responses: [],
+    summary: {
+      eventCount: 0,
+      availability: { context: "unavailable", tokenUsage: "unavailable" },
+      tools: { totalToolCallCount: 0, calls: [] },
+    },
+    timing: { startedAt: now, finishedAt: now, elapsedMs: 0 },
+  };
+  return { status: "cancelled", message, ...snapshot, snapshot };
+}
+
 function isAttemptFenceError(error: unknown): boolean {
   const failure = schedulerStoreError(error);
   return failure?.type === "terminal-attempt"
     || failure?.type === "owner-epoch-stale"
     || failure?.type === "owner-epoch-inactive";
+}
+
+function assertStoredAgentAttemptContext(options: AgentExecutorOptions): void {
+  if (!options.store) return;
+  if (!options.runId || !options.nodeKey || !options.attemptId || options.attemptNo === undefined || options.ownerEpoch === undefined || options.runtimeOwnerEpoch === undefined) {
+    throw new Error("Store-backed Agent execution requires runId, nodeKey, attemptId, attemptNo, ownerEpoch, and runtimeOwnerEpoch.");
+  }
 }
 
 function renderAgentPrompt(node: AgentNodeIR, scope: EvaluationScope, options: AgentExecutorOptions): Result<string, ResolutionError> {
@@ -498,7 +894,7 @@ function staticEnv(env: AgentDefinitionIR["env"]): Record<string, string> {
   return env ? { ...env } : {};
 }
 
-function agentSelector(definition: AgentDefinitionIR): AgentTurnRequest["agent"] {
+function agentSelector(definition: AgentDefinitionIR): AgentSelector {
   return definition.kind === "agent_command"
     ? { kind: "command", command: definition.command }
     : { kind: "named", name: definition.use };
@@ -508,13 +904,12 @@ async function writeAgentTurnArtifacts(
   node: AgentNodeIR,
   options: AgentExecutorOptions,
   turn: number,
-  request: AgentTurnRequest,
+  request: AgentTurnRequestRecord,
   result: AgentTurnResult,
   artifactRun?: RunDirectoryToken,
 ): Promise<AgentTurnRecord> {
   const base = agentTurnRecord(turn, result);
   if (!options.store || !options.runId) return base;
-  const { sessionProjectionPath, ...summary } = result.summary;
   const turnArtifact: AgentTurnArtifact = {
     schemaVersion: 2,
     runId: options.runId,
@@ -523,14 +918,11 @@ async function writeAgentTurnArtifacts(
     attemptNo: options.attemptNo ?? 1,
     turn,
     agentKey: node.run.agent,
-    sessionName: request.sessionName,
-    ...(sessionProjectionPath === undefined
-      ? {}
-      : { sessionProjectionPath: `acp/${sessionProjectionPath}` }),
+    agentSessionId: request.agentSessionId,
     timing: result.timing,
     prompt: request.prompt,
     responses: [...result.responses],
-    summary,
+    summary: result.summary,
     ...(result.status === "completed"
       ? { status: result.status, finalResponse: result.finalResponse }
       : result.status === "failed"
@@ -540,7 +932,6 @@ async function writeAgentTurnArtifacts(
   const record: AgentTurnRecord = {
     ...base,
     turnArtifact: await writeAgentArtifact(options, artifactRun, turn, "json", `${JSON.stringify(turnArtifact, null, 2)}\n`, "application/json"),
-    ...(result.stderr ? { stderrArtifact: await writeAgentArtifact(options, artifactRun, turn, "stderr.log", result.stderr, "text/plain") } : {}),
   };
   return record;
 }
@@ -563,7 +954,6 @@ function summaryProjection(summary: AgentTurnSummary): AgentTurnSummaryProjectio
     context: summary.context,
     tokenUsage: summary.tokenUsage,
     tools: { totalToolCallCount: summary.tools.totalToolCallCount },
-    cwd: summary.cwd,
   }) as AgentTurnSummaryProjection;
 }
 
@@ -627,12 +1017,12 @@ function agentAttemptDirectory(attempt: number, attemptId: string): string {
   return join(`attempt-${attempt}`, attemptId);
 }
 
-function writeAgentInvocationMetadata(
+function agentInvocationMetadata(
   node: AgentNodeIR,
   options: AgentExecutorOptions,
   invocation: {
     prompt: string;
-    promptOrigin: "authored" | "steering" | "continuation";
+    promptOrigin: "authored" | "steering" | "repair";
     cwd: string;
     env: Record<string, string>;
     permissionMode: "approve-reads" | "approve-all" | "deny-all";
@@ -641,42 +1031,37 @@ function writeAgentInvocationMetadata(
     config?: Record<string, string>;
     deadlineAt?: string;
   },
-): void {
-  if (!options.store || !options.runId || !options.attemptId) return;
-  options.store.writeExecutionMetadata({
-    runId: options.runId,
-    attemptId: options.attemptId,
-    kind: "agent_invocation",
-    metadata: pruneUndefined({
-      nodeId: node.id,
-      nodeKey: options.nodeKey ?? node.id,
-      attemptNo: options.attemptNo ?? 1,
-      ...invocation,
-    }) as JsonValue,
-  });
+): JsonValue {
+  return pruneUndefined({
+    nodeId: node.id,
+    nodeKey: options.nodeKey ?? node.id,
+    attemptNo: options.attemptNo ?? 1,
+    ...invocation,
+  }) as JsonValue;
 }
 
 async function writeAgentAttemptMetadata(
   node: AgentNodeIR,
   options: AgentExecutorOptions,
-  sessionName: string | undefined,
+  agentSessionId: string | undefined,
   explicitSessionKey: string | undefined,
   responseRepairMax: number | null | undefined,
   status: "completed" | "failed" | "cancelled" | "timed_out",
   turns: AgentTurnRecord[],
   message?: string,
 ): Promise<void> {
-  if (!options.store || !options.runId) return;
-  options.store.writeExecutionMetadata({
+  if (!options.store) return;
+  throwSchedulerStoreResult(options.store.writeExecutionMetadata({
     runId: options.runId,
-    ...(options.attemptId ? { attemptId: options.attemptId } : {}),
+    attemptId: options.attemptId,
+    ownerEpoch: options.ownerEpoch,
     kind: "agent_attempt",
     metadata: pruneUndefined({
       nodeId: node.id,
       nodeKey: options.nodeKey ?? node.id,
       attemptNo: options.attemptNo ?? 1,
       status,
-      ...(sessionName ? { sessionName } : {}),
+      ...(agentSessionId ? { agentSessionId } : {}),
       ...(explicitSessionKey ? { sessionKey: explicitSessionKey } : {}),
       ...(options.deadlineAt ? { deadlineAt: options.deadlineAt } : {}),
       ...(responseRepairMax === undefined ? {} : { responseRepairMax }),
@@ -684,7 +1069,7 @@ async function writeAgentAttemptMetadata(
       turns: turns.map(turn => pruneUndefined(turn) as JsonValue),
       ...(message ? { message } : {}),
     }) as JsonValue,
-  });
+  }));
 }
 
 function delay(ms: number, signal: AbortSignal | undefined, deadline: number | undefined): Promise<Result<void, AgentAttemptFailure>> {

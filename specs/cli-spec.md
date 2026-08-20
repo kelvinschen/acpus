@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The `acpus` package owns command parsing and human/structured presentation, including terminal workflow visualization. It delegates workflow preparation to the [Workflow Compiler](workflow-compiler-spec.md), durable execution and inspection semantics to the [Runtime](runtime-spec.md), module resolution to the [Loader](loader-spec.md), hook semantics to [Runtime Hooks](hooks-spec.md), and HTML graph rendering to the [WebUI](webui-spec.md).
+The `acpus` package owns command parsing and natural-language presentation for agents and people, including terminal workflow visualization. It delegates workflow preparation to the [Workflow Compiler](workflow-compiler-spec.md), durable execution and inspection semantics to the [Runtime](runtime-spec.md), module resolution to the [Loader](loader-spec.md), hook semantics to [Runtime Hooks](hooks-spec.md), and HTML graph rendering to the [WebUI](webui-spec.md).
 
 ## Requirements
 
@@ -17,16 +17,16 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 | --- | --- |
 | `acpus --version`, `acpus -V` | Print the CLI package version. |
 | `workflow check <workflow>` | `<workflow>` accepts a path, catalog name, or `-` for raw UTF-8 TypeScript on stdin; options are `--input <json\|file.json>`, `--agents <json\|file.json>`, `--project` or `--global`. |
-| `workflow run <workflow>` | Check workflow/input/catalog options plus mutually exclusive `--follow` or `--await-decision`; text-only. |
+| `workflow run <workflow>` | Check workflow/input/catalog options plus mutually exclusive `--follow` or `--await-decision`. |
 | `workflow viz <workflow>` | Accepts the same path, catalog name, or stdin source as check; optional `--out <file.html>` selects HTML output; `--force` permits replacement only with `--out`; catalog scope flags select project or global lookup. |
 | `workflow catalog [name]` | Optional, mutually exclusive `--project` or `--global`; omitting `name` selects interactively in a text TTY and otherwise lists the catalog, while providing it selects one entry. |
 | `workflow import <source>` | `--project` or `--global`, defaulting to project; optional `--check`. |
 | `runs inspect [run-id]` | `--target`, `--timeline`, `--forensics`, and mutually exclusive `--follow` or `--await-decision` as constrained below. |
-| `runs artifact <artifact-ref>` | Resolves one `artifact://<run-id>/<artifact-id>` to verified local source metadata; optional `--json`. |
-| `runs artifacts <run-id>` | Optional `--target` and `--json`. |
+| `runs artifact <artifact-ref>` | Resolves one `artifact://<run-id>/<artifact-id>` to verified local source metadata. |
+| `runs artifacts <run-id>` | Optional `--target`. |
 | `runs delete [run-id]` | Explicit id or interactive text-mode selection. |
 | `runs prune` | Optional `--older-than <duration>`, `--all-workspaces`, `--dry-run`, and `--yes`; selection includes eligible terminal runs and preserved history. |
-| `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry/cancel accept an authored id, occurrence reference, or exact diagnostic key through `--target`; signal requires an occurrence reference or other unambiguous target plus `--payload`; fork accepts `--workflow` with optional `--project` or `--global`, `--input <json\|file.json>`, `--agents <json\|file.json>`, and `--target`; replacement workflow `-` reads raw UTF-8 TypeScript from stdin. |
+| `runs pause/resume/retry/cancel/fork/signal <run-id>` | Retry requires `--target` and accepts a failed/timed-out Task, Agent, or frame through an authored id, occurrence reference, or exact diagnostic key; cancel accepts an optional target; signal requires an occurrence reference or other unambiguous target plus `--payload`; fork accepts `--workflow` with optional `--project` or `--global`, `--input <json\|file.json>`, `--agents <json\|file.json>`, and `--target`; replacement workflow `-` reads raw UTF-8 TypeScript from stdin. |
 | `runs steer <run-id>` | Requires an authored Agent id, occurrence reference, exact-attempt selector, or exact diagnostic key through `--target` and direct `--instruction <text>`. |
 | `doctor` | Read-only Runtime and authoring health; optional `--fix` repairs a repairable Runtime store and rechecks it. |
 | `skill read [path]` | Read `SKILL.md` by default; an explicit path reads a bundled-skill file or lists a directory. |
@@ -36,7 +36,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 | `web` | Optional `--host`, `--port`, and `--token`; a syntactically valid listener failure is operational, not usage. |
 
 - Version flags MUST be root-only terminal operations and MUST fail instead of executing a supplied command.
-- `--json` MUST be owned only by `runs artifact` and `runs artifacts`.
+- Every CLI command MUST present results and handled failures as natural-language text. Structured programmatic consumers MUST use the Runtime, daemon, or Web contracts owned by their respective packages.
 - Help MUST remain on `-h`/`--help` without implicit `help` subcommands.
 - Root help MUST display the CLI package version before usage.
 - Root help MUST show `If the Acpus Skill is not loaded, use acpus skill read to get its usage guide.` before the command list.
@@ -50,6 +50,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - Fork catalog scope flags MUST require `--workflow`.
 - Empty or whitespace-only steer target input MUST fail before daemon startup.
 - Empty or whitespace-only steer instruction input MUST fail before daemon startup.
+- Retry MUST reject an omitted or blank target before daemon startup. The CLI MUST NOT register Continue or Restart commands or aliases.
 
 ### Workflow Resolution And Import
 
@@ -119,7 +120,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - Artifact lookup MUST delegate `ArtifactRef` parsing and path safety to Runtime `resolveArtifact`.
 - Artifact lookup MUST present the verified absolute path and registered media type, size, digest, node key, and attempt without reading the file body.
 - Artifact listing MUST present Runtime-owned registry records, including each absolute public path, without reading bodies.
-- An artifact listing with no records MUST produce `No artifacts.` in text and an empty array in JSON.
+- An artifact listing with no records MUST produce `No artifacts.`.
 
 #### Runtime Store Repair
 
@@ -130,7 +131,10 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 
 #### Inspection
 
-- `runs inspect` MUST be text-only, delegate current target and observation semantics to [Runtime inspection](runtime-spec.md#inspection), and accept only `--target`, `--timeline`, `--forensics`, `--follow`, and `--await-decision`.
+- `runs inspect` MUST delegate current target and observation semantics to
+  [Runtime inspection](runtime-spec.md#inspection), accept only `--target`,
+  `--timeline`, `--forensics`, `--follow`, and `--await-decision`, and render the
+  selected Runtime document as focused natural-language text.
 - `runs inspect --follow` and `--await-decision` MUST attach through one local bound read session, MUST NOT probe or start a daemon, and MUST remain on the generation selected at attachment.
 - `runs inspect <run-id>` MUST automatically render Runtime's preserved archived summary when no active run matches. The summary contains only `id`, `name`, `status`, `createdAt`, and `updatedAt` and exposes no history identifier.
 - Target, Timeline, Forensics, follow, or await-decision against an archived run MUST fail with `ARCHIVED_RUN_DETAIL_UNAVAILABLE` and direct the user to its plain summary command.
@@ -173,6 +177,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 - A mutating control that encounters a repairable store before daemon readiness MUST return public code `RUNTIME_STORE_REPAIR_REQUIRED` and `acpus doctor --fix` as the next command; it MUST NOT repair storage implicitly. A control blocked by a live predecessor MUST return `RUNTIME_UPDATE_BLOCKED` without canceling work or modifying the store.
 - Control success MUST mean the durable projection reflects the effect, not that the run is quiescent or terminal; no wait/timeout customization is exposed.
 - Control receipts MUST distinguish applied pause/resume/retry/cancel/steer, consumed signal, and applied fork; fork results MUST identify source and child separately.
+- A Retry receipt MUST expose only the run and requested target; it MUST NOT expose Session generation, neutralization, or admission assignment details.
 - A control receipt MUST include a target only when the operator requested one, and that target MUST repeat the requested selector rather than a resolved internal occurrence key.
 - Successful text cancel output MUST collapse the action and identity into `Run <run-id> canceled.` for run-level controls or `Target <requested-selector> canceled in run <run-id>.` for targeted controls.
 - Successful text cancel output MUST omit the generic `Status` and `Workflow entry` lines.
@@ -214,7 +219,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 
 ### Update Awareness
 
-- An eligible update-awareness invocation MUST be a command action with TTY stdout and stderr, no `--json`, `--help`, or `-h` argument, and none of `CI`, `NODE_ENV=test`, `npm_lifecycle_event`, or `NO_UPDATE_NOTIFIER` set.
+- An eligible update-awareness invocation MUST be a command action with TTY stdout and stderr, no `--help` or `-h` argument, and none of `CI`, `NODE_ENV=test`, `npm_lifecycle_event`, or `NO_UPDATE_NOTIFIER` set.
 - An ineligible invocation MUST NOT make an update-awareness network request or create update-awareness cache state.
 - Update-awareness persistence MUST be confined to `$HOME/.acpus/cache/update-awareness`.
 - Update awareness MUST NOT create workspace `.acpus` state or modify a workspace.
@@ -229,9 +234,7 @@ The `acpus` package owns command parsing and human/structured presentation, incl
 ### Output And Exit Codes
 
 - `CliResult` MUST be a phase-discriminated closed TypeScript union that rejects fields owned by another phase; `ResultPhase` includes distinct `source`, `lock`, and `import` members.
-- Every machine-readable record MUST contain `schemaVersion`, `ok`, and `phase`.
-- Structured CLI result records MUST retain `schemaVersion: 1`.
-- Except when `-h`/`--help` terminates parsing, artifact lookup and listing invoked with `--json` MUST emit one compact single-line JSON object followed by one newline on stdout and leave stderr empty.
+- Successful CLI results MUST write natural-language text to stdout; handled failures MUST write natural-language text to stderr. The CLI MUST NOT expose a machine-output mode.
 - Text Doctor health checks MUST align the status, area, and message fields as three columns within each report. In a TTY with `NO_COLOR` unset, the summary MUST use the report's success/failure color, each status MUST map `ok`/`warn`/`fail` to success/warning/failure colors, and the area MUST use a consistent accent; non-TTY output MUST remain free of ANSI styling.
 - Successful text `workflow check` output MUST report passed TypeScript, authoring-rule, and WorkflowIR stages, and MUST include the static node count without printing the generic workflow metadata summary.
 - Failed text workflow preparation MUST count `TS####` errors as TypeScript errors, `AL###` and `TB###` errors as authoring-rule errors, report `WF001` and `WF002` as check-infrastructure errors, and mark a WorkflowIR stage skipped when preparation stopped before compilation.

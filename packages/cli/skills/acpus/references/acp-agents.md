@@ -23,26 +23,23 @@ An explicit `command` launches as written and bypasses named Agent lookup.
 The built-ins are `pi`, `openclaw`, `codex`, `claude`, `gemini`, `cursor`,
 `copilot`, `droid`, `fast-agent`, `grok-build`, `iflow`, `kilocode`, `kimi`,
 `kiro`, `mux`, `opencode`, `pool`, `qoder`, `qwen`, `trae`, and `zeroclaw`.
-`factory-droid` and `factorydroid` select `droid`. Declare any of them as
-`{ use: "<agent>" }`.
+Declare any of them as `{ use: "<agent>" }`.
 
 ## Configured Agents
 
-Add other named Agents as structured argv in the effective home directory's
-`.acpus/agents.json` when a home is available, or in
-`<cwd>/.acpus/agents.json` when the launch belongs to one project. A project
-entry overrides a global entry with the same normalized name. Each file
-contains only the `agents` map and each entry contains only `argv`:
+- **Global:** Add commands to `$HOME/.acpus/agents.json`.
+- **Project:** Add project-specific commands to `<cwd>/.acpus/agents.json`.
+- **Precedence:** A project entry overrides a global entry with the same normalized name.
+- **Shape:** Each file contains only `agents`; each entry is a non-empty Shell command:
 
 ```json
 {
   "agents": {
-    "my-agent": {
-      "argv": ["my-acp-server", "--stdio"]
-    }
+    "my-agent": "my-acp-server --stdio"
   }
 }
 ```
+
 
 Then select it normally:
 
@@ -52,23 +49,16 @@ agents: {
 }
 ```
 
-If Acpus reports an unknown named Agent, either add its non-empty argv to one
-of those files or, for a raw command already supplied by the user, change the
-definition to `{ command: "..." }`. Every present configuration file is
-validated completely, so fix the path and entry named by the diagnostic. Retry
-a pre-execution configuration failure through its containing frame or whole
-run after fixing ambient configuration; fork when changing the workflow's
-Agent definition.
+- **Unknown named Agent:** Add a non-empty command to configuration.
+- **User supplied a raw command:** Change the definition to `{ command: "..." }`.
+- **Invalid configuration:** Fix the path and entry named by the diagnostic; every present file is validated completely.
+- **After an ambient configuration fix:** Retry the failed Agent or containing frame.
+- **To change the workflow's Agent definition:** Fork.
 
-Host applications may register immutable named Agent launches. Those take
-precedence over file configuration; file configuration takes precedence over
-the built-in catalog. Acpus resolves a name once per managed attempt, so turns
-inside that attempt retain one launch while a later attempt observes changes.
+- **Resolution order:** Host-provided Agent, file configuration, then built-in catalog.
+- **Later work:** A shared-session occurrence, Retry generation, or Steer replacement resolves current configuration.
 
 ## ACP Agent Config
 
-Use top-level workflow `config` for a static string map of desired ACP session
-options. `config.model` selects the model and overrides the top-level `model`;
-other keys are applied as ACP configuration options. Do not put secrets in
-workflow `config` or authored `env`, because Runtime records them for
-Forensics. Use ambient Agent/provider credential mechanisms instead.
+- Use top-level workflow `config` for static string ACP Session options.
+- `config.model` overrides top-level `model`; other keys select ACP options.

@@ -2,10 +2,12 @@ import { admitRunForTest } from "./support/runtime-store.js";
 import { access, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as wait } from "node:timers/promises";
 import { defineWorkflow, z } from "@acpus/core";
-import { createManagedAcpExecutor, type AgentTurnObservation, type AgentTurnProgress, type AgentTurnRequest, type AgentTurnResult, type ManagedAcpExecutor } from "@acpus/agent-executor";
+import { createAgentSessionSupervisor, type AgentSessionSupervisor } from "@acpus/agent-executor";
 import { lift, template } from "@acpus/expression";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { err, ResultAsync } from "neverthrow";
 import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { createRuntimeNodeExecutor as createRuntimeNodeExecutorProduction, type RuntimeNodeExecutorInput } from "../src/scheduler/node-executor.js";
 import { advanceFrozenRun as advanceFrozenRunProduction, type AdvanceFrozenRunInput } from "../src/scheduler/runtime-runner.js";
@@ -18,11 +20,23 @@ import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { loadAgentHostPolicy, type AgentHostPolicy } from "../src/configuration.js";
 import type { HookContext } from "../src/hooks/dispatch.js";
 import type { HookRunner } from "../src/hooks/runner.js";
-import { agentSummary, agentTiming, completedAgentTurn, segmentedCompletedAgentTurn, taggedAgentOutput } from "./support/agent-turn.js";
+import {
+  agentSummary,
+  agentTiming,
+  completedAgentTurn,
+  segmentedCompletedAgentTurn,
+  taggedAgentOutput,
+  type FixtureAgentTurnObservation as AgentTurnObservation,
+  type FixtureAgentTurnProgress as AgentTurnProgress,
+  type FixtureAgentTurnRequest as AgentTurnRequest,
+  type FixtureAgentTurnResult as AgentTurnResult,
+} from "./support/agent-turn.js";
 import { createVersionedWakeup } from "../src/scheduler/wakeup.js";
 import { rootFrameStarted } from "./support/scheduler.js";
 import { readInspection } from "../src/inspection/use-cases.js";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
+import { captureProcessIdentity } from "../src/process-liveness.js";
+import { testAgentSessionSupervisor as createTestAgentSessionSupervisor } from "./support/agent-session-supervisor.js";
 
 const hangingAcpAgent = fileURLToPath(new URL("./fixtures/hanging-open-acp-agent.mjs", import.meta.url));
 const agentMocks = vi.hoisted(() => ({
@@ -34,18 +48,22 @@ declare global {
 }
 const initialResponseRepairMax = process.env.ACPUS_AGENT_RESPONSE_REPAIR_MAX;
 const testRunClaims = new WeakMap<RuntimeStore, Map<string, RunOwnerClaim>>();
+const testRuntimeAuthorities = new WeakMap<RuntimeStore, number>();
 function advanceFrozenRun(input: AdvanceFrozenRunInput & { executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult> }) {
-  const { executeAgentTurn, managedAcpExecutor = testManagedAcpExecutor(executeAgentTurn), ...productionInput } = input;
-  return advanceFrozenRunProduction({ ...productionInput, managedAcpExecutor });
+  const { executeAgentTurn, agentSessionSupervisor = testAgentSessionSupervisor(executeAgentTurn), ...productionInput } = input;
+  const runtimeOwnerEpoch = productionInput.runtimeOwnerEpoch
+    ?? ensureTestRuntimeAuthority(productionInput.store, productionInput.runId);
+  return advanceFrozenRunProduction({ ...productionInput, runtimeOwnerEpoch, agentSessionSupervisor });
 }
 type TestAgentExecutorOptions = Omit<Parameters<typeof executeAgentNodeProduction>[2], "hostPolicy"> & {
   hostPolicy?: AgentHostPolicy;
   executeTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
+  runtimeOwnerEpoch?: number;
 };
 async function executeAgentNode(node: Parameters<typeof executeAgentNodeProduction>[0], scope: Parameters<typeof executeAgentNodeProduction>[1], options: TestAgentExecutorOptions) {
-  const { executeTurn, hostPolicy = loadAgentHostPolicy(process.env), managedAcpExecutor = testManagedAcpExecutor(executeTurn), ...productionOptions } = options;
+  const { executeTurn, hostPolicy = loadAgentHostPolicy(process.env), agentSessionSupervisor = testAgentSessionSupervisor(executeTurn), ...productionOptions } = options;
   const result = !productionOptions.store || !productionOptions.runId
-    ? await executeAgentNodeProduction(node, scope, { ...productionOptions, hostPolicy, managedAcpExecutor })
+    ? await executeAgentNodeProduction(node, scope, { ...productionOptions, hostPolicy, agentSessionSupervisor } as Parameters<typeof executeAgentNodeProduction>[2])
     : await (() => {
         const attempt = ensureTestAttempt(
           productionOptions.store,
@@ -54,7 +72,9 @@ async function executeAgentNode(node: Parameters<typeof executeAgentNodeProducti
           node.id,
           productionOptions.attemptId,
         );
-        return executeAgentNodeProduction(node, scope, { ...productionOptions, ...attempt, hostPolicy, managedAcpExecutor });
+        const runtimeOwnerEpoch = productionOptions.runtimeOwnerEpoch
+          ?? ensureTestRuntimeAuthority(productionOptions.store, productionOptions.runId);
+        return executeAgentNodeProduction(node, scope, { ...productionOptions, ...attempt, runtimeOwnerEpoch, hostPolicy, agentSessionSupervisor } as Parameters<typeof executeAgentNodeProduction>[2]);
       })();
   if (result.isOk()) return result.value;
   const error = result.error.type === "resolution"
@@ -66,23 +86,47 @@ async function executeAgentNode(node: Parameters<typeof executeAgentNodeProducti
 }
 type TestRuntimeNodeExecutorInput = Omit<RuntimeNodeExecutorInput, "agentHostPolicy"> & { agentHostPolicy?: AgentHostPolicy; executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult> };
 function createRuntimeNodeExecutor(input: TestRuntimeNodeExecutorInput) {
-  const { executeAgentTurn, agentHostPolicy = loadAgentHostPolicy(process.env), managedAcpExecutor = testManagedAcpExecutor(executeAgentTurn), ...productionInput } = input;
-  const executor = createRuntimeNodeExecutorProduction({ ...productionInput, agentHostPolicy, managedAcpExecutor });
+  const { executeAgentTurn, agentHostPolicy = loadAgentHostPolicy(process.env), agentSessionSupervisor = testAgentSessionSupervisor(executeAgentTurn), ...productionInput } = input;
   return {
-    execute(context: Parameters<typeof executor.execute>[0]) {
+    execute(context: Parameters<ReturnType<typeof createRuntimeNodeExecutorProduction>["execute"]>[0]) {
       const attempt = ensureTestAttempt(input.store, context.runId, context.nodeKey, context.nodeId, context.attemptId);
+      const runtimeOwnerEpoch = productionInput.runtimeOwnerEpoch
+        ?? ensureTestRuntimeAuthority(input.store, context.runId);
+      const executor = createRuntimeNodeExecutorProduction({ ...productionInput, runtimeOwnerEpoch, agentHostPolicy, agentSessionSupervisor });
       return executor.execute({ ...context, ...attempt });
     },
   };
 }
 
-function testManagedAcpExecutor(
+function ensureTestRuntimeAuthority(store: RuntimeStore, runId: string): number {
+  const cached = testRuntimeAuthorities.get(store);
+  if (cached !== undefined) return cached;
+  const active = store.getRuntimeDiagnostics().authority;
+  if (active && active.releasedAt === undefined) {
+    testRuntimeAuthorities.set(store, active.epoch);
+    return active.epoch;
+  }
+  const workspaceRealpath = store.getFrozenRun(runId)?.sourceRoot;
+  if (!workspaceRealpath) throw new Error(`Run '${runId}' has no source root for its test Runtime authority.`);
+  const identity = captureProcessIdentity();
+  const authority = store.claimRuntimeAuthority({
+    workspaceRealpath,
+    ownerId: `agent-test-runtime-${runId}`,
+    pid: identity.pid,
+    ...(identity.startToken === undefined ? {} : { processStartToken: identity.startToken }),
+    protocolVersion: 1,
+    packageVersion: "0.0.0-test",
+    nodeVersion: process.version,
+    execPath: process.execPath,
+  })._unsafeUnwrap();
+  testRuntimeAuthorities.set(store, authority.epoch);
+  return authority.epoch;
+}
+
+function testAgentSessionSupervisor(
   executeTurn: (request: AgentTurnRequest) => Promise<AgentTurnResult> = request => agentMocks.executeAgentTurn(request),
-): ManagedAcpExecutor {
-  return {
-    withAttempt: async (_input, use) => use({ runTurn: executeTurn }),
-    shutdown: async () => {},
-  };
+): AgentSessionSupervisor {
+  return createTestAgentSessionSupervisor(executeTurn);
 }
 
 function useIsolatedAgentNodeEnvironment(): void {
@@ -188,13 +232,11 @@ describe("agent node execution", () => {
           const turns: AgentTurnRequest[] = [];
           const attempts: unknown[] = [];
           let executeTurn!: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
-          const managedAcpExecutor: ManagedAcpExecutor = {
-            withAttempt: async (input, use) => {
-              attempts.push(input);
-              return use({ runTurn: executeTurn });
-            },
-            shutdown: async () => {},
-          };
+          const agentSessionSupervisor = createTestAgentSessionSupervisor(
+            request => executeTurn(request),
+            undefined,
+            input => attempts.push(input),
+          );
           try {
             const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
             const executor = createRuntimeNodeExecutor({
@@ -202,7 +244,7 @@ describe("agent node execution", () => {
               ir: prepared.ir,
               scope: {},
               store,
-              managedAcpExecutor,
+              agentSessionSupervisor,
               executeAgentTurn: executeTurn = async request => {
                 turns.push(request);
                 const turnProgress: AgentTurnProgress = {
@@ -245,8 +287,6 @@ describe("agent node execution", () => {
                         completedAt: "2026-07-01T00:00:01.000Z",
                       }],
                     },
-                    cwd: workspace,
-                    sessionProjectionPath: "sessions/session%2F1.json",
                   } : undefined,
                 );
               },
@@ -266,7 +306,10 @@ describe("agent node execution", () => {
             });
             expect(turns).toHaveLength(2);
             expect(attempts).toEqual([
-              expect.objectContaining({ runId: run.id, sessionName: turns[0]!.sessionName }),
+              expect.objectContaining({
+                attempt: expect.objectContaining({ runId: run.id }),
+                session: expect.objectContaining({ agentSessionId: turns[0]!.agentSessionId }),
+              }),
             ]);
             const terminalProgress = store.getRun(run.id)?.dynamic?.progress[0];
             expect(terminalProgress).toMatchObject({
@@ -279,7 +322,7 @@ describe("agent node execution", () => {
                 updatedAt: "2026-07-01T00:00:00.000Z",
               },
             });
-            expect(turns.map(turn => turn.sessionName)).toEqual([turns[0]!.sessionName, turns[0]!.sessionName]);
+            expect(turns.map(turn => turn.agentSessionId)).toEqual([turns[0]!.agentSessionId, turns[0]!.agentSessionId]);
             expect(turns[0]).toMatchObject({ agent: { kind: "command" }, permissionMode: "approve-all" });
             expect(turns[0]!.model).toBe("profile-model");
             expect(turns[0]!.config).toEqual({ effort: "high", mode: "agent", model: "profile-model" });
@@ -295,7 +338,6 @@ describe("agent node execution", () => {
             expect(artifactRows).toEqual([
               expect.objectContaining({ media_type: "application/json", relative_path: `${artifactRoot}/turn-001.json` }),
               expect.objectContaining({ media_type: "application/json", relative_path: `${artifactRoot}/turn-002.json` }),
-              expect.objectContaining({ media_type: "text/plain", relative_path: `${artifactRoot}/turn-002.stderr.log` }),
             ]);
             expect(metadataEntry).toMatchObject({ attemptId: expect.any(String), kind: "agent_attempt" });
             const metadata = metadataEntry?.metadata as AgentAttemptMetadata | undefined;
@@ -304,7 +346,7 @@ describe("agent node execution", () => {
               nodeKey: "review.dynamic",
               attemptNo: 1,
               status: "completed",
-              sessionName: turns[0]!.sessionName,
+              agentSessionId: turns[0]!.agentSessionId,
               turnCount: 2,
               turns: [
                 expect.objectContaining({
@@ -336,7 +378,7 @@ describe("agent node execution", () => {
             expect(JSON.stringify(metadata)).not.toContain("\"timing\"");
             expect(metadata?.turns?.[0]?.summary).not.toHaveProperty("sessionProjectionPath");
             expectAgentArtifactRef(metadata?.turns?.[0]?.turnArtifact, `${artifactRoot}/turn-001.json`, "application/json", artifactRows);
-            expectAgentArtifactRef(metadata?.turns?.[1]?.stderrArtifact, `${artifactRoot}/turn-002.stderr.log`, "text/plain", artifactRows);
+            expect(metadata?.turns?.[1]?.stderrArtifact).toBeUndefined();
             const runDir = store.getRunDir(run.id);
             if (!runDir) throw new Error("expected run dir");
             const turnArtifact = await readJsonFile(join(runDir, artifactRoot, "turn-001.json"));
@@ -348,8 +390,7 @@ describe("agent node execution", () => {
               attemptNo: 1,
               turn: 1,
               agentKey: "reviewer",
-              sessionName: turns[0]!.sessionName,
-              sessionProjectionPath: "acp/sessions/session%2F1.json",
+              agentSessionId: turns[0]!.agentSessionId,
               status: "completed",
               timing: agentTiming(),
               prompt: turns[0]!.prompt,
@@ -372,7 +413,6 @@ describe("agent node execution", () => {
                     completedAt: "2026-07-01T00:00:01.000Z",
                   })],
                 },
-                cwd: workspace,
               },
             });
             expect(turnArtifact).not.toHaveProperty("summary.sessionProjectionPath");
@@ -511,6 +551,103 @@ describe("agent node execution", () => {
         });
       });
 
+    it("does not treat a synthetic turn_end observation as provider acceptance evidence", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-turn-end-evidence", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+          const node = prepared.ir.root.nodes.find(candidate => candidate.id === "review");
+          if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+          const store = await openRuntimeStore(workspace);
+          try {
+            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+            await expect(executeAgentNode(node, {}, {
+              cwd: workspace,
+              runId: run.id,
+              nodeKey: "review",
+              agents: prepared.ir.agents,
+              store,
+              executeTurn: async request => {
+                request.onObservation?.({
+                  event: {
+                    schemaVersion: 1,
+                    sequence: 0,
+                    observedAt: "2026-08-19T00:00:00.000Z",
+                    elapsedMs: 0,
+                    type: "turn_end",
+                    status: "failed",
+                    message: "local wrapper terminal",
+                  },
+                  progress: {
+                    responses: [],
+                    updatedAt: "2026-08-19T00:00:00.000Z",
+                    summary: agentSummary(1),
+                  },
+                });
+                return {
+                  status: "failed",
+                  failure: { kind: "worker_lost", origin: "runtime", retryable: true, message: "provider acceptance unknown" },
+                  responses: [],
+                  stderr: "",
+                  summary: agentSummary(1),
+                  timing: agentTiming(),
+                };
+              },
+            })).rejects.toThrow("provider acceptance unknown");
+
+            expect(store.scheduler.readAgentControlInspection(run.id).agentSessions)
+              .toEqual([expect.objectContaining({
+                checkpoint: expect.objectContaining({ value: "acceptance_unknown" }),
+              })]);
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("maps an open-time ACP binding mismatch once with only safe categories", async () => {
+      await withRuntimeWorkspace("agent-node-binding-mismatch", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
+        const node = prepared.ir.root.nodes.find(candidate => candidate.id === "review");
+        if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+        const base = testAgentSessionSupervisor();
+        const agentSessionSupervisor: AgentSessionSupervisor = {
+          ...base,
+          withSessionLease: input => new ResultAsync(Promise.resolve(err({
+            type: "acquire" as const,
+            error: {
+              type: "session_open_failed" as const,
+              agentSessionId: input.session.agentSessionId,
+              error: {
+                type: "session_binding" as const,
+                operation: "open_session" as const,
+                origin: "persistence" as const,
+                providerEvidence: "none" as const,
+                categories: ["cwd", "options"] as const,
+                message: "The Agent Session binding does not match.",
+                retryable: false,
+              },
+              message: "The Agent Session binding does not match.",
+            },
+          }))),
+        };
+
+        await expect(executeAgentNode(node, {}, {
+          cwd: workspace,
+          agents: prepared.ir.agents,
+          agentSessionSupervisor,
+        })).rejects.toMatchObject({
+          failure: {
+            code: "session_binding_mismatch",
+            upstream: {
+              source: "acp",
+              operation: "open_session",
+              origin: "session_binding",
+              data: { categories: ["cwd", "options"] },
+            },
+          },
+        });
+      });
+    });
+
 
     it("persists agent progress while a scheduler-visible attempt is still running", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-progress", async workspace => {
@@ -600,7 +737,7 @@ describe("agent node execution", () => {
               expect.objectContaining({
                 attemptId: attempt.attemptId,
                 status: "timed_out",
-                message: "Agent turn timed out after 5ms.",
+                message: "Agent turn exceeded its authored deadline.",
                 output: { tail: "partial", totalBytes: 7, truncated: false },
               }),
             ]);
@@ -611,7 +748,7 @@ describe("agent node execution", () => {
               schemaVersion: 2,
               status: "failed",
               responses: ["partial"],
-              failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
+              failure: { kind: "timeout", message: "Agent turn exceeded its authored deadline." },
             });
             expect(artifact).not.toHaveProperty("finalResponse");
             expect(artifact).not.toHaveProperty("response");
@@ -635,7 +772,7 @@ describe("agent node execution", () => {
               store,
               executeAgentTurn: async () => ({
                 status: "cancelled",
-                message: "paused by operator",
+                message: "Agent Turn was cancelled (provider).",
                 responses: ["partial"],
                 stderr: "",
                 summary: agentSummary(1),
@@ -656,7 +793,7 @@ describe("agent node execution", () => {
               expect.objectContaining({
                 attemptId: attempt.attemptId,
                 status: "cancelled",
-                message: "paused by operator",
+                message: "Agent Turn was cancelled (provider).",
                 output: { tail: "partial", totalBytes: 7, truncated: false },
               }),
             ]);
@@ -667,7 +804,7 @@ describe("agent node execution", () => {
               schemaVersion: 2,
               status: "cancelled",
               responses: ["partial"],
-              message: "paused by operator",
+              message: "Agent Turn was cancelled (provider).",
             });
             expect(artifact).not.toHaveProperty("finalResponse");
             expect(artifact).not.toHaveProperty("response");
@@ -726,7 +863,7 @@ describe("agent node execution", () => {
                 origin: "provider",
                 code: "provider_exit",
                 message: "credential helper failed",
-                upstream: { source: "acp", code: "RUNTIME", data: { details: "credential helper failed" } },
+                upstream: { source: "acp", code: "RUNTIME" },
               },
             });
             expect(store.getRun(run.id)?.dynamic?.progress).toEqual([
@@ -982,7 +1119,7 @@ describe("agent node execution", () => {
         });
       });
 
-    it("sends only the steering tag to schema-less agents and omits initial config", async () => {
+    it("rejects schema-less steering without a durable Scheduler directive", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-schema-less-steer", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, defineWorkflow({
             name: "raw_steered_agent",
@@ -998,20 +1135,18 @@ describe("agent node execution", () => {
           await expect(executeAgentNode(node, {}, {
             cwd: workspace,
             agents: prepared.ir.agents,
-            initialPrompt: { kind: "steer", instruction: "Focus on the failing assertion." },
+            initialPrompt: { kind: "steer", steerId: "test-steer", instruction: "Focus on the failing assertion." },
             executeTurn: async request => {
               turns.push(request);
               return completedAgentTurn("fixed");
             },
-          })).resolves.toBe("fixed");
+          })).rejects.toThrow("Agent Steer requires a durable Scheduler directive.");
 
-          expect(turns).toHaveLength(1);
-          expect(turns[0]!.prompt).toBe("<steering>Focus on the failing assertion.</steering>");
-          expect(turns[0]!.config).toBeUndefined();
+          expect(turns).toHaveLength(0);
         });
       });
 
-    it("adds the complete output contract to schema-backed steering and conforms in one turn", async () => {
+    it("rejects schema-backed steering without a durable Scheduler directive", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-schema-steer-direct", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
           const node = prepared.ir.root.nodes.find(node => node.id === "review");
@@ -1021,92 +1156,38 @@ describe("agent node execution", () => {
           await expect(executeAgentNode(node, {}, {
             cwd: workspace,
             agents: prepared.ir.agents,
-            initialPrompt: { kind: "steer", instruction: "Return the attempt as a string." },
+            initialPrompt: { kind: "steer", steerId: "test-steer", instruction: "Return the attempt as a string." },
             executeTurn: async request => {
               turns.push(request);
               return completedAgentTurn(taggedAgentOutput("{\"attempt\":\"1\"}"));
             },
-          })).resolves.toEqual({ attempt: "1" });
+          })).rejects.toThrow("Agent Steer requires a durable Scheduler directive.");
 
-          expect(turns).toHaveLength(1);
-          expect(turns[0]!.prompt).toContain(`<steering>Return the attempt as a string.</steering>
-
-# RESULT HANDOFF [MANDATORY]
-Replace the type shape inside the tags with one matching JSON value; comments are guidance. Keep the tags verbatim, do not escape them, and end at the closing tag.
-<ACPUS_OUTPUT>
-{ attempt: string }
-</ACPUS_OUTPUT>`);
-          expect(turns[0]!.config).toBeUndefined();
+          expect(turns).toHaveLength(0);
         });
       });
 
-    it("keeps steering repair free of the instruction and steer id", async () => {
+    it("rejects in-memory steering before a repair Turn can dispatch", async () => {
         await withRuntimeWorkspace("scheduler-node-executor-agent-schema-steer", async workspace => {
           const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
-          const store = await openRuntimeStore(workspace);
+          const node = prepared.ir.root.nodes.find(node => node.id === "review");
+          if (!node || node.kind !== "agent") throw new Error("expected review agent node");
           const turns: AgentTurnRequest[] = [];
-          try {
-            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
-            const executor = createRuntimeNodeExecutor({
+          await expect(withImmediateAgentRepairs(() => executeAgentNode(node, {}, {
               cwd: workspace,
-              ir: prepared.ir,
-              scope: {},
-              store,
-              executeAgentTurn: async request => {
-                turns.push(request);
-                return completedAgentTurn(taggedAgentOutput(turns.length === 1 ? "{\"attempt\":1}" : "{\"attempt\":\"2\"}"));
-              },
-            });
-
-            await expect(withImmediateAgentRepairs(() => executor.execute({
-              runId: run.id,
-              nodeId: "review",
-              nodeKey: "review.dynamic",
-              attemptId: "attempt_steered",
-              attemptNo: 1,
-              ownerEpoch: 1,
-              steer: {
+              agents: prepared.ir.agents,
+              initialPrompt: {
+                kind: "steer",
                 steerId: "steer-must-remain-internal",
                 instruction: "Return the attempt as a string.",
               },
-              signal: new AbortController().signal,
-            }))).resolves.toEqual({ status: "completed", output: { attempt: "2" } });
+              executeTurn: async request => {
+                turns.push(request);
+                return completedAgentTurn(taggedAgentOutput(turns.length === 1 ? "{\"attempt\":1}" : "{\"attempt\":\"2\"}"));
+              },
+            }))).rejects.toThrow("Agent Steer requires a durable Scheduler directive.");
 
-            expect(turns).toHaveLength(2);
-            expect(turns[0]!.prompt).toMatch(/^<steering>Return the attempt as a string\.<\/steering>\n\n# RESULT HANDOFF \[MANDATORY\]/);
-            expect(turns[0]!.config).toBeUndefined();
-            expect(turns[1]!.prompt).toContain("# OUTPUT REPAIR");
-            expect(turns[1]!.prompt).not.toContain("Return the attempt as a string.");
-            expect(turns.every(turn => !turn.prompt.includes("steer-must-remain-internal"))).toBe(true);
-            const turnArtifacts = store.listArtifacts(run.id)
-              .filter(artifact => /turn-\d+\.json$/.test(artifact.path))
-              .sort((left, right) => left.path.localeCompare(right.path));
-            const recorded = await Promise.all(turnArtifacts.map(artifact => readJsonFile(artifact.path))) as Array<{ prompt: string }>;
-            expect(recorded.map(artifact => artifact.prompt)).toEqual(turns.map(turn => turn.prompt));
-            expect(JSON.stringify(recorded)).not.toContain("steer-must-remain-internal");
-            const observationRows = runtimeRows(
-              workspace,
-              `SELECT turn_no, prompt_kind, state, provider_status
-               FROM agent_observation_turns
-               WHERE run_id = ?
-               ORDER BY turn_no`,
-              run.id,
-            ) as Array<{
-              turn_no: number;
-              prompt_kind: string;
-              state: string;
-              provider_status: string;
-            }>;
-            expect(observationRows).toEqual([
-              { turn_no: 1, prompt_kind: "steer", state: "settled", provider_status: "completed" },
-              { turn_no: 2, prompt_kind: "repair", state: "settled", provider_status: "completed" },
-            ]);
-            const runDir = store.getRunDir(run.id);
-            if (!runDir) throw new Error("expected run directory");
-            await expect(readdir(runDir)).resolves.not.toContain("evidence");
-          } finally {
-            store.close();
-          }
+          expect(turns).toHaveLength(0);
         });
       });
 
@@ -1136,10 +1217,10 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
             ownerEpoch: 1,
             agents: prepared.ir.agents,
             hostPolicy: loadAgentHostPolicy(process.env),
-            managedAcpExecutor: testManagedAcpExecutor(),
+            agentSessionSupervisor: testAgentSessionSupervisor(),
             progressWriter: { writeNodeProgress },
             signal: controller.signal,
-            initialPrompt: { kind: "steer", instruction: "Use the smaller fix." },
+            initialPrompt: { kind: "task" },
           });
           expect(result.isErr() && result.error).toMatchObject({
             type: "cancelled",
@@ -1158,20 +1239,20 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
           const controller = new AbortController();
           const runTurn = vi.fn(async () => completedAgentTurn(taggedAgentOutput("{\"ok\":true}")));
           let startupSignal: AbortSignal | undefined;
-          const managedAcpExecutor: ManagedAcpExecutor = {
-            withAttempt: async (input, use) => {
-              startupSignal = input.signal;
+          const agentSessionSupervisor = createTestAgentSessionSupervisor(
+            runTurn,
+            undefined,
+            input => {
+              startupSignal = input.attempt.signal;
               controller.abort();
-              return use({ runTurn });
             },
-            shutdown: async () => {},
-          };
+          );
 
           const result = await executeAgentNodeProduction(node, {}, {
             cwd: workspace,
             agents: prepared.ir.agents,
             hostPolicy: loadAgentHostPolicy(process.env),
-            managedAcpExecutor,
+            agentSessionSupervisor,
             signal: controller.signal,
           });
 
@@ -1360,7 +1441,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
             }))).resolves.toEqual({ ok: true });
 
             expect(turns).toHaveLength(2);
-            expect(turns.map(turn => turn.sessionName)).toEqual([turns[0]!.sessionName, turns[0]!.sessionName]);
+            expect(turns.map(turn => turn.agentSessionId)).toEqual([turns[0]!.agentSessionId, turns[0]!.agentSessionId]);
             expect(turns.map(turn => turn.env.ACPUS_AGENT_RESPONSE_REPAIR_MAX)).toEqual(["0", "0"]);
             const metadata = store.getExecutionMetadata(run.id).find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
             expect(metadata).toMatchObject({ responseRepairMax: 1, turnCount: 2 });
@@ -1521,11 +1602,8 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
           const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
           const store = await openRuntimeStore(workspace);
           const attempts: unknown[] = [];
-          const managedAcpExecutor: ManagedAcpExecutor = {
-            withAttempt: async (input, use) => {
-              attempts.push(input);
-              return use({
-                runTurn: async () => ({
+          const agentSessionSupervisor = createTestAgentSessionSupervisor(
+                async () => ({
                   status: "failed",
                   failure: {
                     kind: "inactivity_stale",
@@ -1543,10 +1621,9 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
                   summary: agentSummary(0),
                   timing: agentTiming(),
                 }),
-              });
-            },
-            shutdown: async () => {},
-          };
+                undefined,
+                input => attempts.push(input),
+              );
           try {
             const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
 
@@ -1556,10 +1633,12 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               ownerId: "owner-a",
               store,
               agentHostPolicy: loadAgentHostPolicy({}, 60_000),
-              managedAcpExecutor,
+              agentSessionSupervisor,
             })).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
 
-            expect(attempts).toEqual([expect.objectContaining({ runId: run.id, inactivityFailAfterMs: 60_000 })]);
+            expect(attempts).toEqual([expect.objectContaining({
+              attempt: expect.objectContaining({ runId: run.id, inactivityFailAfterMs: 60_000 }),
+            })]);
             expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.attempts)[0]).toMatchObject({
               status: "failed",
               terminalReason: "agent_acp_inactivity_stale",
@@ -1755,8 +1834,8 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
           const persistenceFailure = new Error("invocation store unavailable");
           try {
             const run = await admitRunForTest(store, { prepared, input: { nodeEnv: "dynamic" }, cwd: workspace });
-            vi.spyOn(store, "writeExecutionMetadata").mockImplementation(input => {
-              if (input.kind === "agent_invocation") throw persistenceFailure;
+            vi.spyOn(store.scheduler, "tryCommitAgentTurnDispatch").mockImplementation(() => {
+              throw persistenceFailure;
             });
 
             await expect(executeAgentNode(node, { input: { nodeEnv: "dynamic" } }, {
@@ -1770,6 +1849,34 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               executeTurn: provider,
             })).rejects.toBe(persistenceFailure);
 
+            expect(provider).not.toHaveBeenCalled();
+            expect(store.getExecutionMetadata(run.id)).toEqual([]);
+          } finally {
+            store.close();
+          }
+        });
+      });
+
+    it("rejects a partial store-backed Agent context before dispatch", async () => {
+        await withRuntimeWorkspace("scheduler-node-executor-agent-partial-store-context", async workspace => {
+          const prepared = await prepareSyntheticWorkflow(workspace, forensicsInvocationAgentWorkflow());
+          const node = prepared.ir.root.nodes.find(node => node.id === "review");
+          if (!node || node.kind !== "agent") throw new Error("expected review agent node");
+          const store = await openRuntimeStore(workspace);
+          const provider = vi.fn(async () => completedAgentTurn("done"));
+          try {
+            const run = await admitRunForTest(store, { prepared, input: { nodeEnv: "dynamic" }, cwd: workspace });
+            const incomplete = {
+              cwd: workspace,
+              runId: run.id,
+              store,
+              agents: prepared.ir.agents,
+              hostPolicy: loadAgentHostPolicy(process.env),
+              agentSessionSupervisor: testAgentSessionSupervisor(provider),
+            } as unknown as Parameters<typeof executeAgentNodeProduction>[2];
+
+            await expect(executeAgentNodeProduction(node, { input: { nodeEnv: "dynamic" } }, incomplete))
+              .rejects.toThrow("Store-backed Agent execution requires runId, nodeKey, attemptId, attemptNo, ownerEpoch, and runtimeOwnerEpoch.");
             expect(provider).not.toHaveBeenCalled();
             expect(store.getExecutionMetadata(run.id)).toEqual([]);
           } finally {
@@ -1891,14 +1998,17 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               error: {
                 origin: "provider",
                 code: "timeout",
-                message: "Agent turn timed out after 5ms.",
+                message: "Agent turn exceeded its authored deadline.",
               },
             });
             const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
             expect(metadata).toMatchObject({
               status: "timed_out",
               turnCount: 1,
-              turns: [expect.objectContaining({ status: "failed", failure: { kind: "timeout", message: "Agent turn timed out after 5ms." } })],
+              turns: [expect.objectContaining({
+                status: "failed",
+                failure: { kind: "timeout", origin: "runtime", message: "Agent turn exceeded its authored deadline." },
+              })],
             });
             const turn = store.listArtifacts(run.id).find(artifact => /turn-001\.json$/.test(artifact.path));
             expect(turn).toBeDefined();
@@ -1910,7 +2020,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               responses: [],
               summary: agentSummary(0),
               timing: agentTiming(),
-              failure: { kind: "timeout", message: "Agent turn timed out after 5ms." },
+              failure: { kind: "timeout", message: "Agent turn exceeded its authored deadline." },
             });
             expect(turnArtifact).not.toHaveProperty("finalResponse");
             expect(turnArtifact).not.toHaveProperty("response");
@@ -1931,41 +2041,47 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
           );
           const store = await openRuntimeStore(workspace);
           const layout = resolveRuntimeLayout(workspace);
-          const realExecutor = await createManagedAcpExecutor({
+          const realExecutor = await createAgentSessionSupervisor({
             workersRoot: layout.acpWorkersRoot,
             sessionStateDirectoryForRun: runId => join(layout.runsRoot, runId, "acp"),
-            owner: { generation: layout.generationId ?? "test" },
+            owner: { epoch: 1, pid: process.pid },
           });
+          if (realExecutor.isErr()) throw new Error(realExecutor.error.message);
           let turnCalled = false;
           let startupSignal: AbortSignal | undefined;
-          const managedAcpExecutor: ManagedAcpExecutor = {
-            withAttempt: (input, use) => {
-              startupSignal = input.signal;
-              return realExecutor.withAttempt(input, attempt => use({
+          const agentSessionSupervisor: AgentSessionSupervisor = {
+            withSessionLease: (input, use) => {
+              startupSignal = input.attempt.signal;
+              return realExecutor.value.withSessionLease(input, lease => use({
+                ...lease,
                 runTurn: request => {
                   turnCalled = true;
-                  return attempt.runTurn(request);
+                  return lease.runTurn(request);
                 },
               }));
             },
-            shutdown: () => realExecutor.shutdown(),
+            withSessionsNeutralized: (input, commit) => realExecutor.value.withSessionsNeutralized(input, commit),
+            shutdown: () => realExecutor.value.shutdown(),
           };
           try {
+            vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
             const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
             const execution = advanceFrozenRunProduction({
               cwd: workspace,
               runId: run.id,
               ownerId: "deadline-owner",
               store,
-              managedAcpExecutor,
+              agentSessionSupervisor,
             });
 
             await waitForPath(startedPath);
             const providerPid = Number((await readFile(providerPidPath, "utf8")).trim());
             expect(processExists(providerPid)).toBe(true);
+            await vi.advanceTimersByTimeAsync(2_000);
             await waitUntil(() => Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.attempts)
               .some(attempt => attempt.status === "timed_out"));
             await waitUntil(() => startupSignal?.aborted === true);
+            vi.useRealTimers();
             await writeFile(releasePath, "");
             await expect(execution).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
 
@@ -1986,7 +2102,8 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
             await waitUntil(() => !processExists(providerPid));
             expect(await readdir(layout.acpWorkersRoot)).toEqual([]);
           } finally {
-            await managedAcpExecutor.shutdown();
+            vi.useRealTimers();
+            await agentSessionSupervisor.shutdown();
             store.close();
           }
         });
@@ -2098,13 +2215,9 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
             expect(files.some(path => path.endsWith("/turn-001.json"))).toBe(false);
             expect(files.some(path => path.endsWith("/turn-001.stderr.log"))).toBe(false);
 
-            const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.find(entry => entry.kind === "agent_attempt")?.metadata as AgentAttemptMetadata | undefined;
-            expect(metadata).toMatchObject({
-              status: "cancelled",
-              turnCount: 1,
-              message: "paused by operator",
-              turns: [expect.objectContaining({ turn: 1, status: "cancelled" })],
-            });
+            const metadata = store.getRun(run.id)?.dynamic?.executionMetadata;
+            expect(metadata?.some(entry => entry.kind === "agent_invocation")).toBe(true);
+            expect(metadata?.some(entry => entry.kind === "agent_attempt")).toBe(false);
             expect(runtimeRow(
               workspace,
               `SELECT state, fence_reason, provider_status
@@ -2140,12 +2253,11 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
             })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 
             expect(turns).toHaveLength(2);
-            expect(turns[1]!.sessionName).toBe(turns[0]!.sessionName);
-            expect(turns[1]!.config).toBeUndefined();
+            expect(turns[1]!.agentSessionId).toBe(turns[0]!.agentSessionId);
+            expect(turns[1]!.config).toEqual({ effort: "high", mode: "agent", model: "profile-model" });
             const metadataEntries = store.getRun(run.id)?.dynamic?.executionMetadata.filter(entry => entry.kind === "agent_attempt").map(entry => entry.metadata) as AgentAttemptMetadata[] | undefined;
             expect(metadataEntries).toEqual([
-              expect.objectContaining({ status: "cancelled", sessionName: turns[0]!.sessionName, turnCount: 1 }),
-              expect.objectContaining({ status: "completed", sessionName: turns[0]!.sessionName, turnCount: 1 }),
+              expect.objectContaining({ status: "completed", agentSessionId: turns[0]!.agentSessionId, turnCount: 1 }),
             ]);
           } finally {
             store.close();
@@ -2254,7 +2366,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
               ownerEpoch: 1,
               agents: prepared.ir.agents,
               hostPolicy: loadAgentHostPolicy(process.env),
-              managedAcpExecutor: testManagedAcpExecutor(),
+              agentSessionSupervisor: testAgentSessionSupervisor(),
               progressWriter: { writeNodeProgress },
             });
           } catch (error) {
@@ -2298,7 +2410,7 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
             }
 
             expect(turns).toHaveLength(2);
-            expect(turns[1]!.sessionName).toBe(turns[0]!.sessionName);
+            expect(turns[1]!.agentSessionId).toBe(turns[0]!.agentSessionId);
             const secondRun = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
             await executeAgentNode(node, {}, {
               cwd: workspace,
@@ -2313,11 +2425,11 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
                 return completedAgentTurn(taggedAgentOutput("{\"ok\":true}"));
               },
             });
-            expect(turns[2]!.sessionName).not.toBe(turns[0]!.sessionName);
-            const agentMetadata = store.getRun(run.id)?.dynamic?.executionMetadata.filter(entry => entry.kind === "agent_attempt").map(entry => entry.metadata) as Array<{ sessionKey?: string; sessionName?: string }> | undefined;
+            expect(turns[2]!.agentSessionId).not.toBe(turns[0]!.agentSessionId);
+            const agentMetadata = store.getRun(run.id)?.dynamic?.executionMetadata.filter(entry => entry.kind === "agent_attempt").map(entry => entry.metadata) as Array<{ sessionKey?: string; agentSessionId?: string }> | undefined;
             expect(agentMetadata).toEqual([
-              expect.objectContaining({ sessionKey: "shared-session", sessionName: turns[0]!.sessionName }),
-              expect.objectContaining({ sessionKey: "shared-session", sessionName: turns[0]!.sessionName }),
+              expect.objectContaining({ sessionKey: "shared-session", agentSessionId: turns[0]!.agentSessionId }),
+              expect.objectContaining({ sessionKey: "shared-session", agentSessionId: turns[0]!.agentSessionId }),
             ]);
           } finally {
             store.close();
@@ -2384,125 +2496,6 @@ Replace the type shape inside the tags with one matching JSON value; comments ar
         });
       });
 
-    it("uses plain continuation prompt and same session for manual agent node retry", async () => {
-        await withRuntimeWorkspace("scheduler-node-executor-agent-manual-retry-continuation", async workspace => {
-          const prepared = await prepareSyntheticWorkflow(workspace, retryingAgentWorkflow());
-          const store = await openRuntimeStore(workspace);
-          const turns: AgentTurnRequest[] = [];
-          try {
-            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
-            const nodeKey = deriveInstanceKey(appendNode([], "review"));
-
-            await expect(withAgentResponseRepairMax("2", () => withImmediateAgentRepairs(() => advanceFrozenRun({
-              cwd: workspace,
-              runId: run.id,
-              ownerId: "owner-a",
-              store,
-              executeAgentTurn: async request => {
-                turns.push(request);
-                return completedAgentTurn(taggedAgentOutput("{\"ok\":\"not boolean\"}"));
-              },
-            })))).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
-
-            const claim = store.scheduler.claimRun(run.id, "retry-owner", 60_000);
-            if (!claim) throw new Error("expected retry claim");
-            throwingSchedulerStore(store.scheduler).retry({
-              runId: run.id,
-              target: nodeKey,
-              ownerEpoch: claim.ownerEpoch,
-              idempotencyKey: "manual-agent-retry",
-            });
-            store.scheduler.releaseRun(claim);
-
-            await expect(withAgentResponseRepairMax("0", () => advanceFrozenRun({
-              cwd: workspace,
-              runId: run.id,
-              ownerId: "owner-b",
-              store,
-              executeAgentTurn: async request => {
-                turns.push(request);
-                return completedAgentTurn(taggedAgentOutput("{\"attempt\":\"4\"}"));
-              },
-            }))).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
-
-            expect(turns).toHaveLength(4);
-            expect(turns[3]!.sessionName).toBe(turns[0]!.sessionName);
-            expect(turns[3]!.config).toBeUndefined();
-            expect(turns[3]!.prompt).not.toBe(turns[0]!.prompt);
-            expect(turns[3]!.prompt).toContain("<ACPUS_OUTPUT>");
-            const metadata = store.getRun(run.id)?.dynamic?.executionMetadata.filter(entry => entry.kind === "agent_attempt").map(entry => entry.metadata) as AgentAttemptMetadata[] | undefined;
-            expect(metadata).toEqual([
-              expect.objectContaining({ status: "failed", sessionName: turns[0]!.sessionName, responseRepairMax: 2, turnCount: 3 }),
-              expect.objectContaining({ status: "completed", sessionName: turns[0]!.sessionName, responseRepairMax: 0, turnCount: 1 }),
-            ]);
-            const continuation = runtimeRows(
-              workspace,
-              `SELECT prompt_kind, state, provider_status
-               FROM agent_observation_turns
-               WHERE run_id = ?
-               ORDER BY attempt_no, turn_no`,
-              run.id,
-            ).at(-1);
-            expect(continuation).toEqual({
-              prompt_kind: "continuation",
-              state: "settled",
-              provider_status: "completed",
-            });
-            const runDir = store.getRunDir(run.id);
-            if (!runDir) throw new Error("expected run directory");
-            await expect(readdir(runDir)).resolves.not.toContain("evidence");
-          } finally {
-            store.close();
-          }
-        });
-      });
-
-    it("uses the task prompt again for run-level retry of a failed agent run", async () => {
-        await withRuntimeWorkspace("scheduler-node-executor-agent-run-retry-task-prompt", async workspace => {
-          const prepared = await prepareSyntheticWorkflow(workspace, booleanAgentWorkflow());
-          const store = await openRuntimeStore(workspace);
-          const turns: AgentTurnRequest[] = [];
-          try {
-            const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
-
-            await expect(withAgentResponseRepairMax("0", () => advanceFrozenRun({
-              cwd: workspace,
-              runId: run.id,
-              ownerId: "owner-a",
-              store,
-              executeAgentTurn: async request => {
-                turns.push(request);
-                return completedAgentTurn(taggedAgentOutput("{\"ok\":\"not boolean\"}"));
-              },
-            }))).resolves.toMatchObject({ status: "failed", started: 1, failed: 1 });
-
-            const claim = store.scheduler.claimRun(run.id, "retry-run-owner", 60_000);
-            if (!claim) throw new Error("expected run retry claim");
-            throwingSchedulerStore(store.scheduler).retryRun({
-              runId: run.id,
-              ownerEpoch: claim.ownerEpoch,
-              idempotencyKey: "manual-run-retry",
-            });
-            store.scheduler.releaseRun(claim);
-
-            await expect(advanceFrozenRun({
-              cwd: workspace,
-              runId: run.id,
-              ownerId: "owner-b",
-              store,
-              executeAgentTurn: async request => {
-                turns.push(request);
-                return completedAgentTurn(taggedAgentOutput("{\"ok\":true}"));
-              },
-            })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
-
-            expect(turns).toHaveLength(2);
-            expect(turns[1]!.prompt).toBe(turns[0]!.prompt);
-          } finally {
-            store.close();
-          }
-        });
-      });
     });
 });
 
@@ -2747,7 +2740,7 @@ type AgentAttemptMetadata = {
   nodeKey?: string;
   attemptNo?: number;
   status?: string;
-  sessionName?: string;
+  agentSessionId?: string;
   sessionKey?: string;
   responseRepairMax?: number | null;
   turnCount?: number;
@@ -2798,7 +2791,7 @@ async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<v
   const deadline = performance.now() + 5_000;
   while (performance.now() < deadline) {
     if (await predicate()) return;
-    await new Promise(resolve => setTimeout(resolve, 10));
+    await wait(10);
   }
   throw new Error("Condition was not met before the test timeout.");
 }

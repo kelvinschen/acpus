@@ -29,7 +29,7 @@
 - A store id MUST be `gen_<randomUUID()>`. `generation.json` MUST contain only `schemaVersion: 1`, matching `id`, nullable non-negative `storageVersion`, canonical `createdAt`, and optional canonical `archivedAt`.
 - Every complete store other than `activeGenerationId` is archived and immutable except for whole-store pruning.
 - `run-index.json`, when present, MUST be the closed `{ schemaVersion: 1, runs }` record; each run summary contains exactly `id`, `name`, `status`, `createdAt`, and `updatedAt`, ordered by `updatedAt DESC`, `createdAt DESC`, then `id ASC`.
-- The active database MUST use the Acpus SQLite `application_id` and `user_version = 10`.
+- The active database MUST use the Acpus SQLite `application_id` and `user_version = 16`.
 - Runtime-owned roots, manifests, databases, run capsules, sources, and trash MUST reject symbolic-link substitution. Existing run/file identity fencing remains scoped to opened store data and MUST fail visibly on an observable replacement.
 - A read-only open MUST NOT create the Acpus home, shard, manifest, database, or store directories.
 - A current-store read session MUST resolve the manifest generation, hold shared ownership of that generation, re-read the manifest before opening SQLite, and fail if the active generation changed. It MUST validate the application and storage versions through that connection's SQLite PRAGMAs so committed WAL state remains visible. Every read performed through that session MUST reuse its one read-only SQLite connection and MUST NOT switch generations.
@@ -44,7 +44,7 @@
 - `inspectRuntimeStore` MUST be read-only; a successful inspection returns exactly `ready`, `repairable` with a user-facing message, or `unsupported` with a user-facing message. A missing store is `ready` because ordinary first use initializes it.
 - `repairRuntimeStore` MUST return only `{ changed: boolean }` or a `busy | unsupported | unreadable | failed` error. It MUST be a no-op for a missing or already-ready store.
 - `awaitRuntimeStoreOffline` MUST acquire exclusive workspace ownership and prove that Runtime authority, run-lease, and ACP ownership are absent without modifying store data; it returns only success or a `busy | unavailable` error.
-- Repair MUST remain isolated to one resolved workspace and state root, including that target's daemon endpoint, lock, manifest, journal, generations, and store. It MUST request graceful shutdown only through that endpoint, serialize through the workspace-exclusive lock, re-inspect under that lock, preserve repairable bytes, create and verify a storage-v10 store, and publish the v2 manifest atomically. It MUST never force-kill a daemon or delete source data.
+- Repair MUST remain isolated to one resolved workspace and state root, including that target's daemon endpoint, lock, manifest, journal, generations, and store. It MUST request graceful shutdown only through that endpoint, serialize through the workspace-exclusive lock, re-inspect under that lock, preserve repairable bytes, create and verify a storage-v12 store, and publish the v2 manifest atomically. It MUST never force-kill a daemon or delete source data.
 - A durable repair intent MUST contain only the information needed to resume. Repeating repair after interruption MUST converge without caller-supplied planning state.
 - Concurrent repair callers MUST converge on one publication. A caller that observes the resulting ready store returns unchanged success; unresolved exclusive ownership contention remains `busy`.
 - Concurrent first use MUST serialize initialization, re-inspect, and adopt the one store named by the manifest before acquiring normal shared-store ownership.
@@ -275,34 +275,53 @@ type PruneReport = {
 ### Agents
 
 - Agent execution MUST render frozen prompt, cwd, env, permission, session, model, and static Agent `config` values, resolving a directly interpolated ArtifactRef to its verified absolute path.
-- Runtime MUST call the [Agent Executor](agent-executor-spec.md) through one managed attempt for normalized ACP execution and progress; Runtime MUST not parse raw ACP transport for decisions, summaries, or progress.
-- Runtime MUST translate each effective named or command Agent definition into the corresponding managed-executor request variant; absent permission defaults to `approve-all`.
+- Runtime MUST call the [Agent Executor](agent-executor-spec.md) through one exact Agent Session lease for normalized ACP execution and progress; Runtime MUST not parse raw ACP transport or child topology for decisions, summaries, or progress.
+- Runtime MUST translate each effective named or command Agent definition into the corresponding Session intent; absent permission defaults to `approve-all`.
 - Static Agent `config` is a frozen string-to-string desired ACP option map for a reusable Agent profile; it is not an ACP `configOptions` snapshot or cross-session mutable state and MUST NOT contain secrets.
 - The effective model MUST be `config.model ?? model`; `config.model` uses the ACP session model path rather than the generic config-option loop.
-- Runtime MUST pass `config` only on an initial normal Agent turn; response-repair, plain-continuation, and steering turns MUST omit it.
+- Runtime MUST pass `config` only on the first request of an authored Agent Attempt; response-repair and steering turns MUST omit it.
 - After resolving an Agent attempt's initial prompt, cwd, Acpus-managed env, permission, session, model, config, and deadline, Runtime MUST persist one `agent_invocation` metadata record before the first provider request.
 - `agent_invocation` MUST contain the final prompt sent on that attempt's first request, including output-schema instructions.
-- `agent_invocation` MUST classify prompt origin as `authored`, `steering`, or `continuation`.
+- `agent_invocation` MUST classify prompt origin as `authored`, `steering`, or `repair`.
 - `agent_invocation` env MUST contain only frozen profile env plus resolved node env.
 - `agent_invocation` MUST NOT contain inherited host env or Runtime-injected `ACPUS_RUNTIME_*` values.
 - `agent_invocation` MUST omit internal session names, provider identity, ACP
   record identity, backend session identity, later repair turns, partial
   responses, tools, usage, and artifacts.
 - Failure to persist `agent_invocation` MUST reject the execution boundary before provider dispatch.
+- Every execution metadata record MUST identify an exact started Attempt and its active owner epoch; stale, terminal, mismatched, released, or expired ownership MUST reject without inserting metadata.
 - Overrides MUST allow only `use`, `command`, `model`, `permissionMode`, `config`, `cwd`, and `env`; an override `config` replaces the complete inherited map, including with `{}`, and identity replacement clears inherited model/config while preserving permission.
-- Session identity MUST be run-local and deterministic from explicit non-empty `sessionKey` or dynamic `nodeKey`; repair/retry/resume/steering turns reuse it according to continuation policy.
-- The effective ACP record id MUST be `acpus-` followed by the unpadded base64url encoding of the first 16 bytes of SHA-256 over the canonical JSON identity `{ runId, key }` for an explicit session key or `{ runId, nodeKey }` otherwise.
-- Runtime MUST persist an Agent session below that run's private `acp/sessions/` tree and MUST not retain an ACP worker process after a paused, failed, completed, or canceled Agent attempt.
-- Runtime MUST serialize managed Agent admission by effective session identity within one run.
+- Agent Session scope MUST be the SHA-256 digest of the versioned canonical local identity `{ runId, kind: "node", value: nodeKey }` or explicit-shared identity `{ runId, kind: "key", value: renderedSessionKey }`; raw `sessionKey` MUST NOT appear in the durable Session id.
+- `agentSessionId` MUST be `acpus-` followed by the unpadded base64url encoding of the first 16 bytes of SHA-256 over the versioned canonical identity `{ runId, scopeDigest, generation }`.
+- A materialized Agent Session MUST have one durable row with lifecycle `active` or `abandoned`, one closed current checkpoint, and at most one active generation for each run and scope. Run deletion cascades those rows; Turn/Run terminal state and Runtime shutdown do not abandon continuity.
+- A current Agent Session row MUST hold a nullable immutable overall binding
+  digest. Null means the generation has never reached ready and MUST prohibit
+  invocation/dispatch. Runtime MUST write the lease fingerprint after ready and
+  before invocation; an existing value permits only exact idempotent equality.
+- The same ready write MUST replace nullable `reported_version` with the
+  Provider-reported version from that lease, or null when absent. This value is
+  bounded observational metadata, not immutable Session identity, checkpoint
+  evidence, or binding input.
+- Each admitted Agent Attempt binding MUST be immutable and record its exact Session, operation (`start`, `continue`, or `safe_retry`), open mode, predecessor, prompt origin/digest, checkpoint origin, and optional Steer lineage. The first binding and Session row MUST commit together; deleting reconstructible `node_attempts` projection rows MUST NOT delete historical bindings.
+- Agent Session Store mutations MUST validate the exact started Attempt and active owner, except that post-fence settlement requires current Workspace Runtime authority plus the exact persisted Attempt, Turn, lease, and expected checkpoint tuple.
+- A new binding MUST initialize `not_dispatched`. The only accepted checkpoint evidence graph is repair terminal to `not_dispatched`; dispatch intent to owned in-flight; dispatch intent or owned in-flight to provider observed or terminal observed; provider observed to terminal observed; pre-evidence loss to acceptance unknown; post-evidence loss to terminal unknown; and inbound local failure to terminal unknown. A late weaker write MUST NOT overwrite stronger evidence.
+- The `agent_invocation` metadata row and exact `dispatch_intent(attemptId, turnId, sessionLeaseId)` checkpoint MUST commit atomically before Provider dispatch.
+- Explicit Retry MUST use one two-phase Runtime transaction: the pure planner resolves scheduler topology and exact affected Agent Sessions, the Supervisor proves physical neutralization for every affected implicit-local Session, and Store commit atomically revalidates owner epoch, idempotency, scheduler version, topology, frozen Agent scope, and the exact neutralized Session set before abandoning those generations and appending standard Retry events.
+- Retry planning or commit that encounters any affected explicit shared `sessionKey` MUST reject without Store writes and direct the operator to fork the same target.
+- Retry commit MUST NOT create a Session, Attempt, or pending generation assignment. Admission after an abandoned local generation MUST create the next generation with operation `start` and prompt origin `authored`; an Agent that failed before Session identity MUST still create generation one.
+- Scheduler replay MUST use persisted operation, checkpoint, binding, assignment, and control facts and MUST NOT reclassify historical Attempts with the current operation planner.
+- Storage version 16 is the unified Retry cutover. Retry and Steer are the only Agent-applicable external control wire variants; Continue and Restart MUST NOT be accepted as product controls, and run-level Retry MUST NOT be accepted.
+- Runtime MUST persist an Agent session below that run's private `acp/sessions/` tree and MUST not retain an ACP worker process after its Session lease settles.
+- Runtime MUST serialize Agent execution and Retry neutralization with the Agent Executor's exact Session guard.
 - Runtime MUST NOT admit a steering replacement until the superseded executor using that session has settled.
 - Steering replacement settlement gating MUST include draining the superseded executor.
-- Nodes that explicitly share one `sessionKey` MUST resolve to the same effective Agent backend, model, and config; Runtime does not validate that compatibility constraint.
+- An authored explicit-shared `sessionKey` MUST retain one continuity domain. Direct Retry of that Agent or a frame whose reexecution set intersects it MUST reject without Store writes; Fork is the product operation for rerunning that conversation.
 - Schema-less Agents MUST return the completed turn's `finalResponse` verbatim
   with zero response repairs.
 - A steering turn MUST use exactly `<steering>${instruction}</steering>` as its Agent-visible information update before any schema-backed output contract.
 - A steering turn MUST NOT expose its Runtime steering identity to the Agent.
 - A steering turn MUST NOT add explanatory continuation or interruption prose to the Agent-visible information update.
-- Every schema-backed Agent prompt, including task, continuation, steering, and response-repair turns, MUST state the Tagged JSON output contract.
+- Every schema-backed Agent prompt, including authored, steering, and response-repair turns, MUST state the Tagged JSON output contract.
 - Every schema-backed Agent prompt MUST include the declared output as one anonymous Result Shape expression rendered directly from `SchemaIR`, rather than as JSON Schema.
 - The Result Shape contract MUST direct the Agent to replace the expression with one JSON value, preserve the literal `ACPUS_OUTPUT` tags without escaping them, and end at the closing tag.
 - Result Shape MUST render scalar kinds as TypeScript-shaped scalar expressions, JSON literals and enums as JSON literal expressions or unions, arrays as `T[]`, records as `{ [key: string]: T }`, unions as `A | B`, nullable values as `T | null`, and objects inline with `?` derived from the parent required list.
@@ -334,7 +353,7 @@ type PruneReport = {
 - Agent output-processing metadata MUST NOT embed raw output.
 - The daemon MUST capture `ACPUS_AGENT_RESPONSE_REPAIR_MAX` at startup, default additional repair turns to two, accept canonical non-negative safe integers, and expose invalid configuration as `invalid_agent_response_repair_max` before provider invocation.
 - Response repair MUST remain inside one scheduler-visible attempt, reuse the ACP session, avoid generic config-option reapplication, and never process backend failures as output failures.
-- Runtime MUST execute every response-repair turn in the same managed ACP worker as its initial turn; retry, resume, and steering start a new managed worker against the persisted session.
+- Runtime MUST execute every response-repair Turn in the same Agent Session lease and Process Capsule as its initial Turn. Natural shared-session continuation, safe retry, and Steer replacement Attempts acquire a later lease according to their durable Session plan.
 - A response-repair prompt MUST request a complete replacement Tagged JSON frame.
 - A response-repair prompt MUST repeat the Tagged JSON output contract.
 - A response-repair prompt MUST repeat the declared Result Shape.
@@ -371,7 +390,16 @@ type PruneReport = {
 - Runtime MUST revalidate attempt ownership before artifact registration and again before output conformance, repair, or scheduler result commit.
 - A superseded attempt's late output, ordinary artifact registration, progress writes, and result commit MUST remain fenced.
 - An artifact registered before a fence MAY remain registered.
-- Runtime MUST fold normalized provider observations into bounded current activity and closed semantic entries when they are received.
+- Runtime MUST consume the same parent-enveloped raw ACP event delta for
+  checkpoint evidence, bounded progress, semantic observation, and terminal
+  artifacts. It MUST NOT accept a second cumulative observation stream.
+- The first admitted Provider event MUST monotonically advance the exact
+  Session/Attempt/Turn/lease checkpoint to `provider_observed` before optional
+  business projections. A matched Provider result or Provider error response
+  MUST advance it to `terminal_observed`; a local failure MUST use its
+  boundary-assigned Provider evidence and MUST NOT be reclassified from its
+  message or error tag.
+- Runtime MUST fold raw provider events into bounded current activity and closed semantic entries when they are received.
 - Runtime MUST merge consecutive assistant chunks into one response segment and consecutive thought or plan chunks into the corresponding intent segment.
 - Runtime MUST fold calls and updates sharing one tool-call id into one tool entry.
 - A tool-call update MUST retain its previously resolved non-generic name unless
@@ -423,11 +451,11 @@ type PruneReport = {
 - `WorkspaceRuntimeOpenFailure` MUST expose only `runtime-store-unsupported`, `runtime-store-unavailable`, `runtime-authority-busy`, `runtime-configuration-invalid`, and `runtime-open-failed`. Repair `busy`, `unreadable`, and `failed` outcomes map to `runtime-store-unavailable`; Host failures MUST NOT direct callers to CLI-store Doctor commands.
 - `WorkspaceRuntime` MUST expose only its canonical workspace, prepared-workflow admission, typed run control, inspection and inspection observation, artifact listing/reading, admission lookup, and orderly `close()`.
 - Every Workspace Runtime store operation MUST remain bound to its owned store and storage generation; it MUST NOT reopen or re-resolve the workspace from `cwd`.
-- Runtime owner identity, heartbeat, daemon protocol, idle-stop, incident reporting, executor injection, and authority-loss policy MUST remain internal Adapter concerns. Runtime execution MUST continue to use `ManagedAcpExecutor` as its sole Agent execution interface.
+- Runtime owner identity, heartbeat, daemon protocol, idle-stop, incident reporting, Supervisor injection, and authority-loss policy MUST remain internal Adapter concerns. Runtime execution MUST use `AgentSessionSupervisor` as its sole Agent process-lifecycle interface.
 - Workspace Runtime startup MUST atomically claim the workspace's one durable `runtime_authority` row before recovery or scheduling. A live unreleased owner MUST return the typed `runtime-authority-busy` failure without replacing that owner. Authority persistence and errors MUST NOT classify or name the embedding product.
 - When the platform can obtain a process-start token, Runtime authority and workspace-lock liveness MUST require that token to match; a reused PID MUST NOT retain ownership. An unavailable token MUST preserve conservative PID-based ownership.
 - Runtime authority epochs MUST increase across release and reacquisition. Heartbeat, idle-state update, and release MUST be fenced by workspace, owner id, and epoch; release MUST retain the row's epoch history.
-- Workspace Runtime owns store readiness, Runtime authority heartbeat, ACP ownership recovery, managed-executor construction and closure, run sessions, admission, scheduler ticks, observation, and orderly shutdown. Orderly shutdown MUST request run-session stop and managed-executor cleanup before awaiting either, await both before releasing Runtime authority or closing storage, and MUST NOT leave execution promises accessing a closed store.
+- Workspace Runtime owns store readiness, Runtime authority heartbeat, ACP ownership recovery, Agent Session Supervisor construction and closure, run sessions, admission, scheduler ticks, observation, and orderly shutdown. Orderly shutdown MUST request run-session stop and Supervisor cleanup before awaiting either, await both before releasing Runtime authority or closing storage, and MUST NOT leave execution promises accessing a closed store.
 - `findAdmission(requestId)` MUST read the durable admission selected by `admission-request:<requestId>` from the Runtime's bound store, return the same `RunDetails` receipt as `submit`, and return local absence as `undefined`.
 - The daemon MUST be an Adapter over one Workspace Runtime. It owns socket binding and cleanup, wire protocol translation, active-connection accounting, idle-stop and process policy, but MUST NOT independently own scheduling, execution sessions, ACP recovery, or store reads used to serve Runtime operations.
 
@@ -449,6 +477,7 @@ type DaemonSteerControlResult = {
   steerId: string;
   requestedTarget: string;
   target: string;
+  delivery: "interrupt_continue";
   fencedAttemptId: string;
   continuation: "queued";
 };
@@ -457,7 +486,7 @@ type DaemonSteerControlResult = {
 - A steer instruction MUST contain non-whitespace text.
 - Apart from validating non-whitespace content, Runtime MUST persist a steer instruction without trimming or normalization.
 - The daemon MUST expose unary `status`, `shutdown`, and `control` methods plus streaming `submitAndObserve` over a workspace-derived Unix socket or equivalent named pipe, never an HTTP port.
-- The current daemon protocol version MUST be `4`, Runtime ABI version MUST be `1`, layout version MUST remain `2`, and storage version MUST remain `10`. Package version is diagnostic metadata and MUST NOT determine compatibility.
+- The current daemon protocol version MUST be `8`, Runtime ABI version MUST be `3`, layout version MUST remain `2`, and storage version MUST be `16`. Package version is diagnostic metadata and MUST NOT determine compatibility.
 - Daemon status MUST expose one closed `RuntimeAuthorityIdentity` containing `workspaceKey`, `runtimeAbi`, `layoutVersion`, `storageVersion`, per-start `authorityId`, opaque `sha256:` `storeBinding`, and positive `leaseGeneration`. The binding MUST identify the workspace and active generation without exposing the generation id.
 - Unary requests and responses MUST use closed JSON shapes; responses are `{ ok: true, result }` or `{ ok: false, error: { code, message, ambiguity?: true } }`.
 - A rejected control response MUST set `ambiguity: true` only when target resolution was ambiguous, so a presentation client can replace raw candidate-key diagnostics with an occurrence-reference candidate view.
@@ -471,6 +500,13 @@ type DaemonSteerControlResult = {
 - Daemon submission clients MUST NOT impose a unilateral admission deadline because disconnecting cannot prove that a durable mutation did not commit; idempotent controls MAY retain their bounded transport timeout, and status and shutdown probes MAY retain shorter bounded transport timeouts.
 - Unary daemon clients MUST return `ResultAsync` with `rejected`, `transport`, and `protocol` failures. The submission client MUST incrementally expose `AsyncIterable<Result<DaemonRunStreamFrame, DaemonRunStreamClientFailure>>` without buffering the complete stream.
 - Successful control responses and admitted frames MUST validate the closed required `RunDetails`, `RunStatus`, execution-state, JSON-value, and control-result shapes; a control result type MUST match the requested intent, and malformed success data is a protocol failure.
+- Materialized Agent Session inspection MUST omit `bindingDigest` before ready
+  and expose only the validated overall digest after ready. It MUST NOT expose
+  component digests or raw launch/cwd/model/options; binding failures MAY expose
+  only safe mismatch categories.
+- Materialized Agent Session inspection MAY expose the latest bounded
+  `reportedVersion` persisted by a successful ready write. Clients MUST treat
+  it as informational and MUST NOT infer binding compatibility from it.
 - Public daemon errors MUST use only `INVALID_REQUEST`, `AUTHORITY_MISMATCH`, `RUN_NOT_FOUND`, `RUN_NOT_CONTROLLABLE`, `CONTROL_CONFLICT`, `EXECUTION_UNAVAILABLE`, `STORE_BUSY`, `STORE_ERROR`, and `INTERNAL_ERROR`, with actionable text but no lease/SQLite/projection internals.
 - Unknown daemon handler failures MUST become sanitized `INTERNAL_ERROR` responses and MUST NOT be classified as business control failures.
 - Socket binding MUST arbitrate one daemon endpoint per workspace; durable Runtime authority MUST arbitrate every daemon or embedded Runtime owner. A valid daemon response proves endpoint liveness, while stale socket removal requires local evidence of a dead/expired owner.
@@ -481,43 +517,41 @@ type DaemonSteerControlResult = {
 - Admission-side rollover failure MUST retain intent and source data and return `RUNTIME_STORE_REPAIR_FAILED`. Pause, resume, retry, cancel, signal, steer, and fork MUST NOT automatically roll over an outdated schema and MUST instead return `RUNTIME_STORE_REPAIR_REQUIRED`.
 - The Workspace Runtime MUST host one serialized-write execution session per active/recoverable run, permit different runs concurrently, and keep long executor waits from blocking controls.
 - A Runtime tick MUST NOT dispatch a run's hook backlog through a second store writer after that tick started or found an active execution session for the same run; the execution session owns checkpoint hook dispatch until it settles.
-- After acquiring Runtime authority and before scheduling, the Workspace Runtime MUST perform the [Agent Executor](agent-executor-spec.md#ownership-and-cleanup)'s bounded ownership recovery and create the workspace-managed executor.
+- After acquiring Runtime authority and before scheduling, the Workspace Runtime MUST create the [Agent Executor](agent-executor-spec.md#session-supervisor) Supervisor, which performs bounded ownership recovery before becoming usable.
 - Session start MUST distinguish `started`, `already-active`, `terminal`, and `quarantined`; Runtime tick activity counts only `started` executions and dispatched hook work.
 - Pause/cancel MUST durably fence their effect and abort only applicable active attempt controllers; late executor results cannot overwrite control state.
+- Agent target inspection MUST expose one materialized `agentSession`, optional `steer`, and `availableControls` limited to `retry | steer | cancel`. It MUST expose lifecycle only as `active | abandoned` and MUST NOT expose pending Session assignments. A shared-session Agent Retry MUST be absent. Clients MUST NOT reconstruct control legality from status.
+- Runtime MUST use the same pure retry topology and Session-impact planners for mutation, inspection, and run visualization. A Retry plan MUST return a deterministic sorted, deduplicated `reexecutedNodeKeys` set containing every node whose execution is reset, including restored `parent_failed` completion dependencies.
+- `tryPlanRetry` MUST return the resolved target, expected scheduler version, and exact Session refs requiring neutralization. `tryCommitRetry` MUST re-plan within one SQLite transaction and commit only when every authoritative fact and neutralization proof remains exact; every mismatch MUST produce zero Store writes.
 - Steer MUST resolve an exact started Agent attempt from an exact attempt id, exact dynamic node key, `@ref`, `@ref#attemptNo`, or unambiguous authored Agent id within the control transaction.
 - An ambiguous authored steer target or colliding occurrence reference MUST return `CONTROL_CONFLICT` with deterministically sorted exact candidate keys.
-- A steer target that is absent, non-Agent, or no longer started MUST return `RUN_NOT_CONTROLLABLE`.
+- A steer target that is absent, non-Agent, no longer started, lacks current Runtime ownership, lacks the exact in-process `agentSessionId + attemptId + turnId + sessionLeaseId` registry tuple, or has a checkpoint other than `owned_in_flight | provider_observed` MUST return `RUN_NOT_CONTROLLABLE`.
 - A rejected steer target MUST append no events.
-- An accepted steer MUST atomically persist `control.agent_steer_requested`, supersede the targeted attempt as `operator_steered`, and requeue its node instance as `steered`.
-- The accepted steer transaction MUST return the committed control event sequence and time to the Runtime observation module.
-- In the same control call stack, Runtime MUST idempotently record the fence control metadata before waking the scheduler.
-- A replayed steer request MUST NOT create duplicate fence metadata or a duplicate gap.
-- When no active observation writer is available, inspection MUST retain the durable fence and report an observation gap.
-- Runtime MUST best-effort flush the semantic fence mutation before returning the existing steer receipt.
+- An accepted Steer MUST atomically persist `control.agent_steer_requested(delivery="interrupt_continue")` and supersede the exact Attempt as `operator_steered`; the instance MUST remain non-ready in `draining` until old Turn settlement.
+- Only after commit may Runtime signal the exact existing Turn AbortController. Acceptance MUST NOT acquire a second Session guard or invoke a Session-wide interrupt API.
 - An accepted steer MUST fence the superseded attempt's result commits before returning its receipt.
 - An accepted steer MUST fence the superseded attempt's artifact commits before returning its receipt.
 - An accepted steer MUST fence the superseded attempt's progress commits before returning its receipt.
-- An accepted steer MUST request best-effort abort of the superseded Agent turn.
+- A `terminal_observed` old Turn settlement and `instance.requeued(reason="steered")` MUST commit atomically. Acceptance/terminal unknown MUST instead commit blocked lifecycle plus instance failure and MUST NOT dispatch the instruction.
+- The replacement Attempt MUST use operation `continue`, prompt origin `steering`, the same Agent Session generation, and the requested event sequence as its admission lineage.
 - Pause, cancel, and owner-loss handling MUST add a fallback semantic fence for each affected active Agent turn.
 - Runtime MUST NOT roll back external side effects already performed by a superseded Agent turn.
 - A steering replacement MUST reuse the frozen run, input, node configuration, Agent mapping, and output schema.
 - A steering replacement MUST reuse the effective ACP session.
 - A steering replacement MUST receive a newly resolved full attempt timeout.
-- When pause, owner loss, or daemon recovery interrupts a steering attempt, Runtime MUST preserve its steering identity and instruction for requeue.
-- Completion, failure, timeout, or explicit cancellation of a steering attempt MUST consume its pending steering directive.
-- Steering recovery MUST provide at-least-once instruction delivery and MAY redeliver the same instruction after an interruption.
-- A later steer of an active steering attempt MUST replace the earlier pending steering directive.
+- Startup reconciliation MUST converge every accepted-but-unsignalled `draining` directive from durable checkpoint and ownership evidence; uncertainty blocks rather than re-delivering the instruction.
+- Completion, failure, timeout, or explicit cancellation of a steering replacement MUST consume its pending steering directive.
+- A later Steer is a new idempotent directive against the then-current exact active Turn; it MUST NOT overwrite an earlier directive in memory.
 - Replaying a steer with the same request identity, target, and instruction MUST return its original receipt without appending events.
 - Replaying a steer request identity with a different target or instruction MUST return `CONTROL_CONFLICT`.
 - A successful steer result MUST NOT expose the instruction.
-- Runtime MUST reject steer when another started attempt shares the target's effective session identity.
-- A rejected shared-session steer MUST NOT issue session-wide cancellation.
+- A shared Agent Session does not itself reject Steer because the delivery targets one exact active Turn; lack of an exact tuple still rejects without session-wide cancellation.
 - Pause and resume MUST be idempotent, with pause requeueing eligible canceled work and resume clearing the durable gate.
 - A paused run session MUST finish bounded executor cleanup before returning `paused`.
 - Resume MUST advance a run only through a new session with a newly claimed `ownerEpoch`.
-- Retry MUST advance a run only through a new session with a newly claimed `ownerEpoch`.
-- A no-op or idempotently replayed Resume or Retry MUST NOT stop the active execution, start another session, or claim another `ownerEpoch`.
-- Retry MUST support run-level reset or an unambiguous failed exact node/frame key, occurrence reference, or authored alias; omitted target is run-level while explicit `root` remains a normal alias.
+- Retry MUST advance a run only through a new execution session with a newly claimed `ownerEpoch`.
+- A no-op or idempotently replayed control MUST NOT stop the active execution, start another session, or claim another `ownerEpoch`.
+- Retry MUST require an unambiguous failed or timed-out Task, Agent, or frame exact key, occurrence reference, or authored alias. Run-level Retry MUST NOT exist; a root frame remains a normal explicit target when the planner accepts it.
 - Targeted retry MUST define its target path as the failed target plus each failed ancestor frame, group, and member required to propagate that target's completion.
 - A direct sibling of a target-path member that was canceled as `parent_failed` MUST be treated as a completion dependency and MUST NOT be treated as another failed target.
 - Targeted retry MUST NOT reopen a failed member outside the target path.

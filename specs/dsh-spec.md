@@ -57,7 +57,7 @@ and exposes bounded live projections to its Client contribution.
 - The integration MUST register an immutable package-owned Host launch for the
   exact normalized named Agent `dsh`. Under [Acpus named Agent
   resolution](agent-executor-spec.md#named-agent-resolution), that launch MUST
-  take precedence over structured-argv configuration from
+  take precedence over shell-command configuration from
   `<cwd>/.acpus/agents.json` or `~/.acpus/agents.json` and over the built-in
   catalog, while an explicit workflow Agent `command` MUST bypass it. The Host
   launch MUST start the package-owned DSH ACP server directly, without a shell,
@@ -121,8 +121,11 @@ and exposes bounded live projections to its Client contribution.
   target events and MUST be invalid without target. Runtime's materialized
   tree MUST remain behind the Host seam for Tray projection.
 - `acpus_control` MUST accept a discriminated `action`: pause/resume;
-  cancel/retry with optional target; steer with target/instruction; signal with
-  target/payload; or fork with optional workflow/input/restartFrom. Expected
+  task- or target-scoped cancel; target-scoped Task/Agent/frame Retry; Steer
+  with exact target/instruction; Signal with target/payload; or Fork with
+  explicit workflow/input/`restart` checkpoint choices. The nested Fork field
+  describes child reuse and is not a control action. It MUST NOT expose Continue,
+  Restart, run-level Retry, or Agent-specific Retry aliases. Expected
   rejection MUST return `{ status: "rejected", reason, task }`; success MUST
   return `{ status: "applied", task }`. A fork MUST inherit omitted source and
   input, prepare a supplied workflow through the same adapter as `acpus_run`,
@@ -139,7 +142,7 @@ and exposes bounded live projections to its Client contribution.
   retained non-terminal projection;
   pending controls; and pending or delivered attention. It MUST NOT persist live Runtime observers, Agents,
   processes, or `Result` values.
-- Host disposal MUST begin Supervisor-observer cancellation and Workspace Runtime cleanup concurrently so process signal shutdown immediately reaches managed ACP workers. Structured cancellation reasons crossing the inspection boundary MUST surface as errors with a stable human-readable message.
+- Host disposal MUST begin Supervisor-observer cancellation and Workspace Runtime cleanup concurrently so process signal shutdown immediately reaches Runtime-owned Agent Session capsules. Structured cancellation reasons crossing the inspection boundary MUST surface as errors with a stable human-readable message.
 - The Host MUST own at most one observation task for each linked non-terminal
   run. Startup MUST reconcile provisional links and admitted links without a
   terminal projection, while retained terminal history MUST NOT require its
@@ -164,7 +167,7 @@ and exposes bounded live projections to its Client contribution.
   parked observer.
 - Runtime observation failures MUST remain typed boundary failures, end only
   that observation task, and MUST NOT cancel the run, retry observation, or
-  change `ManagedAcpExecutor` ownership.
+  change Agent Session Supervisor ownership.
 - A proactive DSH notice MUST be derived only for an `awaiting` run whose
   authoritative projection contains an authored Signal selector, prompt, and
   expected input, or for a run newly observed as `completed`, `failed`, or
@@ -312,7 +315,7 @@ type ActivityHoverDetail =
       kind: "agent";
       agent: string;
       model?: string;
-      prompt?: { text: string; truncated: boolean; origin: "authored" | "steering" | "continuation" };
+      prompt?: { text: string; truncated: boolean; origin: "authored" | "steering" };
       result?: HoverResult;
     }
   | {

@@ -58,9 +58,10 @@ async function executeTaskNodeResult(node: TaskNodeIR, scope: EvaluationScope, o
   const timeoutMs = remainingTimeout(options.deadlineAt, node.id);
   if (timeoutMs.isErr()) return err(timeoutMs.error);
   const visibleAttempt = options.attemptNo;
-  options.store.writeExecutionMetadata({
+  throwSchedulerStoreResult(options.store.writeExecutionMetadata({
     runId: options.runId,
     attemptId: options.attemptId,
+    ownerEpoch: options.ownerEpoch,
     kind: "task_attempt",
     metadata: {
       nodeId: node.id,
@@ -72,7 +73,7 @@ async function executeTaskNodeResult(node: TaskNodeIR, scope: EvaluationScope, o
       ...(timeoutMs.value === undefined ? {} : { timeoutMs: timeoutMs.value }),
       ...(defaultCommandTimeout.value === undefined ? {} : { defaultCommandTimeout: defaultCommandTimeout.value.value }),
     },
-  });
+  }));
   const runnerTimeoutMs = remainingTimeout(options.deadlineAt, node.id);
   if (runnerTimeoutMs.isErr()) return err(runnerTimeoutMs.error);
 

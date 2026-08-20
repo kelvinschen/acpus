@@ -16,6 +16,7 @@ const mockInspectAgentExecution = vi.fn();
 const mockReadInspection = vi.fn();
 const mockReadArtifact = vi.fn();
 const mockRequestDaemonControl = vi.fn();
+const mockRequestDaemonInspection = vi.fn();
 const mockEnsureDaemonRunning = vi.fn();
 const mockTryVisualizeWorkflowSource = vi.fn();
 
@@ -33,6 +34,7 @@ vi.mock("@acpus/runtime", () => ({
   readInspection: (...args: unknown[]) => mockReadInspection(...args),
   readArtifact: (...args: unknown[]) => mockReadArtifact(...args),
   requestDaemonControl: (...args: unknown[]) => mockRequestDaemonControl(...args),
+  requestDaemonInspection: (...args: unknown[]) => mockRequestDaemonInspection(...args),
 }));
 
 vi.mock("../src/server/workflows/visualization.js", async importOriginal => ({
@@ -72,6 +74,12 @@ describe("web API contract", () => {
     mockInspectRuntimeStore.mockReturnValue(okAsync({ state: "ready" }));
     mockRepairRuntimeStore.mockReturnValue(okAsync({ changed: true }));
     mockListRuns.mockReturnValue(okAsync([]));
+    mockRequestDaemonInspection.mockReturnValue(errAsync({
+      type: "transport",
+      reason: "not-found",
+      method: "inspect",
+      message: "offline",
+    }));
     mockEnsureDaemonRunning.mockResolvedValue({ ok: true });
   });
 
@@ -422,7 +430,7 @@ describe("web API contract", () => {
           available: true,
           summary: {
             status: "running",
-            sessionName: "review-session",
+            agentSessionId: "review-session",
             turnCount: 2,
             message: "working",
           },
@@ -515,6 +523,7 @@ describe("web API contract", () => {
           nodeId: "review",
           nodeKey: "review~abc",
           cancelTarget: "review~abc",
+          availableControls: [{ type: "cancel", target: "review~abc" }],
           staticKind: "agent",
           timing: {
             startedAt: "2026-07-01T00:00:01.000Z",
@@ -528,6 +537,33 @@ describe("web API contract", () => {
         target: "@1a2b3c4d5e6f",
       });
       expect(mockInspectRuntimeStore).not.toHaveBeenCalled();
+    });
+
+    it("overlays live Steer controls from the daemon authority", async () => {
+      mockInspectNode.mockResolvedValue(inspectionOk(targetInspection({ availableControls: [] })));
+      mockRequestDaemonInspection.mockReturnValue(okAsync({
+        kind: "target",
+        detail: "summary",
+        run: { id: "run_1", status: "running" },
+        subject: { label: "review", kind: "agent", selector: "@1a2b3c4d5e6f" },
+        state: { status: "running" },
+        availableControls: [{
+          type: "steer",
+          target: "attempt-1",
+          delivery: "interrupt_continue",
+          effect: "cancel_drain_then_continue",
+        }],
+      }));
+
+      const res = await app.request(runApi("/run_1/nodes/%401a2b3c4d5e6f"));
+
+      expect(res.status).toBe(200);
+      expect((await res.json() as JsonBody).inspection.availableControls).toEqual([{
+        type: "steer",
+        target: "attempt-1",
+        delivery: "interrupt_continue",
+        effect: "cancel_drain_then_continue",
+      }]);
     });
 
     it("projects composite runtime values from one canonical Forensics read", async () => {
@@ -973,6 +1009,7 @@ describe("web API contract", () => {
 
     it.each([
       { type: "retry", target: "   " },
+      { type: "steer", target: "step_1", instruction: "   " },
       { type: "cancel", target: "   " },
       { type: "signal", target: "   ", payload: {} },
     ])("rejects a blank $type target before daemon startup", async command => {
@@ -1054,6 +1091,27 @@ describe("web API contract", () => {
         type: "retry",
         runId: "run_1",
         target: "step_1",
+      });
+    });
+
+    it.each([
+      [
+        { type: "steer", target: "@active", instruction: "Focus on the failing assertion." },
+        { type: "steer", target: "@active", instruction: "Focus on the failing assertion." },
+      ],
+    ])("maps Agent control %j directly onto the daemon intent", async (command, expected) => {
+      mockRequestDaemonControl.mockReturnValue(okAsync({ run: { id: "run_1", status: "running" } }));
+      const res = await app.request(runApi("/run_1/controls"), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(command),
+      });
+
+      expect(res.status).toBe(200);
+      expect(mockRequestDaemonControl).toHaveBeenCalledWith("/tmp/acpus-web-test", {
+        requestId: expect.stringMatching(/^web:[0-9a-f-]+$/),
+        runId: "run_1",
+        ...expected,
       });
     });
 
@@ -1368,7 +1426,7 @@ function executionInspection(): JsonBody {
     available: true,
     summary: {
       status: "running",
-      sessionName: "review-session",
+      agentSessionId: "review-session",
       turnCount: 2,
       message: "working",
       runtimeOnly: "private",

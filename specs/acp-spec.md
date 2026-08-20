@@ -10,17 +10,19 @@ session projection.
 
 ### Public Session Boundary
 
-- The package root MUST expose `openAcpSession` and its package-owned launch,
+- The package root MUST expose `openAcpSession`,
+  `fingerprintAgentSessionBinding`, and its package-owned launch, binding,
   session, turn, event, result, usage, and error types. It MUST expose no public
   protocol-version or transport subpath.
-- The callable surface MUST consist only of `openAcpSession`,
+- The callable Session surface MUST consist only of `openAcpSession`,
   `AcpSession.runTurn`, and `AcpSession.close`; each MUST return
   `ResultAsync<..., AcpError>`.
 - `openAcpSession` MUST accept a command or structured-argv launch, effective
   cwd and environment, `approve-reads | approve-all | deny-all` permission mode,
-  state directory, caller-owned record id, and optional caller-owned
-  cancellation signal. Structured argv MUST retain its argument boundaries
-  through startup.
+  state directory, caller-owned Agent Session id, `new_or_empty | existing_required`
+  open mode, binding fingerprint, immutable effective model/options, and optional
+  caller-owned cancellation signal. Structured argv MUST retain its argument
+  boundaries through startup.
 - `openAcpSession` MUST impose no package-owned open deadline.
 - Aborting the open signal before session readiness MUST cooperatively cancel
   any in-flight ACP request through stable-v1 `$/cancel_request`. It MUST return
@@ -28,16 +30,19 @@ session projection.
   closed and its spawned Agent process tree is no longer live; inability to
   establish that result after bounded cleanup MUST instead return a tagged
   `cleanup` failure.
-- An opened session MUST expose its record id, backend session id, and
-  state-directory-relative projection path.
+- An opened session MUST expose its Agent Session id, backend session id,
+  state-directory-relative projection path, and the optional non-empty
+  Provider-reported version from `initialize.agentInfo.version`. The version is
+  bounded to 256 characters and is observational only.
 - `runTurn` MUST accept one string prompt, optional desired model and complete
   string-option map, optional cancellation signal, and optional event callback.
 - A session MUST admit at most one active turn. Calling `runTurn` after close
   MUST return a tagged session failure, and repeated `close` calls MUST succeed
   without repeating close effects.
-- A supplied desired-option map MUST replace the prior complete map; omitted
-  configuration MUST retain the prior desired state. Configuration MUST be
-  applied in stable order and replayed after session recovery.
+- Model and options MUST be immutable for an Agent Session. Effective
+  configuration MUST be applied in stable order during open and replayed after
+  session recovery; a Turn-supplied configuration that is not exactly the
+  opened effective configuration MUST fail before Provider dispatch.
 - A turn MUST settle as `completed` or `cancelled`, with string stop reason and
   package-owned token usage when supplied by the Agent. Every other recoverable
   boundary failure MUST return `AcpError`.
@@ -46,10 +51,14 @@ session projection.
 - Public events MUST use the closed message, tool, usage, plan, session,
   client-activity, and unknown variants. Public event, result, usage, and error
   values MUST be package-owned and JSON-safe rather than protocol-SDK types.
-- `AcpError` MUST identify its operation, message, retryability, and optional
-  code through the closed invalid-input, persistence, spawn, cancelled,
+- `AcpError` MUST identify its operation, originating boundary, Provider
+  evidence (`none | inbound_activity | terminal_response`), message,
+  retryability, and optional code through the closed invalid-input,
+  persistence, spawn, cancelled,
   cleanup, initialize, protocol, capability, session, configuration,
-  provider-exit, and client-operation variants.
+  provider-exit, client-operation, and Session-binding variants. A binding
+  mismatch MUST expose only a non-empty fixed-order subset of
+  `launch | cwd | model | options`.
 - The public interface MUST NOT expose raw protocol envelopes or raw provider
   wire output.
 
@@ -62,10 +71,13 @@ session projection.
   handling before `runTurn` settles; notifications received after that fence
   and before the next prompt is written MUST NOT be attributed to a later
   turn.
-- A missing projection MUST create a new backend session. An existing valid
+- `new_or_empty` MUST accept only an absent projection or a projection with no
+  conversation and no last stop. `existing_required` MUST require a projection.
+  An existing valid
   projection MUST resume that session when the Agent currently supports resume,
-  otherwise load it when the Agent supports load, and otherwise return a tagged
-  capability failure without creating another session.
+  otherwise load it when the Agent supports load. An empty `new_or_empty`
+  projection MAY create a new backend session when neither recovery capability
+  exists; `existing_required` MUST instead return a tagged capability failure.
 - `approve-all` MUST select an offered approval, `approve-reads` MUST do so only
   for read or search tool calls, and `deny-all` MUST select an offered rejection.
   If the required option is unavailable, the permission request MUST be
@@ -76,26 +88,46 @@ session projection.
   output, and enforce create, output, wait, kill, and release lifecycle. Session
   close MUST fence new reverse operations, drain every admitted terminal create,
   cancel pending permission requests, and close every owned terminal.
+- Every validated reverse RPC, including permission, filesystem, and terminal
+  operations, MUST emit client activity. UI filtering MUST NOT suppress this
+  Provider evidence.
 - Event callback failures MUST NOT change protocol behavior or turn settlement.
 
 ### Session Projection
 
 - The projection path MUST be
-  `sessions/<encodeURIComponent(recordId)>.json` beneath the supplied state
+  `sessions/<encodeURIComponent(agentSessionId)>.json` beneath the supplied state
   directory, and successful persistence MUST atomically replace that file.
-- The projection MUST use the closed schema `acpus.acp-session.v1` and contain
-  the matching record id and cwd; launch kind, optional name, and SHA-256
-  identity; backend session id and resume/load capabilities; desired model and
-  string options; bounded semantic conversation; optional latest stop and token
-  usage; and canonical UTC creation and update timestamps.
+- The projection MUST use the closed schema `acpus.acp-session.v2` and contain
+  the matching Agent Session id; versioned overall and launch/cwd/model/options
+  SHA-256 binding digests; backend session id and resume/load capabilities;
+  bounded semantic conversation; optional latest stop and token usage; and
+  canonical UTC creation and update timestamps.
 - The semantic conversation MUST retain a bounded newest suffix of User and
   Agent text, thought, tool calls, and compact tool-result content. It MUST omit
   raw tool output.
-- Opening an existing projection MUST validate its closed shape, record id,
-  cwd, and exact launch identity. A validation failure MUST leave the file
-  unchanged and return a tagged persistence failure.
-- The projection MUST NOT contain environment values, secrets, raw protocol
-  data, protocol-SDK values, or serialized Result objects.
+- Opening an existing projection MUST validate its closed shape, Agent Session
+  id, and exact binding before spawning the Provider. Overall/component
+  inconsistency is projection corruption; a genuine mismatch is a typed
+  Session-binding failure with fixed-order safe categories. Either failure MUST
+  leave the file unchanged.
+- The projection MUST NOT contain raw cwd, launch, model, options, environment
+  values, secrets, raw protocol data, protocol-SDK values, or serialized Result
+  objects. The v1 projection shape is unsupported and MUST NOT be migrated.
+
+### Session Binding
+
+- `fingerprintAgentSessionBinding` MUST hash one canonical v1 descriptor made
+  from the resolved launch without display name, `realpath(resolve(cwd))`, and
+  immutable effective model/options. Object keys MUST be recursively ordered by
+  UTF-16 code units, arrays MUST retain order, and canonical UTF-8 JSON MUST end
+  with one LF.
+- Overall and component hashes MUST use their versioned domain separators and
+  exact lowercase `sha256:` form. Invalid JSON-domain values MUST fail rather
+  than be omitted or normalized.
+- Environment, PATH, permission, selector name, Run/Attempt/owner identity, and
+  physical executable/package version MUST NOT enter the binding.
+- Provider-reported name/version MUST NOT enter the projection or binding.
 
 ## Verification
 

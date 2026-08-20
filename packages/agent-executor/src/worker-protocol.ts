@@ -1,467 +1,264 @@
-import type {
-  AcpAgentLaunch,
-  AgentBackendFailure,
-  AgentPermissionMode,
-  AgentTurnObservation,
-  AgentTurnResult,
-} from "./types.js";
+import type { AcpError, AcpEvent, AcpTurnResult, AgentSessionBindingFingerprintV1 } from "@acpus/acp";
+import type { AcpAgentLaunch, AgentPermissionMode, ProcessCapsuleError } from "./types.js";
 
-export const ACP_WORKER_PROTOCOL_VERSION = 6;
+export const ACP_WORKER_PROTOCOL_VERSION = 9;
 
-export type AcpWorkerTurnRequest = {
-  prompt: string;
-  configuration?: Record<string, string>;
-  timeoutMs?: number;
-};
+type CapsuleIdentity = Readonly<{ hostId: string; sessionLeaseId: string }>;
+
+type ProcessCapsuleOpenInput = CapsuleIdentity & Readonly<{
+  runId: string;
+  attemptId: string;
+  agentSessionId: string;
+  sessionOpenMode: "new_or_empty" | "existing_required";
+  sessionStateDirectory: string;
+  resolvedLaunch: AcpAgentLaunch;
+  cwd: string;
+  env: Readonly<Record<string, string>>;
+  permissionMode: AgentPermissionMode;
+  configuration: Readonly<{ model?: string; options: Readonly<Record<string, string>> }>;
+  bindingFingerprint: AgentSessionBindingFingerprintV1;
+}>;
 
 export type AcpWorkerParentMessage =
-  | {
-      type: "initialize";
-      protocolVersion: 6;
-      workerId: string;
-      attemptId: string;
-      recordId: string;
-      sessionStateDirectory: string;
-      cwd: string;
-      env: Record<string, string | undefined>;
-      resolvedLaunch: AcpAgentLaunch;
-      permissionMode: AgentPermissionMode;
-      model?: string;
-    }
-  | {
-      type: "run-turn";
-      protocolVersion: 6;
-      workerId: string;
-      attemptId: string;
+  | Readonly<{
+      type: "open";
+      protocolVersion: 9;
+      input: ProcessCapsuleOpenInput;
+    }>
+  | (CapsuleIdentity & Readonly<{ type: "run"; protocolVersion: 9; turnId: string; prompt: string }>)
+  | (CapsuleIdentity & Readonly<{
+      type: "cancel";
+      protocolVersion: 9;
       turnId: string;
-      request: AcpWorkerTurnRequest;
-    }
-  | {
-      type: "abort-turn";
-      protocolVersion: 6;
-      workerId: string;
-      attemptId: string;
-      turnId: string;
-      reason: "aborted" | "timeout" | "inactivity";
-    }
-  | {
-      type: "close-attempt";
-      protocolVersion: 6;
-      workerId: string;
-      attemptId: string;
-      reason: string;
-    };
+      reason: "operator" | "pause" | "lease_lost" | "steer" | "event_sink" | "deadline" | "inactivity";
+    }>)
+  | (CapsuleIdentity & Readonly<{
+      type: "close";
+      protocolVersion: 9;
+      reason: "lease_settled" | "open_failed" | "neutralize" | "shutdown";
+    }>);
+
+export type ProcessCapsuleTerminal =
+  | Readonly<{ type: "provider_result"; result: AcpTurnResult }>
+  | Readonly<{ type: "provider_error_response"; error: AcpError }>
+  | Readonly<{ type: "local_error"; error: AcpError }>;
 
 export type AcpWorkerChildMessage =
-  | {
-      type: "open-started";
-      protocolVersion: 6;
-      workerId: string;
-      attemptId: string;
-    }
-  | {
+  | (CapsuleIdentity & Readonly<{
       type: "ready";
-      protocolVersion: 6;
-      workerId: string;
-      attemptId: string;
-    }
-  | {
-      type: "acp-activity";
-      protocolVersion: 6;
-      workerId: string;
-      attemptId: string;
-      turnId: string;
-      observedAt: string;
-    }
-  | {
-      type: "turn-observation";
-      protocolVersion: 6;
-      workerId: string;
-      attemptId: string;
-      turnId: string;
-      observation: AgentTurnObservation;
-    }
-  | {
-      type: "turn-result";
-      protocolVersion: 6;
-      workerId: string;
-      attemptId: string;
-      turnId: string;
-      result: AgentTurnResult;
-    }
-  | {
-      type: "worker-failure";
-      protocolVersion: 6;
-      workerId: string;
-      attemptId: string;
-      failure: AgentBackendFailure;
-    }
-  | {
-      type: "closed";
-      protocolVersion: 6;
-      workerId: string;
-      attemptId: string;
-    };
+      protocolVersion: 9;
+      projectionRef: string;
+      bindingFingerprint: AgentSessionBindingFingerprintV1;
+      reportedVersion?: string;
+    }>)
+  | (CapsuleIdentity & Readonly<{ type: "event"; protocolVersion: 9; turnId: string; event: AcpEvent }>)
+  | (CapsuleIdentity & Readonly<{ type: "terminal"; protocolVersion: 9; turnId: string; terminal: ProcessCapsuleTerminal }>)
+  | (CapsuleIdentity & Readonly<{ type: "open_failed"; protocolVersion: 9; error: AcpError }>)
+  | (CapsuleIdentity & Readonly<{ type: "failed"; protocolVersion: 9; error: ProcessCapsuleError }>)
+  | (CapsuleIdentity & Readonly<{ type: "closed"; protocolVersion: 9 }>);
 
 export function isAcpWorkerParentMessage(value: unknown): value is AcpWorkerParentMessage {
-  if (!record(value)
-    || value.protocolVersion !== ACP_WORKER_PROTOCOL_VERSION
-    || typeof value.workerId !== "string"
-    || typeof value.attemptId !== "string") return false;
-  if (value.type === "initialize") {
-    return exactKeys(value, [
-      "type", "protocolVersion", "workerId", "attemptId", "recordId",
-      "sessionStateDirectory", "cwd", "env", "resolvedLaunch", "permissionMode",
-    ], ["model"])
-      && typeof value.recordId === "string"
-      && typeof value.sessionStateDirectory === "string"
-      && typeof value.cwd === "string"
-      && environment(value.env)
-      && agentLaunch(value.resolvedLaunch)
-      && isPermissionMode(value.permissionMode)
-      && optionalString(value.model);
+  if (!record(value) || value.protocolVersion !== ACP_WORKER_PROTOCOL_VERSION) return false;
+  if (value.type === "open") {
+    return exactKeys(value, ["type", "protocolVersion", "input"])
+      && openInput(value.input);
   }
-  if (value.type === "run-turn") {
-    return exactKeys(value, ["type", "protocolVersion", "workerId", "attemptId", "turnId", "request"])
-      && typeof value.turnId === "string"
-      && isTurnRequest(value.request);
+  if (!identity(value)) return false;
+  if (value.type === "run") {
+    return exactKeys(value, ["type", "protocolVersion", "hostId", "sessionLeaseId", "turnId", "prompt"])
+      && string(value.turnId) && typeof value.prompt === "string";
   }
-  if (value.type === "abort-turn") {
-    return exactKeys(value, ["type", "protocolVersion", "workerId", "attemptId", "turnId", "reason"])
-      && typeof value.turnId === "string"
-      && (value.reason === "aborted" || value.reason === "timeout" || value.reason === "inactivity");
+  if (value.type === "cancel") {
+    return exactKeys(value, ["type", "protocolVersion", "hostId", "sessionLeaseId", "turnId", "reason"])
+      && string(value.turnId)
+      && ["operator", "pause", "lease_lost", "steer", "event_sink", "deadline", "inactivity"].includes(String(value.reason));
   }
-  return value.type === "close-attempt"
-    && exactKeys(value, ["type", "protocolVersion", "workerId", "attemptId", "reason"])
-    && typeof value.reason === "string";
+  return value.type === "close"
+    && exactKeys(value, ["type", "protocolVersion", "hostId", "sessionLeaseId", "reason"])
+    && ["lease_settled", "open_failed", "neutralize", "shutdown"].includes(String(value.reason));
 }
 
 export function isAcpWorkerChildMessage(value: unknown): value is AcpWorkerChildMessage {
-  if (!record(value)
-    || value.protocolVersion !== ACP_WORKER_PROTOCOL_VERSION
-    || typeof value.workerId !== "string"
-    || typeof value.attemptId !== "string") return false;
-  if (value.type === "open-started" || value.type === "ready" || value.type === "closed") {
-    return exactKeys(value, ["type", "protocolVersion", "workerId", "attemptId"]);
+  if (!record(value) || value.protocolVersion !== ACP_WORKER_PROTOCOL_VERSION || !identity(value)) return false;
+  if (value.type === "ready") {
+    return exactKeys(
+      value,
+      ["type", "protocolVersion", "hostId", "sessionLeaseId", "projectionRef", "bindingFingerprint"],
+      ["reportedVersion"],
+    )
+      && string(value.projectionRef)
+      && bindingFingerprint(value.bindingFingerprint)
+      && (value.reportedVersion === undefined || boundedString(value.reportedVersion, 256));
   }
-  if (value.type === "worker-failure") {
-    return exactKeys(value, ["type", "protocolVersion", "workerId", "attemptId", "failure"])
-      && isFailure(value.failure);
+  if (value.type === "event") {
+    return exactKeys(value, ["type", "protocolVersion", "hostId", "sessionLeaseId", "turnId", "event"])
+      && string(value.turnId) && acpEvent(value.event);
   }
-  if (value.type === "acp-activity") {
-    return exactKeys(value, ["type", "protocolVersion", "workerId", "attemptId", "turnId", "observedAt"])
-      && typeof value.turnId === "string"
-      && typeof value.observedAt === "string";
+  if (value.type === "terminal") {
+    return exactKeys(value, ["type", "protocolVersion", "hostId", "sessionLeaseId", "turnId", "terminal"])
+      && string(value.turnId) && terminal(value.terminal);
   }
-  if (value.type === "turn-observation") {
-    return exactKeys(value, ["type", "protocolVersion", "workerId", "attemptId", "turnId", "observation"])
-      && typeof value.turnId === "string"
-      && isTurnObservation(value.observation);
+  if (value.type === "open_failed") {
+    return exactKeys(value, ["type", "protocolVersion", "hostId", "sessionLeaseId", "error"]) && acpError(value.error);
   }
-  return value.type === "turn-result"
-    && exactKeys(value, ["type", "protocolVersion", "workerId", "attemptId", "turnId", "result"])
-    && typeof value.turnId === "string"
-    && isTurnResult(value.result);
+  if (value.type === "failed") {
+    return exactKeys(value, ["type", "protocolVersion", "hostId", "sessionLeaseId", "error"])
+      && capsuleError(value.error);
+  }
+  return value.type === "closed" && exactKeys(value, ["type", "protocolVersion", "hostId", "sessionLeaseId"]);
 }
 
-function isTurnRequest(value: unknown): value is AcpWorkerTurnRequest {
-  return record(value)
-    && exactKeys(value, ["prompt"], ["configuration", "timeoutMs"])
-    && typeof value.prompt === "string"
-    && (value.configuration === undefined || stringRecord(value.configuration))
-    && (value.timeoutMs === undefined || nonnegativeFiniteNumber(value.timeoutMs));
-}
-
-function isTurnObservation(value: unknown): value is AgentTurnObservation {
-  return record(value)
-    && exactKeys(value, ["event", "progress"])
-    && isObservationEvent(value.event)
-    && isTurnProgress(value.progress);
-}
-
-function isObservationEvent(value: unknown): boolean {
-  if (!record(value)
-    || value.schemaVersion !== 1
-    || !finiteNumber(value.sequence)
-    || typeof value.observedAt !== "string"
-    || !finiteNumber(value.elapsedMs)) return false;
-  const base = ["schemaVersion", "sequence", "observedAt", "elapsedMs", "type"];
-  if (value.type === "message") {
-    return exactKeys(value, [...base, "channel", "content"], ["tag"])
-      && (value.channel === "assistant" || value.channel === "thought")
-      && isAgentJsonValue(value.content)
-      && optionalString(value.tag);
-  }
-  if (value.type === "tool") {
-    return exactKeys(value, [...base, "action"], [
-      "toolCallId", "title", "kind", "toolName", "status",
-      "rawInput", "rawOutput", "content", "locations",
-    ])
-      && (value.action === "call" || value.action === "update")
-      && optionalString(value.toolCallId)
-      && optionalString(value.title)
-      && optionalString(value.kind)
-      && optionalString(value.toolName)
-      && optionalString(value.status)
-      && optionalAgentJsonValue(value.rawInput)
-      && optionalAgentJsonValue(value.rawOutput)
-      && optionalAgentJsonValue(value.content)
-      && optionalAgentJsonValue(value.locations);
-  }
-  if (value.type === "usage") {
-    return exactKeys(value, base, ["context", "tokenUsage"])
-      && optionalAgentJsonValue(value.context)
-      && optionalAgentJsonValue(value.tokenUsage);
-  }
-  if (value.type === "plan") {
-    return exactKeys(value, [...base, "value"])
-      && isAgentJsonValue(value.value);
-  }
-  if (value.type === "unknown") {
-    return exactKeys(value, [...base, "value"], ["tag"])
-      && optionalString(value.tag)
-      && isAgentJsonValue(value.value);
-  }
-  if (value.type === "turn_end") {
-    return exactKeys(value, [...base, "status"], ["stopReason", "failure", "message"])
-      && (value.status === "completed" || value.status === "failed" || value.status === "cancelled" || value.status === "timed_out")
-      && optionalString(value.stopReason)
-      && optionalAgentJsonValue(value.failure)
-      && optionalString(value.message);
+function terminal(value: unknown): value is ProcessCapsuleTerminal {
+  if (!record(value)) return false;
+  if (value.type === "provider_result") return exactKeys(value, ["type", "result"]) && turnResult(value.result);
+  if (value.type === "provider_error_response" || value.type === "local_error") {
+    return exactKeys(value, ["type", "error"]) && acpError(value.error);
   }
   return false;
 }
 
-function isTurnProgress(value: unknown): boolean {
+function turnResult(value: unknown): value is AcpTurnResult {
   return record(value)
-    && exactKeys(value, ["responses", "summary", "updatedAt"])
-    && stringArray(value.responses)
-    && isTurnSummary(value.summary)
-    && typeof value.updatedAt === "string";
+    && exactKeys(value, ["status", "stopReason"], ["usage"])
+    && (value.status === "completed" || value.status === "cancelled")
+    && string(value.stopReason)
+    && (value.usage === undefined || tokenUsage(value.usage));
 }
 
-function isTurnResult(value: unknown): value is AgentTurnResult {
-  if (!record(value)
-    || !stringArray(value.responses)
-    || typeof value.stderr !== "string"
-    || !isTurnSummary(value.summary)
-    || !isTurnTiming(value.timing)) return false;
-  if (value.status === "completed") {
-    return exactKeys(value, ["status", "responses", "stderr", "summary", "timing", "finalResponse"])
-      && typeof value.finalResponse === "string";
+function tokenUsage(value: unknown): boolean {
+  return record(value)
+    && exactKeys(value, [], ["inputTokens", "outputTokens", "cachedReadTokens", "cachedWriteTokens", "thoughtTokens", "totalTokens"])
+    && Object.values(value).every(item => finite(item));
+}
+
+function acpEvent(value: unknown): value is AcpEvent {
+  if (!record(value) || !string(value.type)) return false;
+  if (value.type === "message") {
+    return exactKeys(value, ["type", "channel", "content"], ["messageId"])
+      && (value.channel === "assistant" || value.channel === "thought") && json(value.content) && optionalString(value.messageId);
   }
-  if (value.status === "failed") {
-    return exactKeys(value, ["status", "responses", "stderr", "summary", "timing", "failure"])
-      && isFailure(value.failure);
+  if (value.type === "tool") {
+    return exactKeys(value, ["type", "action", "toolCallId"], ["title", "name", "kind", "status", "input", "output", "content", "locations"])
+      && (value.action === "call" || value.action === "update") && string(value.toolCallId)
+      && [value.title, value.name, value.kind, value.status].every(optionalString)
+      && [value.input, value.output, value.content, value.locations].every(optionalJson);
   }
-  return value.status === "cancelled"
-    && exactKeys(value, ["status", "responses", "stderr", "summary", "timing", "message"])
-    && typeof value.message === "string";
+  if (value.type === "usage") {
+    return exactKeys(value, ["type"], ["context", "tokens", "cost"])
+      && optionalJson(value.context) && optionalJson(value.tokens) && optionalJson(value.cost);
+  }
+  if (value.type === "plan") return exactKeys(value, ["type", "value"]) && json(value.value);
+  if (value.type === "session") {
+    return exactKeys(value, ["type", "update", "value"])
+      && ["available_commands", "current_mode", "configuration", "info"].includes(String(value.update)) && json(value.value);
+  }
+  if (value.type === "activity") {
+    return exactKeys(value, ["type", "operation"])
+      && ["session/request_permission", "fs/read_text_file", "fs/write_text_file", "terminal/create", "terminal/output", "terminal/wait_for_exit", "terminal/kill", "terminal/release"].includes(String(value.operation));
+  }
+  return value.type === "unknown" && exactKeys(value, ["type", "name", "value"]) && string(value.name) && json(value.value);
 }
 
-function isTurnSummary(value: unknown): boolean {
-  return record(value)
-    && exactKeys(value, ["eventCount", "availability", "tools"], ["stopReason", "context", "tokenUsage", "cwd", "sessionProjectionPath"])
-    && nonnegativeInteger(value.eventCount)
-    && isTelemetryAvailability(value.availability)
-    && optionalString(value.stopReason)
-    && (value.context === undefined || isContextSummary(value.context))
-    && (value.tokenUsage === undefined || isTokenUsageSummary(value.tokenUsage))
-    && isToolsSummary(value.tools)
-    && optionalString(value.cwd)
-    && optionalString(value.sessionProjectionPath);
+function acpError(value: unknown): value is AcpError {
+  if (!record(value) || !string(value.type) || !string(value.operation) || !string(value.message)
+    || !acpOperation(value.operation)
+    || !["input", "persistence", "client", "provider", "transport", "process"].includes(String(value.origin))
+    || !["none", "inbound_activity", "terminal_response"].includes(String(value.providerEvidence))
+    || typeof value.retryable !== "boolean" || (value.code !== undefined && typeof value.code !== "string" && !finite(value.code))) return false;
+  const common = ["type", "operation", "origin", "providerEvidence", "message", "retryable"];
+  const optional = ["code"];
+  if (["invalid_input", "spawn", "cancelled", "cleanup", "initialize", "protocol", "session", "configuration", "client_operation"].includes(value.type)) return exactKeys(value, common, optional);
+  if (value.type === "persistence") return exactKeys(value, [...common, "path"], optional) && string(value.path);
+  if (value.type === "capability") return exactKeys(value, [...common, "capability"], optional) && ["resume", "load", "configuration"].includes(String(value.capability));
+  if (value.type === "session_binding") {
+    const order = ["launch", "cwd", "model", "options"];
+    if (value.operation !== "open_session"
+      || value.origin !== "persistence"
+      || value.providerEvidence !== "none"
+      || value.retryable !== false
+      || !exactKeys(value, [...common, "categories"], optional)
+      || !Array.isArray(value.categories)
+      || value.categories.length === 0) return false;
+    const categories = value.categories;
+    return categories.every(category => order.includes(String(category)))
+      && categories.every((category, index) => index === 0
+        || order.indexOf(String(categories[index - 1])) < order.indexOf(String(category)));
+  }
+  return value.type === "provider_exit" && exactKeys(value, [...common, "exitCode", "signal"], optional)
+    && (value.exitCode === null || finite(value.exitCode)) && (value.signal === null || string(value.signal));
 }
 
-function isTelemetryAvailability(value: unknown): boolean {
-  return record(value)
-    && exactKeys(value, ["context", "tokenUsage"])
-    && (value.context === "available" || value.context === "unavailable")
-    && (value.tokenUsage === "available" || value.tokenUsage === "partial" || value.tokenUsage === "unavailable");
+function capsuleError(value: unknown): value is ProcessCapsuleError {
+  return record(value) && exactKeys(value, ["type", "phase", "code", "message"])
+    && value.type === "process_capsule" && ["bootstrap", "opening", "ready", "running", "closing"].includes(String(value.phase))
+    && ["worker_spawn_failed", "worker_exit", "ipc_closed", "ipc_protocol", "worker_exception"].includes(String(value.code)) && string(value.message);
 }
 
-function isContextSummary(value: unknown): boolean {
-  return record(value)
-    && exactKeys(value, ["used", "size", "updatedAt"])
-    && finiteNumber(value.used)
-    && finiteNumber(value.size)
-    && typeof value.updatedAt === "string";
+function bindingFingerprint(value: unknown): value is AgentSessionBindingFingerprintV1 {
+  return record(value) && exactKeys(value, ["version", "digest", "components"])
+    && value.version === 1 && sha256(value.digest) && record(value.components)
+    && exactKeys(value.components, ["launch", "cwd", "model", "options"])
+    && Object.values(value.components).every(sha256);
 }
 
-function isTokenUsageSummary(value: unknown): boolean {
+function openInput(value: unknown): value is ProcessCapsuleOpenInput {
   return record(value)
-    && exactKeys(value, ["source"], [
-      "inputTokens", "outputTokens", "cachedReadTokens", "cachedWriteTokens", "thoughtTokens", "totalTokens",
+    && exactKeys(value, [
+      "hostId", "sessionLeaseId", "runId", "attemptId", "agentSessionId",
+      "sessionOpenMode", "sessionStateDirectory", "resolvedLaunch", "cwd", "env",
+      "permissionMode", "configuration", "bindingFingerprint",
     ])
-    && (value.source === "prompt_response" || value.source === "usage_update")
-    && optionalFiniteNumber(value.inputTokens)
-    && optionalFiniteNumber(value.outputTokens)
-    && optionalFiniteNumber(value.cachedReadTokens)
-    && optionalFiniteNumber(value.cachedWriteTokens)
-    && optionalFiniteNumber(value.thoughtTokens)
-    && optionalFiniteNumber(value.totalTokens);
+    && identity(value)
+    && string(value.runId)
+    && string(value.attemptId)
+    && string(value.agentSessionId)
+    && (value.sessionOpenMode === "new_or_empty" || value.sessionOpenMode === "existing_required")
+    && string(value.sessionStateDirectory)
+    && launch(value.resolvedLaunch)
+    && string(value.cwd)
+    && stringRecord(value.env)
+    && permission(value.permissionMode)
+    && configuration(value.configuration)
+    && bindingFingerprint(value.bindingFingerprint);
 }
 
-function isToolsSummary(value: unknown): boolean {
-  return record(value)
-    && exactKeys(value, ["totalToolCallCount", "calls"])
-    && nonnegativeInteger(value.totalToolCallCount)
-    && Array.isArray(value.calls)
-    && value.calls.every(isToolCallSummary);
+function acpOperation(value: unknown): boolean {
+  return [
+    "open_session", "initialize", "new_session", "resume_session", "load_session",
+    "configure_session", "run_turn", "cancel_turn", "close_session",
+    "session/request_permission", "fs/read_text_file", "fs/write_text_file",
+    "terminal/create", "terminal/output", "terminal/wait_for_exit", "terminal/kill",
+    "terminal/release",
+  ].includes(String(value));
 }
 
-function isToolCallSummary(value: unknown): boolean {
-  return record(value)
-    && exactKeys(value, ["toolCallId", "startedAt", "updatedAt"], [
-      "title", "kind", "toolName", "status", "input", "completedAt",
-    ])
-    && typeof value.toolCallId === "string"
-    && optionalString(value.title)
-    && optionalString(value.kind)
-    && optionalString(value.toolName)
-    && optionalString(value.status)
-    && (value.input === undefined || isToolInputPreview(value.input))
-    && typeof value.startedAt === "string"
-    && typeof value.updatedAt === "string"
-    && optionalString(value.completedAt);
-}
+function sha256(value: unknown): boolean { return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value); }
 
-function isToolInputPreview(value: unknown): boolean {
-  return record(value)
-    && exactKeys(value, ["preview", "truncated", "originalBytes", "headBytes"], ["tailBytes"])
-    && typeof value.preview === "string"
-    && typeof value.truncated === "boolean"
-    && finiteNumber(value.originalBytes)
-    && finiteNumber(value.headBytes)
-    && optionalFiniteNumber(value.tailBytes);
-}
-
-function isTurnTiming(value: unknown): boolean {
-  return record(value)
-    && exactKeys(value, ["startedAt", "finishedAt", "elapsedMs"])
-    && typeof value.startedAt === "string"
-    && typeof value.finishedAt === "string"
-    && nonnegativeFiniteNumber(value.elapsedMs);
-}
-
-function isFailure(value: unknown): boolean {
-  return record(value)
-    && exactKeys(value, ["kind", "message"], ["origin", "retryable", "evidence", "upstream"])
-    && (value.kind === "config"
-      || value.kind === "spawn"
-      || value.kind === "provider_exit"
-      || value.kind === "timeout"
-      || value.kind === "worker_lost"
-      || value.kind === "inactivity_stale")
-    && (value.origin === undefined || value.origin === "provider" || value.origin === "runtime")
-    && (value.retryable === undefined || typeof value.retryable === "boolean")
-    && typeof value.message === "string"
-    && (value.evidence === undefined || isFailureEvidence(value.evidence))
-    && (value.upstream === undefined || isFailureUpstream(value.upstream));
-}
-
-function isFailureEvidence(value: unknown): boolean {
-  return record(value)
-    && exactKeys(value, ["failAfterMs", "silentForMs", "silenceStartedAt"])
-    && finiteNumber(value.failAfterMs)
-    && finiteNumber(value.silentForMs)
-    && typeof value.silenceStartedAt === "string";
-}
-
-function isFailureUpstream(value: unknown): boolean {
-  return record(value)
-    && exactKeys(value, ["source", "operation"], ["code", "origin"])
-    && value.source === "acp"
-    && (value.operation === "open_session" || value.operation === "configure_session" || value.operation === "run_turn")
-    && (value.code === undefined || typeof value.code === "string" || finiteNumber(value.code))
-    && optionalString(value.origin);
-}
-
-function stringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every(item => typeof item === "string");
-}
-
-function agentLaunch(value: unknown): value is AcpAgentLaunch {
+function identity(value: Record<string, unknown>): boolean { return string(value.hostId) && string(value.sessionLeaseId); }
+function configuration(value: unknown): boolean { return record(value) && exactKeys(value, ["options"], ["model"]) && optionalString(value.model) && stringRecord(value.options); }
+function launch(value: unknown): value is AcpAgentLaunch {
   if (!record(value)) return false;
-  if (value.kind === "command") {
-    return exactKeys(value, ["kind", "command"], ["name"])
-      && typeof value.command === "string"
-      && value.command.trim().length > 0
-      && optionalString(value.name);
-  }
-  return value.kind === "argv"
-    && exactKeys(value, ["kind", "argv"], ["name"])
-    && Array.isArray(value.argv)
-    && value.argv.length > 0
-    && typeof value.argv[0] === "string"
-    && value.argv[0].trim().length > 0
-    && value.argv.every(item => typeof item === "string")
-    && optionalString(value.name);
+  return value.kind === "command"
+    ? exactKeys(value, ["kind", "command"], ["name"]) && string(value.command) && optionalString(value.name)
+    : value.kind === "argv" && exactKeys(value, ["kind", "argv"], ["name"]) && Array.isArray(value.argv) && value.argv.length > 0 && value.argv.every(string) && optionalString(value.name);
 }
-
-function nonnegativeInteger(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
-}
-
-function nonnegativeFiniteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
-}
-
-function finiteNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function optionalFiniteNumber(value: unknown): boolean {
-  return value === undefined || finiteNumber(value);
-}
-
-function environment(value: unknown): value is Record<string, string | undefined> {
-  return record(value) && Object.values(value).every(item => item === undefined || typeof item === "string");
-}
-
-function stringRecord(value: unknown): value is Record<string, string> {
-  return record(value) && Object.values(value).every(item => typeof item === "string");
-}
-
-function isPermissionMode(value: unknown): value is AgentPermissionMode {
-  return value === "approve-reads" || value === "approve-all" || value === "deny-all";
-}
-
-function optionalString(value: unknown): boolean {
-  return value === undefined || typeof value === "string";
-}
-
-function optionalAgentJsonValue(value: unknown): boolean {
-  return value === undefined || isAgentJsonValue(value);
-}
-
-function isAgentJsonValue(value: unknown, ancestors = new WeakSet<object>()): boolean {
+function permission(value: unknown): value is AgentPermissionMode { return value === "approve-reads" || value === "approve-all" || value === "deny-all"; }
+function exactKeys(value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean { const allowed = new Set([...required, ...optional]); return required.every(key => Object.hasOwn(value, key)) && Object.keys(value).every(key => allowed.has(key)); }
+function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === "object" && !Array.isArray(value); }
+function string(value: unknown): value is string { return typeof value === "string" && value.length > 0; }
+function boundedString(value: unknown, maxLength: number): value is string { return string(value) && value.length <= maxLength; }
+function optionalString(value: unknown): boolean { return value === undefined || typeof value === "string"; }
+function stringRecord(value: unknown): value is Record<string, string> { return record(value) && Object.values(value).every(item => typeof item === "string"); }
+function finite(value: unknown): value is number { return typeof value === "number" && Number.isFinite(value); }
+function optionalJson(value: unknown): boolean { return value === undefined || json(value); }
+function json(value: unknown, ancestors = new WeakSet<object>()): boolean {
   if (value === null || typeof value === "string" || typeof value === "boolean") return true;
   if (typeof value === "number") return Number.isFinite(value);
-  if (typeof value !== "object") return false;
-  if (ancestors.has(value)) return false;
+  if (typeof value !== "object" || ancestors.has(value)) return false;
   ancestors.add(value);
   const valid = Array.isArray(value)
-    ? value.every(item => isAgentJsonValue(item, ancestors))
-    : plainRecord(value) && Object.values(value).every(item => isAgentJsonValue(item, ancestors));
+    ? value.every(item => json(item, ancestors))
+    : Object.values(value).every(item => json(item, ancestors));
   ancestors.delete(value);
   return valid;
-}
-
-function exactKeys(
-  value: Record<string, unknown>,
-  required: readonly string[],
-  optional: readonly string[] = [],
-): boolean {
-  const allowed = new Set([...required, ...optional]);
-  return required.every(key => Object.hasOwn(value, key))
-    && Object.keys(value).every(key => allowed.has(key));
-}
-
-function plainRecord(value: object): value is Record<string, unknown> {
-  const prototype = Object.getPrototypeOf(value);
-  return !Array.isArray(value) && (prototype === Object.prototype || prototype === null);
-}
-
-function record(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
 }

@@ -6,12 +6,13 @@ import { compactSchemaSummary } from "../schema-summary.js";
 import type { RuntimeStore } from "../store/store.js";
 import { resolveOccurrenceRef } from "./occurrence-ref.js";
 import { schedulerStoreError, type SchedulerSnapshot, type SchedulerStoreError } from "./store-port.js";
+import type { SchedulerSteerProof } from "./store-port.js";
 import { settleFrozenRunTransitions } from "./runtime-runner.js";
 
 export type RunControlIntent =
   | { requestId: string; runId: string; type: "pause" }
   | { requestId: string; runId: string; type: "resume" }
-  | { requestId: string; runId: string; type: "retry"; target?: string }
+  | { requestId: string; runId: string; type: "retry"; target: string }
   | { requestId: string; runId: string; type: "cancel"; target?: string }
   | { requestId: string; runId: string; type: "steer"; target: string; instruction: string }
   | { requestId: string; runId: string; type: "signal"; node: string; payload: JsonValue; commandIdempotencyKey?: string };
@@ -19,7 +20,7 @@ export type RunControlIntent =
 export type SchedulerControlEffect =
   | { type: "pause"; state: "applied" }
   | { type: "resume"; state: "applied" }
-  | { type: "retry"; state: "applied"; target?: string }
+  | { type: "retry"; state: "applied"; target: string }
   | { type: "cancel"; state: "applied"; target?: string }
   | {
     type: "steer";
@@ -27,6 +28,7 @@ export type SchedulerControlEffect =
     steerId: string;
     requestedTarget: string;
     target: string;
+    delivery: "interrupt_continue";
     fencedAttemptId: string;
     continuation: "queued";
   }
@@ -60,6 +62,7 @@ export function applySchedulerControlIntent(
   store: RuntimeStore,
   intent: RunControlIntent,
   ownerEpoch: number,
+  steerProof?: SchedulerSteerProof,
 ): Result<SchedulerControlResult, SchedulerControlFailure> {
   const runId = intent.runId;
   const idempotencyKey = `scheduler:control:${intent.requestId}`;
@@ -77,14 +80,36 @@ export function applySchedulerControlIntent(
       reopened: false,
     }));
   }
-  if (intent.type === "retry" && intent.target !== undefined) {
-    const target = intent.target;
-    const current = store.scheduler.tryLoadRunSnapshot(runId);
-    if (current.isErr()) return err(current.error);
-    return store.scheduler.tryRetry({ runId, ownerEpoch, idempotencyKey, target }).map(next => ({
-      snapshot: next,
-      effect: { type: "retry", state: "applied", target } as const,
-      reopened: next.version > current.value.version,
+  if (intent.type === "retry") {
+    const planned = store.scheduler.tryPlanRetry({ runId, idempotencyKey, target: intent.target });
+    if (planned.isErr()) return err(planned.error);
+    if (planned.value.sessions.length > 0) {
+      return err({
+        type: "retry-neutralization-mismatch",
+        runId,
+        expectedAgentSessionIds: planned.value.sessions.map(session => session.agentSessionId),
+        actualAgentSessionIds: [],
+        message: `Retry target '${intent.target}' requires Agent Session neutralization.`,
+      });
+    }
+    if (planned.value.duplicate) {
+      return ok({
+        snapshot: planned.value.snapshot,
+        effect: { type: "retry", state: "applied", target: intent.target },
+        reopened: false,
+      });
+    }
+    return store.scheduler.tryCommitRetry({
+      runId,
+      ownerEpoch,
+      idempotencyKey,
+      target: intent.target,
+      expectedVersion: planned.value.snapshot.version,
+      neutralizedAgentSessionIds: [],
+    }).map(snapshot => ({
+      snapshot,
+      effect: { type: "retry", state: "applied", target: intent.target } as const,
+      reopened: snapshot.version > planned.value.snapshot.version,
     }));
   }
   if (intent.type === "steer") {
@@ -95,6 +120,7 @@ export function applySchedulerControlIntent(
       steerId: intent.requestId,
       target: intent.target,
       instruction: intent.instruction,
+      ...(steerProof === undefined ? {} : { proof: steerProof }),
     }).map(applied => ({
       snapshot: applied.snapshot,
       effect: {
@@ -103,6 +129,7 @@ export function applySchedulerControlIntent(
         steerId: applied.steerId,
         requestedTarget: applied.requestedTarget,
         target: applied.target,
+        delivery: "interrupt_continue",
         fencedAttemptId: applied.fencedAttemptId,
         continuation: "queued",
       } as const,
@@ -126,13 +153,6 @@ export function applySchedulerControlIntent(
       snapshot: resumed,
       effect: { type: "resume", state: "applied" } as const,
       reopened: resumed.version > snapshot.version,
-    }));
-  }
-  if (intent.type === "retry") {
-    return store.scheduler.tryRetryRun({ runId, ownerEpoch, idempotencyKey }).map(next => ({
-      snapshot: next,
-      effect: { type: "retry", state: "applied" } as const,
-      reopened: next.version > snapshot.version,
     }));
   }
   if (intent.type === "cancel") {

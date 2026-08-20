@@ -88,7 +88,7 @@ Acpus 模式始终提供内建 DSH Agent。该配置不可修改或删除。它�
 
 会话标题栏中的 **Agent Profiles** 入口只显示当前配置。请通过对话修改配置。修改只影响后续 Workflow。
 
-常用 Agent 已在 Acpus 内建目录中。其他具名 Agent 在 `~/.acpus/agents.json` 或工作目录的 `.acpus/agents.json` 中配置结构化 `argv`：`{"agents":{"my-agent":{"argv":["my-acp-server","--stdio"]}}}`。项目同名项优先；配置后告诉 DSH 该名称和用途。
+常用 Agent 已在 Acpus 内建目录中。其他具名 Agent 在 `~/.acpus/agents.json` 或工作目录的 `.acpus/agents.json` 中配置 Shell 命令：`{"agents":{"my-agent":"my-acp-server --stdio"}}`。项目同名项优先；配置后告诉 DSH 该名称和用途。
 
 在使用 Profile 前，先安装对应 Agent，并完成该 Agent 的登录或凭据配置。保存 Profile 时不会检测可执行文件、网络、凭据或模型是否可用。
 

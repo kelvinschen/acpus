@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { err } from "neverthrow";
 import { describe, expect, it } from "vitest";
 import {
   executeTaskNode,
@@ -7,6 +8,30 @@ import {
 } from "./support/task-executor-fixture.js";
 
 describe.concurrent("task executor lifecycle", () => {
+  it("rejects a fenced metadata write before starting the Task process", async () => {
+    await withTaskExecutorWorkspace(async ({ taskOptions }) => {
+      const options = taskOptions("run_metadata_fenced");
+      options.store.writeExecutionMetadata = input => err({
+        type: "owner-epoch-inactive",
+        runId: input.runId,
+        ownerEpoch: input.ownerEpoch,
+        message: "metadata owner expired",
+      });
+
+      await expect(executeTaskNode(
+        inlineTask("metadata_fenced", "async () => ({ shouldNotRun: true })"),
+        {},
+        options,
+      )).rejects.toMatchObject({
+        failure: {
+          type: "owner-epoch-inactive",
+          runId: "run_metadata_fenced",
+          ownerEpoch: 1,
+        },
+      });
+    });
+  });
+
   it("confines missing cwd and process exit failures to their Task attempts", async () => {
     await withTaskExecutorWorkspace(async ({ workspace, taskOptions }) => {
       const missing = join(workspace, "missing");

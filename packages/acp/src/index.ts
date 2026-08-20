@@ -1,4 +1,5 @@
 export { openAcpSession } from "./session.js";
+export { fingerprintAgentSessionBinding } from "./session-binding.js";
 export type {
   AcpClientOperation,
   AcpContextUsage,
@@ -14,5 +15,11 @@ export type {
   AcpTokenUsage,
   AcpTurnInput,
   AcpTurnResult,
+  AcpSessionBindingError,
+  AgentSessionBindingCategory,
+  AgentSessionBindingFingerprintV1,
+  CanonicalAgentSessionBindingV1,
+  FingerprintAgentSessionBindingInput,
   OpenAcpSessionInput,
+  Sha256Digest,
 } from "./types.js";

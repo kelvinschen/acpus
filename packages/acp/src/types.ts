@@ -19,13 +19,40 @@ export type AcpSessionConfiguration = Readonly<{
   options?: Readonly<Record<string, string>>;
 }>;
 
+export type Sha256Digest = `sha256:${string}`;
+export type AgentSessionBindingCategory = "launch" | "cwd" | "model" | "options";
+export type CanonicalAgentSessionBindingV1 = Readonly<{
+  version: 1;
+  launch:
+    | Readonly<{ kind: "argv"; argv: readonly [string, ...string[]] }>
+    | Readonly<{ kind: "command"; command: string }>;
+  cwd: string;
+  configuration: Readonly<{
+    model: string | null;
+    options: Readonly<Record<string, string>>;
+  }>;
+}>;
+export type AgentSessionBindingFingerprintV1 = Readonly<{
+  version: 1;
+  digest: Sha256Digest;
+  components: Readonly<Record<AgentSessionBindingCategory, Sha256Digest>>;
+}>;
+export type FingerprintAgentSessionBindingInput = Readonly<{
+  launch: AcpLaunch;
+  cwd: string;
+  configuration: Readonly<{ model: string | null; options: Readonly<Record<string, string>> }>;
+}>;
+
 export type OpenAcpSessionInput = Readonly<{
-  recordId: string;
+  agentSessionId: string;
+  bindingFingerprint: AgentSessionBindingFingerprintV1;
+  sessionOpenMode: "new_or_empty" | "existing_required";
   stateDirectory: string;
   launch: AcpLaunch;
   cwd: string;
   env?: Readonly<NodeJS.ProcessEnv>;
   permissionMode: AcpPermissionMode;
+  configuration: Readonly<{ model: string | null; options: Readonly<Record<string, string>> }>;
   signal?: AbortSignal;
 }>;
 
@@ -42,6 +69,7 @@ export type AcpContextUsage = Readonly<{ used: number; size: number }>;
 export type AcpCost = Readonly<{ amount: number; currency: string }>;
 
 export type AcpClientOperation =
+  | "session/request_permission"
   | "fs/read_text_file"
   | "fs/write_text_file"
   | "terminal/create"
@@ -99,6 +127,8 @@ export type AcpOperation =
 
 type AcpErrorBase = Readonly<{
   operation: AcpOperation;
+  origin: "input" | "persistence" | "client" | "provider" | "transport" | "process";
+  providerEvidence: "none" | "inbound_activity" | "terminal_response";
   message: string;
   retryable: boolean;
   code?: string | number;
@@ -116,7 +146,20 @@ export type AcpError =
   | (AcpErrorBase & Readonly<{ type: "session" }>)
   | (AcpErrorBase & Readonly<{ type: "configuration" }>)
   | (AcpErrorBase & Readonly<{ type: "provider_exit"; exitCode: number | null; signal: string | null }>)
-  | (AcpErrorBase & Readonly<{ type: "client_operation" }>);
+  | (AcpErrorBase & Readonly<{ type: "client_operation" }>)
+  | AcpSessionBindingError;
+
+export type AcpSessionBindingError = Omit<
+  AcpErrorBase,
+  "operation" | "origin" | "providerEvidence" | "retryable"
+> & Readonly<{
+  type: "session_binding";
+  operation: "open_session";
+  origin: "persistence";
+  providerEvidence: "none";
+  retryable: false;
+  categories: readonly [AgentSessionBindingCategory, ...AgentSessionBindingCategory[]];
+}>;
 
 export type AcpTurnInput = Readonly<{
   prompt: string;
@@ -132,9 +175,10 @@ export type AcpTurnResult = Readonly<{
 }>;
 
 export interface AcpSession {
-  readonly recordId: string;
+  readonly agentSessionId: string;
   readonly sessionId: string;
   readonly projectionPath: string;
+  readonly reportedVersion?: string;
   runTurn(input: AcpTurnInput): ResultAsync<AcpTurnResult, AcpError>;
   close(reason?: string): ResultAsync<void, AcpError>;
 }

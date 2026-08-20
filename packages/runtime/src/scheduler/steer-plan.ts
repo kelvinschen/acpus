@@ -66,14 +66,14 @@ export function steerControlTargets(
       );
       return identity.isErr()
         ? []
-        : [{ attempt: steerTarget(attempt), sessionName: identity.value.sessionName }];
+        : [{ attempt: steerTarget(attempt), agentSessionId: identity.value.agentSessionId }];
     });
   const sessionUseCount = new Map<string, number>();
   for (const candidate of candidates) {
-    sessionUseCount.set(candidate.sessionName, (sessionUseCount.get(candidate.sessionName) ?? 0) + 1);
+    sessionUseCount.set(candidate.agentSessionId, (sessionUseCount.get(candidate.agentSessionId) ?? 0) + 1);
   }
   return candidates
-    .filter(candidate => sessionUseCount.get(candidate.sessionName) === 1)
+    .filter(candidate => sessionUseCount.get(candidate.agentSessionId) === 1)
     .filter(candidate => activeInstance(snapshot.projection, candidate.attempt.nodeKey))
     .map(candidate => candidate.attempt)
     .sort(compareSteerTargets);
@@ -263,7 +263,7 @@ function assertAgentSteerSessionAvailable(
         attempt.nodeKey,
       );
       if (identity.isErr()) return [];
-      return identity.value.sessionName === targetIdentity.value.sessionName ? [attempt.nodeKey] : [];
+      return identity.value.agentSessionId === targetIdentity.value.agentSessionId ? [attempt.nodeKey] : [];
     })
     .sort();
   if (candidateKeys.length > 0) {

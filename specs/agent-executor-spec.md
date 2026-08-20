@@ -2,155 +2,144 @@
 
 ## Purpose
 
-`@acpus/agent-executor` owns named Agent launch resolution and one isolated
-worker tree for each Runtime Agent attempt. It exposes normalized turn results,
-semantic observations, inactivity policy, and process-ownership evidence while
-delegating protocol sessions and persistence to [ACP](acp-spec.md).
-[Runtime](runtime-spec.md) owns durable attempts, run-local session identity,
-and operator-facing recovery.
+`@acpus/agent-executor` owns workspace-local Agent Session leases, named Agent
+launch resolution, isolated ACP process capsules, and process-ownership
+evidence. [Runtime](runtime-spec.md) owns durable Runs, Attempts, Agent Session
+identity/generation/checkpoints, operator controls, and product inspection.
+[ACP](acp-spec.md) owns the protocol Session and its projection.
+
+The public execution seam is Session-oriented: `createAgentSessionSupervisor`
+returns `withSessionLease`, `withSessionsNeutralized`, and `shutdown`. The
+package MUST NOT expose the removed attempt-oriented `ManagedAcpExecutor`
+surface.
 
 ## Requirements
 
 ### Named Agent Resolution
 
-- A command selector MUST bypass Host launches, Agent configuration, and the
+- Command selectors MUST bypass Host launches, file configuration, and the
   built-in catalog.
-- For a named selector, an own-property match in the immutable Host registry
-  MUST take precedence over project Agent configuration, global Agent
-  configuration, and the package-owned built-in catalog, in that order.
-- Host registry keys MUST use trimmed lowercase Agent names. A Host resolver
-  MUST receive only the attempt's optional effective model and MUST return a
-  structured argv launch.
-- Acpus Agent configuration MUST be read from the effective working
-  directory's `.acpus/agents.json` and the effective home directory's
-  `.acpus/agents.json` when a home is available.
-- Each Agent configuration file MUST be the closed `{ agents: { ... } }`
-  object, and each entry MUST be the closed `{ argv: [...] }` object with a
-  non-empty executable. Names MUST match after trimming and lowercasing;
-  normalized collisions MUST fail validation.
-- Every present configuration file MUST be validated completely before
-  selection. A missing file MUST contribute no entries; malformed JSON, an
-  invalid entry, or a read failure MUST return a non-retryable `agent-config`
-  failure naming the path.
-- A project entry MUST override a same-named global entry, and either configured
-  entry MUST override the same built-in name.
-- The package MUST own a built-in catalog of structured argv launches.
-- An unknown named Agent MUST return a non-retryable `agent-config` failure.
-- Named Agent resolution MUST complete before the executor creates a worker or
-  ownership evidence.
-- A managed attempt MUST resolve its named Agent once and reuse that launch for
-  every turn; a later attempt MUST resolve against the then-current Host
-  registry and Agent configuration.
-- The executor MUST NOT persist the resolved Agent configuration or launch.
+- Named selection precedence MUST be immutable Host registry, project
+  `.acpus/agents.json`, global `.acpus/agents.json`, then the package catalog.
+- Registry and configured names MUST normalize by trim plus lowercase;
+  normalized collisions and malformed present files MUST fail closed.
+- Each configured entry MUST be a non-empty shell command string and resolve
+  through the platform shell without Acpus tokenization or normalization. A
+  missing file contributes no entries; malformed JSON, invalid entries, and
+  read failures are non-retryable resolution failures.
+- Resolution MUST complete before a Process Capsule or ownership manifest is
+  created. One Session lease resolves once; a later lease resolves current
+  configuration again. Resolved launch data MUST NOT be persisted here.
 
-### Managed Attempts And Turns
+### Session Supervisor
 
-- The package MUST expose `createManagedAcpExecutor`, `recoverAcpOwnership`,
-  `inspectAcpOwnership`, and their public managed-attempt, normalized-turn, and
-  ownership types.
-- `withAttempt` MUST provide one callback-scoped `runTurn` capability and MUST
-  clean its worker tree after the callback settles, regardless of the callback
-  result.
-- A managed attempt MUST accept an optional cancellation signal that remains
-  authoritative through named Agent resolution, worker and ACP session startup,
-  and every turn. Cancellation MUST prevent late resolution, readiness, or turn
-  results from making the attempt usable or successful.
-- A managed attempt MUST admit at most one active turn at a time.
-- Worker IPC MUST distinguish bootstrap acknowledgement from ACP session
-  readiness. Bootstrap acknowledgement MUST prove only that the owned worker
-  accepted initialization and began session open; session readiness MUST be
-  reported only after `openAcpSession` succeeds, and bootstrap acknowledgement
-  alone MUST NOT make the managed attempt usable.
-- The executor MAY apply a short package-owned watchdog only to owned-worker IPC
-  bootstrap. It MUST NOT use that watchdog as a deadline for named Agent
-  resolution, ACP session open, or session readiness.
-- A worker MUST use one [ACP session](acp-spec.md#public-session-boundary) with
-  the supplied persistent state directory and record identity; turns in one
-  managed attempt MUST reuse that session.
-- `runTurn` MUST return the public normalized result union and MUST deliver
-  normalized progress and observation callbacks without letting callback
-  failures change turn settlement.
-- A turn summary MUST carry the ACP state-root-relative
-  `sessionProjectionPath` when a projection exists.
-- The managed executor MUST reject child IPC messages with an unsupported
-  version or malformed discriminant-specific payload. A turn result MUST carry
-  string response segments, shared summary and timing data, and exactly the
-  terminal detail required by its status, including completed-only
-  `finalResponse`.
-- Each turn MUST start with an empty response collector that is not shared with
-  any earlier repair, retry, resumed, or steering turn.
-- Consecutive non-empty assistant text updates MUST append exactly as received
-  to the current response segment, preserving non-empty whitespace.
-- A thought or plan MUST close the current response segment without
-  invalidating the latest final-response candidate.
-- A tool call MUST close the segment and invalidate every earlier
-  final-response candidate; a tool update MUST close the segment without
-  invalidating that candidate.
-- Usage, session, client-activity, and unknown events MUST NOT enter or segment
-  responses or change the final-response candidate.
-- Response collection MUST depend only on normalized event order and MUST NOT
-  use Agent or provider identity or response-text heuristics.
-- Turn progress MUST expose detached ordered response segments observed so far;
-  its final segment MAY still be growing.
-- A completed turn MUST expose `finalResponse` as its latest valid candidate, or
-  an empty string when no candidate remains. A failed or cancelled turn MUST
-  retain observed response segments and MUST NOT expose `finalResponse`.
-- The executor MUST NOT expose raw ACP transport or raw provider output as a
-  public request or result field.
+- `createAgentSessionSupervisor` MUST recover workspace-local ownership before
+  returning a usable supervisor. Unsupported manifest shapes MUST fail startup.
+- `withSessionLease` MUST serialize ownership by exact `agentSessionId`. A
+  second lease or neutralization for that Session MUST fail as `session_busy`
+  before spawning a process.
+- The caller MUST supply the exact durable Attempt context and Session intent.
+  Cancellation and authored deadline remain authoritative through guard
+  acquisition, Agent resolution, capsule open, every Turn, and cleanup.
+- Inside the Session guard and after Agent resolution, the Supervisor MUST
+  compute the canonical Agent Session binding before capsule spawn. Resolution
+  or canonicalization failure MUST create no capsule or Provider process.
+- A lease MUST open one Process Capsule and one ACP Session, expose only the
+  lease's Session/lease/projection identities, exact binding fingerprint,
+  optional bounded Provider-reported version, and `runTurn`, then close the
+  capsule after the callback settles.
+- One lease MUST admit at most one active Turn. Response-repair Turns MAY reuse
+  that lease; natural shared-session continuation, safe retry, and Steer
+  replacement Attempts acquire a later lease against Runtime's authoritative
+  Session plan.
+- `withSessionsNeutralized` MUST sort and deduplicate exact Session refs,
+  acquire all guards before cleanup, neutralize every selected capsule, and
+  invoke the commit callback only after all selected ownership is absent.
+- Partial neutralization MUST NOT invoke the commit callback. The callback is
+  the sole boundary at which Runtime may atomically commit Retry abandonment
+  and scheduler changes.
+- `shutdown` MUST stop new leases, request cleanup for every capsule, wait for
+  bounded cleanup, and return a typed aggregate when ownership remains.
 
-### Activity And Inactivity
+### Process Capsule And Turns
 
-- Context-window counters and token usage MUST remain independent optional
-  telemetry: context is the latest session-window checkpoint, while token usage
-  describes the current turn and MUST NOT be inferred from context.
-- Terminal usage reported by the ACP session result MUST replace the live
-  current-turn token breakdown without changing settlement or emitting another
-  usage observation.
-- The executor MUST report ACP activity when it dispatches a turn and whenever
-  it receives a public ACP event.
-- Message, thought, tool, usage, plan, and unknown events MUST become their
-  normalized observations. Session and client-activity events MUST count as
-  activity without becoming persisted semantic observations.
-- An optional `inactivityFailAfterMs` MUST reset on each reported activity.
-  When it elapses, the executor MUST cancel the active turn and return a
-  retryable `inactivity_stale` failure with its silence duration and configured
-  interval as evidence.
-- Activity reporting MUST not claim receipt of an unexposed transport frame or
-  Agent-side execution confirmation.
+- Each Process Capsule MUST own exactly one worker process tree, one closed IPC
+  channel, one ACP Session, and at most one active Turn.
+- Worker IPC MUST distinguish bootstrap acknowledgement from ACP Session
+  readiness. A short package watchdog MAY cover worker bootstrap only; it MUST
+  NOT become an Agent resolution, ACP open, or Turn deadline.
+- Provider readiness MUST use a separate 30-second capsule-open bound, shortened
+  by the Attempt deadline when less time remains. The bootstrap orphan watchdog
+  MUST NOT shorten this Provider initialization window.
+- The capsule MUST implement first-trigger-wins cancellation for caller abort,
+  authored deadline, inactivity, event-sink failure, and cleanup. A trigger
+  sends at most one Turn cancel and establishes one cleanup deadline.
+- After cancellation starts, matched events and the terminal result MUST
+  continue through the settlement reducer until a terminal barrier, verified
+  worker loss, or bounded hard cleanup. A second Turn remains rejected during
+  drain.
+- `runTurn` MUST return a typed completed outcome or typed event-sink, policy,
+  originating ACP, capsule-loss, or cancellation failure while retaining the bounded
+  Turn snapshot and settlement evidence.
+- Consecutive assistant text events append to the current response segment.
+  Thought/plan and tool events close a segment; tool calls invalidate earlier
+  final-response candidates. Usage, Session, client-activity, and unknown
+  events MUST NOT enter response text.
+- Completed Turns expose the latest valid final-response candidate, or an empty
+  string. Non-completed Turns retain observed segments and MUST NOT expose a
+  completed final response.
+- The public seam MUST NOT expose raw ACP transport, provider stdio, process
+  identity, or child topology.
+- Worker IPC MUST carry one ordered raw `AcpEvent` delta per event and one
+  terminal envelope. `open_failed` is the only pre-ready ACP failure lane;
+  `failed` is reserved for Process Capsule faults.
+- Worker protocol v9 open MUST carry the exact binding fingerprint and ready
+  MUST echo it. A missing, malformed, or different ready fingerprint MUST fail
+  the capsule protocol. Ready MAY additionally carry the non-empty
+  Provider-reported version bounded to 256 characters; it MUST NOT affect the
+  fingerprint.
+- The parent capsule MUST assign sequence/time metadata and exclusively own
+  response, final-candidate, tool, usage, timing, and partial-snapshot
+  reduction. Terminal receipt MUST NOT increment the ACP event count.
+- An event after terminal, a duplicate terminal, or a mismatched Turn id MUST
+  fail the capsule protocol.
+
+### Activity And Observation
+
+- Context-window counters and current-Turn token usage are independent optional
+  telemetry and MUST NOT be inferred from each other.
+- Dispatch and every admitted ACP event count as activity. Optional inactivity
+  policy resets only on admitted activity before a policy wins.
+- `TurnInput.onEvent` receives parent-enveloped raw ACP event deltas in worker
+  order. No cumulative observation, request/result, or backend-failure public
+  shape may coexist with this seam. Callback failure is an event-sink failure and MUST participate
+  in Turn cancellation/drain rather than escape as an unowned throw.
+- Permission, Session, and client activity count as Provider activity without becoming a semantic
+  observation. Missing telemetry is `unavailable`, never an invented zero.
 
 ### Ownership And Cleanup
 
-- `shutdown()` MUST first stop admitting new managed attempts and request every
-  resolving, starting, ready, or active attempt to stop. It MUST issue those
-  stop requests before awaiting attempt or cleanup settlement.
-- Before initializing a spawned worker, the executor MUST atomically write an
-  active ownership manifest under the supplied workers root.
-- A manifest MUST identify its run, attempt, session, executor-owner
-  generation, and worker process; it MUST include a process-start token
-  whenever the platform can obtain one.
-- Managed-attempt cleanup MUST request turn cancellation and session close,
-  then make one bounded best-effort tree cleanup using TERM, KILL, and a final
-  liveness check.
-- Cleanup MUST delete a manifest only after the worker tree is no longer live.
-  When cleanup cannot establish that result, it MUST retain a degraded manifest.
-- `recoverAcpOwnership` MUST perform only a bounded startup sweep of the
-  supplied workspace workers root; it MUST not start a background reaper or
-  scan other workspaces.
-- Startup recovery MUST signal a residual worker only when its stored
-  process-start token still matches; an unverified live PID MUST remain as
-  ownership evidence without being signalled.
-- `inspectAcpOwnership` MUST be read-only and report only degraded or orphaned
-  ownership evidence; a manifest owned by the supplied executor owner and
-  generation MUST not be reported as an orphan.
+- Before worker initialization, the capsule MUST atomically write a schema-v3
+  manifest identifying host, Runtime owner epoch, Agent Session, Session lease,
+  Run, Attempt, and exact worker process identity.
+- Cleanup MUST request Turn cancellation and Session close, then use one bounded
+  TERM/KILL/final-liveness budget. Cooperative and process-tree cleanup MUST
+  share that budget.
+- A manifest may be removed only after worker-tree death is proven. Proven-live
+  or unverified residual ownership MUST remain as degraded evidence and MUST
+  quarantine the Session from later acquire.
+- Startup recovery MUST be bounded to the supplied workspace root. It MUST
+  signal a residual tree only when the recorded process-start token still
+  matches; otherwise it retains unverified evidence without signalling.
+- `inspectAcpOwnership` is read-only. Its safe manifest references expose only
+  Session/Run/Attempt identity, lifecycle state, and
+  `healthy | quarantined | unverified`; raw PID, token, argv, and environment
+  MUST remain private.
 
 ## Verification
 
-- `pnpm --filter @acpus/agent-executor typecheck`: verifies the public managed
-  executor and ACP type boundary.
-- `pnpm test:unit packages/agent-executor`: verifies Agent resolution, response
-  collection, event normalization, inactivity, and ownership lifecycle.
-- `pnpm test:integration packages/agent-executor`: verifies Host, project,
-  global, built-in, and command-backed Agent startup and failure behavior.
-- `pnpm test:contract packages/agent-executor` and
-  `pnpm test:type packages/agent-executor`: verify the closed worker IPC and
-  exported managed-executor surface.
+- `pnpm --filter @acpus/agent-executor typecheck`
+- `pnpm test:type packages/agent-executor`
+- `pnpm test:contract packages/agent-executor`
+- `pnpm test:unit packages/agent-executor`
+- `pnpm test:integration packages/agent-executor`

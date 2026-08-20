@@ -34,7 +34,7 @@ export type RunDynamicGroup =
 
 export type RunExecutionMetadata = {
   id: number;
-  attemptId?: string;
+  attemptId: string;
   kind: string;
   metadata: unknown;
   createdAt: string;
@@ -187,13 +187,18 @@ export class SqliteRuntimeInspectionReadModel {
       WHERE run_id = ?
       ORDER BY id
     `).all(runId) as Array<Record<string, string | number | null>>;
-    return rows.map(row => withoutUndefined({
-      id: Number(row.id),
-      attemptId: nullableString(row.attempt_id),
-      kind: String(row.kind),
-      metadata: JSON.parse(String(row.metadata_json)) as unknown,
-      createdAt: String(row.created_at),
-    }) as RunExecutionMetadata);
+    return rows.map(row => {
+      if (typeof row.attempt_id !== "string") {
+        throw new Error(`Execution metadata row '${String(row.id)}' has no Attempt identity.`);
+      }
+      return {
+        id: Number(row.id),
+        attemptId: row.attempt_id,
+        kind: String(row.kind),
+        metadata: JSON.parse(String(row.metadata_json)) as unknown,
+        createdAt: String(row.created_at),
+      };
+    });
   }
 
   getDynamicDetails(runId: string): RunDynamicDetails | undefined {

@@ -221,6 +221,16 @@ async function prompt(request) {
         : {}),
     });
   }
+  if (flags.has("paced-activity")) {
+    const delayMs = Number(process.env.ACP_FIXTURE_ACTIVITY_DELAY_MS ?? 25);
+    for (let index = 0; index < 2; index += 1) {
+      await new Promise(resolveDelay => setTimeout(resolveDelay, delayMs));
+      update({
+        sessionUpdate: "available_commands_update",
+        availableCommands: [{ name: `fixture-${index}`, description: "activity" }],
+      });
+    }
+  }
   if (flags.has("exit-after-update")) return exit();
 
   await runReverseRequests(state);
@@ -316,6 +326,7 @@ async function runTerminalRequests(state, suffix) {
 async function cancel(sessionId) {
   const state = activePrompt;
   if (state === undefined || state.sessionId !== sessionId || state.settled) return;
+  if (flags.has("ignore-cancel")) return;
   if (flags.has("late-cancel-update") || flags.has("late-cancel-first")) {
     update({
       sessionUpdate: "tool_call_update",

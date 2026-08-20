@@ -7,6 +7,7 @@ import {
   classifyDaemonStatus,
   describeDaemonRequest,
   isDaemonControlResult,
+  isDaemonInspectionResult,
   isDaemonResponse,
   isDaemonRunStreamFrame,
   isDaemonShutdownResult,
@@ -14,6 +15,7 @@ import {
   type DaemonClientFailure,
   type DaemonControlIntent,
   type DaemonControlResult,
+  type DaemonInspectionResult,
   type DaemonRequest,
   type DaemonResponse,
   type DaemonRunStreamClientFailure,
@@ -23,6 +25,7 @@ import {
   type DaemonStatusProbe,
   type DaemonSubmitAndObserveInput,
 } from "./protocol.js";
+import type { ObservableInspectionViewQuery } from "../inspection/types.js";
 
 export function daemonEndpoint(cwd: string): string {
   return resolveRuntimeWorkspaceLayout(cwd).daemonEndpoint;
@@ -67,6 +70,18 @@ export function requestDaemonControl(
     request,
     response,
     value => isDaemonControlResult(value, control.type),
+  ));
+}
+
+export function requestDaemonInspection(
+  cwd: string,
+  view: ObservableInspectionViewQuery,
+): ResultAsync<DaemonInspectionResult, DaemonClientFailure> {
+  const request = { method: "inspect", view } as const;
+  return requestDaemon(daemonEndpoint(cwd), request).andThen(response => daemonResult(
+    request,
+    response,
+    isDaemonInspectionResult,
   ));
 }
 
@@ -125,7 +140,7 @@ function requestDaemon(
   return new ResultAsync(new Promise(resolveRequest => {
     const socket = connect(endpoint);
     const chunks: Buffer[] = [];
-    const timeoutMs = request.method === "control" ? 30_000 : 1_000;
+    const timeoutMs = request.method === "control" ? 30_000 : request.method === "inspect" ? 5_000 : 1_000;
     const timeout = setTimeout(() => {
       socket.destroy();
       resolveRequest(err({

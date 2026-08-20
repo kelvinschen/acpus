@@ -194,6 +194,7 @@ describe("Inspector primitives", () => {
     const inspection: NodeInspection = {
       nodeKey: "task~abc",
       staticKind: "task",
+      availableControls: [],
       timing: {
         startedAt: "2026-07-01T00:00:01.000Z",
         finishedAt: "2026-07-01T00:00:03.000Z",
@@ -278,6 +279,7 @@ describe("Inspector primitives", () => {
     const inspection: NodeInspection = {
       nodeKey: "lanes~abc",
       staticKind: "fanout",
+      availableControls: [],
       input: { kind: "runtime", value: { release: true } },
       artifacts: [],
     };
@@ -326,6 +328,7 @@ describe("Inspector primitives", () => {
     const inspection: NodeInspection = {
       nodeKey: "report~abc",
       staticKind: "task",
+      availableControls: [],
       artifacts: [{
         id: "artifact_1",
         path: "reports/final.md",
@@ -382,6 +385,7 @@ describe("Inspector primitives", () => {
     const inspection: NodeInspection = {
       nodeKey: "report~abc",
       staticKind: "task",
+      availableControls: [],
       artifacts: [{ id: "artifact_1", path: "reports/final.txt", size: 6, mediaType: "text/plain" }],
     };
     await render(React.createElement(

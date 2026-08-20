@@ -16,4 +16,4 @@ and release tags; they are not retained in the current documentation tree.
 
 ## Active Roadmaps
 
-- [ACP Session Supervisor 重构 Roadmap](acp-session-supervisor-redesign.md)
+None.

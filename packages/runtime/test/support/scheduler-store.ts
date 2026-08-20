@@ -7,12 +7,14 @@ import {
   type SchedulerPauseInput,
   type SchedulerResumeInput,
   type SchedulerRetryInput,
-  type SchedulerRunRetryInput,
+  type SchedulerSnapshot,
+  type SchedulerStoreResult,
   type SchedulerRecoveryInput,
   type SchedulerSteerInput,
   type SchedulerStorePort,
   type SignalConsumeInput,
 } from "../../src/scheduler/store-port.js";
+import { err } from "neverthrow";
 
 export function throwingSchedulerStore(store: SchedulerStorePort) {
   return {
@@ -26,10 +28,27 @@ export function throwingSchedulerStore(store: SchedulerStorePort) {
     consumeSignal: (input: SignalConsumeInput) => throwSchedulerStoreResult(store.tryConsumeSignal(input)),
     pauseRun: (input: SchedulerPauseInput) => throwSchedulerStoreResult(store.tryPauseRun(input)),
     resumeRun: (input: SchedulerResumeInput) => throwSchedulerStoreResult(store.tryResumeRun(input)),
-    retryRun: (input: SchedulerRunRetryInput) => throwSchedulerStoreResult(store.tryRetryRun(input)),
-    retry: (input: SchedulerRetryInput) => throwSchedulerStoreResult(store.tryRetry(input)),
+    retry: (input: SchedulerRetryInput) => throwSchedulerStoreResult(tryRetryStore(store, input)),
     cancel: (input: SchedulerCancelInput) => throwSchedulerStoreResult(store.tryCancel(input)),
     steerAgent: (input: SchedulerSteerInput) => throwSchedulerStoreResult(store.trySteerAgent(input)),
     markExpiredOwnerAttemptsSuperseded: (input: SchedulerRecoveryInput) => throwSchedulerStoreResult(store.tryMarkExpiredOwnerAttemptsSuperseded(input)),
   };
+}
+
+export function tryRetryStore(
+  store: SchedulerStorePort,
+  input: SchedulerRetryInput,
+): SchedulerStoreResult<SchedulerSnapshot> {
+  const plan = store.tryPlanRetry({
+    runId: input.runId,
+    idempotencyKey: input.idempotencyKey,
+    target: input.target,
+  });
+  if (plan.isErr()) return err(plan.error);
+  if (plan.value.duplicate) return store.tryLoadRunSnapshot(input.runId);
+  return store.tryCommitRetry({
+    ...input,
+    expectedVersion: plan.value.snapshot.version,
+    neutralizedAgentSessionIds: plan.value.sessions.map(session => session.agentSessionId),
+  });
 }

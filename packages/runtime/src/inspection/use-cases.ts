@@ -15,6 +15,9 @@ import {
   settleRetryControlSnapshot,
 } from "../scheduler/control-plan.js";
 import { steerControlTargets } from "../scheduler/steer-plan.js";
+import { planRetrySessionImpact } from "../scheduler/retry-session-impact.js";
+import type { AgentTurnProof } from "../execution/agent-turn-registry.js";
+import { indexNodes } from "../scheduler/ir-walk.js";
 import {
   throwSchedulerStoreResult,
   type SchedulerSnapshot,
@@ -38,6 +41,12 @@ import { resolveInspectionTarget } from "./target-resolution.js";
 import { deriveOccurrenceRef } from "../scheduler/occurrence-ref.js";
 import { projectInspectionForensicsView } from "./forensics-projection.js";
 import type { ResolvedTargetState } from "./resolved-target.js";
+import {
+  readAgentSessionOwnershipHealth,
+  withInspectionOwnershipHealth,
+  withObservationOwnershipHealth,
+  withStoreReadOwnershipHealth,
+} from "./ownership-health.js";
 import type {
   InspectAgentExecutionQuery,
   InspectNodeQuery,
@@ -45,6 +54,7 @@ import type {
   RunInspectionAgentExecutionDocument,
   RunInspectionNodeDocument,
   RunInspectionTargetArtifactsDocument,
+  RunInspectionTargetSummary,
   RunInspectionError,
   RunInspectionControl,
   InspectionCandidates,
@@ -61,6 +71,7 @@ import type {
 const inspectionObserveReadDelayMs = 1_000;
 const inspectionTimelineEntryLimit = 12;
 const inspectionTimelineEventLimit = 48;
+type AgentTurnProofLookup = (proof: AgentTurnProof) => boolean;
 
 /** Reads the one coherent public inspection document. */
 export function readInspection(
@@ -80,6 +91,10 @@ export function readInspection(
         view.runId,
         state => readCoherentView(state, view),
       );
+      if (active.isOk()) {
+        const ownership = await readAgentSessionOwnershipHealth(cwd, session.value.store);
+        active = ok(withInspectionOwnershipHealth(active.value, ownership));
+      }
     } finally {
       session.value.close();
     }
@@ -91,13 +106,14 @@ export function readInspection(
 export function readInspectionAtStore(
   store: RuntimeStore,
   view: InspectionViewQuery,
+  provesAgentTurn?: AgentTurnProofLookup,
 ): ResultAsync<InspectionRead, InspectionError> {
   const invalid = view.kind === "target" ? validateCoherentTarget(view.target) : undefined;
   if (invalid) return invalidCoherentInspection(invalid);
   return new ResultAsync(withCoherentInspectionRunAtStore(
     store,
     view.runId,
-    state => readCoherentView(state, view),
+    state => readCoherentView(state, view, undefined, provesAgentTurn),
   ));
 }
 
@@ -139,11 +155,21 @@ export async function* observeInspection(
         return;
       }
     }
-    yield first.value;
+    const ownership = first.value.isOk() && first.value.value.kind !== "update"
+      ? await readAgentSessionOwnershipHealth(cwd, session.value.store)
+      : undefined;
+    yield first.value.isOk() && ownership
+      ? ok(withObservationOwnershipHealth(first.value.value, ownership))
+      : first.value;
     while (true) {
       const next = await iterator.next();
       if (next.done) return;
-      yield next.value;
+      if (next.value.isOk() && next.value.value.kind !== "update") {
+        const nextOwnership = await readAgentSessionOwnershipHealth(cwd, session.value.store);
+        yield ok(withObservationOwnershipHealth(next.value.value, nextOwnership));
+      } else {
+        yield next.value;
+      }
     }
   } finally {
     session.value.close();
@@ -153,13 +179,14 @@ export async function* observeInspection(
 export async function* observeInspectionAtStore(
   store: RuntimeStore,
   query: ObserveInspectionQuery,
+  provesAgentTurn?: AgentTurnProofLookup,
 ): AsyncIterable<Result<InspectionObservation, InspectionError>> {
   const invalid = validateObserveInspectionQuery(query);
   if (invalid) {
     yield err(invalid);
     return;
   }
-  let cycle = await readCoherentCycleAtStore(store, query.view);
+  let cycle = await readCoherentCycleAtStore(store, query.view, undefined, undefined, provesAgentTurn);
   if (cycle.isErr()) {
     yield err(cycle.error);
     return;
@@ -181,7 +208,13 @@ export async function* observeInspectionAtStore(
       return;
     }
     if (sameInspectionToken(previous.token, token.value)) continue;
-    cycle = await readCoherentCycleAtStore(store, query.view, previous.pinnedTarget, previous.token.eventSequence);
+    cycle = await readCoherentCycleAtStore(
+      store,
+      query.view,
+      previous.pinnedTarget,
+      previous.token.eventSequence,
+      provesAgentTurn,
+    );
     if (cycle.isErr()) {
       yield err(cycle.error);
       return;
@@ -321,9 +354,10 @@ async function readCoherentCycleAtStore(
   view: InspectionViewQuery,
   pinnedTarget?: string,
   afterEventSequence?: number,
+  provesAgentTurn?: AgentTurnProofLookup,
 ): Promise<Result<CoherentCycle, InspectionError>> {
   return withCoherentInspectionRunAtStore(store, view.runId, async state => {
-    const read = await readCoherentView(state, view, pinnedTarget);
+    const read = await readCoherentView(state, view, pinnedTarget, provesAgentTurn);
     if (read.isErr()) return err(read.error);
     if (read.value.kind === "candidates") {
       return err({
@@ -336,7 +370,7 @@ async function readCoherentCycleAtStore(
     }
     if (read.value.kind === "archived-run") throw new Error("Archived runs are not observable.");
     const resolved = view.kind === "target"
-      ? resolveCoherentTarget(state, view.target, pinnedTarget)
+      ? resolveCoherentTarget(state, view.target, pinnedTarget, provesAgentTurn)
       : undefined;
     if (resolved?.isErr()) return err(resolved.error);
     if (view.kind === "target" && resolved?.isOk() && resolved.value.kind === "candidates") {
@@ -351,10 +385,15 @@ async function readCoherentCycleAtStore(
     return ok({
       view: read.value,
       changeView: read.value.kind === "run"
-        ? projectInspectionRunDecisionView({ ir: state.frozen.ir, run: state.run })
+        ? projectInspectionRunDecisionView({
+            ir: state.frozen.ir,
+            run: state.run,
+            agentSessions: state.read.agentControl.agentSessions,
+          })
         : read.value,
       token: state.read.cursor,
       run: state.run,
+      agentSessions: state.read.agentControl.agentSessions,
       events: afterEventSequence === undefined
         ? []
         : state.store.getCommittedRuntimeEventsAfter(state.run.id, afterEventSequence),
@@ -369,17 +408,19 @@ async function readCoherentView(
   state: CoherentInspectionRun,
   view: InspectionViewQuery,
   pinnedTarget?: string,
+  provesAgentTurn?: AgentTurnProofLookup,
 ): Promise<Result<InspectionRead, InspectionError>> {
   if (view.kind === "run") {
     const observations = await coherentRunObservations(state);
     return ok(projectInspectionRunView({
       ir: state.frozen.ir,
       run: state.run,
+      agentSessions: state.read.agentControl.agentSessions,
       ...(observations ? { observations } : {}),
       ...(view.structure === "materialized" ? { structure: "materialized" as const } : {}),
     }));
   }
-  const resolved = resolveCoherentTarget(state, view.target, pinnedTarget);
+  const resolved = resolveCoherentTarget(state, view.target, pinnedTarget, provesAgentTurn);
   if (resolved.isErr()) return err(resolved.error);
   if (resolved.value.kind === "candidates") return ok(resolved.value.candidates);
   const details = resolved.value.details;
@@ -438,16 +479,17 @@ function resolveCoherentTarget(
   state: CoherentInspectionRun,
   target: string,
   pinnedTarget?: string,
+  provesAgentTurn?: AgentTurnProofLookup,
 ): Result<CoherentTarget, InspectionError> {
   if (pinnedTarget) {
-    const details = resolveTargetState({
+    const resolved = resolveTargetState({
       ir: state.frozen.ir,
       run: state.run,
       artifacts: state.read.artifacts,
       target: pinnedTarget,
     });
-    return details
-      ? ok({ kind: "resolved", target: pinnedTarget, details })
+    return resolved
+      ? ok({ kind: "resolved", target: pinnedTarget, details: enrichCoherentTarget(state, resolved, provesAgentTurn) })
       : err({ type: "target-not-found", runId: state.run.id, target, message: `Run target '${target}' was not found.` });
   }
   const staticNodes = inspectionStaticNodes(state.frozen.ir);
@@ -483,8 +525,40 @@ function resolveCoherentTarget(
     target: resolution.target,
   });
   return details
-    ? ok({ kind: "resolved", target: resolution.target, details })
+    ? ok({ kind: "resolved", target: resolution.target, details: enrichCoherentTarget(state, details, provesAgentTurn) })
     : err({ type: "target-not-found", runId: state.run.id, target, message: `Run target '${target}' was not found.` });
+}
+
+function enrichCoherentTarget(
+  state: CoherentInspectionRun,
+  details: ResolvedTargetState,
+  provesAgentTurn?: AgentTurnProofLookup,
+): ResolvedTargetState {
+  const agentControl = targetAgentControl(state.read.agentControl, details, selectedAttemptFor(details));
+  const snapshot = throwSchedulerStoreResult(state.store.scheduler.tryLoadRunSnapshot(state.run.id));
+  const retrySnapshot = settleRetryControlSnapshot({
+    frozen: state.frozen,
+    snapshot,
+    now: new Date(),
+  }).snapshot;
+  return {
+    ...details,
+    run: { ...details.run, agentSessions: state.read.agentControl.agentSessions },
+    summary: {
+      ...details.summary,
+      ...(agentControl.agentSession === undefined ? {} : { agentSession: agentControl.agentSession }),
+      ...(agentControl.steer === undefined ? {} : { steer: agentControl.steer }),
+    },
+    availableControls: targetInspectionControls(
+      retrySnapshot,
+      snapshot,
+      details,
+      state.frozen,
+      agentControl.agentSession,
+      agentControl.turnProof,
+      provesAgentTurn,
+    ),
+  };
 }
 
 async function coherentTargetObservations(
@@ -949,8 +1023,9 @@ function withInspectionRun<T>(
     if (!session.value) return err({ type: "runtime-store-not-found", message: "Runtime store was not found." });
     try {
       const runtimeStore = session.value.store;
+      const ownership = await readAgentSessionOwnershipHealth(cwd, runtimeStore);
       return await withRunInspectionSnapshot(runtimeStore, async () => {
-        const read = runtimeStore.readRunInspection(runId);
+        const read = withStoreReadOwnershipHealth(runtimeStore.readRunInspection(runId), ownership);
         if (!read.run) {
           return err({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
         }
@@ -1014,14 +1089,59 @@ function resolveTarget(
     target: resolution.target,
   });
   if (!base) return err(targetNotFound(state.run.id, target));
+  const agentControl = targetAgentControl(state.read.agentControl, base, selectedAttemptFor(base));
   const controls = includeControls
-    ? targetInspectionControls(state.retrySchedulerSnapshot(), state.schedulerSnapshot(), base, state.frozen)
+    ? targetInspectionControls(state.retrySchedulerSnapshot(), state.schedulerSnapshot(), base, state.frozen, agentControl.agentSession)
     : base.availableControls;
+  const details = {
+    ...base,
+    run: { ...base.run, agentSessions: state.read.agentControl.agentSessions },
+    summary: {
+      ...base.summary,
+      ...(agentControl.agentSession === undefined ? {} : { agentSession: agentControl.agentSession }),
+      ...(agentControl.steer === undefined ? {} : { steer: agentControl.steer }),
+    },
+    availableControls: controls,
+  };
   return ok({
     kind: "resolved",
     target: resolution.target,
-    details: controls === base.availableControls ? base : { ...base, availableControls: controls },
+    details,
   });
+}
+
+function selectedAttemptFor(details: ResolvedTargetState): ResolvedTargetState["attempts"][number] | undefined {
+  return details.target.kind === "attempt"
+    ? details.attempts.find(attempt => attempt.attemptId === details.target.id)
+    : undefined;
+}
+
+function targetAgentControl(
+  control: RunInspectionStoreRead["agentControl"],
+  details: ResolvedTargetState,
+  selectedAttempt: ResolvedTargetState["attempts"][number] | undefined,
+): {
+  agentSession?: RunInspectionTargetSummary["agentSession"];
+  steer?: RunInspectionTargetSummary["steer"];
+  turnProof?: AgentTurnProof;
+} {
+  const attemptIds = new Set(selectedAttempt
+    ? [selectedAttempt.attemptId]
+    : details.attempts.map(attempt => attempt.attemptId));
+  const agentSession = control.agentSessions.filter(session => attemptIds.has(session.currentBinding.attemptId))
+    .sort((left, right) => right.generation - left.generation)[0];
+  const nodeKey = selectedAttempt?.nodeKey ?? details.summary.nodeKey;
+  const steer = nodeKey === undefined
+    ? undefined
+    : control.steers.filter(candidate => candidate.nodeKey === nodeKey).at(-1)?.projection;
+  const turnProof = agentSession === undefined
+    ? undefined
+    : control.turnProofs.find(candidate => candidate.attemptId === agentSession.currentBinding.attemptId);
+  return {
+    ...(agentSession === undefined ? {} : { agentSession }),
+    ...(steer === undefined ? {} : { steer }),
+    ...(turnProof === undefined ? {} : { turnProof }),
+  };
 }
 
 function targetNotFound(runId: string, target: string): RunInspectionError {
@@ -1047,6 +1167,9 @@ function targetInspectionControls(
   cancelSnapshot: SchedulerSnapshot,
   details: ResolvedTargetState,
   frozen?: NonNullable<RunInspectionStoreRead["frozen"]>,
+  agentSession?: RunInspectionTargetSummary["agentSession"],
+  turnProof?: AgentTurnProof,
+  provesAgentTurn?: AgentTurnProofLookup,
 ): RunInspectionControl[] {
   const selectedAttempt = details.target.kind === "attempt"
     ? details.attempts.find(attempt => attempt.attemptId === details.target.id)
@@ -1060,25 +1183,52 @@ function targetInspectionControls(
   }
   const target = inspectionControlTarget(details, selectedAttempt);
   if (!target) return [];
+  const effectiveAttempt = selectedAttempt ?? details.attempts
+    .filter(attempt => details.summary.nodeKey === undefined || attempt.nodeKey === details.summary.nodeKey)
+    .sort((left, right) => right.attemptNo - left.attemptNo)[0];
+  const agentNode = frozen && details.staticNode?.kind === "agent"
+    ? indexNodes(frozen.ir.root).get(details.staticNode.nodeId)
+    : undefined;
+  const controls: RunInspectionControl[] = [];
+  if (agentNode?.kind === "agent") {
+    const active = effectiveAttempt?.status === "started";
+    if (active && frozen
+      && effectiveAttempt
+      && agentSession !== undefined
+      && (agentSession.checkpoint.value === "owned_in_flight" || agentSession.checkpoint.value === "provider_observed")
+      && turnProof !== undefined
+      && provesAgentTurn?.(turnProof) === true
+      && steerControlTargets(frozen, cancelSnapshot).some(candidate => candidate.attemptId === effectiveAttempt.attemptId)) {
+      controls.push({
+        type: "steer",
+        target: effectiveAttempt.attemptId,
+        delivery: "interrupt_continue",
+        effect: "cancel_drain_then_continue",
+      });
+      const cancel = planCancelControl(cancelSnapshot, target);
+      if (cancel.isOk() && cancel.value.events.length > 0 && cancel.value.resolvedTarget) {
+        controls.push({ type: "cancel", target: cancel.value.resolvedTarget });
+      }
+      return controls;
+    }
+  }
   const allowRetry = selectedAttempt === undefined
     || selectedAttempt.status === "failed"
     || selectedAttempt.status === "timed_out";
   const allowCancel = selectedAttempt === undefined
     || selectedAttempt.status === "started";
-  const controls: RunInspectionControl[] = [];
   if (allowRetry) {
     const retry = planRetryControl(retrySnapshot, target);
-    if (retry.isOk()) controls.push({ type: "retry", target: retry.value.resolvedTarget });
+    const impact = retry.isOk() && frozen !== undefined
+      ? planRetrySessionImpact({ frozen, snapshot: retrySnapshot, reexecutedNodeKeys: retry.value.reexecutedNodeKeys })
+      : undefined;
+    if (retry.isOk() && impact?.isOk()) controls.push({ type: "retry", target: retry.value.resolvedTarget });
   }
   if (allowCancel) {
     const cancel = planCancelControl(cancelSnapshot, target);
     if (cancel.isOk() && cancel.value.events.length > 0 && cancel.value.resolvedTarget) {
       controls.push({ type: "cancel", target: cancel.value.resolvedTarget });
     }
-  }
-  if (frozen && selectedAttempt
-    && steerControlTargets(frozen, cancelSnapshot).some(candidate => candidate.attemptId === selectedAttempt.attemptId)) {
-    controls.push({ type: "steer", target: selectedAttempt.attemptId });
   }
   return controls;
 }

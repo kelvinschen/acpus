@@ -256,37 +256,33 @@ You can also ask your Agent to configure a Hook.
 
 ## Configure Agents
 
-Acpus uses the pinned version of `acpx` to resolve named Agents.
-Before each named Agent Attempt starts, Acpus reads two configuration files:
+Acpus uses the stable ACP v1 session interface from `@acpus/acp`. For
+`{ use: "name" }`, each Agent Attempt resolves its named launch in this order:
 
-- Global configuration: `~/.acpx/config.json`
-- Project configuration: `.acpxrc.json`
+1. A Host-provided named launch
+2. `.acpus/agents.json` in the Attempt's effective working directory
+3. `~/.acpus/agents.json`
+4. The Acpus built-in Agent catalog
 
-Acpus resolves the final `agents` map using the current Attempt's working directory and environment.
+Add or override an Agent with `.acpus/agents.json`:
 
 ```json
 {
   "agents": {
-    "my-agent": { "argv": ["node", "./scripts/agent-acp-bridge.mjs"] }
+    "my-agent": "node ./scripts/agent-acp-bridge.mjs"
   }
 }
 ```
 
-Reference the name in a Workflow with `{ use: "my-agent" }`.
-Project configuration overrides global configuration.
-Configured names can override built-in Agents.
-An explicit `{ command: "..." }` bypasses Acpx configuration.
+Commands run as written through the current platform shell; use the shell's
+quoting rules when needed. Project configuration overrides a same-named global
+entry. Invalid configuration or an unknown name fails the Attempt with a
+configuration error. An explicit `{ command: "..." }` bypasses named lookup.
 
-For more configuration options, see the pinned Acpx documentation for the
-[`agents` map](https://github.com/openclaw/acpx/blob/v0.13.0/docs/config.md#the-agents-map)
-and [config-defined agents](https://github.com/openclaw/acpx/blob/v0.13.0/docs/custom-agents.md#3-config-defined-agents).
-
-Acpus only reads the launch command for named Agents from Acpx.
-It does not apply Acpx `mcpServers`, `auth`, permission defaults, `defaultAgent`, TTL, timeout, or format.
-
-Agent login state, provider environment variables, and `ACPX_AUTH_*` variables are inherited from the Agent environment.
-Acpx validates the complete configuration first.
-If any field is invalid, the named Agent Attempt may fail to start.
+An Agent profile may also declare `model` and string-valued ACP `config`
+options, for example
+`{ use: "my-agent", model: "model-id", config: { reasoning_effort: "high" } }`.
+Acpus applies them when opening the ACP Session and replays them when resuming it.
 
 ## Additional Skill Installation Notes
 

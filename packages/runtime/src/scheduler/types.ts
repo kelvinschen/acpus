@@ -59,6 +59,7 @@ export type NodeInstance = {
   /** Current status reason only; running/completed instances must not retain historical control reasons. */
   statusReason?: string;
   pendingSteerId?: string;
+  pendingSteerEventSequence?: number;
   output?: JsonValue;
   error?: JsonObject;
   acceptedAttemptId?: string;
@@ -81,6 +82,7 @@ type NodeAttempt = {
   ownerEpoch: number;
   status: AttemptStatus;
   steerId?: string;
+  steerEventSequence?: number;
   deadlineAt?: string;
   result?: JsonValue;
   error?: JsonObject;

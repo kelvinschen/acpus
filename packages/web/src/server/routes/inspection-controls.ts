@@ -7,6 +7,8 @@ import {
   readArtifact,
   readInspection,
   requestDaemonControl,
+  requestDaemonInspection,
+  type DaemonClientFailure,
   type DaemonControlIntent,
   type InspectionError,
   type InspectionForensicsView,
@@ -105,7 +107,9 @@ async function submitControl(
       ? { ...base, type: command.type }
       : command.type === "retry"
         ? { ...base, type: "retry", target: command.target }
-        : { ...base, type: "cancel", ...(command.target === undefined ? {} : { target: command.target }) };
+        : command.type === "steer"
+              ? { ...base, type: "steer", target: command.target, instruction: command.instruction }
+              : { ...base, type: "cancel", ...(command.target === undefined ? {} : { target: command.target }) };
   const controlled = await requestDaemonControl(cwd, intent);
   if (controlled.isErr()) {
     if (controlled.error.type === "rejected") {
@@ -133,7 +137,15 @@ function parseControlBody(body: JsonValue): WebControlCommand {
     requireControlKeys(record, ["type", "target"]);
     if (typeof record.target !== "string" || record.target.trim().length === 0)
       apiError(400, "invalid_command", "Retry control requires a non-empty target.");
-    return { type: "retry", target: record.target };
+    return { type: record.type, target: record.target };
+  }
+  if (record.type === "steer") {
+    requireControlKeys(record, ["type", "target", "instruction"]);
+    if (typeof record.target !== "string" || record.target.trim().length === 0
+      || typeof record.instruction !== "string" || record.instruction.trim().length === 0) {
+      apiError(400, "invalid_command", "Steer control requires a non-empty target and instruction.");
+    }
+    return { type: "steer", target: record.target, instruction: record.instruction };
   }
   if (record.type === "cancel") {
     requireControlKeys(record, ["type", "target"]);
@@ -183,7 +195,29 @@ async function readRunJsonArtifact(
 async function readNodeInspection(cwd: string, runId: string, target: string): Promise<RunInspectionNodeDocument> {
   const result = await inspectNode(cwd, { runId, target });
   if (result.isErr()) inspectionError(result.error);
-  return result.value;
+  const inspection = result.value;
+  const live = await requestDaemonInspection(cwd, { kind: "target", runId, target, detail: "summary" });
+  if (live.isErr()) {
+    if (allowsOfflineInspection(live.error)) return inspection;
+    apiError(503, "runtime_unavailable", live.error.message);
+  }
+  if (live.value.kind !== "target" || live.value.detail !== "summary") {
+    return inspection;
+  }
+  return {
+    ...inspection,
+    availableControls: live.value.availableControls ?? [],
+    summary: {
+      ...inspection.summary,
+      ...(live.value.agentSession === undefined ? {} : { agentSession: live.value.agentSession }),
+      ...(live.value.steer === undefined ? {} : { steer: live.value.steer }),
+    },
+  };
+}
+
+function allowsOfflineInspection(error: DaemonClientFailure): boolean {
+  return error.type === "transport" && (error.reason === "not-found" || error.reason === "refused")
+    || error.type === "rejected" && error.code === "RUN_NOT_FOUND";
 }
 
 async function readNodeRuntimeValues(cwd: string, runId: string, target: string): Promise<InspectionForensicsView> {

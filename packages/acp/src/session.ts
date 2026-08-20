@@ -18,9 +18,9 @@ import {
 import { errAsync, ResultAsync } from "neverthrow";
 import {
   PersistenceIssue,
+  SessionBindingMismatchIssue,
   acpSessionProjectionPath,
   boundConversation,
-  launchIdentity,
   loadAcpSessionProjection,
   saveAcpSessionProjection,
   type AcpProjectedConversationEntry,
@@ -101,15 +101,14 @@ async function open(input: OpenAcpSessionInput): Promise<AcpSession> {
     committed: false,
   };
   throwIfOpenCancelled(control);
-  const identity = launchIdentity(input.launch);
   let saved: AcpSessionProjection | undefined;
   try {
     saved = await loadAcpSessionProjection({
       stateDirectory: input.stateDirectory,
-      recordId: input.recordId,
-      cwd: input.cwd,
-      launchIdentity: identity,
+      agentSessionId: input.agentSessionId,
+      bindingFingerprint: input.bindingFingerprint,
     });
+    validateSessionOpenMode(input, saved);
     throwIfOpenCancelled(control);
   } catch (error) {
     throw control.signal?.aborted ? cancelledFailure(control.operation) : error;
@@ -132,7 +131,6 @@ async function open(input: OpenAcpSessionInput): Promise<AcpSession> {
     return await openSpawned(
       input,
       saved,
-      identity,
       child,
       monitor,
       control,
@@ -159,10 +157,32 @@ async function open(input: OpenAcpSessionInput): Promise<AcpSession> {
   }
 }
 
+function validateSessionOpenMode(
+  input: OpenAcpSessionInput,
+  saved: AcpSessionProjection | undefined,
+): void {
+  const path = acpSessionProjectionPath(input.agentSessionId);
+  if (input.sessionOpenMode === "existing_required" && saved === undefined) {
+    throw new PersistenceIssue(
+      "validate",
+      path,
+      "existing_required requires an existing ACP Session projection.",
+    );
+  }
+  if (input.sessionOpenMode === "new_or_empty"
+    && saved !== undefined
+    && (saved.conversation.length > 0 || saved.lastStop !== undefined)) {
+    throw new PersistenceIssue(
+      "validate",
+      path,
+      "new_or_empty requires an absent or empty ACP Session projection.",
+    );
+  }
+}
+
 async function openSpawned(
   input: OpenAcpSessionInput,
   saved: AcpSessionProjection | undefined,
-  identity: AcpSessionProjection["launch"],
   child: ChildProcessWithoutNullStreams,
   monitor: ProcessMonitor,
   control: OpenControl,
@@ -172,8 +192,6 @@ async function openSpawned(
   let sessionId: string | undefined;
   let currentEventHandler: ((event: AcpEvent) => unknown) | undefined;
   let currentClientIssue: ClientOperationIssue | undefined;
-  let configurationDirty = false;
-  let pendingConfiguration: AcpSessionConfiguration | undefined;
   let active = false;
   let projectTurnUpdates = false;
   let activeTurn: Promise<void> | undefined;
@@ -216,7 +234,7 @@ async function openSpawned(
     ...(input.env === undefined ? {} : { env: input.env }),
     permissionMode: input.permissionMode,
     onActivity: operation => {
-      if (operation !== "session/request_permission") emit({ type: "activity", operation });
+      emit({ type: "activity", operation });
     },
   });
   const app = client({ name: "acpus" })
@@ -280,9 +298,10 @@ async function openSpawned(
   );
   validateInitialize(initialized);
   const capabilities = capabilitiesFrom(initialized);
+  const reportedVersion = reportedAgentVersion(initialized);
   const configuration: ConfigurationState = { options: undefined };
 
-  if (saved !== undefined) {
+  if (saved !== undefined && (capabilities.resume || capabilities.load)) {
     sessionId = saved.backend.sessionId;
     if (capabilities.resume) {
       const response = await openingAgentRequest(
@@ -310,15 +329,15 @@ async function openSpawned(
         "session",
       );
       configuration.options = response?.configOptions;
-    } else {
-      throw failure(
-        "capability",
-        "resume_session",
-        "The ACP Agent cannot resume or load the recorded session.",
-        false,
-        { capability: "resume" },
-      );
     }
+  } else if (saved !== undefined && input.sessionOpenMode === "existing_required") {
+    throw failure(
+      "capability",
+      "resume_session",
+      "The ACP Agent cannot resume or load the recorded session.",
+      false,
+      { capability: "resume" },
+    );
   } else {
     const response = await openingAgentRequest(
       options => context.request(
@@ -341,12 +360,10 @@ async function openSpawned(
   const now = new Date().toISOString();
   projection.value = {
     ...(saved ?? {
-      schema: "acpus.acp-session.v1",
-      recordId: input.recordId,
-      cwd: input.cwd,
-      launch: identity,
+      schema: "acpus.acp-session.v2",
+      agentSessionId: input.agentSessionId,
+      binding: input.bindingFingerprint,
       backend: { sessionId, capabilities },
-      desiredConfiguration: { options: {} },
       conversation: [],
       createdAt: now,
       updatedAt: now,
@@ -354,18 +371,14 @@ async function openSpawned(
     backend: { sessionId, capabilities },
     updatedAt: now,
   };
-  const optionBaselines = configurationBaselines(configuration.options);
-
-  if (saved !== undefined) {
-    configuration.options = await applyConfiguration(
-      context,
-      monitor,
-      sessionId,
-      saved.desiredConfiguration,
-      configuration.options,
-      control,
-    );
-  }
+  configuration.options = await applyConfiguration(
+    context,
+    monitor,
+    sessionId,
+    effectiveTurnConfiguration(input.configuration),
+    configuration.options,
+    control,
+  );
   control.operation = "open_session";
   await saveAcpSessionProjection(input.stateDirectory, projection.value, {
     beforeRename: () => throwIfOpenCancelled(control),
@@ -409,19 +422,17 @@ async function openSpawned(
       currentEventHandler = turnInput.onEvent;
       currentClientIssue = undefined;
       const currentProjection = requireProjection(projection);
-      const desired = mergeConfiguration(currentProjection.desiredConfiguration, turnInput.configuration);
-      if (turnInput.configuration !== undefined) {
-        pendingConfiguration = configurationApplication(
-          currentProjection.desiredConfiguration,
-          desired,
-          turnInput.configuration,
-          optionBaselines,
+      if (turnInput.configuration !== undefined
+        && !sameEffectiveConfiguration(input.configuration, turnInput.configuration)) {
+        throw failure(
+          "configuration",
+          "configure_session",
+          "Agent Session configuration is immutable after open.",
+          false,
         );
-        configurationDirty = true;
       }
       projection.value = appendConversation({
         ...currentProjection,
-        desiredConfiguration: desired,
         updatedAt: new Date().toISOString(),
       }, {
         type: "message",
@@ -429,21 +440,6 @@ async function openSpawned(
         content: turnInput.prompt,
       });
       await saveAcpSessionProjection(input.stateDirectory, projection.value);
-
-      const configurationToApply = configurationDirty ? pendingConfiguration ?? desired : undefined;
-      if (configurationToApply !== undefined) {
-        configuration.options = await applyConfiguration(
-          context,
-          monitor,
-          sessionId!,
-          configurationToApply,
-          configuration.options,
-          undefined,
-          turnInput.signal,
-        );
-        configurationDirty = false;
-        pendingConfiguration = undefined;
-      }
 
       if (turnInput.signal?.aborted) cancel();
       if (cancelled) {
@@ -469,7 +465,10 @@ async function openSpawned(
       projectTurnUpdates = false;
       if (currentClientIssue !== undefined) throw currentClientIssue;
       if (!response || typeof response.stopReason !== "string" || response.stopReason.length === 0) {
-        throw failure("protocol", "run_turn", "The ACP Agent returned an invalid prompt response.", false);
+        throw failure("protocol", "run_turn", "The ACP Agent returned an invalid prompt response.", false, {
+          origin: "provider",
+          providerEvidence: "inbound_activity",
+        });
       }
       const usage = tokenUsage(response.usage);
       const status = cancelled || response.stopReason === "cancelled" ? "cancelled" : "completed";
@@ -546,9 +545,10 @@ async function openSpawned(
   };
 
   return {
-    recordId: input.recordId,
+    agentSessionId: input.agentSessionId,
     sessionId,
-    projectionPath: acpSessionProjectionPath(input.recordId),
+    projectionPath: acpSessionProjectionPath(input.agentSessionId),
+    ...(reportedVersion === undefined ? {} : { reportedVersion }),
     runTurn,
     close,
   };
@@ -556,8 +556,13 @@ async function openSpawned(
 
 function validateOpenInput(input: OpenAcpSessionInput): AcpError | undefined {
   if (!record(input)) return failure("invalid_input", "open_session", "open input must be an object.", false);
-  if (typeof input.recordId !== "string") return failure("invalid_input", "open_session", "recordId must be a string.", false);
-  if (!input.recordId.trim()) return failure("invalid_input", "open_session", "recordId must be non-empty.", false);
+  if (typeof input.agentSessionId !== "string") return failure("invalid_input", "open_session", "agentSessionId must be a string.", false);
+  if (!input.agentSessionId.trim()) return failure("invalid_input", "open_session", "agentSessionId must be non-empty.", false);
+  if (input.sessionOpenMode !== "new_or_empty" && input.sessionOpenMode !== "existing_required") {
+    return failure("invalid_input", "open_session", "sessionOpenMode is invalid.", false);
+  }
+  if (!bindingFingerprint(input.bindingFingerprint)) return failure("invalid_input", "open_session", "bindingFingerprint is invalid.", false);
+  if (!effectiveConfiguration(input.configuration)) return failure("invalid_input", "open_session", "configuration is invalid.", false);
   if (typeof input.stateDirectory !== "string") return failure("invalid_input", "open_session", "stateDirectory must be a string.", false);
   if (!input.stateDirectory.trim()) return failure("invalid_input", "open_session", "stateDirectory must be non-empty.", false);
   if (typeof input.cwd !== "string") return failure("invalid_input", "open_session", "cwd must be a string.", false);
@@ -714,9 +719,16 @@ async function agentRequest<T>(
     const exited = await monitor.settleExit();
     if (exited !== undefined) throw providerExitFailure(operation, exited);
     if (error instanceof RequestError) {
-      throw failure(failureType, operation, error.message, error.code === -32800, { code: error.code });
+      throw failure(failureType, operation, error.message, error.code === -32800, {
+        code: error.code,
+        origin: "provider",
+        providerEvidence: operation === "run_turn" ? "terminal_response" : "inbound_activity",
+      });
     }
-    throw failure(failureType, operation, error instanceof Error ? error.message : String(error), true);
+    throw failure(failureType, operation, error instanceof Error ? error.message : String(error), true, {
+      origin: "transport",
+      providerEvidence: "none",
+    });
   }
 }
 
@@ -784,58 +796,30 @@ function capabilitiesFrom(value: InitializeResponse): { resume: boolean; load: b
   };
 }
 
-function mergeConfiguration(
-  current: AcpSessionProjection["desiredConfiguration"],
-  next: AcpSessionConfiguration | undefined,
-): { model?: string; options: Record<string, string> } {
-  if (next === undefined) {
-    return {
-      ...(current.model === undefined ? {} : { model: current.model }),
-      options: { ...current.options },
-    };
-  }
-  return {
-    ...(next.model !== undefined
-      ? { model: next.model }
-      : current.model === undefined ? {} : { model: current.model }),
-    options: { ...(next.options ?? current.options) },
-  };
+function reportedAgentVersion(value: InitializeResponse): string | undefined {
+  const version = value.agentInfo?.version;
+  return typeof version === "string" && version.length > 0 && version.length <= 256
+    ? version
+    : undefined;
 }
 
-function configurationBaselines(
-  options: SessionConfigOption[] | null | undefined,
-): Readonly<Record<string, string>> {
-  return Object.fromEntries((options ?? []).flatMap(option => {
-    if (option.type !== "select" || typeof option.currentValue !== "string") return [];
-    return [[option.id, option.currentValue]];
-  }));
-}
-
-function configurationApplication(
-  current: AcpSessionProjection["desiredConfiguration"],
-  desired: AcpSessionProjection["desiredConfiguration"],
-  supplied: AcpSessionConfiguration,
-  baselines: Readonly<Record<string, string>>,
+function effectiveTurnConfiguration(
+  value: OpenAcpSessionInput["configuration"],
 ): AcpSessionConfiguration {
-  if (supplied.options === undefined) return supplied;
-  const options = { ...desired.options };
-  for (const key of Object.keys(current.options)) {
-    if (Object.hasOwn(desired.options, key)) continue;
-    const baseline = baselines[key];
-    if (baseline === undefined) {
-      throw failure(
-        "configuration",
-        "configure_session",
-        "The ACP Agent did not advertise a reset value for removed option " + key + ".",
-        false,
-      );
-    }
-    options[key] = baseline;
-  }
   return {
-    ...(supplied.model === undefined ? {} : { model: supplied.model }),
-    options,
+    ...(value.model === null ? {} : { model: value.model }),
+    ...(Object.keys(value.options).length === 0 ? {} : { options: value.options }),
   };
+}
+
+function sameEffectiveConfiguration(
+  expected: OpenAcpSessionInput["configuration"],
+  supplied: AcpSessionConfiguration,
+): boolean {
+  const model = supplied.model ?? null;
+  const options = supplied.options ?? expected.options;
+  return model === expected.model
+    && JSON.stringify(Object.entries(options).sort()) === JSON.stringify(Object.entries(expected.options).sort());
 }
 
 async function applyConfiguration(
@@ -1095,6 +1079,33 @@ function jsonValue(value: unknown, depth = 0): AcpJsonValue {
   ));
 }
 
+function bindingFingerprint(value: unknown): value is OpenAcpSessionInput["bindingFingerprint"] {
+  if (!record(value) || !record(value.components)) return false;
+  const components = value.components;
+  return exactKeys(value, ["version", "digest", "components"])
+    && value.version === 1
+    && sha256(value.digest)
+    && exactKeys(components, ["launch", "cwd", "model", "options"])
+    && ["launch", "cwd", "model", "options"].every(key => sha256(components[key]));
+}
+
+function effectiveConfiguration(value: unknown): value is OpenAcpSessionInput["configuration"] {
+  return record(value)
+    && exactKeys(value, ["model", "options"])
+    && (value.model === null || typeof value.model === "string")
+    && record(value.options)
+    && Object.values(value.options).every(item => typeof item === "string");
+}
+
+function exactKeys(value: Record<string, unknown>, required: readonly string[]): boolean {
+  return Object.keys(value).length === required.length
+    && required.every(key => Object.hasOwn(value, key));
+}
+
+function sha256(value: unknown): value is `sha256:${string}` {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
+}
+
 function toAcpError(operation: AcpOperation): (error: unknown) => AcpError {
   return error => {
     if (isAcpError(error)) return error;
@@ -1104,9 +1115,18 @@ function toAcpError(operation: AcpOperation): (error: unknown) => AcpError {
         code: error.operation,
       });
     }
+    if (error instanceof SessionBindingMismatchIssue) {
+      return failure("session_binding", operation, error.message, false, {
+        categories: error.categories,
+        origin: "persistence",
+        providerEvidence: "none",
+      });
+    }
     if (error instanceof ClientOperationIssue) {
       return failure("client_operation", clientOperation(error), error.message, false, {
         code: error.reason,
+        origin: "client",
+        providerEvidence: "inbound_activity",
       });
     }
     if (error instanceof RequestError) {
@@ -1117,7 +1137,7 @@ function toAcpError(operation: AcpOperation): (error: unknown) => AcpError {
 }
 
 function clientOperation(error: ClientOperationIssue): AcpOperation {
-  return error.operation === "session/request_permission" ? "run_turn" : error.operation;
+  return error.operation;
 }
 
 function isAcpError(value: unknown): value is AcpError {
@@ -1133,7 +1153,27 @@ function failure<T extends AcpError["type"]>(
   retryable: boolean,
   extra: Record<string, unknown> = {},
 ): Extract<AcpError, { type: T }> {
-  return { type, operation, message, retryable, ...extra } as Extract<AcpError, { type: T }>;
+  return {
+    type,
+    operation,
+    ...defaultErrorEvidence(type),
+    message,
+    retryable,
+    ...extra,
+  } as Extract<AcpError, { type: T }>;
+}
+
+function defaultErrorEvidence(type: AcpError["type"]): Pick<AcpError, "origin" | "providerEvidence"> {
+  const origin = type === "invalid_input"
+    ? "input" as const
+    : type === "persistence"
+      ? "persistence" as const
+      : type === "spawn" || type === "provider_exit"
+        ? "process" as const
+        : type === "protocol" || type === "initialize"
+          ? "transport" as const
+          : "client" as const;
+  return { origin, providerEvidence: "none" };
 }
 
 function cancelledFailure(operation: AcpOperation): Extract<AcpError, { type: "cancelled" }> {
@@ -1346,6 +1386,8 @@ function createTurnUpdateFence(stream: Stream): {
       epoch.accepting = false;
       if (active === epoch) active = undefined;
       if (next === epoch) next = undefined;
+      // Classify transport messages already ordered after the response before another prompt may become active.
+      await new Promise<void>(resolve => setImmediate(resolve));
       while (epoch.pending.size > 0) {
         const pending = [...epoch.pending];
         await Promise.all(pending);

@@ -1,13 +1,11 @@
-import type {
-  AgentTurnObservation,
-  AgentTurnResult,
-} from "@acpus/agent-executor";
+import type { AgentTurnEvent, AgentTurnSnapshot, AgentTurnSummary } from "@acpus/agent-executor";
 import { describe, expect, it } from "vitest";
 import { AgentObservationSemanticReducer } from "../src/observations/turn-semantics.js";
+import { fixtureEvent, type FixtureObservationEvent } from "./support/agent-turn.js";
 
 const startedAt = "2026-07-26T00:00:00.000Z";
 type ObservationBase = "schemaVersion" | "sequence" | "observedAt" | "elapsedMs";
-type ObservationEventInput = AgentTurnObservation["event"] extends infer Event
+type ObservationEventInput = FixtureObservationEvent extends infer Event
   ? Event extends unknown ? Omit<Event, ObservationBase> : never
   : never;
 
@@ -249,7 +247,7 @@ describe("Agent observation turn semantics", () => {
     const changed = reducer.observe(observation(3, {
       type: "usage",
       context: { used: 95, size: 100 },
-      tokenUsage: { input_tokens: 90, output_tokens: 5 },
+      tokenUsage: { inputTokens: 90, outputTokens: 5, totalTokens: 95 },
     }, diagnosticSummary()), false);
 
     expect(unchanged).toMatchObject({ checkpoint: false, current: undefined, entries: [] });
@@ -329,33 +327,35 @@ function createReducer(): AgentObservationSemanticReducer {
 function observation(
   sequence: number,
   event: ObservationEventInput,
-  summary: AgentTurnResult["summary"] = emptySummary(),
-): AgentTurnObservation {
+  _summary: AgentTurnSummary = emptySummary(),
+): AgentTurnEvent {
   const observedAt = at(sequence);
+  const fixture = {
+    schemaVersion: 1 as const,
+    sequence,
+    observedAt,
+    elapsedMs: sequence * 1_000,
+    ...event,
+  } as FixtureObservationEvent;
+  const projected = fixtureEvent(fixture);
+  if (!projected) throw new Error("turn_end is not an ACP event");
   return {
-    event: {
-      schemaVersion: 1,
-      sequence,
-      observedAt,
-      elapsedMs: sequence * 1_000,
-      ...event,
-    } as AgentTurnObservation["event"],
-    progress: { responses: [], summary, updatedAt: observedAt },
+    sequence,
+    observedAt,
+    elapsedMs: sequence * 1_000,
+    event: projected,
   };
 }
 
-function completedTurn(finalResponse: string, finishedAt: string): AgentTurnResult {
+function completedTurn(finalResponse: string, finishedAt: string): AgentTurnSnapshot {
   return {
-    status: "completed",
     responses: [finalResponse],
-    finalResponse,
-    stderr: "",
     summary: emptySummary(),
     timing: { startedAt, finishedAt, elapsedMs: 1_000 },
   };
 }
 
-function emptySummary(): AgentTurnResult["summary"] {
+function emptySummary(): AgentTurnSummary {
   return {
     eventCount: 0,
     availability: { context: "unavailable", tokenUsage: "unavailable" },
@@ -363,7 +363,7 @@ function emptySummary(): AgentTurnResult["summary"] {
   };
 }
 
-function diagnosticSummary(): AgentTurnResult["summary"] {
+function diagnosticSummary(): AgentTurnSummary {
   return {
     eventCount: 1,
     availability: { context: "available", tokenUsage: "available" },

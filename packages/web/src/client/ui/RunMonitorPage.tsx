@@ -164,6 +164,7 @@ export function RunMonitorPage({
               canCancelRun={snapshot.data?.controls.canCancelRun ?? false}
               retryTargets={retryTargets}
               selectedRetryTarget={retryTarget}
+              selectedAgentControls={inspection.data?.availableControls ?? []}
               onSelectRetryTarget={setRetryTarget}
               onCommand={input => command.mutate(input)}
             />

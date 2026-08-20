@@ -3,8 +3,13 @@ import { useState } from "react";
 import Pause from "lucide-react/dist/esm/icons/pause.js";
 import Play from "lucide-react/dist/esm/icons/play.js";
 import RotateCcw from "lucide-react/dist/esm/icons/rotate-ccw.js";
+import Send from "lucide-react/dist/esm/icons/send.js";
 import Square from "lucide-react/dist/esm/icons/square.js";
-import type { RunControlTarget, WebControlCommand } from "../api.js";
+import type {
+  NodeInspection,
+  RunControlTarget,
+  WebControlCommand,
+} from "../api.js";
 import { Button } from "./shadcn/button.js";
 import {
   Dialog,
@@ -19,6 +24,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "./shadcn/select.js";
+import { Textarea } from "./shadcn/textarea.js";
 
 export function RunControls({
   disabled,
@@ -28,6 +34,7 @@ export function RunControls({
   canCancelRun,
   retryTargets,
   selectedRetryTarget,
+  selectedAgentControls,
   onSelectRetryTarget,
   onCommand,
 }: {
@@ -38,16 +45,29 @@ export function RunControls({
   canCancelRun: boolean;
   retryTargets: RetryTarget[];
   selectedRetryTarget: string | undefined;
+  selectedAgentControls: NodeInspection["availableControls"];
   onSelectRetryTarget(value: string): void;
   onCommand(input: Exclude<WebControlCommand, { type: "signal" }>): void;
 }) {
   const controls = controlStateForRun(status, disabled, retryTargets, canCancelRun);
   const retryTarget = retryCommandTarget(retryTargets, selectedRetryTarget);
   const [pendingControl, setPendingControl] = useState<PendingControl | undefined>();
+  const [pendingSteer, setPendingSteer] = useState<AgentControl | undefined>();
   const retryTargetLabel = retryTargets.find(target => target.value === retryTarget)?.label;
 
   return (
     <div className="control-strip">
+      {agentControls(selectedAgentControls).map(control => (
+        <IconButton
+          key={agentControlKey(control)}
+          label={agentControlLabel(control)}
+          title={agentControlTitle(control)}
+          tone="resume"
+          icon={<Send size={16} />}
+          disabled={disabled}
+          onClick={() => setPendingSteer(control)}
+        />
+      ))}
       {retryTargets.length > 1 && controls.some(control => control.id === "retry") && (
         <Select
           value={selectedRetryTarget ?? retryTargets[0]?.value ?? ""}
@@ -96,6 +116,16 @@ export function RunControls({
           }}
         />
       )}
+      {pendingSteer && (
+        <SteerDialog
+          target={pendingSteer.target}
+          onCancel={() => setPendingSteer(undefined)}
+          onConfirm={instruction => {
+            onCommand({ type: "steer", target: pendingSteer.target, instruction });
+            setPendingSteer(undefined);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -106,6 +136,8 @@ export type RetryTarget = {
 };
 
 export type RunControlId = "pause" | "resume" | "retry" | "cancel";
+type ControlTone = RunControlId;
+type AgentControl = Extract<NodeInspection["availableControls"][number], { type: "steer" }>;
 
 export type RunControlSpec = {
   id: RunControlId;
@@ -126,8 +158,26 @@ export type ControlConfirmation = {
   title: string;
   detail: string;
   confirmLabel: string;
-  tone: RunControlId;
+  tone: ControlTone;
 };
+
+function agentControls(controls: NodeInspection["availableControls"]): AgentControl[] {
+  return controls.filter((control): control is AgentControl => control.type === "steer");
+}
+
+function agentControlKey(control: AgentControl): string {
+  return `${control.type}:${control.target}`;
+}
+
+function agentControlLabel(control: AgentControl): string {
+  void control;
+  return "Steer";
+}
+
+function agentControlTitle(control: AgentControl): string {
+  void control;
+  return "Interrupt the current client Turn, then continue with new instructions";
+}
 
 export function retryTargetsForControls(targets: readonly RunControlTarget[]): RetryTarget[] {
   const baseLabels = targets.map(target => `${target.kind}: ${target.nodeId ?? target.target}`);
@@ -154,7 +204,7 @@ export function controlStateForRun(
       label: "Retry",
       tone: "retry",
       disabled: disabled || retryTargets.length === 0,
-      title: retryTargets.length === 0 ? "No failed retry target found. Use CLI for run-level retry." : "Retry failed target",
+      title: retryTargets.length === 0 ? "No failed Task or frame retry target found." : "Retry failed target",
     }];
   }
   if (status === "paused") {
@@ -284,6 +334,50 @@ function ConfirmDialog({
   );
 }
 
+function SteerDialog({
+  target,
+  onCancel,
+  onConfirm,
+}: {
+  target: string;
+  onCancel(): void;
+  onConfirm(instruction: string): void;
+}) {
+  const [instruction, setInstruction] = useState("");
+  return (
+    <Dialog open onOpenChange={open => {
+      if (!open) onCancel();
+    }}>
+      <DialogContent className="confirm-dialog resume">
+        <DialogTitle>Steer this Agent?</DialogTitle>
+        <DialogDescription>
+          Interrupt the current client Turn, wait for it to drain, then continue the same ACP Session with these instructions.
+        </DialogDescription>
+        <Textarea
+          autoFocus
+          aria-label="Steer instruction"
+          placeholder="What should the Agent do next?"
+          value={instruction}
+          onChange={event => setInstruction(event.target.value)}
+        />
+        <div className="confirm-actions">
+          <Button type="button" variant="confirmSecondary" onClick={onCancel}>Back</Button>
+          <Button
+            type="button"
+            variant="confirmPrimary"
+            tone="resume"
+            disabled={instruction.trim().length === 0}
+            onClick={() => onConfirm(instruction)}
+          >
+            Steer
+          </Button>
+        </div>
+        <span className="sr-only">Target {target}</span>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function IconButton({
   icon,
   label,
@@ -296,7 +390,7 @@ function IconButton({
   label: string;
   title: string;
   disabled: boolean;
-  tone: RunControlId;
+  tone: ControlTone;
   onClick(): void;
 }) {
   return (

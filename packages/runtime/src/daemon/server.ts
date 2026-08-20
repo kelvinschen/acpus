@@ -13,6 +13,8 @@ import {
   type DaemonControlIntent,
   type DaemonControlResult,
   type DaemonHandlerFailure,
+  type DaemonInspectInput,
+  type DaemonInspectionResult,
   type DaemonRequest,
   type DaemonResponse,
   type DaemonRunStreamFrame,
@@ -32,6 +34,7 @@ export type DaemonServerHandle = {
 export type DaemonHandlers = {
   status(): Result<DaemonStatus, DaemonHandlerFailure> | ResultAsync<DaemonStatus, DaemonHandlerFailure>;
   submitAndObserve(input: DaemonSubmitAndObserveInput, signal: AbortSignal): AsyncIterable<DaemonRunStreamFrame>;
+  inspect(input: DaemonInspectInput): Result<DaemonInspectionResult, DaemonHandlerFailure> | ResultAsync<DaemonInspectionResult, DaemonHandlerFailure>;
   control(intent: DaemonControlIntent): Result<DaemonControlResult, DaemonHandlerFailure> | ResultAsync<DaemonControlResult, DaemonHandlerFailure>;
   shutdown(): Result<DaemonShutdownResult, DaemonHandlerFailure> | ResultAsync<DaemonShutdownResult, DaemonHandlerFailure>;
 };
@@ -226,9 +229,11 @@ async function dispatchRequest(
   try {
     const result = request.method === "control"
       ? await handlers.control(request.control)
-      : request.method === "shutdown"
-        ? await handlers.shutdown()
-        : await handlers.status();
+      : request.method === "inspect"
+        ? await handlers.inspect({ view: request.view })
+        : request.method === "shutdown"
+          ? await handlers.shutdown()
+          : await handlers.status();
     return result.match(
       appliedDaemonResponse,
       failure => failedDaemonResponse(failure.code, failure.message, failure.ambiguity),

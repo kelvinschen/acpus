@@ -297,7 +297,7 @@ const _acpus_dsh_acpus_readActivityDetail_result$schema = z.union([z.object({
   'text': z.string(),
   'truncated': z.boolean(),
 }), z.object({
-  'origin': z.union([z.literal("authored"), z.literal("steering"), z.literal("continuation")]),
+  'origin': z.union([z.literal("authored"), z.literal("steering")]),
 })).optional(),
   'result': z.union([z.object({
   'kind': z.literal("output"),
@@ -697,7 +697,7 @@ export const TYPERT = {
           },
           {
             "name": "ActivityHoverDetail",
-            "declaration": "export type ActivityHoverDetail = { kind: \"agent\"; agent: string; model?: string; prompt?: BoundedHoverText & { origin: \"authored\" | \"steering\" | \"continuation\"; }; result?: HoverResult; } | { kind: \"task\"; input: BoundedHoverText & { format: \"text\" | \"json\"; }; result?: HoverResult; };"
+            "declaration": "export type ActivityHoverDetail = { kind: \"agent\"; agent: string; model?: string; prompt?: BoundedHoverText & { origin: \"authored\" | \"steering\"; }; result?: HoverResult; } | { kind: \"task\"; input: BoundedHoverText & { format: \"text\" | \"json\"; }; result?: HoverResult; };"
           },
           {
             "name": "ActivityNode",

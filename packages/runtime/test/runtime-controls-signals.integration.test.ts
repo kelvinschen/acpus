@@ -39,14 +39,16 @@ describe.concurrent("runtime controls and recovery", () => {
       const failed = await admitSyntheticWorkflow(workspace, failingPureWorkflow());
       expect(failed.status).toBe("failed");
       const failedId = failed.run.id;
-      await expect(controlRun(workspace, failedId, "retry")).resolves.toMatchObject({ status: "failed" });
-      expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'control.run_retry_requested'", failedId)).toMatchObject({ count: 1 });
+      const failedRetry = await retryTarget(workspace, failedId);
+      await expect(controlRun(workspace, failedId, "retry", failedRetry.target)).resolves.toMatchObject({ status: "failed" });
+      expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = ?", failedId, retryEventType(failedRetry.kind))).toMatchObject({ count: 1 });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.failed'", failedId)).toMatchObject({ count: 2 });
 
       const failOnce = await admitSyntheticWorkflow(workspace, failOnceTaskWorkflow(), { workDir: workspace });
       expect(failOnce.status).toBe("failed");
-      await expect(controlRun(workspace, failOnce.run.id, "retry")).resolves.toMatchObject({ status: "completed", output: { ok: true } });
-      expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'control.run_retry_requested'", failOnce.run.id)).toMatchObject({ count: 1 });
+      const failOnceRetry = await retryTarget(workspace, failOnce.run.id);
+      await expect(controlRun(workspace, failOnce.run.id, "retry", failOnceRetry.target)).resolves.toMatchObject({ status: "completed", output: { ok: true } });
+      expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = ?", failOnce.run.id, retryEventType(failOnceRetry.kind))).toMatchObject({ count: 1 });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.failed'", failOnce.run.id)).toMatchObject({ count: 1 });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.completed'", failOnce.run.id)).toMatchObject({ count: 1 });
 
@@ -342,3 +344,14 @@ describe.concurrent("runtime controls and recovery", () => {
   });
 
 });
+
+function retryEventType(kind: "node" | "frame"): "instance.retry_requested" | "frame.retry_requested" {
+  return kind === "node" ? "instance.retry_requested" : "frame.retry_requested";
+}
+
+async function retryTarget(workspace: string, runId: string) {
+  const snapshot = (await getRunVisualizationSnapshot(workspace, runId))._unsafeUnwrap();
+  const target = snapshot?.controls.retryTargets[0];
+  if (!target) throw new Error(`Expected one retry target for run '${runId}'.`);
+  return target;
+}

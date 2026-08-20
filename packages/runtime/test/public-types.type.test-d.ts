@@ -390,8 +390,8 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   >();
   expectTypeOf<AgentHostPolicy["inactivityFailAfterMs"]>().toEqualTypeOf<number | undefined>();
 
-  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<4>();
-  expectTypeOf<typeof RUNTIME_ABI_VERSION>().toEqualTypeOf<1>();
+  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<8>();
+  expectTypeOf<typeof RUNTIME_ABI_VERSION>().toEqualTypeOf<3>();
   expectTypeOf(daemonEndpoint).toEqualTypeOf<(cwd: string) => string>();
   expectTypeOf(requestDaemonStatus).toEqualTypeOf<(cwd: string) => ResultAsync<DaemonStatus, DaemonClientFailure>>();
   expectTypeOf(requestDaemonStatusProbe).toEqualTypeOf<
@@ -417,7 +417,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     status: "ok";
     pid: number;
     leaseGeneration: number;
-    protocolVersion: 4;
+    protocolVersion: 8;
     packageVersion: string;
     authority: RuntimeAuthorityIdentity;
   }>();
@@ -431,9 +431,9 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf<DaemonRunObservationUntil>().toEqualTypeOf<"admitted" | "subject-terminal" | "decision-boundary">();
   expectTypeOf<RuntimeAuthorityIdentity>().toEqualTypeOf<{
     workspaceKey: string;
-    runtimeAbi: 1;
+    runtimeAbi: 3;
     layoutVersion: 2;
-    storageVersion: 10;
+    storageVersion: 16;
     authorityId: string;
     storeBinding: `sha256:${string}`;
     leaseGeneration: number;
@@ -510,11 +510,11 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     type: "pause" | "resume";
     runId: string;
   }>();
-  expectTypeOf<Extract<DaemonControlIntent, { type: "retry" | "cancel" }>>().toEqualTypeOf<{
+  expectTypeOf<Extract<DaemonControlIntent, { type: "retry" }>>().toEqualTypeOf<{
     requestId: string;
-    type: "retry" | "cancel";
+    type: "retry";
     runId: string;
-    target?: string;
+    target: string;
   }>();
   expectTypeOf<Extract<DaemonControlIntent, { type: "steer" }>>().toEqualTypeOf<{
     requestId: string;
@@ -540,7 +540,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf<DaemonControlResult>().toEqualTypeOf<
     | { type: "pause"; state: "applied"; run: RunDetails }
     | { type: "resume"; state: "applied"; run: RunDetails }
-    | { type: "retry"; state: "applied"; run: RunDetails; target?: string }
+    | { type: "retry"; state: "applied"; run: RunDetails; target: string }
     | { type: "cancel"; state: "applied"; run: RunDetails; target?: string }
     | {
       type: "steer";
@@ -549,6 +549,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
       steerId: string;
       requestedTarget: string;
       target: string;
+      delivery: "interrupt_continue";
       fencedAttemptId: string;
       continuation: "queued";
     }
@@ -583,15 +584,21 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     attemptNo: number;
     turn: number;
     agentKey: string;
-    sessionName: string;
-    sessionProjectionPath?: string;
+    agentSessionId: string;
     timing: import("@acpus/agent-executor").AgentTurnTiming;
     prompt: string;
     responses: string[];
-    summary: Omit<AgentTurnSummary, "sessionProjectionPath">;
+    summary: AgentTurnSummary;
   } & (
     | { status: "completed"; finalResponse: string }
-    | { status: "failed"; failure: import("@acpus/agent-executor").AgentBackendFailure }
+    | { status: "failed"; failure: {
+        kind: "config" | "session_binding_mismatch" | "spawn" | "provider_exit" | "timeout" | "worker_lost" | "inactivity_stale";
+        origin?: "provider" | "runtime";
+        retryable?: boolean;
+        message: string;
+        evidence?: { failAfterMs: number; silentForMs: number; silenceStartedAt: string };
+        upstream?: { source: "acp"; operation: "open_session" | "configure_session" | "run_turn"; code?: string | number; origin?: string; data?: JsonValue };
+      } }
     | { status: "cancelled"; message: string }
   )>();
   expectTypeOf<RunInspectionDetailedFailure>().toMatchTypeOf<{

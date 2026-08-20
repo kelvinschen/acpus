@@ -14,7 +14,7 @@ import {
 import type { WorkflowCatalogScopeOptions } from "../workflow/catalog.js";
 import { controlError, usageError, validationError } from "../presentation/errors.js";
 import { parseAgents, parseInput, parseRequiredPayload } from "../presentation/json-input.js";
-import { writeResult, type CliAppliedControl } from "../presentation/output.js";
+import { writeResult, type CliAppliedControl, type CliResult } from "../presentation/output.js";
 import {
   daemonControlRequestId,
   sendDaemonControl,
@@ -50,12 +50,13 @@ type ControlAction = "pause" | "resume" | "retry" | "fork" | "cancel";
 
 type RunMutation =
   | { type: "pause" | "resume" }
-  | ({ type: "retry" | "cancel" } & Target)
+  | { type: "retry"; target: string }
+  | ({ type: "cancel" } & Target)
   | ({ type: "fork" } & ForkMutation);
 
 export function createControlCommands(ctx: RunsCommandContext): Command[] {
   const commands: Command[] = [];
-  for (const name of ["pause", "resume", "retry", "cancel"] as const) {
+  for (const name of ["pause", "resume", "cancel"] as const) {
     const control = new Command(name)
       .exitOverride()
       .description(controlDescription(name))
@@ -66,10 +67,18 @@ export function createControlCommands(ctx: RunsCommandContext): Command[] {
           : { type: name, ...(options.target === undefined ? {} : { target: options.target }) };
         await mutateRun(ctx, runId, request);
       });
-    if (name === "retry") control.option("--target <run-target>", "retry only a failed run target");
     if (name === "cancel") control.option("--target <run-target>", "cancel only a non-terminal run target");
     commands.push(control);
   }
+
+  commands.push(new Command("retry")
+    .exitOverride()
+    .description(controlDescription("retry"))
+    .argument("<run-id>", "run id")
+    .requiredOption("--target <run-target>", "failed or timed-out Task, Agent, or frame target")
+    .action(async (runId: string, options: { target: string }) => {
+      await mutateRun(ctx, runId, { type: "retry", target: options.target });
+    }));
 
   commands.push(new Command("fork")
     .exitOverride()
@@ -105,7 +114,7 @@ export function createControlCommands(ctx: RunsCommandContext): Command[] {
 
   commands.push(new Command("steer")
     .exitOverride()
-    .description("Apply an admitted in-scope information update to one running Agent attempt.")
+    .description("Steer a running Agent by interrupting its current Turn, draining it, then continuing the same Session.")
     .argument("<run-id>", "run id")
     .requiredOption("--target <run-target>", "running Agent attempt, dynamic node, or static node")
     .requiredOption("--instruction <text>", "admitted in-scope information update or constraint")
@@ -128,14 +137,14 @@ async function signalRun(ctx: RunsCommandContext, runId: string, options: Signal
   if (controlled.isErr()) throw await runControlError(ctx, controlled.error, options.target);
   const result = controlled.value;
   if (result.type !== "signal") throw new Error(`Daemon returned '${result.type}' for signal control.`);
-  ctx.setExitCode(writeResult({
+  ctx.setExitCode(writeControlResult({
     ok: true,
     phase: "control",
     message: "Signal consumed.",
     control: appliedControl(result, options.target),
     run: toRunRecord(result.run),
     ...(terminalRun(result.run) ? {} : { followRunId: result.run.id }),
-  }, ctx, 0));
+  }, ctx));
 }
 
 async function steerRun(ctx: RunsCommandContext, runId: string, options: SteerOptions): Promise<void> {
@@ -151,17 +160,23 @@ async function steerRun(ctx: RunsCommandContext, runId: string, options: SteerOp
   if (controlled.isErr()) throw await runControlError(ctx, controlled.error, options.target);
   const result = controlled.value;
   if (result.type !== "steer") throw new Error(`Daemon returned '${result.type}' for steer control.`);
-  ctx.setExitCode(writeResult({
+  ctx.setExitCode(writeControlResult({
     ok: true,
     phase: "control",
-    message: "Attempt fenced; information update queued.",
+    message: "Steer delivery: Interrupt & Continue. Current Turn fenced and draining; instruction queued for the same Session.",
     control: appliedControl(result, options.target),
     run: toRunRecord(result.run),
     ...(terminalRun(result.run) ? {} : { followRunId: result.run.id }),
-  }, ctx, 0));
+  }, ctx));
 }
 
 async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMutation): Promise<void> {
+  if (request.type === "retry" && request.target.trim() === "") {
+    throw usageError("--target must be a non-empty string.");
+  }
+  if (request.type === "cancel" && request.target === "") {
+    throw usageError("--target must be a non-empty string.");
+  }
   if (request.type === "fork" && request.target === "") throw usageError("--target must be a non-empty string.");
   if (request.type === "fork" && request.project && request.global) {
     throw usageError("--project and --global are mutually exclusive.");
@@ -195,8 +210,10 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
       intent = { ...base, type: request.type };
       break;
     case "retry":
+      intent = { ...base, type: "retry", target: request.target };
+      break;
     case "cancel":
-      intent = { ...base, type: request.type, ...(request.target ? { target: request.target } : {}) };
+      intent = { ...base, type: "cancel", ...(request.target ? { target: request.target } : {}) };
       break;
     case "fork":
       intent = {
@@ -217,7 +234,7 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
   const run = toRunRecord(result.run);
   const follow = terminalRun(result.run) ? {} : { followRunId: result.run.id };
   if (control.type === "fork") {
-    ctx.setExitCode(writeResult({
+    ctx.setExitCode(writeControlResult({
       ok: true,
       phase: "control",
       message: controlSuccessMessage(request.type),
@@ -230,17 +247,21 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
             diagnostics: preparation.prepared.ir.diagnostics,
             ...(preparation.catalog === undefined ? {} : { catalog: preparation.catalog }),
           }),
-    }, ctx, 0));
+    }, ctx));
     return;
   }
-  ctx.setExitCode(writeResult({
+  ctx.setExitCode(writeControlResult({
     ok: true,
     phase: "control",
     message: controlSuccessMessage(request.type),
     control,
     run,
     ...follow,
-  }, ctx, 0));
+  }, ctx));
+}
+
+function writeControlResult(result: CliResult, ctx: RunsCommandContext): number {
+  return writeResult(result, ctx, 0);
 }
 
 function controlDescription(type: Exclude<ControlAction, "fork">): string {
@@ -268,6 +289,7 @@ function appliedControl(result: DaemonControlResult, requestedTarget?: string): 
     case "resume":
       return { type: result.type, state: "applied", runId: result.run.id };
     case "retry":
+      return { type: "retry", state: "applied", runId: result.run.id, target: requestedTarget ?? result.target };
     case "cancel":
       return {
         type: result.type,
@@ -294,6 +316,7 @@ function appliedControl(result: DaemonControlResult, requestedTarget?: string): 
         runId: result.run.id,
         steerId: result.steerId,
         target: requestedTarget ?? result.requestedTarget,
+        delivery: result.delivery,
         continuation: result.continuation,
       };
   }

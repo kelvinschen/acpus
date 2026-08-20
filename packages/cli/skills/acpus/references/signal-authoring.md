@@ -24,6 +24,8 @@ const approval = step("approval").signal({
 
 Concurrent waits do not provide participant identity, access control, confidentiality, sealed answers, commit/reveal fairness, or privacy. Add those guarantees outside Acpus when required.
 
-Durations accept integer milliseconds with optional `ms`, `s`, `m`, `h`, or `d`; omitted units mean milliseconds. Weeks (`w`) are not supported. The shared grammar also applies to Agent/Task timeouts and Task command timeouts.
+- Durations accept integer `ms`, `s`, `m`, `h`, or `d`; omitted units mean milliseconds.
+- Weeks (`w`) are not supported.
+- Use the same duration grammar for Agent, Task, and Task-command timeouts.
 
 For a compact checked concurrent-wait pattern, use [`parallel-approvals`](../workflows/examples/parallel-approvals/workflow.ts).

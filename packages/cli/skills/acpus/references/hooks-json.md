@@ -61,9 +61,11 @@ Each hook entry must contain a non-empty `command`. It may contain `id`, `timeou
 
 - Hook config is loaded once at daemon startup. Editing or validating files does not activate changes; they take effect on the next daemon start.
 - Hook commands start asynchronously with no ordering guarantee. Terminal run state may be visible before its hook journal entry; shutdown waits for active hooks.
-- Commands receive JSON on stdin with `event`, `eventSequence`, `run`, and optional `node`, `output`, `error`, `cancellation`, or `signal`. `run` includes id, workflow name/path, workspace, and status; `node` includes id/key/kind/status plus event-specific result/input/prompt. Agent prompts, Task inputs, and outputs may be sensitive.
-- Hooks trigger only for newly committed `run_events` rows, not from inspect commands, projection rebuilds, read APIs, or idempotent duplicate controls that commit no new row.
-- Hook failure, timeout, output, or journal failure must not change workflow status, output, IR, runtime scope, or public run event payloads.
+- Commands receive JSON on stdin with `event`, `eventSequence`, `run`, and optional `node`, `output`, `error`, `cancellation`, or `signal`.
+- `run` includes id, workflow name/path, workspace, and status. `node` includes id/key/kind/status plus event-specific values.
+- **Treat hook input as sensitive:** it may include Agent prompts, Task inputs, and outputs.
+- Hooks trigger only for newly committed events, not from inspect/read commands or duplicate controls that make no change.
+- Hook failure or timeout does not change workflow status or output.
 - Invalid hook configuration fails daemon startup with an invalid hooks config error instead of silently disabling hooks.
 - Hook `timeout` uses the shared duration units `ms`, `s`, `m`, `h`, and `d`; `w` is not supported. The default is 30 seconds.
 - Hook journal rows are terminal only: `completed`, `failed`, or `timed_out`.
@@ -78,4 +80,5 @@ acpus hooks list [--project | --global]
 
 Reject simultaneous `--project` and `--global`.
 
-The CLI validates only the project and global hook locations; it does not accept an arbitrary `--path`. For scratch validation without touching project hooks, set `HOME` to a scratch directory containing `.acpus/hooks.json` and run `acpus hooks validate --global`.
+- The CLI validates only project and global hook locations; it does not accept `--path`.
+- For scratch validation, set `HOME` to a scratch directory containing `.acpus/hooks.json`, then run `acpus hooks validate --global`.

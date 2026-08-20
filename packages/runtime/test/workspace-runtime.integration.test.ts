@@ -1,4 +1,4 @@
-import type { ManagedAcpExecutor } from "@acpus/agent-executor";
+import type { AgentSessionSupervisor } from "@acpus/agent-executor";
 import { defineWorkflow } from "@acpus/core";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -28,6 +28,8 @@ import {
   startPredecessorDaemon,
 } from "./support/runtime-store-lifecycle.js";
 import { treeFingerprint } from "./support/tree-fingerprint.js";
+import { testAgentSessionSupervisor } from "./support/agent-session-supervisor.js";
+import { okAsync } from "neverthrow";
 
 describe.concurrent("WorkspaceRuntime", () => {
   it("requires an absolute state root", async () => {
@@ -182,22 +184,20 @@ describe.concurrent("WorkspaceRuntime", () => {
     });
   });
 
-  it("starts managed ACP cleanup without waiting for blocked sessions", async () => {
+  it("starts Supervisor cleanup without waiting for blocked sessions and fails closed on unknown settlement", async () => {
     await withRuntimeWorkspace("workspace-runtime-shutdown", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, blockingAgentWorkflow());
       const turnStarted = deferred<void>();
       const turnSettled = deferred<never>();
-      const shutdown = vi.fn(async () => turnSettled.reject(new Error("executor stopped")));
-      const managedAcpExecutor: ManagedAcpExecutor = {
-        withAttempt: async (_input, use) => use({
-          runTurn: async () => {
-            turnStarted.resolve();
-            return turnSettled.promise;
-          },
-        }),
-        shutdown,
-      };
-      const opened = await openWorkspaceRuntimeInternal(workspace, { managedAcpExecutor });
+      const shutdown = vi.fn(() => {
+        turnSettled.reject(new Error("executor stopped"));
+        return okAsync(undefined);
+      });
+      const agentSessionSupervisor: AgentSessionSupervisor = testAgentSessionSupervisor(async () => {
+        turnStarted.resolve();
+        return turnSettled.promise;
+      }, shutdown);
+      const opened = await openWorkspaceRuntimeInternal(workspace, { agentSessionSupervisor });
       expect(opened.isOk()).toBe(true);
       const runtime = opened._unsafeUnwrap();
 
@@ -218,12 +218,7 @@ describe.concurrent("WorkspaceRuntime", () => {
       const incidents: unknown[] = [];
       const reopened = await openWorkspaceRuntimeInternal(workspace, {
         onRunIncident: incident => incidents.push(incident),
-        managedAcpExecutor: {
-          withAttempt: async (_input, use) => use({
-            runTurn: async () => completedAgentTurn("reviewed"),
-          }),
-          shutdown: async () => undefined,
-        },
+        agentSessionSupervisor: testAgentSessionSupervisor(async () => completedAgentTurn("reviewed")),
       });
       expect(reopened.isOk()).toBe(true);
       const recoveredRuntime = reopened._unsafeUnwrap();
@@ -241,7 +236,7 @@ describe.concurrent("WorkspaceRuntime", () => {
             terminalStatus = value.view.run.status;
           }
         }
-        expect(terminalStatus).toBe("completed");
+        expect(terminalStatus).toBe("failed");
         expect(incidents).toEqual([]);
       } finally {
         await recoveredRuntime.close();

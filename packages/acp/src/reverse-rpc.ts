@@ -133,7 +133,7 @@ export function createReverseRpcHandlers(
     }
     assertOperationAllowed(operation, options.permissionMode);
     try {
-      if (operation !== "session/request_permission") options.onActivity?.(operation);
+      options.onActivity?.(operation);
     } catch {
       // Activity reporting must not change protocol behavior.
     }
