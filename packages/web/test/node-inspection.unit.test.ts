@@ -354,11 +354,8 @@ describe("node runtime values projection", () => {
       {
         kind: "agent",
         agent: "worker",
-        profile: { kind: "agent_definition", use: "codex" },
-        binding: {
-          source: { kind: "workflow" },
-          effective: { kind: "agent_definition", use: "codex" },
-        },
+        source: { kind: "workflow" },
+        effective: { kind: "agent_definition", use: "codex" },
         prompt: "private authored prompt",
       },
       {

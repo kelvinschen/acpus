@@ -31,7 +31,7 @@ describe.concurrent("daemon lease socket protocol", () => {
             workspaceKey: expect.any(String),
             runtimeAbi: 5,
             layoutVersion: 2,
-            storageVersion: 18,
+            storageVersion: 19,
             authorityId: expect.any(String),
             leaseGeneration: expect.any(Number),
           },

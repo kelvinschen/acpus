@@ -98,7 +98,7 @@ function targetNode(ir: WorkflowIR, details: ResolvedTargetState): NodeIR | unde
 
 function definition(frozen: FrozenRun, node: NodeIR | undefined): ForensicsDefinition {
   if (!node) {
-    const agents = Object.fromEntries(Object.keys(frozen.ir.agents).sort().map(name => [name, frozenAgentProfile(frozen, name)]));
+    const agents = Object.fromEntries(Object.keys(frozen.ir.agents).sort().map(name => [name, frozenAgentResolution(frozen, name)]));
     return {
       kind: "workflow",
       name: frozen.ir.name,
@@ -110,12 +110,11 @@ function definition(frozen: FrozenRun, node: NodeIR | undefined): ForensicsDefin
   }
   switch (node.kind) {
     case "agent": {
-      const { profile, binding } = frozenAgentProfile(frozen, node.run.agent);
+      const resolution = frozenAgentResolution(frozen, node.run.agent);
       return {
         kind: "agent",
         agent: node.run.agent,
-        profile,
-        binding,
+        ...resolution,
         prompt: formatExpression(node.run.prompt),
         ...(node.run.permissionMode === undefined ? {} : { permissionMode: node.run.permissionMode }),
         ...(node.run.sessionKey === undefined ? {} : { sessionKey: formatExpression(node.run.sessionKey) }),
@@ -200,15 +199,15 @@ function definition(frozen: FrozenRun, node: NodeIR | undefined): ForensicsDefin
   }
 }
 
-function frozenAgentProfile(frozen: FrozenRun, name: string): {
-  profile: FrozenRun["ir"]["agents"][string];
-  binding: FrozenRun["agentBindings"][string];
+function frozenAgentResolution(frozen: FrozenRun, name: string): {
+  source: FrozenRun["agentBindings"][string]["source"];
+  effective: FrozenRun["ir"]["agents"][string];
 } {
-  const profile = Object.hasOwn(frozen.ir.agents, name) ? frozen.ir.agents[name] : undefined;
-  if (!profile) throw new Error(`Agent '${name}' is missing from frozen IR.`);
+  const effective = Object.hasOwn(frozen.ir.agents, name) ? frozen.ir.agents[name] : undefined;
+  if (!effective) throw new Error(`Agent '${name}' is missing from frozen IR.`);
   const binding = Object.hasOwn(frozen.agentBindings, name) ? frozen.agentBindings[name] : undefined;
   if (!binding) throw new Error(`Agent '${name}' is missing from frozen bindings.`);
-  return { profile, binding };
+  return { source: binding.source, effective };
 }
 
 function scopeDefinition(scope: ScopeIR): ForensicsScopeDefinition {

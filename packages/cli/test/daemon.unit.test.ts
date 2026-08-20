@@ -477,7 +477,7 @@ function authority(authorityId: string, leaseGeneration: number) {
     workspaceKey: "workspace-key",
     runtimeAbi: 5 as const,
     layoutVersion: 2 as const,
-    storageVersion: 18 as const,
+    storageVersion: 19 as const,
     authorityId,
     leaseGeneration,
   };

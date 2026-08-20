@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { chmod, link, lstat, mkdir, open, readFile, realpath, rm } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { sha256Digest, type Sha256Digest } from "@acpus/core/content-identity";
 import { z } from "@acpus/core/schema";
 import type { AgentCommandSpec, AgentUseSpec } from "@acpus/core";
 import type { AgentDefinitionIR } from "@acpus/core/ir";
@@ -10,7 +9,6 @@ import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { PreservingStringRecordSchema } from "./agents/string-record-schema.js";
 import { validateHooksFile, type HooksFile } from "./hooks/config.js";
 import { captureProcessIdentity, probeProcessIdentity } from "./process-liveness.js";
-import { stableJsonLine } from "./stable-json.js";
 import { writePrivateJsonAtomically } from "./storage/private-json.js";
 
 export type AgentPresetSpec = {
@@ -41,7 +39,6 @@ export type AgentPresetChoice = {
 export type ResolvedAgentPreset = {
   id: string;
   scope: AgentPresetScope;
-  definitionDigest: Sha256Digest;
   definition: AgentDefinitionIR;
 };
 
@@ -698,7 +695,6 @@ function catalogFromEntries(entries: readonly CatalogEntry[]): AgentPresetCatalo
           id,
           scope: entry.scope,
           definition,
-          definitionDigest: sha256Digest(stableJsonLine(definition)),
         };
       }
       return ok(resolved);

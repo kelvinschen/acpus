@@ -32,12 +32,12 @@ describe("Forensics projection", () => {
     expect(root.definition.kind).toBe("workflow");
     if (root.definition.kind !== "workflow") throw new Error("Expected workflow Definition.");
     expect(Object.hasOwn(root.definition.agents, "__proto__")).toBe(true);
-    expect(root.definition.agents["__proto__"]).toEqual({ profile, binding: frozenBinding(profile) });
+    expect(root.definition.agents["__proto__"]).toEqual({ source: { kind: "workflow" }, effective: profile });
     expect(agent.definition).toEqual({
       kind: "agent",
       agent: "__proto__",
-      profile,
-      binding: frozenBinding(profile),
+      source: { kind: "workflow" },
+      effective: profile,
       prompt: "\"review\"",
     });
 
@@ -46,8 +46,8 @@ describe("Forensics projection", () => {
     expect(view(overridden, run, "review").definition).toEqual({
       kind: "agent",
       agent: "__proto__",
-      profile,
-      binding: frozenBinding(profile, injection),
+      source: { kind: "workflow" },
+      effective: profile,
       prompt: "\"review\"",
     });
   });
@@ -79,7 +79,8 @@ describe("Forensics projection", () => {
       },
       agents: {
         reviewer: {
-          profile: {
+          source: { kind: "direct" },
+          effective: {
             kind: "agent_command",
             command: "effective-agent",
             model: "effective-model",
@@ -88,7 +89,6 @@ describe("Forensics projection", () => {
             cwd: "/effective/profile",
             env: { PROFILE: "effective" },
           },
-          binding: frozenBinding(ir.agents.reviewer!, agentInjections.reviewer),
         },
       },
       root: {
@@ -102,8 +102,8 @@ describe("Forensics projection", () => {
     expect(view(frozen, run, "review").definition).toMatchObject({
       kind: "agent",
       agent: "reviewer",
-      profile: ir.agents.reviewer,
-      binding: frozenBinding(ir.agents.reviewer!, agentInjections.reviewer),
+      source: { kind: "direct" },
+      effective: ir.agents.reviewer,
       prompt: "`Review ${input.topic}`",
       permissionMode: "approve-reads",
       sessionKey: "input.session",
@@ -642,9 +642,9 @@ function frozenRun(
   input: JsonValue = {},
   agentInjections: Record<string, AgentDirectInjectionSpec> = {},
 ): FrozenRun {
-  const agentBindings = Object.fromEntries(Object.entries(ir.agents).map(([name, profile]) => [
+  const agentBindings = Object.fromEntries(Object.keys(ir.agents).map(name => [
     name,
-    frozenBinding(profile, Object.hasOwn(agentInjections, name) ? agentInjections[name] : undefined),
+    frozenBinding(Object.hasOwn(agentInjections, name) ? agentInjections[name] : undefined),
   ]));
   return {
     ir,
@@ -655,15 +655,13 @@ function frozenRun(
 }
 
 function frozenBinding(
-  effective: AdmittedWorkflowIR["agents"][string],
-  materializedInjection?: AgentDirectInjectionSpec,
+  injection?: AgentDirectInjectionSpec,
 ): FrozenAgentBinding {
   return {
-    source: materializedInjection?.use !== undefined || materializedInjection?.command !== undefined
+    source: injection?.use !== undefined || injection?.command !== undefined
       ? { kind: "direct" }
       : { kind: "workflow" },
-    effective,
-    ...(materializedInjection === undefined ? {} : { materializedInjection }),
+    ...(injection === undefined ? {} : { injection }),
   };
 }
 

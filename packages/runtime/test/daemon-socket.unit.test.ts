@@ -498,7 +498,7 @@ describe("daemon socket server", () => {
       { ...current, workspaceKey: "c".repeat(32) },
       { ...current, runtimeAbi: 6 },
       { ...current, layoutVersion: 3 },
-      { ...current, storageVersion: 19 },
+      { ...current, storageVersion: current.storageVersion + 1 },
       { ...current, authorityId: "00000000-0000-4000-8000-000000000002" },
       { ...current, leaseGeneration: 2 },
     ];
@@ -985,7 +985,7 @@ function runtimeAuthority(): RuntimeAuthorityIdentity {
     workspaceKey: "a".repeat(32),
     runtimeAbi: 5,
     layoutVersion: 2,
-    storageVersion: 18,
+    storageVersion: 19,
     authorityId: "00000000-0000-4000-8000-000000000001",
     leaseGeneration: 1,
   };

@@ -635,8 +635,7 @@ function agentHoverDetail(
     ? view.invocation
     : undefined;
   const model = invocation?.model
-    ?? view.definition.binding.effective.model
-    ?? view.definition.profile.model;
+    ?? view.definition.effective.model;
   const result = hoverResult(view.result);
   return {
     kind: "agent",

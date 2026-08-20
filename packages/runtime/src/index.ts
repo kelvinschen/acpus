@@ -153,7 +153,7 @@ export type {
   InspectionViewQuery,
   ObservableInspectionViewQuery,
   ObserveInspectionQuery,
-  ForensicsAgentBinding,
+  ForensicsAgentResolution,
   ForensicsDefinition,
   ForensicsExecutionContext,
   ForensicsInvocation,

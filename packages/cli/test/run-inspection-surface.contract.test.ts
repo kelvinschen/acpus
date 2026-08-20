@@ -293,8 +293,8 @@ describe("inspection text surface", () => {
       definition: {
         kind: "agent",
         agent: "reviewer",
-        profile: { kind: "agent_definition", use: "codex" },
-        binding: { source: { kind: "workflow" }, effective: { kind: "agent_definition", use: "codex" } },
+        source: { kind: "workflow" },
+        effective: { kind: "agent_definition", use: "codex" },
         prompt: "input.prompt",
       },
       invocation: {
@@ -315,11 +315,16 @@ describe("inspection text surface", () => {
     expect(text).toContain("Definition:\n");
     expect(text).toContain("Invocation:\n");
     expect(text).toContain("Result:\n");
+    expect(text).toContain('"source": {');
+    expect(text).toContain('"effective": {');
     expect(text).toContain('"prompt": "<multiline:prompt>"');
     expect(text).toContain("prompt: |\n    Review all facts.\n    Return the final answer.");
     expect(text).toContain(value);
     expect(text).not.toContain("Timeline:");
     expect(text).not.toContain("Await:");
+    expect(text).not.toContain('"profile"');
+    expect(text).not.toContain('"binding"');
+    expect(text).not.toContain('"injection"');
     expect(candidatesText).toContain("Select: acpus runs inspect run_1 --target @000000000001 --forensics");
     expect(candidatesText).toContain("Select: acpus runs inspect run_1 --target @00000000000d --forensics");
     expect(candidatesText).not.toContain("Next:");
@@ -336,8 +341,8 @@ describe("inspection text surface", () => {
       definition: {
         kind: "agent",
         agent: "reviewer",
-        profile: { kind: "agent_definition", use: "codex" },
-        binding: { source: { kind: "workflow" }, effective: { kind: "agent_definition", use: "codex" } },
+        source: { kind: "workflow" },
+        effective: { kind: "agent_definition", use: "codex" },
         prompt: "\"review\"",
       },
       invocation: {

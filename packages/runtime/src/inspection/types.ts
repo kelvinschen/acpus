@@ -2,7 +2,7 @@ import type { AgentDefinitionIR, ExprIR, NodeIR, SchemaIR } from "@acpus/core/ir
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTelemetryAvailability } from "@acpus/agent-executor";
 import type { ArtifactRecord } from "../artifacts/types.js";
-import type { FrozenAgentBinding } from "../agents/injections.js";
+import type { AgentBindingSource } from "../agents/injections.js";
 import type {
   RunDetails,
   RunForkInfo,
@@ -649,7 +649,10 @@ export type InspectionSubject = {
   selector?: string;
 };
 
-export type ForensicsAgentBinding = FrozenAgentBinding;
+export type ForensicsAgentResolution = {
+  source: AgentBindingSource;
+  effective: AgentDefinitionIR;
+};
 
 export type ForensicsScopeDefinition = {
   nodes: string[];
@@ -662,17 +665,12 @@ export type ForensicsDefinition =
       name: string;
       description?: string;
       inputSchema?: SchemaIR;
-      agents: Record<string, {
-        profile: AgentDefinitionIR;
-        binding: ForensicsAgentBinding;
-      }>;
+      agents: Record<string, ForensicsAgentResolution>;
       root: ForensicsScopeDefinition;
     }
-  | {
+  | ForensicsAgentResolution & {
       kind: "agent";
       agent: string;
-      profile: AgentDefinitionIR;
-      binding: ForensicsAgentBinding;
       prompt: string;
       permissionMode?: "approve-reads" | "approve-all" | "deny-all";
       sessionKey?: string;

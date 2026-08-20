@@ -24,8 +24,8 @@ describe("Agent Preset admission and fork freezing", () => {
           ir: { agents: { reviewer: { kind: "agent_definition", use: "first-agent", config: { secret: "first-secret" } } } },
           agentBindings: {
             reviewer: {
-              source: { kind: "preset", id: "reviewer", scope: "project", definitionDigest: expect.stringMatching(/^sha256:/) },
-              materializedInjection: { use: "first-agent", config: { secret: "first-secret" } },
+              source: { kind: "preset", id: "reviewer", scope: "project" },
+              injection: { use: "first-agent", config: { secret: "first-secret" } },
             },
           },
         });

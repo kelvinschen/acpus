@@ -1,5 +1,4 @@
 import { z } from "@acpus/core/schema";
-import { sha256Digest, type Sha256Digest } from "@acpus/core/content-identity";
 import type {
   AdmittedWorkflowIR,
   AgentDeclarationIR,
@@ -48,13 +47,11 @@ export type AgentBindingSource =
       kind: "preset";
       id: string;
       scope: AgentPresetScope;
-      definitionDigest: Sha256Digest;
     };
 
 export type FrozenAgentBinding = {
   source: AgentBindingSource;
-  effective: AgentDefinitionIR;
-  materializedInjection?: AgentDirectInjectionSpec;
+  injection?: AgentDirectInjectionSpec;
 };
 
 export type FrozenAgentBindingMap = Record<string, FrozenAgentBinding>;
@@ -88,27 +85,6 @@ const AgentPresetInjectionSchema = z.object({
   preset: z.string().min(1),
 }).strict();
 
-const AgentDefinitionSchema = z.union([
-  z.object({
-    kind: z.literal("agent_definition"),
-    use: z.string().min(1),
-    model: z.string().optional(),
-    permissionMode: z.enum(["approve-reads", "approve-all", "deny-all"]).optional(),
-    config: PreservingStringRecordSchema.optional(),
-    cwd: z.string().min(1).optional(),
-    env: PreservingStringRecordSchema.optional(),
-  }).strict(),
-  z.object({
-    kind: z.literal("agent_command"),
-    command: z.string().min(1),
-    model: z.string().optional(),
-    permissionMode: z.enum(["approve-reads", "approve-all", "deny-all"]).optional(),
-    config: PreservingStringRecordSchema.optional(),
-    cwd: z.string().min(1).optional(),
-    env: PreservingStringRecordSchema.optional(),
-  }).strict(),
-]);
-
 const AgentBindingSchema = z.object({
   source: z.union([
     z.object({ kind: z.literal("workflow") }).strict(),
@@ -117,11 +93,9 @@ const AgentBindingSchema = z.object({
       kind: z.literal("preset"),
       id: z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/),
       scope: z.enum(["host", "project", "global"]),
-      definitionDigest: z.string().regex(/^sha256:[0-9a-f]{64}$/),
     }).strict(),
   ]),
-  effective: AgentDefinitionSchema,
-  materializedInjection: AgentDirectInjectionSchema.optional(),
+  injection: AgentDirectInjectionSchema.optional(),
 }).strict();
 
 export function parseAgentInjectionMap(
@@ -205,6 +179,7 @@ function finalizeBindings(input: {
   if (resolved.isErr()) return err(resolved.error);
 
   const bindingEntries: Array<[string, FrozenAgentBinding]> = [];
+  const agentEntries: Array<[string, AgentDefinitionIR]> = [];
   const unresolved: string[] = [];
   for (const name of Object.keys(input.declarations).sort(codeUnitCompare)) {
     const declaration = input.declarations[name]!;
@@ -215,54 +190,40 @@ function finalizeBindings(input: {
     let binding: FrozenAgentBinding | undefined;
 
     if (injection !== undefined && isPresetInjection(injection)) {
-      binding = bindingFromPreset(declaration, resolved.value[injection.preset]!);
+      binding = bindingFromPreset(resolved.value[injection.preset]!);
     } else if (injection !== undefined) {
-      const materializedInjection = mergeDirectInjections(
+      const frozenInjection = mergeDirectInjections(
         declaration,
-        inherited?.materializedInjection ?? {},
+        inherited?.injection ?? {},
         injection,
       );
-      const effective = applyDirectInjection(declaration, materializedInjection);
-      if (effective !== undefined) {
-        let source: AgentBindingSource = hasIdentity(injection)
-          ? { kind: "direct" }
-          : inherited?.source ?? { kind: "workflow" };
-        if (source.kind === "preset") {
-          const materializedDefinition = applyDirectInjection({ kind: "agent_slot" }, materializedInjection);
-          if (materializedDefinition === undefined) {
-            throw new Error(`Inherited Agent Preset '${source.id}' did not provide a materialized identity.`);
-          }
-          source = {
-            ...source,
-            definitionDigest: sha256Digest(stableJsonLine(materializedDefinition)),
-          };
-        }
-        binding = {
-          source,
-          effective,
-          ...(Object.keys(materializedInjection).length === 0 ? {} : { materializedInjection }),
-        };
-      }
+      const source: AgentBindingSource = hasIdentity(injection)
+        ? { kind: "direct" }
+        : inherited?.source ?? { kind: "workflow" };
+      binding = {
+        source,
+        ...(Object.keys(frozenInjection).length === 0 ? {} : { injection: frozenInjection }),
+      };
     } else if (inherited !== undefined) {
-      const materializedInjection = inherited.materializedInjection ?? {};
-      const effective = applyDirectInjection(declaration, materializedInjection);
-      if (effective !== undefined) {
-        binding = {
-          source: structuredClone(inherited.source),
-          effective,
-          ...(Object.keys(materializedInjection).length === 0
-            ? {}
-            : { materializedInjection: structuredClone(materializedInjection) }),
-        };
-      }
+      const frozenInjection = inherited.injection ?? {};
+      binding = {
+        source: structuredClone(inherited.source),
+        ...(Object.keys(frozenInjection).length === 0
+          ? {}
+          : { injection: structuredClone(frozenInjection) }),
+      };
     } else if (declaration.kind !== "agent_slot") {
-      binding = { source: { kind: "workflow" }, effective: structuredClone(declaration) };
+      binding = { source: { kind: "workflow" } };
     }
 
-    if (binding === undefined) {
+    const effective = binding === undefined
+      ? undefined
+      : applyDirectInjection(declaration, binding.injection ?? {});
+    if (binding === undefined || effective === undefined) {
       unresolved.push(name);
     } else {
       bindingEntries.push([name, binding]);
+      agentEntries.push([name, effective]);
     }
   }
 
@@ -275,7 +236,7 @@ function finalizeBindings(input: {
   }
   const bindings = Object.fromEntries(bindingEntries) as FrozenAgentBindingMap;
   return ok({
-    agents: Object.fromEntries(Object.entries(bindings).map(([name, binding]) => [name, structuredClone(binding.effective)])),
+    agents: Object.fromEntries(agentEntries),
     bindings,
   });
 }
@@ -300,29 +261,22 @@ export function rebuildFrozenAgentBindings(
   bindings: FrozenAgentBindingMap,
 ): FinalizedAgentBindings {
   for (const [name, binding] of Object.entries(bindings)) {
-    const materialized = binding.materializedInjection;
+    const injection = binding.injection;
     if ((binding.source.kind === "direct" || binding.source.kind === "preset")
-      && (materialized === undefined || !hasIdentity(materialized))) {
-      throw new Error(`Frozen Agent binding '${name}' ${binding.source.kind} source requires a materialized identity.`);
+      && (injection === undefined || !hasIdentity(injection))) {
+      throw new Error(`Frozen Agent binding '${name}' ${binding.source.kind} source requires a frozen identity.`);
     }
-    if (binding.source.kind === "workflow" && materialized !== undefined && hasIdentity(materialized)) {
-      throw new Error(`Frozen Agent binding '${name}' workflow source must not contain a materialized identity.`);
+    if (binding.source.kind === "workflow" && injection !== undefined && hasIdentity(injection)) {
+      throw new Error(`Frozen Agent binding '${name}' workflow source must not contain a frozen identity.`);
     }
-    if (binding.source.kind === "preset") {
-      if (binding.source.id === "dsh" && binding.source.scope !== "host") {
-        throw new Error(`Frozen Agent binding '${name}' uses reserved Preset id 'dsh' outside Host scope.`);
-      }
-      const definition = applyDirectInjection({ kind: "agent_slot" }, materialized!);
-      if (definition === undefined
-        || binding.source.definitionDigest !== sha256Digest(stableJsonLine(definition))) {
-        throw new Error(`Frozen Agent binding '${name}' Preset definition digest does not match its materialized injection.`);
-      }
+    if (binding.source.kind === "preset" && binding.source.id === "dsh" && binding.source.scope !== "host") {
+      throw new Error(`Frozen Agent binding '${name}' uses reserved Preset id 'dsh' outside Host scope.`);
     }
   }
   const rebuilt = finalizeBindings({ declarations, inherited: bindings });
   if (rebuilt.isErr()) throw new Error(`Frozen Agent bindings are incomplete: ${rebuilt.error.message}`);
   if (stableJsonLine(rebuilt.value.bindings) !== stableJsonLine(bindings)) {
-    throw new Error("Frozen Agent binding effective definitions do not match their declarations and materialized injections.");
+    throw new Error("Frozen Agent bindings are not canonical for their declarations and injections.");
   }
   return rebuilt.value;
 }
@@ -338,22 +292,15 @@ export function unboundAgentNames(declarations: Record<string, AgentDeclarationI
     .sort(codeUnitCompare);
 }
 
-function bindingFromPreset(
-  declaration: AgentDeclarationIR,
-  preset: ResolvedAgentPreset,
-): FrozenAgentBinding {
-  const materializedInjection = directInjectionFromDefinition(preset.definition);
-  const effective = applyDirectInjection(declaration, materializedInjection);
-  if (effective === undefined) throw new Error(`Resolved Agent Preset '${preset.id}' did not provide a concrete Agent definition.`);
+function bindingFromPreset(preset: ResolvedAgentPreset): FrozenAgentBinding {
+  const injection = directInjectionFromDefinition(preset.definition);
   return {
     source: {
       kind: "preset",
       id: preset.id,
       scope: preset.scope,
-      definitionDigest: preset.definitionDigest,
     },
-    effective,
-    materializedInjection,
+    injection,
   };
 }
 

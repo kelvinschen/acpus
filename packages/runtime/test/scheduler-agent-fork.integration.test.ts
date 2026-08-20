@@ -48,7 +48,7 @@ describe.concurrent("scheduler Agent injections and forks", () => {
 
           expect(store.getFrozenRun(run.id)?.agentBindings.reviewer).toMatchObject({
             source: { kind: "direct" },
-            materializedInjection: { command: "custom-acp-server", permissionMode: "deny-all" },
+            injection: { command: "custom-acp-server", permissionMode: "deny-all" },
           });
           expect((await getRunVisualizationSnapshot(workspace, run.id))._unsafeUnwrap()).toMatchObject({
             workflow: {
@@ -99,13 +99,13 @@ describe.concurrent("scheduler Agent injections and forks", () => {
 
           const inherited = await forkRuntimeRun(store, source.id);
           expect(store.getFrozenRun(inherited.id)?.agentBindings).toMatchObject({
-            reviewer: { materializedInjection: {
+            reviewer: { injection: {
               use: "claude",
               model: "sonnet",
               config: { mode: "plan", effort: "high" },
               permissionMode: "deny-all",
             } },
-            auditor: { materializedInjection: { use: "codex", model: "audit-model" } },
+            auditor: { injection: { use: "codex", model: "audit-model" } },
           });
           expect(store.getFrozenRun(inherited.id)?.ir.agents.reviewer).toMatchObject({
             kind: "agent_definition",
@@ -118,7 +118,7 @@ describe.concurrent("scheduler Agent injections and forks", () => {
           const reconfigured = await forkRuntimeRun(store, source.id, {
             agentInjections: { reviewer: { config: { mode: "agent" } } },
           });
-          expect(store.getFrozenRun(reconfigured.id)?.agentBindings.reviewer?.materializedInjection).toMatchObject({
+          expect(store.getFrozenRun(reconfigured.id)?.agentBindings.reviewer?.injection).toMatchObject({
             use: "claude",
             model: "sonnet",
             config: { mode: "agent" },
@@ -131,7 +131,7 @@ describe.concurrent("scheduler Agent injections and forks", () => {
           const cleared = await forkRuntimeRun(store, source.id, {
             agentInjections: { reviewer: { config: {} } },
           });
-          expect(store.getFrozenRun(cleared.id)?.agentBindings.reviewer?.materializedInjection).toMatchObject({ config: {} });
+          expect(store.getFrozenRun(cleared.id)?.agentBindings.reviewer?.injection).toMatchObject({ config: {} });
           expect(store.getFrozenRun(cleared.id)?.ir.agents.reviewer).toMatchObject({ config: {} });
 
           const replaced = await forkRuntimeRun(store, source.id, {
@@ -139,8 +139,8 @@ describe.concurrent("scheduler Agent injections and forks", () => {
           });
           const effective = store.getFrozenRun(replaced.id)?.ir.agents.reviewer;
           expect(store.getFrozenRun(replaced.id)?.agentBindings).toMatchObject({
-            reviewer: { materializedInjection: { command: "custom-acp-server", permissionMode: "deny-all" } },
-            auditor: { materializedInjection: { use: "codex", model: "audit-model" } },
+            reviewer: { injection: { command: "custom-acp-server", permissionMode: "deny-all" } },
+            auditor: { injection: { use: "codex", model: "audit-model" } },
           });
           expect(effective).toMatchObject({
             kind: "agent_command",

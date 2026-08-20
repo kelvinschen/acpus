@@ -28,12 +28,34 @@ describe("Agent binding finalization", () => {
     });
   });
 
-  it("rejects empty cwd values in persisted bindings", () => {
+  it("parses compact frozen bindings strictly", () => {
     expect(() => parseFrozenAgentBindingMap({
       reviewer: {
         source: { kind: "direct" },
+        injection: { use: "codex", cwd: "" },
+      },
+    })).toThrow();
+    expect(() => parseFrozenAgentBindingMap({
+      reviewer: {
+        source: { kind: "workflow" },
         effective: { kind: "agent_definition", use: "codex" },
-        materializedInjection: { cwd: "" },
+      },
+    })).toThrow();
+    expect(() => parseFrozenAgentBindingMap({
+      reviewer: {
+        source: { kind: "direct" },
+        materializedInjection: { use: "codex" },
+      },
+    })).toThrow();
+    expect(() => parseFrozenAgentBindingMap({
+      reviewer: {
+        source: {
+          kind: "preset",
+          id: "reviewer",
+          scope: "project",
+          definitionDigest: `sha256:${"0".repeat(64)}`,
+        },
+        injection: { use: "codex" },
       },
     })).toThrow();
   });
@@ -67,7 +89,7 @@ describe("Agent binding finalization", () => {
     expect(result._unsafeUnwrap().agents.__proto__).toMatchObject({ kind: "agent_definition", use: "codex" });
     const roundTripped = parseFrozenAgentBindingMap(JSON.parse(JSON.stringify(result._unsafeUnwrap().bindings)));
     expect(Object.hasOwn(roundTripped, "__proto__")).toBe(true);
-    expect(roundTripped.__proto__?.effective).toMatchObject({ kind: "agent_definition", use: "codex" });
+    expect(roundTripped.__proto__?.injection).toEqual({ use: "codex" });
 
     const missing = await finalizeAgentBindings({ declarations });
     expect(missing._unsafeUnwrapErr()).toMatchObject({
@@ -119,15 +141,15 @@ describe("Agent binding finalization", () => {
         },
       },
       bindings: {
-        reviewer: expect.objectContaining({
-          source: expect.objectContaining({ kind: "preset", id: "reviewer", scope: "host" }),
-          materializedInjection: { use: "codex", config: { effort: "high" } },
-        }),
+        reviewer: {
+          source: { kind: "preset", id: "reviewer", scope: "host" },
+          injection: { use: "codex", config: { effort: "high" } },
+        },
       },
     });
   });
 
-  it("reapplies only the materialized injection when a fork replaces the workflow", async () => {
+  it("reapplies only the frozen injection when a fork replaces the workflow", async () => {
     const original = await finalizeAgentBindings({
       declarations: {
         reviewer: declaration({
@@ -169,12 +191,12 @@ describe("Agent binding finalization", () => {
 
     expect(result._unsafeUnwrap().bindings.reviewer).toMatchObject({
       source: { kind: "workflow" },
-      effective: { kind: "agent_definition", use: "codex", model: "new" },
-      materializedInjection: { model: "new" },
+      injection: { model: "new" },
     });
+    expect(result._unsafeUnwrap().agents.reviewer).toEqual({ kind: "agent_definition", use: "codex", model: "new" });
   });
 
-  it("keeps Preset identity provenance and refreshes its digest after a field-only override", async () => {
+  it("keeps Preset identity provenance after a field-only override", async () => {
     const declarations = { reviewer: { kind: "agent_slot" as const } };
     const catalog = await loadAgentPresetCatalog({
       scopes: ["host"],
@@ -203,54 +225,45 @@ describe("Agent binding finalization", () => {
 
     expect(childBinding).toMatchObject({
       source: { kind: "preset", id: "reviewer", scope: "host" },
-      effective: {
-        kind: "agent_definition",
-        use: "codex",
-        model: "new",
-        config: { effort: "low" },
-        env: { CHILD: "yes" },
-      },
-      materializedInjection: {
+      injection: {
         use: "codex",
         model: "new",
         config: { effort: "low" },
         env: { CHILD: "yes" },
       },
     });
-    expect(childBinding.source).not.toEqual(sourceBinding.source);
+    expect(child._unsafeUnwrap().agents.reviewer).toEqual({
+      kind: "agent_definition",
+      use: "codex",
+      model: "new",
+      config: { effort: "low" },
+      env: { CHILD: "yes" },
+    });
+    expect(childBinding.source).toEqual(sourceBinding.source);
     expect(rebuildFrozenAgentBindings(declarations, child._unsafeUnwrap().bindings)).toEqual(child._unsafeUnwrap());
   });
 
-  it("rejects a frozen effective definition that diverges from its materialized injection", async () => {
-    const declarations = { reviewer: { kind: "agent_slot" as const } };
-    const finalized = await finalizeAgentBindings({
-      declarations,
-      injections: { reviewer: { use: "codex" } },
-    });
-    const tampered = structuredClone(finalized._unsafeUnwrap().bindings);
-    tampered.reviewer!.effective = { kind: "agent_definition", use: "different" };
-
-    expect(() => rebuildFrozenAgentBindings(declarations, tampered)).toThrow(/effective definitions do not match/);
-  });
-
-  it("rejects frozen Preset provenance that diverges from the materialized definition", async () => {
-    const declarations = { reviewer: { kind: "agent_slot" as const } };
-    const catalog = await loadAgentPresetCatalog({
-      scopes: ["host"],
-      hostProvider: () => new ResultAsync(Promise.resolve(ok([
-        { id: "reviewer", guidance: "Review", agent: { use: "codex" } },
-      ]))),
-    });
-    const finalized = await finalizeAgentBindings({
-      declarations,
-      injections: { reviewer: { preset: "reviewer" } },
-      presetCatalog: catalog._unsafeUnwrap(),
-    });
-    const tampered = structuredClone(finalized._unsafeUnwrap().bindings);
-    if (tampered.reviewer?.source.kind !== "preset") throw new Error("expected Preset binding");
-    tampered.reviewer.source.definitionDigest = `sha256:${"0".repeat(64)}`;
-
-    expect(() => rebuildFrozenAgentBindings(declarations, tampered)).toThrow(/definition digest does not match/);
+  it("rejects impossible and non-canonical frozen bindings", () => {
+    expect(() => rebuildFrozenAgentBindings(
+      { reviewer: { kind: "agent_slot" } },
+      { reviewer: { source: { kind: "direct" }, injection: { model: "gpt" } } },
+    )).toThrow(/direct source requires a frozen identity/);
+    expect(() => rebuildFrozenAgentBindings(
+      { reviewer: declaration({ use: "codex" }) },
+      { reviewer: { source: { kind: "workflow" }, injection: { use: "claude" } } },
+    )).toThrow(/workflow source must not contain a frozen identity/);
+    expect(() => rebuildFrozenAgentBindings(
+      { reviewer: { kind: "agent_slot" } },
+      { reviewer: { source: { kind: "preset", id: "dsh", scope: "project" }, injection: { use: "codex" } } },
+    )).toThrow(/reserved Preset id 'dsh'/);
+    expect(() => rebuildFrozenAgentBindings(
+      { reviewer: declaration({ use: "codex" }) },
+      { reviewer: { source: { kind: "workflow" }, injection: {} } },
+    )).toThrow(/not canonical/);
+    expect(() => rebuildFrozenAgentBindings(
+      { reviewer: { kind: "agent_slot" } },
+      { reviewer: { source: { kind: "workflow" } } },
+    )).toThrow(/bindings are incomplete/);
   });
 });
 

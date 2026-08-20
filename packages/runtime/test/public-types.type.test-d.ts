@@ -42,6 +42,8 @@ import type {
   AgentInjectionMap,
   AgentInjectionValidationFailure,
   AgentBindingFailure,
+  AgentBindingSource,
+  AgentDirectInjectionSpec,
   AgentPresetCatalogFailure,
   AgentTurnArtifact,
   ArtifactResolutionFailure,
@@ -67,6 +69,7 @@ import type {
   InspectionChange,
   InspectionCounts,
   InspectionError,
+  ForensicsAgentResolution,
   InspectionForensicsView,
   InspectionObservation,
   InspectionRead,
@@ -114,6 +117,7 @@ import type {
   RuntimeAuthorityIdentity,
   RuntimeStoreFailure,
   RuntimeStoreStatus,
+  ResolvedAgentPreset,
   ResolvedArtifact,
   SchemaNormalizationFailure,
   Sha256Digest,
@@ -124,6 +128,7 @@ import type {
   WorkflowVisualizationNode,
   WorkflowVisualizationOverlay,
   WorkspaceResolutionFailure,
+  FrozenAgentBinding,
 } from "@acpus/runtime";
 import {
   openWorkspaceRuntime,
@@ -135,7 +140,7 @@ import {
   type WorkspaceRuntimeLocation,
   type WorkspaceRuntimeOpenFailure,
 } from "@acpus/runtime/host";
-import type { WorkflowIR } from "@acpus/core/ir";
+import type { AgentDefinitionIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTurnSummary } from "@acpus/agent-executor";
 import type {
@@ -365,6 +370,24 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf(tryParseAgentInjectionMap).toEqualTypeOf<
     (value: unknown, declarations?: Record<string, unknown>) => Result<AgentInjectionMap, AgentInjectionValidationFailure>
   >();
+  expectTypeOf<AgentBindingSource>().toEqualTypeOf<
+    | { kind: "workflow" }
+    | { kind: "direct" }
+    | { kind: "preset"; id: string; scope: "host" | "project" | "global" }
+  >();
+  expectTypeOf<FrozenAgentBinding>().toEqualTypeOf<{
+    source: AgentBindingSource;
+    injection?: AgentDirectInjectionSpec;
+  }>();
+  expectTypeOf<ResolvedAgentPreset>().toEqualTypeOf<{
+    id: string;
+    scope: "host" | "project" | "global";
+    definition: AgentDefinitionIR;
+  }>();
+  expectTypeOf<ForensicsAgentResolution>().toEqualTypeOf<{
+    source: AgentBindingSource;
+    effective: AgentDefinitionIR;
+  }>();
   expectTypeOf<AdmitRunFailure>().toEqualTypeOf<
     | PreparedRunValidationFailure
     | SchemaNormalizationFailure
@@ -438,7 +461,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     workspaceKey: string;
     runtimeAbi: 5;
     layoutVersion: 2;
-    storageVersion: 18;
+    storageVersion: 19;
     authorityId: string;
     leaseGeneration: number;
   }>();
