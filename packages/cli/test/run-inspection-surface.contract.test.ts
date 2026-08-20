@@ -17,7 +17,7 @@ describe("inspection text surface", () => {
     expect(text).toContain("Run run_1  design  running  1m36s");
     expect(text).toContain("Counts total=3  not-started=1  running=1  completed=1");
     expect(text).toContain("┌─ ✓ seed_blackboard · task · completed");
-    expect(text).toContain("├─ ⠋ design_cycle · loop · @e6bacaf847b3 · running · 1/2 · tool: Searching the Web");
+    expect(text).toContain("├─ ⠋ design_cycle · loop · @e6bacaf847b3 · running · 1/2 · using tool: Searching the Web");
     expect(text).toContain("└─ ○ publish_blackboard · task · not started");
     expect(text).not.toContain("publish_blackboard · task · publish_blackboard");
     expect(text).toContain("└┄ … round 1–4 ×4 · ⠋ · running");
@@ -29,15 +29,23 @@ describe("inspection text surface", () => {
     expect(text).not.toContain("attempt_internal");
   });
 
-  it("distinguishes a true Agent start from the interval between activities", () => {
+  it("presents current Agent phases as ongoing actions", () => {
     const starting = formatInspectionView(agentActivityView({ phase: "starting", turn: 1 }));
+    const thinking = formatInspectionView(agentActivityView({ phase: "reported-thought", turn: 1 }));
+    const unnamedTool = formatInspectionView(agentActivityView({ phase: "tool", turn: 1 }));
+    const namedTool = formatInspectionView(agentActivityView({ phase: "tool", turn: 1, headline: "Bash" }));
     const repairing = formatInspectionView(agentActivityView({ phase: "output-repair", turn: 2, headline: "output repair" }));
+    const finishing = formatInspectionView(agentActivityView({ phase: "settling", turn: 2 }));
     const between = formatInspectionView(agentActivityView());
 
     expect(starting).toContain("┌─ ⠋ write_report · agent · @3f19e12fc389#1 · running · starting");
     expect(starting).not.toContain("turn 1");
-    expect(repairing).toContain("┌─ ⠋ write_report · agent · @3f19e12fc389#1 · running · turn 2 · output repair");
-    expect(repairing).not.toContain("output repair: output repair");
+    expect(thinking).toContain("· running · thinking");
+    expect(unnamedTool).toContain("· running · using tool");
+    expect(namedTool).toContain("· running · using tool: Bash");
+    expect(repairing).toContain("┌─ ⠋ write_report · agent · @3f19e12fc389#1 · running · turn 2 · repairing output");
+    expect(repairing).not.toContain("repairing output: output repair");
+    expect(finishing).toContain("· running · turn 2 · finishing");
     expect(between).toContain("┌─ ⠋ write_report · agent · @3f19e12fc389#1 · running\n");
     expect(between).not.toContain("starting");
   });
@@ -53,7 +61,7 @@ describe("inspection text surface", () => {
       recent: [],
     } satisfies InspectionView);
 
-    expect(text).toContain("Current:\n  tool: Searching the Web");
+    expect(text).toContain("Current:\n  using tool: Searching the Web");
     expect(text).not.toContain("turn 1");
     expect(text).not.toContain("Current:\n  agent");
   });

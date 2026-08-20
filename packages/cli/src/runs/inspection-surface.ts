@@ -383,9 +383,17 @@ function formatActivity(
 }
 
 function formatAgentPhase(phase: string, headline?: string): string {
-  const label = phase.replaceAll("-", " ");
+  const label = displayAgentPhase(phase);
   const visible = visibleHeadline(phase, headline);
   return visible === undefined ? label : `${label}: ${visible}`;
+}
+
+function displayAgentPhase(phase: string): string {
+  if (phase === "reported-thought") return "thinking";
+  if (phase === "tool") return "using tool";
+  if (phase === "output-repair") return "repairing output";
+  if (phase === "settling") return "finishing";
+  return phase.replaceAll("-", " ");
 }
 
 function formatTimelineEntry(entry: TimelineEntry, impliedAttempt?: number): string {

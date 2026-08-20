@@ -159,6 +159,7 @@ The `acpus` package owns command parsing and natural-language presentation for a
 - A one-shot ambiguous target MUST render every candidate successfully in Runtime order. A blocking ambiguous target MUST render the same complete candidate handoff and fail without attaching.
 - Navigation MUST be derived only from visible facts: Await, Timeline, required Signal, and Select. It MUST preserve Timeline or Forensics detail for candidate selection and never recommend retry, fork, cancel, or steer.
 - Inspection text MUST distinguish activity labels from their detail and omit default or duplicate metadata that does not change the visible subject, lifecycle, or next executable action.
+- Inspection text MUST present current Agent phases as ongoing actions: `reported-thought` as `thinking`, `tool` as `using tool`, `output-repair` as `repairing output`, and `settling` as `finishing`.
 - Forensics text MUST render stable `Definition`, `Invocation`, and `Result` sections in stable field order using indented JSON plus literal blocks for multiline strings without truncating Runtime values.
 - Forensics text MUST render terminal and bidirectional control characters as visible escapes rather than writing them raw.
 - Summary and Timeline text MUST NOT add Forensics navigation.
