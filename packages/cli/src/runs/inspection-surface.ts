@@ -33,18 +33,11 @@ export function formatInspectionView(
   return formatTargetForensics(view);
 }
 
-export function formatInspectionCandidates(
-  document: InspectionCandidates,
-  detail: "summary" | "timeline" | "forensics" = "summary",
-): string {
-  const args = detail === "timeline" ? ["--timeline"] : detail === "forensics" ? ["--forensics"] : [];
+export function formatInspectionCandidates(document: InspectionCandidates): string {
   const lines = [
     `Run ${document.run.id}  ${document.run.status}`,
     `Target ${document.target}  matches=${document.entries.length}`,
-    ...document.entries.flatMap(entry => [
-      `  ${statusGlyph(entry.status)} ${entry.selector}  ${entry.breadcrumb}`,
-      `     Select: ${command("acpus", "runs", "inspect", document.run.id, "--target", entry.selector, ...args)}`,
-    ]),
+    ...document.entries.map(entry => `  ${statusGlyph(entry.status)} ${entry.selector}  ${entry.breadcrumb}`),
   ];
   return `${lines.join("\n")}\n`;
 }
@@ -129,8 +122,7 @@ export function formatInspectionError(error: InspectionError, view: InspectionVi
     return `${error.message}\nError code: ARCHIVED_RUN_LOOKUP_UNAVAILABLE\n`;
   }
   if (error.type === "target-ambiguous") {
-    const detail = view.kind === "target" ? view.detail : "summary";
-    return `${formatInspectionCandidates(error.candidates, detail).trimEnd()}\nCannot attach: ${error.message}\n`;
+    return `${formatInspectionCandidates(error.candidates).trimEnd()}\nCannot attach: ${error.message}\n`;
   }
   return `Inspection failed: ${error.message}\nInspect: ${inspectionRecoveryCommand(view)}\n`;
 }

@@ -214,7 +214,7 @@ describe("run inspection projection", () => {
     expect(inspectionFolds(view.tree)).toEqual([]);
     expect(failures).toHaveLength(2);
     expect(new Set(failures.map(entry => entry.subject.selector)).size).toBe(2);
-    for (const failure of failures) expect(failure.subject.selector).toMatch(/^@[0-9a-f]{12}#1$/);
+    for (const failure of failures) expect(failure.subject.selector).toMatch(/^@[0-9a-f]{8}$/);
   });
 
   it("exposes only direct fork lineage and compact failure evidence", () => {
@@ -285,7 +285,7 @@ describe("run inspection projection", () => {
       kind: "awaiting-input",
     });
     expect(signal?.attention?.kind === "awaiting-input" ? signal.attention.signal : undefined)
-      .toMatch(/^@[0-9a-f]{12}$/);
+      .toMatch(/^@[0-9a-f]{8}$/);
     expect(signal?.attention?.summary.length).toBeLessThanOrEqual(240);
     expect(JSON.stringify(view)).not.toContain("PROMPT_TAIL");
     expect(JSON.stringify(view)).not.toContain("field_79");

@@ -331,8 +331,9 @@ describe("inspection observation transcript", () => {
     expect(outcome).toEqual({ kind: "error", error });
     expect(stdout.text).toBe("");
     expect(stderr.text).toContain("Target review  matches=13");
-    expect(stderr.text).toContain("Select: acpus runs inspect run_1 --target @000000000001");
-    expect(stderr.text).toContain("Select: acpus runs inspect run_1 --target @00000000000d");
+    expect(stderr.text).toContain("@000000000001");
+    expect(stderr.text).toContain("@00000000000d");
+    expect(stderr.text).not.toContain("Select:");
     expect(stderr.text).not.toContain("Next:");
     expect(stderr.text).toContain("Cannot attach: Target is ambiguous.");
   });

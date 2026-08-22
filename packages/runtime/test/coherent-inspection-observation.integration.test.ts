@@ -217,7 +217,6 @@ describe("coherent inspection observation boundaries", () => {
         })));
         await ready;
         const selector = deriveOccurrenceRef(review.instancePath);
-        const treeSelector = `${selector}#${attempt.attemptNo}`;
         const observe = (
           sequence: number,
           payload: ObservationEventInput,
@@ -271,7 +270,7 @@ describe("coherent inspection observation boundaries", () => {
 
         const thoughtRead = await readInspection(workspace, { kind: "run", runId: started.runId });
         const thoughtView = Result.isSuccess(thoughtRead) && thoughtRead.success.kind === "run" ? thoughtRead.success : undefined;
-        expect(inspectionTreeItem(thoughtView?.tree ?? [], treeSelector)?.pulse).toEqual({
+        expect(inspectionTreeItem(thoughtView?.tree ?? [], selector)?.pulse).toEqual({
           phase: "reported-thought",
           turn: 1,
         });
@@ -299,7 +298,7 @@ describe("coherent inspection observation boundaries", () => {
 
         const runRead = await readInspection(workspace, { kind: "run", runId: started.runId });
         const runView = Result.isSuccess(runRead) && runRead.success.kind === "run" ? runRead.success : undefined;
-        expect(inspectionTreeItem(runView?.tree ?? [], treeSelector)?.pulse).toEqual({
+        expect(inspectionTreeItem(runView?.tree ?? [], selector)?.pulse).toEqual({
           phase: "tool",
           turn: 1,
           tool: { name: "Bash", title: "Run focused checks", state: "completed" },

@@ -15,30 +15,30 @@ const staticNodes: RunInspectionStaticNode[] = [
 ];
 
 describe("inspection occurrence targets", () => {
-  it("derives fixed twelve-hex refs from branch, Fanout, Loop, and mixed paths", () => {
-    expect(deriveOccurrenceRef([{ kind: "node", nodeId: "verify" }])).toBe("@75de35d61d1d");
+  it("derives fixed eight-hex refs from branch, Fanout, Loop, and mixed paths", () => {
+    expect(deriveOccurrenceRef([{ kind: "node", nodeId: "verify" }])).toBe("@75de35d6");
     expect(deriveOccurrenceRef([
       { kind: "node", nodeId: "batch" },
       { kind: "fanout", nodeId: "batch", itemIndex: 0 },
       { kind: "node", nodeId: "verify" },
-    ])).toBe("@6119a20210df");
+    ])).toBe("@6119a202");
     expect(deriveOccurrenceRef([
       { kind: "node", nodeId: "batch" },
       { kind: "fanout", nodeId: "batch", itemIndex: 1 },
       { kind: "node", nodeId: "loop" },
       { kind: "loop", nodeId: "loop", iter: 2 },
       { kind: "node", nodeId: "verify" },
-    ])).toBe("@9d4669a0288d");
-    expect(deriveOccurrenceRef([{ kind: "branch", nodeId: "gate", branchId: "then" }])).toBe("@65606a87d385");
+    ])).toBe("@9d4669a0");
+    expect(deriveOccurrenceRef([{ kind: "branch", nodeId: "gate", branchId: "then" }])).toBe("@65606a87");
   });
 
   it("fails closed for a colliding pure lookup without a hash seam", () => {
-    expect(resolveOccurrenceRefCandidate("@111111111111", [
-      { ref: "@111111111111", value: "first~full-key" },
-      { ref: "@111111111111", value: "second~full-key" },
+    expect(resolveOccurrenceRefCandidate("@11111111", [
+      { ref: "@11111111", value: "first~full-key" },
+      { ref: "@11111111", value: "second~full-key" },
     ])).toEqual({
       kind: "collision",
-      target: "@111111111111",
+      target: "@11111111",
       candidates: ["first~full-key", "second~full-key"],
     });
   });
@@ -55,20 +55,20 @@ describe("inspection occurrence targets", () => {
       candidates: {
         target: "verify",
         entries: [{
-          selector: "@6119a20210df",
+          selector: "@6119a202",
           status: "completed",
           breadcrumb: "batch › batch[0] › verify",
         }, {
-          selector: "@9d4669a0288d",
+          selector: "@9d4669a0",
           status: "running",
           breadcrumb: "batch › batch[1] › loop › loop#2 › verify",
         }],
       },
     });
 
-    expect(resolveInspectionTarget({ run, staticNodes, target: "@9d4669a0288d" }))
+    expect(resolveInspectionTarget({ run, staticNodes, target: "@9d4669a0" }))
       .toEqual({ kind: "resolved", target: "verify~item-1-round-2" });
-    expect(resolveInspectionTarget({ run, staticNodes, target: "@9d4669a0288d#2" }))
+    expect(resolveInspectionTarget({ run, staticNodes, target: "@9d4669a0#2" }))
       .toEqual({ kind: "resolved", target: "verify-attempt-2" });
     expect(resolveInspectionTarget({ run, staticNodes, target: "verify~item-0" }))
       .toEqual({ kind: "resolved", target: "verify~item-0" });

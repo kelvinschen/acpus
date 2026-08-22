@@ -296,13 +296,15 @@ describe("inspection text surface", () => {
     }
   });
 
-  it("makes every ambiguous candidate selection executable and preserves Timeline detail", () => {
-    const text = formatInspectionCandidates(candidates(), "timeline");
+  it("renders ambiguous candidates as compact selector rows without embedded commands", () => {
+    const text = formatInspectionCandidates(candidates());
 
     expect(text).toContain("Target review  matches=13");
-    expect(text).toContain("Select: acpus runs inspect run_1 --target @000000000001 --timeline");
-    expect(text).toContain("Select: acpus runs inspect run_1 --target @000000000007 --timeline");
-    expect(text).toContain("Select: acpus runs inspect run_1 --target @00000000000d --timeline");
+    expect(text).toContain("@000000000001");
+    expect(text).toContain("@000000000007");
+    expect(text).toContain("@00000000000d");
+    expect(text).not.toContain("Select:");
+    expect(text).not.toContain("--timeline");
     expect(text).not.toContain("Next:");
     expect(text).not.toContain("page=");
     expect(text).not.toContain("--follow");
@@ -337,7 +339,7 @@ describe("inspection text surface", () => {
       },
       result: { status: "accepted", value: { value } },
     } satisfies InspectionView);
-    const candidatesText = formatInspectionCandidates(candidates(), "forensics");
+    const candidatesText = formatInspectionCandidates(candidates());
 
     expect(text).toContain("Forensics review  @1a2b3c4d5e6f#2 · agent");
     expect(text).toContain("Definition:\n");
@@ -353,8 +355,9 @@ describe("inspection text surface", () => {
     expect(text).not.toContain('"profile"');
     expect(text).not.toContain('"binding"');
     expect(text).not.toContain('"injection"');
-    expect(candidatesText).toContain("Select: acpus runs inspect run_1 --target @000000000001 --forensics");
-    expect(candidatesText).toContain("Select: acpus runs inspect run_1 --target @00000000000d --forensics");
+    expect(candidatesText).toContain("@000000000001");
+    expect(candidatesText).toContain("@00000000000d");
+    expect(candidatesText).not.toContain("Select:");
     expect(candidatesText).not.toContain("Next:");
   });
 

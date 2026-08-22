@@ -22,12 +22,12 @@ vi.mock("@acpus/runtime", async importOriginal => ({
 const artifacts: ArtifactRecord[] = [{
   id: "artifact_1",
   runId: "run_1",
-  nodeKey: "review~abc",
+  nodeKey: "review~1a2b3c4d",
   attempt: 1,
   mediaType: "application/json",
   digest: "sha256:abc",
   size: 42,
-  path: "/home/user/.acpus/workspaces/0123456789abcdef0123456789abcdef/runtime/runs/run_1/artifacts/review~abc/attempt-1/agent/turn-001.json",
+  path: "/home/user/.acpus/workspaces/0123456789abcdef0123456789abcdef/runtime/runs/run_1/artifacts/review~1a2b3c4d/attempt-1/agent/turn-001.json",
 }];
 const resolvedArtifact = {
   ...artifacts[0]!,
@@ -133,7 +133,7 @@ describe("runs artifact", () => {
         `Media-Type: ${resolvedArtifact.mediaType}`,
         `Size: ${resolvedArtifact.size} bytes`,
         `Digest: ${resolvedArtifact.digest}`,
-        `Source: ${resolvedArtifact.nodeKey} attempt ${resolvedArtifact.attempt}`,
+        `Source: review attempt ${resolvedArtifact.attempt}`,
         "",
       ].join("\n"),
     });

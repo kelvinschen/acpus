@@ -132,7 +132,7 @@ describe.concurrent("daemon lease hooks", () => {
           type: "signal",
           state: "consumed",
           requestedTarget: "approve",
-          target: expect.stringMatching(/^approve~[0-9a-f]{12}$/),
+          target: expect.stringMatching(/^approve~[0-9a-f]{8}$/),
           validation: { kind: "schema", schemaSummary: "{ ok: boolean }" },
           run: { id: awaiting.run.id },
         });

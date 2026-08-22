@@ -69,16 +69,16 @@ describe("scheduler identity and reducers", () => {
       "check",
     );
 
-    expect(deriveInstanceKey(path)).toMatch(/^items\[0\]\/retry#2\/check~[a-f0-9]{12}$/);
-    expect(deriveInstanceKey(appendBranch([], "race", "left"))).toMatch(/^race\.left~[a-f0-9]{12}$/);
+    expect(deriveInstanceKey(path)).toMatch(/^items\[0\]\/retry#2\/check~[a-f0-9]{8}$/);
+    expect(deriveInstanceKey(appendBranch([], "race", "left"))).toMatch(/^race\.left~[a-f0-9]{8}$/);
   });
 
   it("gives a static loop-body node a distinct key in every iteration", () => {
     const first = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 0), "check"));
     const second = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 1), "check"));
 
-    expect(first).toMatch(/^retry#0\/check~[a-f0-9]{12}$/);
-    expect(second).toMatch(/^retry#1\/check~[a-f0-9]{12}$/);
+    expect(first).toMatch(/^retry#0\/check~[a-f0-9]{8}$/);
+    expect(second).toMatch(/^retry#1\/check~[a-f0-9]{8}$/);
     expect(first).not.toBe(second);
   });
 

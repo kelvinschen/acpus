@@ -78,7 +78,7 @@ async function artifactRunCommand(
     `Media-Type: ${artifact.mediaType ?? "-"}`,
     `Size: ${artifact.size} bytes`,
     `Digest: ${artifact.digest}`,
-    `Source: ${artifact.nodeKey} attempt ${artifact.attempt}`,
+    `Source: ${artifact.nodeKey.replace(/~[0-9a-f]{8}$/, "")} attempt ${artifact.attempt}`,
     "",
   ].join("\n"));
   ctx.setExitCode(0);

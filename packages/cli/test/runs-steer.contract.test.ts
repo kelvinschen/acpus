@@ -107,7 +107,6 @@ describe("runs steer", () => {
     const text = await runCliCommand(["runs", "retry", "run_1", "--target", "review"]);
     expect(text.exitCode).toBe(1);
     expect(text.stderr).toContain("@1a2b3c4d5e6f");
-    expect(text.stderr).toContain("Select: acpus runs inspect run_1 --target @1a2b3c4d5e6f");
     expect(text.stderr).toContain("Select one @ref from the candidate view.");
     expect(text.stderr).not.toContain("review~one");
     expect(text.stderr).not.toContain("review~two");

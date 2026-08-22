@@ -56,7 +56,7 @@ async function inspectRun(ctx: RunsCommandContext, runId: string, options: Inspe
   const document = await readOneShotInspection(ctx.cwd, inspectionViewQuery(runId, options));
   if (document.kind === "archived-run") return renderArchivedRun(ctx, document.run);
   ctx.stdout.write(document.kind === "candidates"
-    ? formatInspectionCandidates(document, options.forensics ? "forensics" : options.timeline ? "timeline" : "summary")
+    ? formatInspectionCandidates(document)
     : formatInspectionView(document));
   ctx.setExitCode(0);
 }

@@ -311,7 +311,7 @@ function hasSignalNode(ir: WorkflowIR, nodeId: string): boolean {
 }
 
 function looksLikeInstanceKey(value: string): boolean {
-  return value.startsWith("@") || /~[0-9a-f]{12}$/i.test(value);
+  return value.startsWith("@") || /~[0-9a-f]{8}$/i.test(value);
 }
 
 function isOpenSignalWait(snapshot: SchedulerSnapshot, nodeKey: string): boolean {

@@ -322,7 +322,9 @@ function treeItem(
   includePulse: boolean,
 ): Extract<InspectionTreeEntry, { type: "item" }> {
   const selector = item.ref
-    ? item.attemptNo === undefined ? item.ref : occurrenceRefSelector(item.ref as `@${string}`, item.attemptNo)
+    ? item.attemptNo !== undefined && item.attemptNo > 1
+      ? occurrenceRefSelector(item.ref as `@${string}`, item.attemptNo)
+      : item.ref
     : item.nodeId;
   const attention = itemAttention(item, selector, run);
   const elapsed = terminalItemStatus(item.status) ? duration(item.startedAt, item.finishedAt) : undefined;

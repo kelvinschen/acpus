@@ -52,7 +52,7 @@ describe("runs inspect observation grammar", () => {
     expect(runtime.readInspection).not.toHaveBeenCalled();
   });
 
-  it("renders every ambiguous Timeline candidate and preserves detail", async () => {
+  it("renders every ambiguous Timeline candidate without embedded commands", async () => {
     runtime.readInspection.mockReturnValue(Effect.succeed(candidates()));
 
     const result = await runCommand(["inspect", "run_1", "--target", "review", "--timeline"]);
@@ -62,8 +62,9 @@ describe("runs inspect observation grammar", () => {
       kind: "target", runId: "run_1", target: "review", detail: "timeline",
     });
     expect(result.stdout).toContain("Target review  matches=13");
-    expect(result.stdout).toContain("Select: acpus runs inspect run_1 --target @000000000001 --timeline");
-    expect(result.stdout).toContain("Select: acpus runs inspect run_1 --target @00000000000d --timeline");
+    expect(result.stdout).toContain("@000000000001");
+    expect(result.stdout).toContain("@00000000000d");
+    expect(result.stdout).not.toContain("Select:");
     expect(result.stdout).not.toContain("Next:");
   });
 
@@ -88,8 +89,9 @@ describe("runs inspect observation grammar", () => {
     expect(runtime.readInspection).toHaveBeenLastCalledWith("/workspace", {
       kind: "target", runId: "run_1", target: "review", detail: "forensics",
     });
-    expect(result.stdout).toContain("Select: acpus runs inspect run_1 --target @000000000001 --forensics");
-    expect(result.stdout).toContain("Select: acpus runs inspect run_1 --target @00000000000d --forensics");
+    expect(result.stdout).toContain("@000000000001");
+    expect(result.stdout).toContain("@00000000000d");
+    expect(result.stdout).not.toContain("Select:");
   });
 
   it("maps terminal follow and decision waiting to distinct Runtime policies", async () => {
@@ -126,8 +128,9 @@ describe("runs inspect observation grammar", () => {
     const ambiguous = await runCommand(["inspect", "run_1", "--target", "review"]);
     expect(ambiguous.exitCode).toBe(0);
     expect(ambiguous.stdout).toContain("Target review  matches=13");
-    expect(ambiguous.stdout).toContain("Select: acpus runs inspect run_1 --target @000000000001");
-    expect(ambiguous.stdout).toContain("Select: acpus runs inspect run_1 --target @00000000000d");
+    expect(ambiguous.stdout).toContain("@000000000001");
+    expect(ambiguous.stdout).toContain("@00000000000d");
+    expect(ambiguous.stdout).not.toContain("Select:");
     expect(ambiguous.stdout).not.toContain("--timeline");
     expect(ambiguous.stdout).not.toContain("--forensics");
 

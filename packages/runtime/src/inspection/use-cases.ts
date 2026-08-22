@@ -949,7 +949,7 @@ function validateCoherentTarget(target: string): InspectionError | undefined {
   if (target.includes("~") || target.includes("#") && !target.startsWith("@")) {
     return { type: "invalid-query", message: "Inspection target must use an authored id, root, or occurrence selector." };
   }
-  if (target.startsWith("@") && !/^@[0-9a-f]{12}(?:#[1-9]\d*)?$/.test(target)) {
+  if (target.startsWith("@") && !/^@[0-9a-f]{8}(?:#[1-9]\d*)?$/.test(target)) {
     return { type: "invalid-query", message: "Inspection occurrence selector is malformed." };
   }
   return undefined;
