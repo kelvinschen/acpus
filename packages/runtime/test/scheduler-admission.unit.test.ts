@@ -138,6 +138,7 @@ describe("scheduler admission", () => {
       signalNodeIds: new Set(),
     })).toMatchObject({ kind: "executor", instance: { nodeKey: "other-session" } });
   });
+
 });
 
 function projected(events: SchedulerEvent[]) {

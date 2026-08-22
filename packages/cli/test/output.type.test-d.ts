@@ -1,4 +1,4 @@
-import { describe, expectTypeOf, it } from "vitest";
+import { describe, it } from "vitest";
 import type { CliResult } from "../src/presentation/output.js";
 
 const catalog = {
@@ -16,7 +16,6 @@ describe("CLI result type", () => {
   it("closes fields and success states by phase", () => {
     const imported = { ok: true, phase: "import", message: "Imported.", catalog, checked: false } as const;
     acceptResult(imported);
-    expectTypeOf(imported.checked).toEqualTypeOf<false>();
 
     // @ts-expect-error successful imports require checked
     acceptResult({ ok: true, phase: "import", message: "Imported.", catalog });

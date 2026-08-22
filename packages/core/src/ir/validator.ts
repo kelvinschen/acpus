@@ -1,5 +1,6 @@
 import { isJsonValue } from "@acpus/expression/ir";
 import { validateExprIR, type ExpressionDiagnostic } from "@acpus/expression/validator";
+import * as Result from "effect/Result";
 import { tryParseDurationMs } from "./duration.js";
 import { isPositiveInteger } from "./integer.js";
 import { isRootedPath } from "../internal/path.js";
@@ -442,7 +443,7 @@ function validateDurationExpr(
   refs: RefContext,
 ): void {
   if (value === undefined || !validateExpr(value, diagnostics, path, refs)) return;
-  if (value.kind === "literal" && (typeof value.value !== "string" || tryParseDurationMs(value.value).isErr())) {
+  if (value.kind === "literal" && (typeof value.value !== "string" || Result.isFailure(tryParseDurationMs(value.value)))) {
     addError(diagnostics, code, `${label} must resolve to a duration string like 500ms, 30s, 5m, 1h, or 1000.`, path);
   }
 }

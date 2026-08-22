@@ -1,13 +1,17 @@
-import { err, ok, ResultAsync, type Result } from "neverthrow";
-import type { AgentObservationInspectionProjection, AgentObservationLog } from "../observations/log.js";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
+import type { AgentObservationInspectionProjection, AgentObservationReadError } from "../observations/log.js";
 import {
-  openBoundRuntimeReadSession,
-  runtimeReadFailureFromError,
-  withRunInspectionSnapshot,
   type RuntimeReadFailure,
-  type RuntimeStore,
   type RunInspectionStoreRead,
 } from "../store/store.js";
+import {
+  acquireBoundRuntimeReadSession,
+  type RuntimeStoreBusy,
+  type RuntimeStoreShape,
+} from "../store/service.js";
+import type { CommittedRuntimeEventRow } from "../store/committed-event.js";
 import { findArchivedRun } from "../runtime-history.js";
 import {
   planCancelControl,
@@ -18,10 +22,7 @@ import { steerControlTargets } from "../scheduler/steer-plan.js";
 import { planRetrySessionImpact } from "../scheduler/retry-session-impact.js";
 import type { AgentTurnProof } from "../execution/agent-turn-registry.js";
 import { indexNodes } from "../scheduler/ir-walk.js";
-import {
-  throwSchedulerStoreResult,
-  type SchedulerSnapshot,
-} from "../scheduler/store-port.js";
+import type { SchedulerSnapshot, SchedulerStoreError } from "../scheduler/store-port.js";
 import {
   inspectionSubject,
   inspectionTargetState,
@@ -77,167 +78,179 @@ type AgentTurnProofLookup = (proof: AgentTurnProof) => boolean;
 export function readInspection(
   cwd: string,
   view: InspectionViewQuery,
-): ResultAsync<InspectionRead, InspectionError> {
+): Effect.Effect<InspectionRead, InspectionError> {
   const invalid = view.kind === "target" ? validateCoherentTarget(view.target) : undefined;
-  if (invalid) return invalidCoherentInspection(invalid);
-  return new ResultAsync((async () => {
-    const session = await openBoundRuntimeReadSession(cwd);
-    if (session.isErr()) return err(inspectionRuntimeReadFailure(view.runId, session.error));
-    if (!session.value) return err({ type: "runtime-store-not-found", message: "Runtime store was not found." });
-    let active: Result<InspectionRead, InspectionError>;
-    try {
-      active = await withCoherentInspectionRunAtStore(
-        session.value.store,
-        view.runId,
-        state => readCoherentView(state, view),
+  if (invalid) return Effect.fail(invalid);
+  return Effect.scoped(Effect.gen(function* () {
+    const session = yield* acquireBoundRuntimeReadSession(cwd).pipe(
+      Effect.mapError(failure => inspectionRuntimeReadFailure(view.runId, failure)),
+    );
+    if (!session) return yield* Effect.fail<InspectionError>({
+      type: "runtime-store-not-found",
+      message: "Runtime store was not found.",
+    });
+    const active = yield* Effect.result(withCoherentInspectionRunAtStore(
+      session.store,
+      view.runId,
+      state => readCoherentView(state, view),
+    ));
+    if (Result.isSuccess(active)) {
+      const ownership = yield* readAgentSessionOwnershipHealth(cwd, session.store).pipe(
+        Effect.mapError(failure => inspectionStoreBusyFailure(view.runId, failure)),
       );
-      if (active.isOk()) {
-        const ownership = await readAgentSessionOwnershipHealth(cwd, session.value.store);
-        active = ok(withInspectionOwnershipHealth(active.value, ownership));
-      }
-    } finally {
-      session.value.close();
+      return withInspectionOwnershipHealth(active.success, ownership);
     }
-    if (active.isOk() || active.error.type !== "run-not-found") return active;
-    return archivedInspection(cwd, view);
-  })());
+    if (active.failure.type !== "run-not-found") return yield* Effect.fail(active.failure);
+    return yield* archivedInspection(cwd, view);
+  }));
 }
 
 export function readInspectionAtStore(
-  store: RuntimeStore,
+  store: RuntimeStoreShape,
   view: InspectionViewQuery,
   provesAgentTurn?: AgentTurnProofLookup,
-): ResultAsync<InspectionRead, InspectionError> {
+): Effect.Effect<InspectionRead, InspectionError> {
   const invalid = view.kind === "target" ? validateCoherentTarget(view.target) : undefined;
-  if (invalid) return invalidCoherentInspection(invalid);
-  return new ResultAsync(withCoherentInspectionRunAtStore(
+  if (invalid) return Effect.fail(invalid);
+  return withCoherentInspectionRunAtStore(
     store,
     view.runId,
     state => readCoherentView(state, view, undefined, provesAgentTurn),
-  ));
+  );
 }
 
 /**
- * Observes durable semantic state.  The initial projection is immediate; later
+ * Observes durable semantic state. The initial projection is immediate; later
  * cycles first read only the durable change token and build a view only when it
  * changed.
  */
-export async function* observeInspection(
+export function observeInspection(
   cwd: string,
   query: ObserveInspectionQuery,
-): AsyncIterable<Result<InspectionObservation, InspectionError>> {
+): Stream.Stream<InspectionObservation, InspectionError> {
   const invalid = validateObserveInspectionQuery(query);
-  if (invalid) {
-    yield err(invalid);
-    return;
-  }
-  const session = await openBoundRuntimeReadSession(cwd);
-  if (session.isErr()) {
-    yield err(inspectionRuntimeReadFailure(query.view.runId, session.error));
-    return;
-  }
-  if (!session.value) {
-    yield err({ type: "runtime-store-not-found", message: "Runtime store was not found." });
-    return;
-  }
-  try {
-    const iterator = observeInspectionAtStore(session.value.store, query)[Symbol.asyncIterator]();
-    const first = await iterator.next();
-    if (first.done) return;
-    if (first.value.isErr() && first.value.error.type === "run-not-found") {
-      const archived = await archivedInspection(cwd, query.view);
-      if (archived.isOk() && archived.value.kind === "archived-run") {
-        yield err(archivedDetailUnavailable(query.view.runId));
-        return;
-      }
-      if (archived.isErr()) {
-        yield err(archived.error);
-        return;
-      }
-    }
-    const ownership = first.value.isOk() && first.value.value.kind !== "update"
-      ? await readAgentSessionOwnershipHealth(cwd, session.value.store)
-      : undefined;
-    yield first.value.isOk() && ownership
-      ? ok(withObservationOwnershipHealth(first.value.value, ownership))
-      : first.value;
-    while (true) {
-      const next = await iterator.next();
-      if (next.done) return;
-      if (next.value.isOk() && next.value.value.kind !== "update") {
-        const nextOwnership = await readAgentSessionOwnershipHealth(cwd, session.value.store);
-        yield ok(withObservationOwnershipHealth(next.value.value, nextOwnership));
-      } else {
-        yield next.value;
-      }
-    }
-  } finally {
-    session.value.close();
-  }
+  if (invalid) return Stream.fail(invalid);
+  return Stream.unwrap(acquireBoundRuntimeReadSession(cwd).pipe(
+    Effect.mapError(failure => inspectionRuntimeReadFailure(query.view.runId, failure)),
+    Effect.flatMap(session => session === undefined
+      ? Effect.fail<InspectionError>({ type: "runtime-store-not-found", message: "Runtime store was not found." })
+      : Effect.succeed(session)),
+    Effect.flatMap(session => Effect.gen(function* () {
+      const initialResult = yield* Effect.result(readCoherentCycleAtStore(session.store, query.view));
+      const initial = Result.isSuccess(initialResult)
+        ? initialResult.success
+        : yield* Effect.gen(function* () {
+            if (initialResult.failure.type !== "run-not-found") return yield* Effect.fail(initialResult.failure);
+            const archived = yield* archivedInspection(cwd, query.view);
+            if (archived.kind === "archived-run") {
+              return yield* Effect.fail(archivedDetailUnavailable(query.view.runId));
+            }
+            return yield* Effect.fail(initialResult.failure);
+          });
+      return observationStreamAtStore(session.store, query, initial).pipe(
+        Stream.mapEffect(observation => observation.kind === "update"
+          ? Effect.succeed(observation)
+          : readAgentSessionOwnershipHealth(cwd, session.store).pipe(
+              Effect.mapError(failure => inspectionStoreBusyFailure(query.view.runId, failure)),
+              Effect.map(ownership => withObservationOwnershipHealth(observation, ownership)),
+            )),
+      );
+    })),
+  ));
 }
 
-export async function* observeInspectionAtStore(
-  store: RuntimeStore,
+export function observeInspectionAtStore(
+  store: RuntimeStoreShape,
   query: ObserveInspectionQuery,
   provesAgentTurn?: AgentTurnProofLookup,
-): AsyncIterable<Result<InspectionObservation, InspectionError>> {
+): Stream.Stream<InspectionObservation, InspectionError> {
   const invalid = validateObserveInspectionQuery(query);
-  if (invalid) {
-    yield err(invalid);
-    return;
-  }
-  let cycle = await readCoherentCycleAtStore(store, query.view, undefined, undefined, provesAgentTurn);
-  if (cycle.isErr()) {
-    yield err(cycle.error);
-    return;
-  }
-  const initialClose = observationCloseReason(cycle.value, query.until);
-  if (initialClose) {
-    yield ok({ kind: "closed", reason: initialClose, view: cycle.value.view });
-    return;
-  }
-  yield ok({ kind: "attached", view: cycle.value.view });
-  let previous = cycle.value;
+  if (invalid) return Stream.fail(invalid);
+  return Stream.unwrap(readCoherentCycleAtStore(store, query.view, undefined, undefined, provesAgentTurn).pipe(
+    Effect.map(initial => observationStreamAtStore(store, query, initial, provesAgentTurn)),
+  ));
+}
 
-  while (!query.signal?.aborted) {
-    await delay(inspectionObserveReadDelayMs, query.signal);
-    if (query.signal?.aborted) return;
-    const token = await readCoherentTokenAtStore(store, query.view.runId);
-    if (token.isErr()) {
-      yield err(token.error);
-      return;
+type InspectionObservationState = Readonly<{
+  previous: CoherentCycle;
+  done: boolean;
+}>;
+
+function observationStreamAtStore(
+  store: RuntimeStoreShape,
+  query: ObserveInspectionQuery,
+  initial: CoherentCycle,
+  provesAgentTurn?: AgentTurnProofLookup,
+): Stream.Stream<InspectionObservation, InspectionError> {
+  const initialClose = observationCloseReason(initial, query.until);
+  if (initialClose) return Stream.succeed({ kind: "closed", reason: initialClose, view: initial.view });
+  const state: InspectionObservationState = { previous: initial, done: false };
+  const updates = Stream.unfold(
+    state,
+    state => nextInspectionObservation(store, query, state, provesAgentTurn),
+  );
+  return Stream.succeed<InspectionObservation>({ kind: "attached", view: initial.view }).pipe(Stream.concat(updates));
+}
+
+function nextInspectionObservation(
+  store: RuntimeStoreShape,
+  query: ObserveInspectionQuery,
+  state: InspectionObservationState,
+  provesAgentTurn?: AgentTurnProofLookup,
+): Effect.Effect<readonly [InspectionObservation, InspectionObservationState] | undefined, InspectionError> {
+  if (state.done) return Effect.succeed(undefined);
+  return Effect.gen(function* () {
+    let previous = state.previous;
+    while (true) {
+      const continueObservation = yield* waitForInspectionCycle(query.signal);
+      if (!continueObservation) return undefined;
+      const token = yield* readCoherentTokenAtStore(store, query.view.runId);
+      if (sameInspectionToken(previous.token, token)) continue;
+      const cycle = yield* readCoherentCycleAtStore(
+        store,
+        query.view,
+        previous.pinnedTarget,
+        previous.token.eventSequence,
+        provesAgentTurn,
+      );
+      const close = observationCloseReason(cycle, query.until);
+      if (close) {
+        return [
+          { kind: "closed", reason: close, view: cycle.view },
+          { previous: cycle, done: true },
+        ] as const;
+      }
+      const changes = inspectionChanges(previous.changeView, cycle.changeView, cycle.events, cycle.run);
+      const timeline = timelineChanges(previous.view, cycle.view, changes);
+      const activity = query.updates === "activity" && inspectionActivityChanged(previous.view, cycle.view);
+      previous = cycle;
+      if (changes.length > 0 || timeline?.length || activity) {
+        return [
+          {
+            kind: "update",
+            changes,
+            ...(timeline?.length ? { timeline } : {}),
+            ...(activity ? { activity: true as const } : {}),
+          },
+          { previous, done: false },
+        ] as const;
+      }
     }
-    if (sameInspectionToken(previous.token, token.value)) continue;
-    cycle = await readCoherentCycleAtStore(
-      store,
-      query.view,
-      previous.pinnedTarget,
-      previous.token.eventSequence,
-      provesAgentTurn,
-    );
-    if (cycle.isErr()) {
-      yield err(cycle.error);
-      return;
-    }
-    const close = observationCloseReason(cycle.value, query.until);
-    if (close) {
-      yield ok({ kind: "closed", reason: close, view: cycle.value.view });
-      return;
-    }
-    const changes = inspectionChanges(previous.changeView, cycle.value.changeView, cycle.value.events, cycle.value.run);
-    const timeline = timelineChanges(previous.view, cycle.value.view, changes);
-    const activity = query.updates === "activity"
-      && inspectionActivityChanged(previous.view, cycle.value.view);
-    if (changes.length > 0 || timeline?.length || activity) {
-      yield ok({
-        kind: "update",
-        changes,
-        ...(timeline?.length ? { timeline } : {}),
-        ...(activity ? { activity: true as const } : {}),
-      });
-    }
-    previous = cycle.value;
-  }
+  });
+}
+
+function waitForInspectionCycle(signal: AbortSignal | undefined): Effect.Effect<boolean> {
+  if (signal === undefined) return Effect.as(Effect.sleep(inspectionObserveReadDelayMs), true);
+  if (signal.aborted) return Effect.succeed(false);
+  const aborted = Effect.callback<void>(resume => {
+    const onAbort = (): void => resume(Effect.void);
+    signal.addEventListener("abort", onAbort, { once: true });
+    return Effect.sync(() => signal.removeEventListener("abort", onAbort));
+  });
+  return Effect.raceFirst(
+    Effect.as(Effect.sleep(inspectionObserveReadDelayMs), true),
+    Effect.as(aborted, false),
+  );
 }
 
 export function inspectionActivityChanged(
@@ -273,10 +286,11 @@ function treeActivityProjection(
 }
 
 type CoherentInspectionRun = {
-  store: RuntimeStore;
+  store: RuntimeStoreShape;
   read: RunInspectionStoreRead;
   run: NonNullable<RunInspectionStoreRead["run"]>;
   frozen: NonNullable<RunInspectionStoreRead["frozen"]>;
+  schedulerSnapshot(): Effect.Effect<SchedulerSnapshot, InspectionError>;
 };
 
 type CoherentCycle = {
@@ -285,42 +299,38 @@ type CoherentCycle = {
   token: RunInspectionStoreRead["cursor"];
   run: NonNullable<RunInspectionStoreRead["run"]>;
   pinnedTarget?: string;
-  events: ReturnType<RuntimeStore["getCommittedRuntimeEventsAfter"]>;
+  events: CommittedRuntimeEventRow[];
 };
 
 type CoherentTarget =
   | { kind: "candidates"; candidates: InspectionCandidates }
   | { kind: "resolved"; target: string; details: ResolvedTargetState };
 
-function invalidCoherentInspection<T>(error: InspectionError): ResultAsync<T, InspectionError> {
-  return new ResultAsync(Promise.resolve(err(error)));
-}
-
-async function archivedInspection(
+function archivedInspection(
   cwd: string,
   view: InspectionViewQuery,
-): Promise<Result<InspectionRead, InspectionError>> {
-  try {
-    const lookup = await findArchivedRun(cwd, view.runId);
+): Effect.Effect<InspectionRead, InspectionError> {
+  return Effect.tryPromise({
+    try: () => findArchivedRun(cwd, view.runId),
+    catch: error => ({
+      type: "read-failed" as const,
+      runId: view.runId,
+      message: error instanceof Error ? error.message : String(error),
+    }),
+  }).pipe(Effect.flatMap(lookup => {
     if (lookup.kind === "not-found") {
-      return err({ type: "run-not-found", runId: view.runId, message: `Run '${view.runId}' was not found.` });
+      return Effect.fail<InspectionError>({ type: "run-not-found", runId: view.runId, message: `Run '${view.runId}' was not found.` });
     }
     if (lookup.kind === "unavailable") {
-      return err({
+      return Effect.fail<InspectionError>({
         type: "archived-run-lookup-unavailable",
         runId: view.runId,
         message: lookup.message,
       });
     }
-    if (view.kind !== "run") return err(archivedDetailUnavailable(view.runId));
-    return ok({ kind: "archived-run", run: lookup.run });
-  } catch (error) {
-    return err({
-      type: "read-failed",
-      runId: view.runId,
-      message: error instanceof Error ? error.message : String(error),
-    });
-  }
+    if (view.kind !== "run") return Effect.fail(archivedDetailUnavailable(view.runId));
+    return Effect.succeed<InspectionRead>({ kind: "archived-run", run: lookup.run });
+  }));
 }
 
 function archivedDetailUnavailable(runId: string): Extract<InspectionError, { type: "archived-run-detail-unavailable" }> {
@@ -332,87 +342,103 @@ function archivedDetailUnavailable(runId: string): Extract<InspectionError, { ty
   };
 }
 
-async function withCoherentInspectionRunAtStore<T>(
-  store: RuntimeStore,
+function withCoherentInspectionRunAtStore<T>(
+  store: RuntimeStoreShape,
   runId: string,
-  project: (state: CoherentInspectionRun) => Result<T, InspectionError> | Promise<Result<T, InspectionError>>,
-): Promise<Result<T, InspectionError>> {
-  try {
-    return await withRunInspectionSnapshot(store, async () => {
-      const read = store.readRunInspection(runId);
-      if (!read.run) return err({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
-      if (!read.frozen) throw new Error(`Frozen workflow for run '${runId}' was not found.`);
-      return await project({ store, read, run: read.run, frozen: read.frozen });
+  project: (state: CoherentInspectionRun) => Effect.Effect<T, InspectionError>,
+): Effect.Effect<T, InspectionError> {
+  return store.withRunInspectionSnapshot(Effect.gen(function* () {
+    const read = yield* store.readRunInspection(runId).pipe(
+      Effect.mapError(failure => inspectionStoreBusyFailure(runId, failure)),
+    );
+    if (!read.run) return yield* Effect.fail<InspectionError>({
+      type: "run-not-found",
+      runId,
+      message: `Run '${runId}' was not found.`,
     });
-  } catch (error) {
-    return err(inspectionRuntimeReadFailure(runId, runtimeReadFailureFromError(error)));
-  }
+    if (!read.frozen) throw new Error(`Frozen workflow for run '${runId}' was not found.`);
+    let scheduler: SchedulerSnapshot | undefined;
+    const schedulerSnapshot = (): Effect.Effect<SchedulerSnapshot, InspectionError> => scheduler === undefined
+      ? loadSchedulerSnapshot(store, runId).pipe(
+          Effect.mapError(failure => inspectionStoreBusyFailure(runId, failure)),
+          Effect.tap(value => Effect.sync(() => {
+            scheduler = value;
+          })),
+        )
+      : Effect.succeed(scheduler);
+    return yield* project({ store, read, run: read.run, frozen: read.frozen, schedulerSnapshot });
+  })).pipe(
+    Effect.catchIf(
+      (failure): failure is RuntimeStoreBusy => isRuntimeStoreBusy(failure),
+      failure => Effect.fail(inspectionStoreBusyFailure(runId, failure)),
+    ),
+  );
 }
 
-async function readCoherentCycleAtStore(
-  store: RuntimeStore,
+function readCoherentCycleAtStore(
+  store: RuntimeStoreShape,
   view: InspectionViewQuery,
   pinnedTarget?: string,
   afterEventSequence?: number,
   provesAgentTurn?: AgentTurnProofLookup,
-): Promise<Result<CoherentCycle, InspectionError>> {
-  return withCoherentInspectionRunAtStore(store, view.runId, async state => {
-    const read = await readCoherentView(state, view, pinnedTarget, provesAgentTurn);
-    if (read.isErr()) return err(read.error);
-    if (read.value.kind === "candidates") {
-      return err({
+): Effect.Effect<CoherentCycle, InspectionError> {
+  return withCoherentInspectionRunAtStore(store, view.runId, state => Effect.gen(function* () {
+    const read = yield* readCoherentView(state, view, pinnedTarget, provesAgentTurn);
+    if (read.kind === "candidates") {
+      return yield* Effect.fail<InspectionError>({
         type: "target-ambiguous",
         runId: view.runId,
         target: view.kind === "target" ? view.target : "root",
-        candidates: read.value,
+        candidates: read,
         message: "A blocking inspection needs one exact target selector.",
       });
     }
-    if (read.value.kind === "archived-run") throw new Error("Archived runs are not observable.");
+    if (read.kind === "archived-run") throw new Error("Archived runs are not observable.");
     const resolved = view.kind === "target"
-      ? resolveCoherentTarget(state, view.target, pinnedTarget, provesAgentTurn)
+      ? yield* resolveCoherentTarget(state, view.target, pinnedTarget, provesAgentTurn)
       : undefined;
-    if (resolved?.isErr()) return err(resolved.error);
-    if (view.kind === "target" && resolved?.isOk() && resolved.value.kind === "candidates") {
-      return err({
+    if (view.kind === "target" && resolved?.kind === "candidates") {
+      return yield* Effect.fail<InspectionError>({
         type: "target-ambiguous",
         runId: view.runId,
         target: view.target,
-        candidates: resolved.value.candidates,
+        candidates: resolved.candidates,
         message: "A blocking inspection needs one exact target selector.",
       });
     }
-    return ok({
-      view: read.value,
-      changeView: read.value.kind === "run"
+    const events = afterEventSequence === undefined
+      ? []
+      : yield* state.store.getCommittedRuntimeEventsAfter(state.run.id, afterEventSequence).pipe(
+          Effect.mapError(failure => inspectionStoreBusyFailure(state.run.id, failure)),
+        );
+    return {
+      view: read,
+      changeView: read.kind === "run"
         ? projectInspectionRunDecisionView({
             ir: state.frozen.ir,
             run: state.run,
             agentSessions: state.read.agentControl.agentSessions,
           })
-        : read.value,
+        : read,
       token: state.read.cursor,
       run: state.run,
       agentSessions: state.read.agentControl.agentSessions,
-      events: afterEventSequence === undefined
-        ? []
-        : state.store.getCommittedRuntimeEventsAfter(state.run.id, afterEventSequence),
-      ...(resolved?.isOk() && resolved.value.kind === "resolved"
-        ? { pinnedTarget: resolved.value.target }
+      events,
+      ...(resolved?.kind === "resolved"
+        ? { pinnedTarget: resolved.target }
         : {}),
-    });
-  });
+    };
+  }));
 }
 
-async function readCoherentView(
+function readCoherentView(
   state: CoherentInspectionRun,
   view: InspectionViewQuery,
   pinnedTarget?: string,
   provesAgentTurn?: AgentTurnProofLookup,
-): Promise<Result<InspectionRead, InspectionError>> {
+): Effect.Effect<InspectionRead, InspectionError> {
   if (view.kind === "run") {
-    const observations = await coherentRunObservations(state);
-    return ok(projectInspectionRunView({
+    return Effect.map(coherentRunObservations(state), observations => projectInspectionRunView({
       ir: state.frozen.ir,
       run: state.run,
       agentSessions: state.read.agentControl.agentSessions,
@@ -420,46 +446,47 @@ async function readCoherentView(
       ...(view.structure === "materialized" ? { structure: "materialized" as const } : {}),
     }));
   }
-  const resolved = resolveCoherentTarget(state, view.target, pinnedTarget, provesAgentTurn);
-  if (resolved.isErr()) return err(resolved.error);
-  if (resolved.value.kind === "candidates") return ok(resolved.value.candidates);
-  const details = resolved.value.details;
-  if (view.detail === "summary") {
-    const observations = await coherentTargetObservations(state, details);
-    const projected = projectInspectionTargetSummaryView({
-      run: state.run,
-      details,
-      ...(observations ? { observations } : {}),
-    });
-    const acp = acpSilence(details);
-    return ok({
-      ...projected,
-      ...(acp === undefined ? {} : { acp }),
-    });
-  }
-  if (view.detail === "forensics") {
-    return ok(projectInspectionForensicsView({
-      frozen: state.frozen,
-      run: state.run,
-      details,
-    }));
-  }
-  const observations = await readRecentTimelineObservations(
-    state.store.observationLog,
-    state.run.id,
-    recentTimelineAttemptIds(details),
-  );
-  const projected = projectInspectionTargetTimelineView({
-    run: state.run,
-    details,
-    events: state.store.getInspectionTimelineEvents(
+  return Effect.gen(function* () {
+    const resolved = yield* resolveCoherentTarget(state, view.target, pinnedTarget, provesAgentTurn);
+    if (resolved.kind === "candidates") return resolved.candidates;
+    const details = resolved.details;
+    if (view.detail === "summary") {
+      const observations = yield* coherentTargetObservations(state, details);
+      const projected = projectInspectionTargetSummaryView({
+        run: state.run,
+        details,
+        ...(observations ? { observations } : {}),
+      });
+      const acp = acpSilence(details);
+      return {
+        ...projected,
+        ...(acp === undefined ? {} : { acp }),
+      };
+    }
+    if (view.detail === "forensics") {
+      return projectInspectionForensicsView({
+        frozen: state.frozen,
+        run: state.run,
+        details,
+      });
+    }
+    const observations = yield* readRecentTimelineObservations(
+      state.store,
+      state.run.id,
+      recentTimelineAttemptIds(details),
+    );
+    const events = yield* state.store.getInspectionTimelineEvents(
       state.run.id,
       inspectionTimelineNodeKeys(state.run, details),
       inspectionTimelineEventLimit,
-    ),
-    observations,
+    ).pipe(Effect.mapError(failure => inspectionStoreBusyFailure(state.run.id, failure)));
+    return projectInspectionTargetTimelineView({
+      run: state.run,
+      details,
+      events,
+      observations,
+    });
   });
-  return ok(projected);
 }
 
 function acpSilence(details: ResolvedTargetState): { silentForMs: number } | undefined {
@@ -480,7 +507,7 @@ function resolveCoherentTarget(
   target: string,
   pinnedTarget?: string,
   provesAgentTurn?: AgentTurnProofLookup,
-): Result<CoherentTarget, InspectionError> {
+): Effect.Effect<CoherentTarget, InspectionError> {
   if (pinnedTarget) {
     const resolved = resolveTargetState({
       ir: state.frozen.ir,
@@ -489,8 +516,12 @@ function resolveCoherentTarget(
       target: pinnedTarget,
     });
     return resolved
-      ? ok({ kind: "resolved", target: pinnedTarget, details: enrichCoherentTarget(state, resolved, provesAgentTurn) })
-      : err({ type: "target-not-found", runId: state.run.id, target, message: `Run target '${target}' was not found.` });
+      ? Effect.map(enrichCoherentTarget(state, resolved, provesAgentTurn), details => ({
+          kind: "resolved" as const,
+          target: pinnedTarget,
+          details,
+        }))
+      : Effect.fail({ type: "target-not-found", runId: state.run.id, target, message: `Run target '${target}' was not found.` });
   }
   const staticNodes = inspectionStaticNodes(state.frozen.ir);
   if (target !== "root" && !target.startsWith("@")) {
@@ -498,10 +529,10 @@ function resolveCoherentTarget(
       || state.run.dynamic?.frames.some(frame => frame.frameKey === target)
       || state.run.dynamic?.attempts.some(attempt => attempt.attemptId === target);
     if (internal) {
-      return err({ type: "invalid-query", message: "Inspection target must use an authored id, root, or occurrence selector." });
+      return Effect.fail({ type: "invalid-query", message: "Inspection target must use an authored id, root, or occurrence selector." });
     }
     if (!staticNodes.some(node => node.nodeId === target)) {
-      return err({ type: "target-not-found", runId: state.run.id, target, message: `Run target '${target}' was not found.` });
+      return Effect.fail({ type: "target-not-found", runId: state.run.id, target, message: `Run target '${target}' was not found.` });
     }
   }
   const resolution = resolveInspectionTarget({
@@ -510,13 +541,13 @@ function resolveCoherentTarget(
     target,
   });
   if (resolution.kind === "not-found") {
-    return err({ type: "target-not-found", runId: state.run.id, target, message: `Run target '${target}' was not found.` });
+    return Effect.fail({ type: "target-not-found", runId: state.run.id, target, message: `Run target '${target}' was not found.` });
   }
   if (resolution.kind === "ref-collision") {
-    return err({ type: "read-failed", runId: state.run.id, message: `Occurrence reference '${target}' could not be resolved safely.` });
+    return Effect.fail({ type: "read-failed", runId: state.run.id, message: `Occurrence reference '${target}' could not be resolved safely.` });
   }
   if (resolution.kind === "candidates") {
-    return ok({ kind: "candidates", candidates: resolution.candidates });
+    return Effect.succeed({ kind: "candidates", candidates: resolution.candidates });
   }
   const details = resolveTargetState({
     ir: state.frozen.ir,
@@ -525,87 +556,86 @@ function resolveCoherentTarget(
     target: resolution.target,
   });
   return details
-    ? ok({ kind: "resolved", target: resolution.target, details: enrichCoherentTarget(state, details, provesAgentTurn) })
-    : err({ type: "target-not-found", runId: state.run.id, target, message: `Run target '${target}' was not found.` });
+    ? Effect.map(enrichCoherentTarget(state, details, provesAgentTurn), enriched => ({
+        kind: "resolved" as const,
+        target: resolution.target,
+        details: enriched,
+      }))
+    : Effect.fail({ type: "target-not-found", runId: state.run.id, target, message: `Run target '${target}' was not found.` });
 }
 
 function enrichCoherentTarget(
   state: CoherentInspectionRun,
   details: ResolvedTargetState,
   provesAgentTurn?: AgentTurnProofLookup,
-): ResolvedTargetState {
-  const agentControl = targetAgentControl(state.read.agentControl, details, selectedAttemptFor(details));
-  const snapshot = throwSchedulerStoreResult(state.store.scheduler.tryLoadRunSnapshot(state.run.id));
-  const retrySnapshot = settleRetryControlSnapshot({
-    frozen: state.frozen,
-    snapshot,
-    now: new Date(),
-  }).snapshot;
-  return {
-    ...details,
-    run: { ...details.run, agentSessions: state.read.agentControl.agentSessions },
-    summary: {
-      ...details.summary,
-      ...(agentControl.agentSession === undefined ? {} : { agentSession: agentControl.agentSession }),
-      ...(agentControl.steer === undefined ? {} : { steer: agentControl.steer }),
-    },
-    availableControls: targetInspectionControls(
-      retrySnapshot,
+): Effect.Effect<ResolvedTargetState, InspectionError> {
+  return Effect.map(state.schedulerSnapshot(), snapshot => {
+    const agentControl = targetAgentControl(state.read.agentControl, details, selectedAttemptFor(details));
+    const retrySnapshot = settleRetryControlSnapshot({
+      frozen: state.frozen,
       snapshot,
-      details,
-      state.frozen,
-      agentControl.agentSession,
-      agentControl.turnProof,
-      provesAgentTurn,
-    ),
-  };
+      now: new Date(),
+    }).snapshot;
+    return {
+      ...details,
+      run: { ...details.run, agentSessions: state.read.agentControl.agentSessions },
+      summary: {
+        ...details.summary,
+        ...(agentControl.agentSession === undefined ? {} : { agentSession: agentControl.agentSession }),
+        ...(agentControl.steer === undefined ? {} : { steer: agentControl.steer }),
+      },
+      availableControls: targetInspectionControls(
+        retrySnapshot,
+        snapshot,
+        details,
+        state.frozen,
+        agentControl.agentSession,
+        agentControl.turnProof,
+        provesAgentTurn,
+      ),
+    };
+  });
 }
 
-async function coherentTargetObservations(
+function coherentTargetObservations(
   state: CoherentInspectionRun,
   details: ResolvedTargetState,
-): Promise<AgentObservationInspectionProjection | undefined> {
-  if (details.staticNode?.kind !== "agent") return undefined;
+): Effect.Effect<AgentObservationInspectionProjection | undefined, InspectionError> {
+  if (details.staticNode?.kind !== "agent") return Effect.succeed(undefined);
   const attemptId = targetAttemptId(details);
-  if (!attemptId) return undefined;
-  const result = await state.store.observationLog.readInspectionProjection({
+  if (!attemptId) return Effect.succeed(undefined);
+  return state.store.observationLog.readInspectionProjection({
     runId: state.run.id,
     attemptIds: [attemptId],
     entryLimit: 50,
-  });
-  if (result.isErr()) throw result.error;
-  return result.value;
+  }).pipe(Effect.mapError(failure => inspectionObservationFailure(state.run.id, failure)));
 }
 
-async function coherentRunObservations(
+function coherentRunObservations(
   state: CoherentInspectionRun,
-): Promise<AgentObservationInspectionProjection | undefined> {
+): Effect.Effect<AgentObservationInspectionProjection | undefined, InspectionError> {
   const attemptIds = state.run.dynamic?.attempts
     .filter(attempt => attempt.status === "started")
     .map(attempt => attempt.attemptId) ?? [];
-  if (attemptIds.length === 0) return undefined;
-  const result = await state.store.observationLog.readInspectionProjection({
+  if (attemptIds.length === 0) return Effect.succeed(undefined);
+  return state.store.observationLog.readInspectionProjection({
     runId: state.run.id,
     attemptIds,
     latestTurnPerAttempt: true,
     includeOlderCount: false,
-  });
-  if (result.isErr()) throw result.error;
-  return result.value;
+  }).pipe(Effect.mapError(failure => inspectionObservationFailure(state.run.id, failure)));
 }
 
-async function readCoherentTokenAtStore(
-  store: RuntimeStore,
+function readCoherentTokenAtStore(
+  store: RuntimeStoreShape,
   runId: string,
-): Promise<Result<RunInspectionStoreRead["cursor"], InspectionError>> {
-  try {
-    const token = store.readRunInspectionToken(runId);
-    return token
-      ? ok(token)
-      : err({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
-  } catch (error) {
-    return err(inspectionRuntimeReadFailure(runId, runtimeReadFailureFromError(error)));
-  }
+): Effect.Effect<RunInspectionStoreRead["cursor"], InspectionError> {
+  return store.readRunInspectionToken(runId).pipe(
+    Effect.mapError(failure => inspectionStoreBusyFailure(runId, failure)),
+    Effect.flatMap(token => token
+      ? Effect.succeed(token)
+      : Effect.fail<InspectionError>({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` })),
+  );
 }
 
 function sameInspectionToken(left: RunInspectionStoreRead["cursor"], right: RunInspectionStoreRead["cursor"]): boolean {
@@ -644,7 +674,7 @@ function terminalInspectionState(status: string): boolean {
 export function inspectionChanges(
   previous: InspectionView,
   current: InspectionView,
-  events: ReturnType<RuntimeStore["getCommittedRuntimeEventsAfter"]>,
+  events: CommittedRuntimeEventRow[],
   run: NonNullable<RunInspectionStoreRead["run"]>,
 ): InspectionChange[] {
   if (previous.kind !== "run" || current.kind !== "run") {
@@ -709,7 +739,7 @@ function sameDecisionChange(left: InspectionChange | undefined, right: Inspectio
 function inspectionReason(
   previous: string | undefined,
   current: string,
-  events: ReturnType<RuntimeStore["getCommittedRuntimeEventsAfter"]>,
+  events: CommittedRuntimeEventRow[],
   subject: import("./types.js").InspectionSubject,
   run: NonNullable<RunInspectionStoreRead["run"]>,
 ): InspectionVisibleReason | undefined {
@@ -735,7 +765,7 @@ function inspectionReason(
 }
 
 function inspectionEventAffectsSubject(
-  event: ReturnType<RuntimeStore["getCommittedRuntimeEventsAfter"]>[number],
+  event: CommittedRuntimeEventRow,
   subject: import("./types.js").InspectionSubject,
   run: NonNullable<RunInspectionStoreRead["run"]>,
 ): boolean {
@@ -744,7 +774,7 @@ function inspectionEventAffectsSubject(
 }
 
 function inspectionEventSelectors(
-  event: ReturnType<RuntimeStore["getCommittedRuntimeEventsAfter"]>[number],
+  event: CommittedRuntimeEventRow,
   run: NonNullable<RunInspectionStoreRead["run"]>,
 ): Set<string> {
   const selectors = new Set<string>();
@@ -924,15 +954,17 @@ function validateCoherentTarget(target: string): InspectionError | undefined {
   return undefined;
 }
 
-export function inspectNode(cwd: string, query: InspectNodeQuery): ResultAsync<RunInspectionNodeDocument, RunInspectionError> {
+export function inspectNode(
+  cwd: string,
+  query: InspectNodeQuery,
+): Effect.Effect<RunInspectionNodeDocument, RunInspectionError> {
   const invalid = validateTargetQuery(query.target);
-  if (invalid) return invalidInspection(invalid);
-  return withInspectionRun(cwd, query.runId, state => {
-    const resolved = resolveTarget(state, query.target, true);
-    if (resolved.isErr()) return err(resolved.error);
-    if (resolved.value.kind === "candidates") return err(targetAmbiguous(query.runId, query.target, resolved.value.candidates));
-    const details = resolved.value.details;
-    return ok({
+  if (invalid) return Effect.fail(invalid);
+  return withInspectionRun(cwd, query.runId, state => Effect.gen(function* () {
+    const resolved = yield* resolveTarget(state, query.target, true);
+    if (resolved.kind === "candidates") return yield* Effect.fail(targetAmbiguous(query.runId, query.target, resolved.candidates));
+    const details = resolved.details;
+    return {
       schemaVersion: 2,
       kind: "node",
       run: details.run,
@@ -941,139 +973,148 @@ export function inspectNode(cwd: string, query: InspectNodeQuery): ResultAsync<R
       summary: details.summary,
       availableControls: details.availableControls,
       artifacts: details.artifacts,
-    });
-  });
+    } satisfies RunInspectionNodeDocument;
+  }));
 }
 
 export function inspectAgentExecution(
   cwd: string,
   query: InspectAgentExecutionQuery,
-): ResultAsync<RunInspectionAgentExecutionDocument, RunInspectionError> {
+): Effect.Effect<RunInspectionAgentExecutionDocument, RunInspectionError> {
   const invalid = validateTargetQuery(query.target);
-  if (invalid) return invalidInspection(invalid);
-  return withInspectionRun(cwd, query.runId, async state => {
-    const resolved = resolveTarget(state, query.target);
-    if (resolved.isErr()) return err(resolved.error);
-    if (resolved.value.kind === "candidates") return err(targetAmbiguous(query.runId, query.target, resolved.value.candidates));
-    const attemptId = resolved.value.details.staticNode?.kind === "agent"
-      ? targetAttemptId(resolved.value.details)
+  if (invalid) return Effect.fail(invalid);
+  return withInspectionRun(cwd, query.runId, state => Effect.gen(function* () {
+    const resolved = yield* resolveTarget(state, query.target);
+    if (resolved.kind === "candidates") return yield* Effect.fail(targetAmbiguous(query.runId, query.target, resolved.candidates));
+    const attemptId = resolved.details.staticNode?.kind === "agent"
+      ? targetAttemptId(resolved.details)
       : undefined;
-    const observationResult = attemptId === undefined
+    const observations = attemptId === undefined
       ? undefined
-      : await state.store.observationLog.readInspectionProjection({
+      : yield* state.store.observationLog.readInspectionProjection({
           runId: query.runId,
           attemptIds: [attemptId],
           entryLimit: 50,
           latestTurnPerAttempt: true,
-        });
-    if (observationResult?.isErr()) throw observationResult.error;
-    return ok(projectAgentExecution({
-      details: resolved.value.details,
-      ...(observationResult?.isOk() ? { observations: observationResult.value } : {}),
-    }));
-  });
+        }).pipe(Effect.mapError(failure => runInspectionObservationFailure(query.runId, failure)));
+    return projectAgentExecution({
+      details: resolved.details,
+      ...(observations === undefined ? {} : { observations }),
+    });
+  }));
 }
 
 export function inspectTargetArtifacts(
   cwd: string,
   query: InspectTargetArtifactsQuery,
-): ResultAsync<RunInspectionTargetArtifactsDocument, RunInspectionError> {
+): Effect.Effect<RunInspectionTargetArtifactsDocument, RunInspectionError> {
   const invalid = validateTargetQuery(query.target);
-  if (invalid) return invalidInspection(invalid);
-  return withInspectionRun(cwd, query.runId, state => {
-    const resolved = resolveTarget(state, query.target);
-    if (resolved.isErr()) return err(resolved.error);
-    if (resolved.value.kind === "candidates") return err(targetAmbiguous(query.runId, query.target, resolved.value.candidates));
-    const details = resolved.value.details;
-    return ok({
+  if (invalid) return Effect.fail(invalid);
+  return withInspectionRun(cwd, query.runId, state => Effect.gen(function* () {
+    const resolved = yield* resolveTarget(state, query.target);
+    if (resolved.kind === "candidates") return yield* Effect.fail(targetAmbiguous(query.runId, query.target, resolved.candidates));
+    const details = resolved.details;
+    return {
       schemaVersion: 2,
       kind: "artifacts",
       run: { id: details.run.id, status: details.run.status, updatedAt: details.run.updatedAt },
       subject: inspectionSubject(details),
       artifacts: details.artifacts,
-    });
-  });
+    } satisfies RunInspectionTargetArtifactsDocument;
+  }));
 }
 
 type InspectionRun = {
-  store: RuntimeStore;
+  store: RuntimeStoreShape;
   read: RunInspectionStoreRead;
   run: NonNullable<RunInspectionStoreRead["run"]>;
   frozen: NonNullable<RunInspectionStoreRead["frozen"]>;
-  schedulerSnapshot: () => SchedulerSnapshot;
-  retrySchedulerSnapshot: () => SchedulerSnapshot;
+  schedulerSnapshot(): Effect.Effect<SchedulerSnapshot, RunInspectionError>;
+  retrySchedulerSnapshot(): Effect.Effect<SchedulerSnapshot, RunInspectionError>;
 };
 
 type ResolvedInspectionTarget =
   | { kind: "resolved"; target: string; details: ResolvedTargetState }
   | { kind: "candidates"; candidates: InspectionCandidates };
 
-function invalidInspection<T>(error: RunInspectionError): ResultAsync<T, RunInspectionError> {
-  return new ResultAsync(Promise.resolve(err(error)));
-}
-
 function withInspectionRun<T>(
   cwd: string,
   runId: string,
-  project: (state: InspectionRun) => Result<T, RunInspectionError> | Promise<Result<T, RunInspectionError>>,
-): ResultAsync<T, RunInspectionError> {
-  return new ResultAsync((async () => {
-    const session = await openBoundRuntimeReadSession(cwd);
-    if (session.isErr()) return err(inspectionRuntimeReadFailure(runId, session.error));
-    if (!session.value) return err({ type: "runtime-store-not-found", message: "Runtime store was not found." });
-    try {
-      const runtimeStore = session.value.store;
-      const ownership = await readAgentSessionOwnershipHealth(cwd, runtimeStore);
-      return await withRunInspectionSnapshot(runtimeStore, async () => {
-        const read = withStoreReadOwnershipHealth(runtimeStore.readRunInspection(runId), ownership);
-        if (!read.run) {
-          return err({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
-        }
-        if (!read.frozen) throw new Error(`Frozen workflow for run '${runId}' was not found.`);
-        let scheduler: SchedulerSnapshot | undefined;
-        const schedulerSnapshot = () => {
-          scheduler ??= throwSchedulerStoreResult(runtimeStore.scheduler.tryLoadRunSnapshot(runId));
-          return scheduler;
-        };
-        let retryScheduler: SchedulerSnapshot | undefined;
-        const retrySchedulerSnapshot = () => {
-          retryScheduler ??= settleRetryControlSnapshot({
-            frozen: read.frozen!,
-            snapshot: schedulerSnapshot(),
-            now: new Date(),
-          }).snapshot;
-          return retryScheduler;
-        };
-        return project({
-          store: runtimeStore,
-          read,
-          run: read.run,
-          frozen: read.frozen,
-          schedulerSnapshot,
-          retrySchedulerSnapshot,
-        });
+  project: (state: InspectionRun) => Effect.Effect<T, RunInspectionError>,
+): Effect.Effect<T, RunInspectionError> {
+  return Effect.scoped(Effect.gen(function* () {
+    const session = yield* acquireBoundRuntimeReadSession(cwd).pipe(
+      Effect.mapError(failure => inspectionRuntimeReadFailure(runId, failure)),
+    );
+    if (!session) return yield* Effect.fail<RunInspectionError>({
+      type: "runtime-store-not-found",
+      message: "Runtime store was not found.",
+    });
+    const runtimeStore = session.store;
+    const ownership = yield* readAgentSessionOwnershipHealth(cwd, runtimeStore).pipe(
+      Effect.mapError(failure => inspectionStoreBusyFailure(runId, failure)),
+    );
+    return yield* runtimeStore.withRunInspectionSnapshot(Effect.gen(function* () {
+      const read = withStoreReadOwnershipHealth(
+        yield* runtimeStore.readRunInspection(runId),
+        ownership,
+      );
+      if (!read.run) return yield* Effect.fail<RunInspectionError>({
+        type: "run-not-found",
+        runId,
+        message: `Run '${runId}' was not found.`,
       });
-    } catch (error) {
-      return err(inspectionRuntimeReadFailure(runId, runtimeReadFailureFromError(error)));
-    } finally {
-      session.value.close();
-    }
-  })());
+      if (!read.frozen) throw new Error(`Frozen workflow for run '${runId}' was not found.`);
+      let scheduler: SchedulerSnapshot | undefined;
+      const schedulerSnapshot = (): Effect.Effect<SchedulerSnapshot, RunInspectionError> => scheduler === undefined
+        ? loadSchedulerSnapshot(runtimeStore, runId).pipe(
+            Effect.mapError(failure => inspectionStoreBusyFailure(runId, failure)),
+            Effect.tap(value => Effect.sync(() => {
+              scheduler = value;
+            })),
+          )
+        : Effect.succeed(scheduler);
+      let retryScheduler: SchedulerSnapshot | undefined;
+      const retrySchedulerSnapshot = (): Effect.Effect<SchedulerSnapshot, RunInspectionError> => retryScheduler === undefined
+        ? schedulerSnapshot().pipe(Effect.map(snapshot => {
+            retryScheduler = settleRetryControlSnapshot({
+              frozen: read.frozen!,
+              snapshot,
+              now: new Date(),
+            }).snapshot;
+            return retryScheduler;
+          }))
+        : Effect.succeed(retryScheduler);
+      return yield* project({
+        store: runtimeStore,
+        read,
+        run: read.run,
+        frozen: read.frozen,
+        schedulerSnapshot,
+        retrySchedulerSnapshot,
+      });
+    })).pipe(
+      Effect.catchIf(
+        (failure): failure is RuntimeStoreBusy => isRuntimeStoreBusy(failure),
+        failure => Effect.fail(inspectionStoreBusyFailure(runId, failure)),
+      ),
+    );
+  }));
 }
 
 function resolveTarget(
   state: InspectionRun,
   target: string,
   includeControls = false,
-): Result<ResolvedInspectionTarget, RunInspectionError> {
+): Effect.Effect<ResolvedInspectionTarget, RunInspectionError> {
   const resolution = resolveInspectionTarget({
     run: state.run,
     staticNodes: inspectionStaticNodes(state.frozen.ir),
     target,
   });
-  if (resolution.kind === "not-found") return err(targetNotFound(state.run.id, target));
+  if (resolution.kind === "not-found") return Effect.fail(targetNotFound(state.run.id, target));
   if (resolution.kind === "ref-collision") {
-    return err({
+    return Effect.fail({
       type: "target-ref-collision",
       runId: state.run.id,
       target,
@@ -1081,32 +1122,39 @@ function resolveTarget(
       message: `Occurrence reference '${target}' is not unique in this run; use one of: ${resolution.candidateKeys.join(", ")}.`,
     });
   }
-  if (resolution.kind === "candidates") return ok({ kind: "candidates", candidates: resolution.candidates });
+  if (resolution.kind === "candidates") return Effect.succeed({ kind: "candidates", candidates: resolution.candidates });
   const base = resolveTargetState({
     ir: state.frozen.ir,
     run: state.run,
     artifacts: state.read.artifacts,
     target: resolution.target,
   });
-  if (!base) return err(targetNotFound(state.run.id, target));
-  const agentControl = targetAgentControl(state.read.agentControl, base, selectedAttemptFor(base));
-  const controls = includeControls
-    ? targetInspectionControls(state.retrySchedulerSnapshot(), state.schedulerSnapshot(), base, state.frozen, agentControl.agentSession)
-    : base.availableControls;
-  const details = {
-    ...base,
-    run: { ...base.run, agentSessions: state.read.agentControl.agentSessions },
-    summary: {
-      ...base.summary,
-      ...(agentControl.agentSession === undefined ? {} : { agentSession: agentControl.agentSession }),
-      ...(agentControl.steer === undefined ? {} : { steer: agentControl.steer }),
-    },
-    availableControls: controls,
-  };
-  return ok({
-    kind: "resolved",
-    target: resolution.target,
-    details,
+  if (!base) return Effect.fail(targetNotFound(state.run.id, target));
+  return Effect.gen(function* () {
+    const agentControl = targetAgentControl(state.read.agentControl, base, selectedAttemptFor(base));
+    const controls = includeControls
+      ? targetInspectionControls(
+          yield* state.retrySchedulerSnapshot(),
+          yield* state.schedulerSnapshot(),
+          base,
+          state.frozen,
+          agentControl.agentSession,
+        )
+      : base.availableControls;
+    return {
+      kind: "resolved" as const,
+      target: resolution.target,
+      details: {
+        ...base,
+        run: { ...base.run, agentSessions: state.read.agentControl.agentSessions },
+        summary: {
+          ...base.summary,
+          ...(agentControl.agentSession === undefined ? {} : { agentSession: agentControl.agentSession }),
+          ...(agentControl.steer === undefined ? {} : { steer: agentControl.steer }),
+        },
+        availableControls: controls,
+      },
+    };
   });
 }
 
@@ -1206,8 +1254,8 @@ function targetInspectionControls(
         effect: "cancel_drain_then_continue",
       });
       const cancel = planCancelControl(cancelSnapshot, target);
-      if (cancel.isOk() && cancel.value.events.length > 0 && cancel.value.resolvedTarget) {
-        controls.push({ type: "cancel", target: cancel.value.resolvedTarget });
+      if (Result.isSuccess(cancel) && cancel.success.events.length > 0 && cancel.success.resolvedTarget) {
+        controls.push({ type: "cancel", target: cancel.success.resolvedTarget });
       }
       return controls;
     }
@@ -1219,15 +1267,15 @@ function targetInspectionControls(
     || selectedAttempt.status === "started";
   if (allowRetry) {
     const retry = planRetryControl(retrySnapshot, target);
-    const impact = retry.isOk() && frozen !== undefined
-      ? planRetrySessionImpact({ frozen, snapshot: retrySnapshot, reexecutedNodeKeys: retry.value.reexecutedNodeKeys })
+    const impact = Result.isSuccess(retry) && frozen !== undefined
+      ? planRetrySessionImpact({ frozen, snapshot: retrySnapshot, reexecutedNodeKeys: retry.success.reexecutedNodeKeys })
       : undefined;
-    if (retry.isOk() && impact?.isOk()) controls.push({ type: "retry", target: retry.value.resolvedTarget });
+    if (Result.isSuccess(retry) && impact !== undefined && Result.isSuccess(impact)) controls.push({ type: "retry", target: retry.success.resolvedTarget });
   }
   if (allowCancel) {
     const cancel = planCancelControl(cancelSnapshot, target);
-    if (cancel.isOk() && cancel.value.events.length > 0 && cancel.value.resolvedTarget) {
-      controls.push({ type: "cancel", target: cancel.value.resolvedTarget });
+    if (Result.isSuccess(cancel) && cancel.success.events.length > 0 && cancel.success.resolvedTarget) {
+      controls.push({ type: "cancel", target: cancel.success.resolvedTarget });
     }
   }
   return controls;
@@ -1294,19 +1342,68 @@ function inspectionTimelineNodeKeys(
   return [...nodeIds];
 }
 
-async function readRecentTimelineObservations(
-  log: AgentObservationLog,
+function readRecentTimelineObservations(
+  store: RuntimeStoreShape,
   runId: string,
   attemptIds: readonly string[],
-): Promise<AgentObservationInspectionProjection> {
-  const result = await log.readInspectionProjection({
+): Effect.Effect<AgentObservationInspectionProjection, InspectionError> {
+  return store.observationLog.readInspectionProjection({
     runId,
     attemptIds,
     entryLimit: inspectionTimelineEntryLimit,
     includeOlderCount: false,
-  });
-  if (result.isErr()) throw result.error;
-  return result.value;
+  }).pipe(Effect.mapError(failure => inspectionObservationFailure(runId, failure)));
+}
+
+function loadSchedulerSnapshot(
+  store: RuntimeStoreShape,
+  runId: string,
+): Effect.Effect<SchedulerSnapshot, RuntimeStoreBusy> {
+  return store.scheduler.tryLoadRunSnapshot(runId).pipe(
+    Effect.catchIf(
+      (failure): failure is SchedulerStoreError => !isRuntimeStoreBusy(failure),
+      failure => Effect.die(failure),
+    ),
+  );
+}
+
+function inspectionObservationFailure(
+  runId: string,
+  failure: AgentObservationReadError | RuntimeStoreBusy,
+): InspectionError {
+  return isRuntimeStoreBusy(failure)
+    ? inspectionStoreBusyFailure(runId, failure)
+    : { type: "read-failed", runId, message: failure.message };
+}
+
+function runInspectionObservationFailure(
+  runId: string,
+  failure: AgentObservationReadError | RuntimeStoreBusy,
+): RunInspectionError {
+  return isRuntimeStoreBusy(failure)
+    ? inspectionStoreBusyFailure(runId, failure)
+    : {
+        type: "inspection-read-failed",
+        runId,
+        message: failure.message,
+        ...(failure.cause === undefined ? {} : { cause: failure.cause }),
+      };
+}
+
+function inspectionStoreBusyFailure(
+  runId: string,
+  failure: RuntimeStoreBusy,
+): Extract<InspectionError, { type: "runtime-store-unavailable" }> {
+  return {
+    type: "runtime-store-unavailable",
+    runId,
+    message: failure.message,
+  };
+}
+
+function isRuntimeStoreBusy(failure: unknown): failure is RuntimeStoreBusy {
+  return typeof failure === "object" && failure !== null
+    && "type" in failure && failure.type === "runtime-store-busy";
 }
 
 function inspectionRuntimeReadFailure(
@@ -1323,17 +1420,4 @@ function inspectionRuntimeReadFailure(
     ...failure,
     runId,
   };
-}
-
-async function delay(ms: number, signal: AbortSignal | undefined): Promise<void> {
-  if (signal?.aborted) return;
-  await new Promise<void>(resolve => {
-    const timer = setTimeout(done, ms);
-    function done(): void {
-      clearTimeout(timer);
-      signal?.removeEventListener("abort", done);
-      resolve();
-    }
-    signal?.addEventListener("abort", done, { once: true });
-  });
 }

@@ -12,10 +12,14 @@ session projection.
 
 - The package root MUST expose `openAcpSession` and its package-owned launch,
   session, turn, event, result, usage, and error types. It MUST expose no public
-  protocol-version or transport subpath.
+  protocol-version or protocol-SDK types, and it MUST NOT re-export the SDK
+  transport adapter.
 - The callable Session surface MUST consist only of `openAcpSession`,
   `AcpSession.runTurn`, and `AcpSession.close`; each MUST return
-  `ResultAsync<..., AcpError>`.
+  `Effect.Effect<..., AcpError>`. Opening MUST retain the explicit
+  `AcpTransport | ProcessHost | Scope.Scope` requirements for the executable
+  composition root to provide; the returned Session methods MUST retain no
+  ambient service requirement.
 - `openAcpSession` MUST accept a command or structured-argv launch, effective
   cwd and environment, `approve-reads | approve-all | deny-all` permission mode,
   state directory, caller-owned Agent Session id, `new_or_empty | existing_required`
@@ -60,6 +64,40 @@ session projection.
   `launch | cwd | model | options`.
 - The public interface MUST NOT expose raw protocol envelopes or raw provider
   wire output.
+
+### SDK Transport Boundary
+
+- The package MUST expose `@acpus/acp/transport` as the explicit low-level ACP
+  SDK adapter. This subpath MAY expose the pinned SDK request, response, and
+  update types needed by Session lifecycle code; the package root MUST remain
+  package-owned.
+- The package MUST expose `@acpus/acp/cancellation` as the single
+  listener-cleanup bridge from an external `AbortSignal` to Effect
+  interruption. ACP transport and Agent Session supervision MUST consume this
+  bridge rather than owning separate listener lifecycles.
+- The adapter MUST provide an `AcpTransport` service with Context key
+  `acpus/acp/AcpTransport`. Connecting MUST require `ProcessHost` and a
+  `Scope`, and MUST return Effect operations for initialize, new/resume/load,
+  configuration, prompt, cancellation, Session close, process signalling,
+  liveness, and connection close plus an ordered update Stream. Each decoded
+  update MUST carry only the SDK update and the optional package-owned prompt
+  epoch/sequence needed by Session fencing; `prompt` MUST return the matching
+  epoch and exact pre-response update fence with its SDK response.
+- Provider creation, stdio conversion, SDK connection ownership, request
+  Promise adaptation, SDK callback adaptation, and the bounded provider-exit
+  priority race MUST be confined to the transport adapter. It MUST use
+  `@acpus/owned-process` rather than importing Node child-process APIs.
+- Fiber interruption of an outbound SDK request MUST supply the SDK
+  cancellation signal and MUST stop waiting even if the SDK Promise settles
+  later. An inbound SDK cancellation signal MUST interrupt the corresponding
+  handler Effect and remove its listener.
+- SDK callbacks MUST enqueue handler Effects into concurrent Fibers owned by
+  the connection Scope. They MUST NOT start an Effect Runtime internally.
+  Closing the Scope MUST interrupt and settle every pending callback, close the
+  SDK connection, end the update Stream, and release the provider process.
+- A request-side transport failure observed within the 100 ms provider-exit
+  priority window MUST become a typed provider-exit failure when process exit
+  is observed in that window.
 
 ### Stable V1 Behavior
 
@@ -137,4 +175,5 @@ session projection.
   recovery, configuration replay, turns, cancellation, client operations, and
   projection behavior.
 - `pnpm test:contract packages/acp` and `pnpm test:type packages/acp`: verify
-  the root export and closed package-owned type surface.
+  the root export, closed package-owned type surface, and explicit
+  `@acpus/acp/transport` Effect contract.

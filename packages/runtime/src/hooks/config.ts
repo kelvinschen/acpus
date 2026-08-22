@@ -1,5 +1,5 @@
 import { tryParseDurationMs } from "@acpus/core/ir";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 
 export const hookEvents = [
   "run.started",
@@ -52,9 +52,9 @@ function isHookEvent(value: string): value is HookEvent {
   return hookEventSet.has(value);
 }
 
-export function validateHooksFile(config: unknown): Result<HooksFile, HookValidationError[]> {
+export function validateHooksFile(config: unknown): Result.Result<HooksFile, HookValidationError[]> {
   const errors: HookValidationError[] = [];
-  if (!isRecord(config)) return err([{ path: "$", message: "Hooks file must be an object." }]);
+  if (!isRecord(config)) return Result.fail([{ path: "$", message: "Hooks file must be an object." }]);
 
   const output: HooksFile = {};
   for (const [event, value] of Object.entries(config)) {
@@ -78,7 +78,7 @@ export function validateHooksFile(config: unknown): Result<HooksFile, HookValida
     output[event] = entries;
   }
 
-  return errors.length > 0 ? err(errors) : ok(output);
+  return errors.length > 0 ? Result.fail(errors) : Result.succeed(output);
 }
 
 function validateHookEntry(entry: unknown, event: HookEvent, path: string, errors: HookValidationError[]): HookConfig | undefined {
@@ -101,7 +101,7 @@ function validateHookEntry(entry: unknown, event: HookEvent, path: string, error
   }
 
   const timeout = entry.timeout;
-  if (timeout !== undefined && (typeof timeout !== "string" || tryParseDurationMs(timeout).isErr())) {
+  if (timeout !== undefined && (typeof timeout !== "string" || tryParseDurationMs(timeout)._tag === "Failure")) {
     errors.push({ path: `${path}.timeout`, message: "Hook timeout must be a duration such as 500ms, 30s, 5m, or 1h." });
   }
 

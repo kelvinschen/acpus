@@ -16,17 +16,26 @@ import {
   type WritableAgentPresetScope,
 } from "@acpus/runtime";
 import type { WorkspaceRuntime } from "@acpus/runtime/host";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
 import { AcpusOperationError, runtimePoolOperationError } from "./errors.js";
 import {
   dshAgentPresetProvider,
   toAgentPresetView,
 } from "./agent-presets.js";
-import { RuntimePool } from "./runtime-pool.js";
+import {
+  makeRuntimePool,
+  type RuntimePool,
+  type RuntimePoolOpenFailure,
+} from "./runtime-pool.js";
 import { createDshAgentLaunches } from "./dsh-agent.js";
 import { RunLinkStore } from "./run-links.js";
-import type { AdmittedRunLink } from "./run-links.js";
+import type { AdmittedRunLink, RunLink, StoredControl } from "./run-links.js";
 import { ParentSessionAgentAdapter } from "./session-agent.js";
-import { AcpusSupervision } from "./supervision.js";
+import { makeAcpusSupervision, type AcpusSupervision } from "./supervision.js";
 import { findStoredActivityNode } from "./run-projection.js";
 import {
   installAcpusPreset,
@@ -42,7 +51,7 @@ import {
   type AcpusRunReceipt,
   type InvalidWorkflow,
 } from "./submission.js";
-import { AcpusProjectionReader } from "../remote/reader.js";
+import { abortError, AcpusProjectionReader } from "../remote/reader.js";
 import type {
   AwaitSessionActivityRevisionRequest,
   AwaitSessionActivityRevisionResult,
@@ -92,34 +101,29 @@ export type ApplyAgentPresetsResult =
   | { status: "rejected"; reason: string };
 
 export class AcpusMode extends TypertRemoteService {
-  private readonly runtimes: RuntimePool;
-  private readonly links: RunLinkStore;
-  private readonly supervision: AcpusSupervision;
-  private readonly projections: AcpusProjectionReader;
+  private runtimes!: RuntimePool;
+  private links!: RunLinkStore;
+  private supervision!: AcpusSupervision;
+  private projections!: AcpusProjectionReader;
+  private hostScope!: Scope.Closeable;
   private readonly presetOptions: AcpusPresetInstallOptions;
+  private readonly stateDir: string;
+  private readonly dshHome: string;
+  private readonly noticeAdapter: ParentSessionAgentAdapter | undefined;
 
   constructor(ctx: Context, config: AcpusModeConfig = {}) {
     super(ctx, "acpusMode", { namespace: "acpus" });
     const dshHome = resolve(config.dshHome
       ?? process.env.DSH_HOME
       ?? join(homedir(), ".dsh"));
-    const stateDir = resolve(config.stateDir ?? join(dshHome, ".acpus-dsh"));
+    this.dshHome = dshHome;
+    this.stateDir = resolve(config.stateDir ?? join(dshHome, ".acpus-dsh"));
     this.presetOptions = { dshHome };
-    this.runtimes = new RuntimePool(
-      join(stateDir, "runtime"),
-      {
-        namedAgentLaunches: createDshAgentLaunches(dshHome),
-        agentPresetProvider: dshAgentPresetProvider,
-      },
-    );
-    this.links = new RunLinkStore(
-      join(stateDir, "run-links.json"),
-    );
     const agents = ctx.get("agents");
     const agentPresets = ctx.get("agentPresets");
     const sessions = ctx.get("sessions");
     const sessionPersistence = ctx.get("sessionPersistence");
-    const noticeAdapter = agents === undefined
+    this.noticeAdapter = agents === undefined
       || agentPresets === undefined
       || sessions === undefined
       ? undefined
@@ -129,114 +133,150 @@ export class AcpusMode extends TypertRemoteService {
           sessions,
           ...(sessionPersistence === undefined ? {} : { sessionPersistence }),
         }, resolveSessionPreset);
-    this.supervision = new AcpusSupervision({
-      runtimes: this.runtimes,
-      store: this.links,
-      admit: (admissionRequestId, run) =>
-        this.links.admitted(admissionRequestId, run),
-      ...(noticeAdapter === undefined ? {} : { notices: noticeAdapter }),
-    });
-    this.projections = new AcpusProjectionReader({
-      sessions: {
-        readSession: sessionId => this.links.readSession(sessionId),
-        waitForActivityRevision: (sessionId, revision, signal) =>
-          this.supervision.waitForActivityRevision(sessionId, revision, signal),
-      },
-    });
   }
 
   protected async [Service.init](): Promise<void> {
     await installAcpusPreset(this.presetOptions);
-    this.supervision.start();
-    void this.reconcilePendingCancels().catch(error =>
-      console.error("[acpus/dsh] cancel reconciliation:", error));
+    this.hostScope = await Effect.runPromise(this.initializeHost());
+    const scope = this.hostScope;
     this.ctx.effect(() => async () => {
-      const settled = await Promise.allSettled([
-        this.supervision.dispose(),
-        this.runtimes.close(),
-      ]);
-      const failures = settled.flatMap(result =>
-        result.status === "rejected" ? [result.reason] : []);
-      if (failures.length === 1) throw failures[0];
-      if (failures.length > 1) {
-        throw new AggregateError(failures, "Acpus DSH mode did not close cleanly.");
-      }
+      await Effect.runPromise(Scope.close(scope, Exit.void));
     }, "acpusMode.supervision");
   }
 
-  async run(request: AcpusRunRequest): Promise<AcpusRunReceipt | InvalidWorkflow> {
-    await this.supervision.whenReady();
-    const opened = await this.runtimes.open(request.workspace);
-    if (opened.isErr()) throw runtimePoolOperationError(opened.error);
-    const { workspace, runtime } = opened.value;
-    const admissionRequestId = admissionId(request.sessionId, request.toolCallId);
-    const identity = {
-      workspace,
-      admissionRequestId,
-      parentSessionId: request.sessionId,
-    };
-    const existingLink = await this.links.readLink(identity);
-    if (existingLink !== undefined) {
-      const existingReceipt = await readAdmissionReceipt({
-        runtime,
-        admissionRequestId,
-        link: existingLink,
-      });
-      if (existingReceipt !== undefined) {
-        await this.supervision.reconcileRun(existingLink);
-        return existingReceipt;
-      }
-    }
-    const prepared = await prepareAuthoringWorkflow(workspace, request.workflow);
-    if (prepared.status === "invalid") return prepared;
-    const normalized = normalizeAuthoringInput(
-      prepared.prepared,
-      request.input === undefined ? {} : request.input,
-    );
-    if (normalized.status === "invalid") return normalized;
-    const agents = normalizeAgentInjections(
-      request.agents ?? {},
-      prepared.prepared.ir.agents,
-    );
-    if (agents.status === "invalid") return agents;
-    const presetCatalog = hasPresetInjections(agents.agents)
-      ? await this.agentPresetCatalog(workspace)
-      : undefined;
-    const bindings = await preflightAgentBindings(
-      prepared.prepared.ir.agents,
-      agents.agents,
-      presetCatalog,
-    );
-    if (bindings.status === "invalid") return bindings;
-    let link = await this.links.provisional(identity);
-    if (link.runId === undefined) {
-      const recovered = await runtime.findAdmission(admissionRequestId);
-      if (recovered.isErr()) throw new AcpusOperationError(recovered.error.message, "ACPUS_READ_FAILED");
-      if (recovered.value !== undefined) {
-        link = await this.links.admitted(admissionRequestId, recovered.value);
-      }
-    }
-    const receipt = await submitPreparedWorkflow({
-      runtime,
-      prepared: prepared.prepared,
-      normalizedInput: normalized.input,
-      agentInjections: agents.agents,
-      admissionRequestId,
-      link,
-      links: this.links,
-      ...(request.signal === undefined ? {} : { signal: request.signal }),
+  private initializeHost(): Effect.Effect<Scope.Closeable> {
+    const mode = this;
+    return Effect.gen(function* () {
+      const scope = yield* Scope.make("parallel");
+      const initialized = yield* Effect.exit(Scope.provide(scope)(Effect.gen(function* () {
+        const links = new RunLinkStore(join(mode.stateDir, "run-links.json"));
+        const runtimes = yield* makeRuntimePool(join(mode.stateDir, "runtime"), {
+          namedAgentLaunches: createDshAgentLaunches(mode.dshHome),
+          agentPresetProvider: dshAgentPresetProvider,
+        });
+        const supervision = yield* makeAcpusSupervision({
+          runtimes,
+          store: links,
+          admit: (admissionRequestId, run) => links.admitted(admissionRequestId, run),
+          ...(mode.noticeAdapter === undefined ? {} : { notices: mode.noticeAdapter }),
+        });
+        const projections = new AcpusProjectionReader({
+          sessions: {
+            readSession: sessionId => links.readSession(sessionId),
+            waitForActivityRevision: (sessionId, revision) =>
+              supervision.waitForActivityRevision(sessionId, revision),
+          },
+        });
+        yield* Effect.sync(() => {
+          mode.links = links;
+          mode.runtimes = runtimes;
+          mode.supervision = supervision;
+          mode.projections = projections;
+        });
+        yield* mode.reconcilePendingCancels().pipe(
+          Effect.catchCause(cause => Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.sync(() => console.error(
+                "[acpus/dsh] cancel reconciliation:",
+                Cause.squash(cause),
+              ))),
+          Effect.forkScoped,
+        );
+      })));
+      if (Exit.isSuccess(initialized)) return scope;
+      yield* Scope.close(scope, initialized);
+      return yield* Effect.failCause(initialized.cause);
     });
-    const admitted = (await this.links.listLinks()).find(candidate =>
-      candidate.admissionRequestId === admissionRequestId);
-    if (admitted !== undefined) await this.supervision.reconcileRun(admitted);
-    return receipt;
   }
 
-  async runtime(workspace: string): Promise<WorkspaceRuntime> {
-    await this.supervision.whenReady();
-    const opened = await this.runtimes.open(workspace);
-    if (opened.isErr()) throw runtimePoolOperationError(opened.error);
-    return opened.value.runtime;
+  run(request: AcpusRunRequest): Promise<AcpusRunReceipt | InvalidWorkflow> {
+    const mode = this;
+    const operation = Effect.gen(function* () {
+      yield* mode.supervision.whenReady();
+      const opened = yield* Effect.result(mode.runtimes.open(request.workspace));
+      if (Result.isFailure(opened)) {
+        return yield* Effect.fail(runtimePoolOperationError(opened.failure));
+      }
+      const { workspace, runtime } = opened.success;
+      const admissionRequestId = admissionId(request.sessionId, request.toolCallId);
+      const identity = {
+        workspace,
+        admissionRequestId,
+        parentSessionId: request.sessionId,
+      };
+      const existingLink = yield* mode.links.readLink(identity);
+      if (existingLink !== undefined) {
+        const existingReceipt = yield* readAdmissionReceipt({
+          runtime,
+          admissionRequestId,
+          link: existingLink,
+        });
+        if (existingReceipt !== undefined) {
+          yield* mode.supervision.reconcileRun(existingLink);
+          return existingReceipt;
+        }
+      }
+      const prepared = yield* prepareAuthoringWorkflow(workspace, request.workflow);
+      if (prepared.status === "invalid") return prepared;
+      const normalized = normalizeAuthoringInput(
+        prepared.prepared,
+        request.input === undefined ? {} : request.input,
+      );
+      if (normalized.status === "invalid") return normalized;
+      const agents = normalizeAgentInjections(
+        request.agents ?? {},
+        prepared.prepared.ir.agents,
+      );
+      if (agents.status === "invalid") return agents;
+      const presetCatalog = hasPresetInjections(agents.agents)
+        ? yield* mode.agentPresetCatalogEffect(workspace)
+        : undefined;
+      const bindings = preflightAgentBindings(
+        prepared.prepared.ir.agents,
+        agents.agents,
+        presetCatalog,
+      );
+      if (bindings.status === "invalid") return bindings;
+      let link = yield* mode.links.provisional(identity);
+      if (link.runId === undefined) {
+        const recovered = yield* Effect.result(runtime.findAdmission(admissionRequestId));
+        if (Result.isFailure(recovered)) {
+          return yield* Effect.fail(new AcpusOperationError(
+            recovered.failure.message,
+            "ACPUS_READ_FAILED",
+          ));
+        }
+        if (recovered.success !== undefined) {
+          link = yield* mode.links.admitted(admissionRequestId, recovered.success);
+        }
+      }
+      const receipt = yield* submitPreparedWorkflow({
+        runtime,
+        prepared: prepared.prepared,
+        normalizedInput: normalized.input,
+        agentInjections: agents.agents,
+        admissionRequestId,
+        link,
+        links: mode.links,
+      });
+      const admitted = (yield* mode.links.listLinks()).find(candidate =>
+        candidate.admissionRequestId === admissionRequestId);
+      if (admitted !== undefined) yield* mode.supervision.reconcileRun(admitted);
+      return receipt;
+    });
+    return runHostEffect(operation, request.signal);
+  }
+
+  runtime(workspace: string): Promise<WorkspaceRuntime> {
+    const mode = this;
+    return runHostEffect(Effect.gen(function* () {
+      yield* mode.supervision.whenReady();
+      const opened = yield* Effect.result(mode.runtimes.open(workspace));
+      return yield* Result.match(opened, {
+        onSuccess: value => Effect.succeed(value.runtime),
+        onFailure: failure => Effect.fail(runtimePoolOperationError(failure)),
+      });
+    }));
   }
 
   async trustedAgentPresetChoices(): Promise<AgentPresetView[]> {
@@ -250,15 +290,15 @@ export class AcpusMode extends TypertRemoteService {
   async applyAgentPresets(
     input: ApplyAgentPresetsRequest,
   ): Promise<ApplyAgentPresetsResult> {
-    const applied = await applyAgentPresetChanges({
+    const applied = await Effect.runPromise(Effect.result(applyAgentPresetChanges({
       workspaceDir: input.workspace,
       scope: input.scope,
       changes: input.changes,
+    })));
+    return Result.match(applied, {
+      onSuccess: () => ({ status: "applied" as const }),
+      onFailure: failure => ({ status: "rejected" as const, reason: failure.type }),
     });
-    return applied.match(
-      () => ({ status: "applied" }),
-      failure => ({ status: "rejected", reason: failure.type }),
-    );
   }
 
   private async loadAgentPresetChoices(
@@ -273,26 +313,31 @@ export class AcpusMode extends TypertRemoteService {
     workspace: string | undefined,
     scopes?: readonly AgentPresetScope[],
   ): Promise<AgentPresetCatalog> {
-    const loaded = await loadAgentPresetCatalog({
+    return runHostEffect(this.agentPresetCatalogEffect(workspace, scopes));
+  }
+
+  private agentPresetCatalogEffect(
+    workspace: string | undefined,
+    scopes?: readonly AgentPresetScope[],
+  ): Effect.Effect<AgentPresetCatalog, AcpusOperationError> {
+    return Effect.result(loadAgentPresetCatalog({
       ...(workspace === undefined ? {} : { workspaceDir: workspace }),
       hostProvider: dshAgentPresetProvider,
       ...(scopes === undefined ? {} : { scopes }),
-    });
-    if (loaded.isErr()) {
-      throw new AcpusOperationError(
-        "Acpus could not read the Agent Preset catalog.",
-        "ACPUS_AGENT_PRESET_CATALOG_FAILED",
-        { cause: loaded.error },
-      );
-    }
-    return loaded.value;
+    })).pipe(Effect.flatMap(loaded => Result.isSuccess(loaded)
+      ? Effect.succeed(loaded.success)
+      : Effect.fail(new AcpusOperationError(
+          "Acpus could not read the Agent Preset catalog.",
+          "ACPUS_AGENT_PRESET_CATALOG_FAILED",
+          { cause: loaded.failure },
+        ))));
   }
 
   tasks(sessionId: string, name?: string): Promise<AcpusTasksResult> {
-    return this.projections.readTasks(sessionId, name);
+    return runHostEffect(this.projections.readTasks(sessionId, name));
   }
 
-  async resolveTask(
+  resolveTask(
     sessionId: string,
     selector?: DelegatedTaskSelector,
   ): Promise<{
@@ -303,77 +348,88 @@ export class AcpusMode extends TypertRemoteService {
     selector: ResolvedTaskSelector;
     link: AdmittedRunLink;
   }> {
-    if (selector !== undefined && (selector.name.length === 0
-      || !Number.isSafeInteger(selector.occurrence) || selector.occurrence < 1)) {
-      throw new AcpusOperationError(
-        "A delegated task selector requires an exact non-empty workflow name and a positive occurrence.",
-        "ACPUS_TASK_NOT_FOUND",
-      );
-    }
-    const session = await this.links.readSession(sessionId);
-    if (selector === undefined) {
-      const latest = session.runs.reduce<typeof session.runs[number] | undefined>(
-        (selected, run) => selected === undefined || run.generation > selected.generation ? run : selected,
-        undefined,
-      );
-      if (latest === undefined) {
-        throw new AcpusOperationError(
-          "This DSH session has no delegated task.",
+    const mode = this;
+    return runHostEffect(Effect.gen(function* () {
+      let resolved = selector;
+      if (resolved !== undefined && (resolved.name.length === 0
+        || !Number.isSafeInteger(resolved.occurrence) || resolved.occurrence < 1)) {
+        return yield* Effect.fail(new AcpusOperationError(
+          "A delegated task selector requires an exact non-empty workflow name and a positive occurrence.",
           "ACPUS_TASK_NOT_FOUND",
-        );
+        ));
       }
-      selector = { name: latest.name, occurrence: latest.occurrence };
-    }
-    const named = session.runs.filter(run => run.name === selector.name);
-    const selected = named.find(run => run.occurrence === selector.occurrence);
-    if (selected === undefined) {
-      throw new AcpusOperationError(
-        `Workflow '${selector.name}' occurrence ${selector.occurrence} was not found in this DSH session.`,
-        "ACPUS_TASK_NOT_FOUND",
-      );
-    }
-    const link = (await this.links.listLinks()).find(candidate =>
-      candidate.parentSessionId === sessionId
-      && candidate.generation === selected.generation);
-    if (!isAdmittedLink(link)) {
-      throw new AcpusOperationError(
-        `Workflow '${selector.name}' is not available for control.`,
-        "ACPUS_TASK_NOT_FOUND",
-      );
-    }
-    const opened = await this.supervision.openLinkedRuntime(link);
-    if (opened.isErr()) throw runtimePoolOperationError(opened.error);
-    return {
-      runId: link.runId,
-      workspace: link.workspace,
-      runtime: opened.value.runtime,
-      generation: link.generation,
-      selector: { name: link.workflowName, occurrence: link.occurrence },
-      link,
-    };
+      const session = yield* mode.links.readSession(sessionId);
+      if (resolved === undefined) {
+        const latest = session.runs.reduce<typeof session.runs[number] | undefined>(
+          (selected, run) => selected === undefined || run.generation > selected.generation
+            ? run
+            : selected,
+          undefined,
+        );
+        if (latest === undefined) {
+          return yield* Effect.fail(new AcpusOperationError(
+            "This DSH session has no delegated task.",
+            "ACPUS_TASK_NOT_FOUND",
+          ));
+        }
+        resolved = { name: latest.name, occurrence: latest.occurrence };
+      }
+      const selected = session.runs.find(run =>
+        run.name === resolved.name && run.occurrence === resolved.occurrence);
+      if (selected === undefined) {
+        return yield* Effect.fail(new AcpusOperationError(
+          `Workflow '${resolved.name}' occurrence ${resolved.occurrence} was not found in this DSH session.`,
+          "ACPUS_TASK_NOT_FOUND",
+        ));
+      }
+      const link = (yield* mode.links.listLinks()).find(candidate =>
+        candidate.parentSessionId === sessionId
+        && candidate.generation === selected.generation);
+      if (!isAdmittedLink(link)) {
+        return yield* Effect.fail(new AcpusOperationError(
+          `Workflow '${resolved.name}' is not available for control.`,
+          "ACPUS_TASK_NOT_FOUND",
+        ));
+      }
+      const opened = yield* Effect.result(mode.supervision.openLinkedRuntime(link));
+      if (Result.isFailure(opened)) {
+        return yield* Effect.fail(linkedRuntimeError(opened.failure));
+      }
+      return {
+        runId: link.runId,
+        workspace: link.workspace,
+        runtime: opened.success.runtime,
+        generation: link.generation,
+        selector: { name: link.workflowName, occurrence: link.occurrence },
+        link,
+      };
+    }));
   }
 
-  async reconcileTask(link: AdmittedRunLink): Promise<void> {
-    await this.supervision.reconcileRun(link);
+  reconcileTask(link: AdmittedRunLink): Promise<void> {
+    return runHostEffect(this.supervision.reconcileRun(link));
   }
 
-  async linkFork(
+  linkFork(
     sessionId: string,
     toolCallId: string,
     sourceGeneration: number,
     workspace: string,
     run: { id: string; name: string },
   ): Promise<ResolvedTaskSelector> {
-    const admissionRequestId = `dsh-control:${toolCallId}`;
-    await this.links.provisional({
-      workspace,
-      admissionRequestId,
-      parentSessionId: sessionId,
-      forkedFromGeneration: sourceGeneration,
-    });
-    const link = await this.links.admitted(admissionRequestId, run);
-    await this.supervision.reconcileRun(link);
-    return { name: link.workflowName, occurrence: link.occurrence };
+    const mode = this;
+    return runHostEffect(Effect.gen(function* () {
+      const admissionRequestId = `dsh-control:${toolCallId}`;
+      yield* mode.links.provisional({
+        workspace,
+        admissionRequestId,
+        parentSessionId: sessionId,
+        forkedFromGeneration: sourceGeneration,
+      });
+      const link = yield* mode.links.admitted(admissionRequestId, run);
+      yield* mode.supervision.reconcileRun(link);
+      return { name: link.workflowName, occurrence: link.occurrence };
+    }));
   }
 
   @Remote
@@ -387,14 +443,14 @@ export class AcpusMode extends TypertRemoteService {
   readSessionActivity(
     input: ReadSessionActivityRequest,
   ): Promise<SessionActivityProjection> {
-    return this.projections.readSessionActivity(input.sessionId, input.task);
+    return runHostEffect(this.projections.readSessionActivity(input.sessionId, input.task));
   }
 
   @Remote
   async readActivityDetail(
     input: ReadActivityDetailRequest,
   ): Promise<ReadActivityDetailResult> {
-    const session = await this.links.readSession(input.sessionId);
+    const session = await runHostEffect(this.links.readSession(input.sessionId));
     const task = session.runs.find(candidate => candidate.generation === input.generation);
     if (task === undefined) return { status: "rejected", reason: "task-unavailable" };
     const node = findStoredActivityNode(task.activity, input.activityId);
@@ -405,23 +461,19 @@ export class AcpusMode extends TypertRemoteService {
       return { status: "rejected", reason: "node-unavailable" };
     }
     try {
-      const link = (await this.links.listLinks()).find(candidate =>
+      const link = (await runHostEffect(this.links.listLinks())).find(candidate =>
         candidate.parentSessionId === input.sessionId
         && candidate.generation === input.generation);
       if (!isAdmittedLink(link)) return { status: "rejected", reason: "task-unavailable" };
-      const opened = await this.supervision.openLinkedRuntime(link);
-      if (opened.isErr()) return { status: "rejected", reason: "temporarily-unavailable" };
-      const runtime = opened.value.runtime;
-      const inspected = await runtime.inspect({
+      const opened = await runHostEffect(Effect.result(this.supervision.openLinkedRuntime(link)));
+      if (Result.isFailure(opened)) return { status: "rejected", reason: "temporarily-unavailable" };
+      const runtime = opened.success.runtime;
+      const view = await Effect.runPromise(runtime.inspect({
         kind: "target",
         runId: task.runId,
         target: node.target,
         detail: "forensics",
-      });
-      if (inspected.isErr()) {
-        return { status: "rejected", reason: "temporarily-unavailable" };
-      }
-      const view = inspected.value;
+      }));
       if (view.kind !== "target" || view.detail !== "forensics" || view.definition.kind !== node.kind) {
         return { status: "rejected", reason: "node-unavailable" };
       }
@@ -447,168 +499,197 @@ export class AcpusMode extends TypertRemoteService {
     input: AwaitSessionActivityRevisionRequest,
     signal: AbortSignal,
   ): Promise<AwaitSessionActivityRevisionResult> {
-    return this.projections.awaitSessionActivityRevision(
-      input.sessionId,
-      input.afterRevision,
+    return runHostEffect(
+      this.projections.awaitSessionActivityRevision(input.sessionId, input.afterRevision),
       signal,
     );
   }
 
   @Remote
-  async cancelSessionTask(
+  cancelSessionTask(
     input: CancelSessionTaskRequest,
   ): Promise<CancelSessionTaskResult> {
-    const selected = (await this.links.listLinks()).find(link =>
-      link.parentSessionId === input.sessionId && link.generation === input.generation);
-    const selector = isAdmittedLink(selected)
-      ? { name: selected.workflowName, occurrence: selected.occurrence }
-      : undefined;
-    const prepared = await this.links.prepareCancel({
-      sessionId: input.sessionId,
-      generation: input.generation,
-      actor: "user",
-    });
-    if (prepared.status === "rejected") {
-      if (prepared.reason === "already-terminal") {
-        this.supervision.scheduleNoticeDelivery(input.sessionId);
+    const mode = this;
+    return runHostEffect(Effect.gen(function* () {
+      const selected = (yield* mode.links.listLinks()).find(link =>
+        link.parentSessionId === input.sessionId && link.generation === input.generation);
+      const selector = isAdmittedLink(selected)
+        ? { name: selected.workflowName, occurrence: selected.occurrence }
+        : undefined;
+      const prepared = yield* mode.links.prepareCancel({
+        sessionId: input.sessionId,
+        generation: input.generation,
+        actor: "user",
+      });
+      if (prepared.status === "rejected") {
+        if (prepared.reason === "already-terminal") {
+          yield* mode.supervision.scheduleNoticeDelivery(input.sessionId);
+        }
+        return {
+          status: "rejected" as const,
+          reason: prepared.reason,
+          projection: yield* mode.projections.readSessionActivity(input.sessionId, selector),
+        };
       }
-      return {
-        status: "rejected",
-        reason: prepared.reason,
-        projection: await this.projections.readSessionActivity(input.sessionId, selector),
-      };
-    }
-    return this.applyUserCancel(prepared.control, prepared.link);
+      return yield* mode.applyUserCancel(prepared.control, prepared.link);
+    }));
   }
 
-  async prepareModelCancel(
+  prepareModelCancel(
     sessionId: string,
     generation: number,
     requestId: string,
-  ): Promise<Awaited<ReturnType<RunLinkStore["prepareCancel"]>>> {
-    return this.links.prepareCancel({ sessionId, generation, actor: "model", requestId });
+  ): Promise<
+    | { status: "ready"; control: StoredControl; link: AdmittedRunLink }
+    | { status: "rejected"; reason: "task-unavailable" | "already-terminal" }
+  > {
+    return runHostEffect(this.links.prepareCancel({
+      sessionId,
+      generation,
+      actor: "model",
+      requestId,
+    }));
   }
 
-  async settleModelCancel(
+  settleModelCancel(
     controlId: string,
     outcome: "applied" | "rejected",
     reason?: "not-controllable" | "temporarily-unavailable",
   ): Promise<void> {
-    await this.links.settleCancel({
+    return runHostEffect(this.links.settleCancel({
       controlId,
       outcome,
       taskStatus: outcome === "applied" ? "canceled" : "running",
       ...(reason === undefined ? {} : { reason }),
-    });
+    }));
   }
 
-  private async applyUserCancel(
-    control: Awaited<ReturnType<RunLinkStore["pendingControls"]>>[number],
+  private applyUserCancel(
+    control: StoredControl,
     link: AdmittedRunLink,
-  ): Promise<CancelSessionTaskResult> {
-    const opened = await this.supervision.openLinkedRuntime(link);
-    if (opened.isErr()) {
-      return {
-        status: "rejected",
-        reason: "temporarily-unavailable",
-        projection: await this.projections.readSessionActivity(control.parentSessionId, {
-          name: link.workflowName,
-          occurrence: link.occurrence,
-        }),
-      };
-    }
-    const runtime = opened.value.runtime;
-    const result = await runtime.control({
-      type: "cancel",
-      runId: link.runId,
-      requestId: control.requestId,
-    });
-    if (result.isErr()) {
-      const reason = result.error.code === "RUN_NOT_CONTROLLABLE"
-        ? "not-controllable" as const
-        : "temporarily-unavailable" as const;
-      await this.links.settleCancel({
+  ): Effect.Effect<CancelSessionTaskResult, Error> {
+    const mode = this;
+    const selector = { name: link.workflowName, occurrence: link.occurrence };
+    return Effect.gen(function* () {
+      const opened = yield* Effect.result(mode.supervision.openLinkedRuntime(link));
+      if (Result.isFailure(opened)) {
+        return {
+          status: "rejected" as const,
+          reason: "temporarily-unavailable" as const,
+          projection: yield* mode.projections.readSessionActivity(
+            control.parentSessionId,
+            selector,
+          ),
+        };
+      }
+      const result = yield* Effect.result(opened.success.runtime.control({
+        type: "cancel",
+        runId: link.runId,
+        requestId: control.requestId,
+      }));
+      if (Result.isFailure(result)) {
+        const reason = result.failure.code === "RUN_NOT_CONTROLLABLE"
+          ? "not-controllable" as const
+          : "temporarily-unavailable" as const;
+        yield* mode.links.settleCancel({
+          controlId: control.id,
+          outcome: "rejected",
+          taskStatus: "running",
+          reason,
+        });
+        yield* mode.supervision.scheduleNoticeDelivery(control.parentSessionId);
+        return {
+          status: "rejected" as const,
+          reason,
+          projection: yield* mode.projections.readSessionActivity(
+            control.parentSessionId,
+            selector,
+          ),
+        };
+      }
+      yield* mode.links.settleCancel({
         controlId: control.id,
-        outcome: "rejected",
-        taskStatus: "running",
-        reason,
+        outcome: "applied",
+        taskStatus: "canceled",
       });
-      this.supervision.scheduleNoticeDelivery(control.parentSessionId);
+      yield* mode.supervision.reconcileRun(link);
+      yield* mode.supervision.scheduleNoticeDelivery(control.parentSessionId);
       return {
-      status: "rejected",
-      reason,
-      projection: await this.projections.readSessionActivity(control.parentSessionId, {
-        name: link.workflowName,
-        occurrence: link.occurrence,
-      }),
+        status: "applied" as const,
+        projection: yield* mode.projections.readSessionActivity(
+          control.parentSessionId,
+          selector,
+        ),
       };
-    }
-    await this.links.settleCancel({
-      controlId: control.id,
-      outcome: "applied",
-      taskStatus: "canceled",
     });
-    await this.supervision.reconcileRun(link);
-    this.supervision.scheduleNoticeDelivery(control.parentSessionId);
-    return {
-      status: "applied",
-      projection: await this.projections.readSessionActivity(control.parentSessionId, {
-        name: link.workflowName,
-        occurrence: link.occurrence,
-      }),
-    };
   }
 
-  private async reconcilePendingCancels(): Promise<void> {
-    await this.supervision.whenReady();
-    for (const control of await this.links.pendingControls()) {
-      try {
-        const link = (await this.links.listLinks()).find(candidate =>
-          candidate.parentSessionId === control.parentSessionId
-          && candidate.generation === control.generation
-          && candidate.runId === control.runId);
-        if (!isAdmittedLink(link)) continue;
-        const projection = (await this.links.readSession(control.parentSessionId)).runs
-          .find(run => run.runId === control.runId);
-        if (projection !== undefined
-          && ["completed", "failed", "canceled"].includes(projection.status)) {
-          await this.links.settleCancel({
-            controlId: control.id,
-            outcome: "rejected",
-            taskStatus: projection.status,
-            reason: "already-terminal",
-          });
-          continue;
-        }
-        if (control.actor === "user") {
-          await this.applyUserCancel(control, link);
-          continue;
-        }
-        const opened = await this.supervision.openLinkedRuntime(link);
-        if (opened.isErr()) continue;
-        const result = await opened.value.runtime.control({
-          type: "cancel",
-          runId: link.runId,
-          requestId: control.requestId,
-        });
-        await this.links.settleCancel({
+  private reconcilePendingCancels(): Effect.Effect<void, Error> {
+    const mode = this;
+    return Effect.gen(function* () {
+      yield* mode.supervision.whenReady();
+      const controls = yield* mode.links.pendingControls();
+      yield* Effect.forEach(
+        controls,
+        control => mode.reconcilePendingCancel(control).pipe(
+          Effect.catchCause(cause => Cause.hasInterruptsOnly(cause)
+            ? Effect.failCause(cause)
+            : Effect.sync(() => console.error(
+                `[acpus/dsh] cancel reconciliation for ${control.runId}:`,
+                Cause.squash(cause),
+              ))),
+        ),
+        { concurrency: 1, discard: true },
+      );
+      yield* mode.supervision.scheduleNoticeDelivery();
+    });
+  }
+
+  private reconcilePendingCancel(control: StoredControl): Effect.Effect<void, Error> {
+    const mode = this;
+    return Effect.gen(function* () {
+      const link = (yield* mode.links.listLinks()).find(candidate =>
+        candidate.parentSessionId === control.parentSessionId
+        && candidate.generation === control.generation
+        && candidate.runId === control.runId);
+      if (!isAdmittedLink(link)) return;
+      const projection = (yield* mode.links.readSession(control.parentSessionId)).runs
+        .find(run => run.runId === control.runId);
+      if (projection !== undefined
+        && ["completed", "failed", "canceled"].includes(projection.status)) {
+        yield* mode.links.settleCancel({
           controlId: control.id,
-          outcome: result.isOk() ? "applied" : "rejected",
-          taskStatus: result.isOk() ? "canceled" : "running",
-          ...(result.isErr()
-            ? {
-                reason: result.error.code === "RUN_NOT_CONTROLLABLE"
-                  ? "not-controllable" as const
-                  : "temporarily-unavailable" as const,
-              }
-            : {}),
+          outcome: "rejected",
+          taskStatus: projection.status,
+          reason: "already-terminal",
         });
-        await this.supervision.reconcileRun(link);
-      } catch (error) {
-        console.error(`[acpus/dsh] cancel reconciliation for ${control.runId}:`, error);
+        return;
       }
-    }
-    this.supervision.scheduleNoticeDelivery();
+      if (control.actor === "user") {
+        yield* mode.applyUserCancel(control, link);
+        return;
+      }
+      const opened = yield* Effect.result(mode.supervision.openLinkedRuntime(link));
+      if (Result.isFailure(opened)) return;
+      const result = yield* Effect.result(opened.success.runtime.control({
+        type: "cancel",
+        runId: link.runId,
+        requestId: control.requestId,
+      }));
+      yield* mode.links.settleCancel({
+        controlId: control.id,
+        outcome: Result.isSuccess(result) ? "applied" : "rejected",
+        taskStatus: Result.isSuccess(result) ? "canceled" : "running",
+        ...(Result.isFailure(result)
+          ? {
+              reason: result.failure.code === "RUN_NOT_CONTROLLABLE"
+                ? "not-controllable" as const
+                : "temporarily-unavailable" as const,
+            }
+          : {}),
+      });
+      yield* mode.supervision.reconcileRun(link);
+    });
   }
 }
 
@@ -616,10 +697,27 @@ function admissionId(sessionId: string, toolCallId: string): string {
   return `dsh:${createHash("sha256").update(sessionId).update("\0").update(toolCallId).digest("hex")}`;
 }
 
-function isAdmittedLink(link: Awaited<ReturnType<RunLinkStore["listLinks"]>>[number] | undefined): link is AdmittedRunLink {
+function isAdmittedLink(link: RunLink | undefined): link is AdmittedRunLink {
   return link?.runId !== undefined
     && link.workflowName !== undefined
     && link.occurrence !== undefined;
+}
+
+function linkedRuntimeError(failure: RuntimePoolOpenFailure | Error): Error {
+  return failure instanceof Error ? failure : runtimePoolOperationError(failure);
+}
+
+async function runHostEffect<A, E>(
+  effect: Effect.Effect<A, E>,
+  signal?: AbortSignal,
+): Promise<A> {
+  if (signal === undefined) return Effect.runPromise(effect);
+  try {
+    return await Effect.runPromise(effect, { signal });
+  } catch (error) {
+    if (signal.aborted) throw abortError(signal.reason);
+    throw error;
+  }
 }
 
 const PROMPT_LIMIT = 16 * 1024;

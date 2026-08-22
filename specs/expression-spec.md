@@ -34,7 +34,7 @@
 - `Resolvable<T>` MUST be the sole authoring type for values resolved from workflow scope at run time.
 - `Resolvable<T>` MUST accept expression tokens, JSON-compatible literals, arrays, and plain objects recursively. Raw literal `undefined` MUST still fail lowering; expression tokens whose value type includes `undefined` are allowed as projection values.
 - Runtime lowering MUST reject unsupported raw values such as `undefined`, sparse arrays, non-plain objects, functions, symbols, bigint, and non-finite numbers.
-- `tryValueToExprIR(value)` MUST return a neverthrow `Result<ExprIR, ExprLoweringError>` for recoverable expression lowering failures.
+- `tryValueToExprIR(value)` MUST return a native Effect v4 `Result.Result<ExprIR, ExprLoweringError>` for recoverable expression lowering failures.
 - `ExprLoweringError` MUST be a serializable tagged union with stable path fields.
 - Cyclic values MUST return `cyclic-value`, and object reflection failures MUST return `uninspectable-value`; neither case may leak a recursion or Proxy trap exception.
 - Lowering and object evaluation MUST preserve ordinary own data fields named `__proto__`.

@@ -11,12 +11,17 @@ for (const argument of process.argv.slice(2)) {
 }
 addScenarios(process.env.ACP_FIXTURE_SCENARIO);
 const hangingOpen = scenarios.has("hang-initialize") || scenarios.has("hang-new");
+let cancellationReceived = false;
+let terminationRequested = false;
 
 if (process.env.ACP_FIXTURE_PID_PATH !== undefined) {
   writeFileSync(process.env.ACP_FIXTURE_PID_PATH, `${process.pid}\n`);
 }
-if (scenarios.has("hang-initialize")) {
-  process.on("SIGTERM", () => {});
+if (hangingOpen) {
+  process.on("SIGTERM", () => {
+    terminationRequested = true;
+    if (cancellationReceived) process.exit(0);
+  });
 }
 
 const requestLogPath = process.env.ACP_FIXTURE_LOG_PATH;
@@ -43,6 +48,10 @@ createInterface({ input: process.stdin })
   .on("line", line => {
     const message = JSON.parse(line);
     if (requestLogPath !== undefined) appendFileSync(requestLogPath, `${JSON.stringify(message)}\n`);
+    if (hangingOpen && message.method === "$/cancel_request") {
+      cancellationReceived = true;
+      if (terminationRequested) process.exit(0);
+    }
     if (message.method === undefined && message.id !== undefined) {
       reverseRequests.get(message.id)?.(message);
       reverseRequests.delete(message.id);

@@ -1,6 +1,7 @@
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getRuntimeHealth, requestDaemonShutdown } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
 import { setRuntimeHomeForTest } from "../../../runtime/src/runtime-layout.js";
 import { registerTestProcessHome, repoRoot } from "./cli-runner.js";
 
@@ -84,7 +85,7 @@ async function stopWorkspaceDaemon(workspace: string): Promise<void> {
     ...maybePid(await workspaceDaemonPid(workspace)),
   ]);
   try {
-    await requestDaemonShutdown(workspace);
+    await Effect.runPromise(requestDaemonShutdown(workspace));
   } catch {
     // Active test runs can reject graceful shutdown. The workspace is about to be
     // deleted, so the test-owned daemon must not be allowed to outlive it.
@@ -96,7 +97,7 @@ async function stopWorkspaceDaemon(workspace: string): Promise<void> {
 
 async function workspaceDaemonPid(workspace: string): Promise<number | undefined> {
   try {
-    const health = await getRuntimeHealth(workspace);
+    const health = await Effect.runPromise(getRuntimeHealth(workspace));
     const daemon = health.checks.find(check => check.area === "daemon");
     const pid = daemon?.details?.pid;
     return typeof pid === "number" ? pid : undefined;

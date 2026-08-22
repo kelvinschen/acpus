@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import { projectSteerLifecycle, type SequencedSchedulerEvent } from "../src/scheduler/steer-lifecycle.js";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
@@ -5,10 +6,10 @@ import type { SchedulerEvent } from "../src/scheduler/events.js";
 describe("Steer lifecycle projection", () => {
   it("projects draining, queued, and one replacement from the closed relation", () => {
     const draining = base();
-    expect(projectSteerLifecycle("steer-1", draining)._unsafeUnwrap()).toMatchObject({ phase: "draining" });
+    expect(Result.getOrThrow(projectSteerLifecycle("steer-1", draining))).toMatchObject({ phase: "draining" });
     const queued = [...draining, requeued()];
-    expect(projectSteerLifecycle("steer-1", queued, "terminal_observed")._unsafeUnwrap()).toMatchObject({ phase: "queued" });
-    expect(projectSteerLifecycle("steer-1", [...queued, started()], "terminal_observed")._unsafeUnwrap()).toEqual({
+    expect(Result.getOrThrow(projectSteerLifecycle("steer-1", queued, "terminal_observed"))).toMatchObject({ phase: "queued" });
+    expect(Result.getOrThrow(projectSteerLifecycle("steer-1", [...queued, started()], "terminal_observed"))).toEqual({
       steerId: "steer-1",
       delivery: "interrupt_continue",
       fencedAttemptId: "attempt-old",
@@ -29,20 +30,20 @@ describe("Steer lifecycle projection", () => {
       },
       { sequence: 13, event: { type: "instance.failed", payload: { nodeKey: "agent~1", error: { message: "unknown" } } } },
     ];
-    expect(projectSteerLifecycle("steer-1", events, "terminal_unknown")._unsafeUnwrap()).toMatchObject({
+    expect(Result.getOrThrow(projectSteerLifecycle("steer-1", events, "terminal_unknown"))).toMatchObject({
       phase: "blocked",
       blockedCheckpoint: "terminal_unknown",
     });
   });
 
   it("rejects missing, out-of-order, and duplicate replacement facts", () => {
-    expect(projectSteerLifecycle("steer-1", [base()[0]!])._unsafeUnwrapErr()).toMatchObject({ type: "invalid_steer_lifecycle" });
-    expect(projectSteerLifecycle("steer-1", [...base(), started()])._unsafeUnwrapErr().message).toContain("before");
-    expect(projectSteerLifecycle("steer-1", [base()[0]!, { ...requeued(), sequence: 11 }, { ...base()[1]!, sequence: 12 }], "terminal_observed")._unsafeUnwrapErr().message).toContain("before");
-    expect(projectSteerLifecycle("steer-1", [...base(), { ...started(), sequence: 12 }, { ...requeued(), sequence: 13 }], "terminal_observed")._unsafeUnwrapErr().message).toContain("before");
-    expect(projectSteerLifecycle("steer-1", [...base(), { ...requeued(), event: { ...requeued().event, payload: { ...requeued().event.payload, steerEventSequence: 9 } } }], "terminal_observed")._unsafeUnwrapErr().message).toContain("authority");
+    expect(Result.getOrThrow(Result.flip(projectSteerLifecycle("steer-1", [base()[0]!])))).toMatchObject({ type: "invalid_steer_lifecycle" });
+    expect(Result.getOrThrow(Result.flip(projectSteerLifecycle("steer-1", [...base(), started()]))).message).toContain("before");
+    expect(Result.getOrThrow(Result.flip(projectSteerLifecycle("steer-1", [base()[0]!, { ...requeued(), sequence: 11 }, { ...base()[1]!, sequence: 12 }], "terminal_observed"))).message).toContain("before");
+    expect(Result.getOrThrow(Result.flip(projectSteerLifecycle("steer-1", [...base(), { ...started(), sequence: 12 }, { ...requeued(), sequence: 13 }], "terminal_observed"))).message).toContain("before");
+    expect(Result.getOrThrow(Result.flip(projectSteerLifecycle("steer-1", [...base(), { ...requeued(), event: { ...requeued().event, payload: { ...requeued().event.payload, steerEventSequence: 9 } } }], "terminal_observed"))).message).toContain("authority");
     const queued = [...base(), requeued(), started(), { ...started(), sequence: 14, event: { ...started().event, payload: { ...started().event.payload, attemptId: "attempt-other" } } }];
-    expect(projectSteerLifecycle("steer-1", queued, "terminal_observed")._unsafeUnwrapErr().message).toContain("duplicate");
+    expect(Result.getOrThrow(Result.flip(projectSteerLifecycle("steer-1", queued, "terminal_observed"))).message).toContain("duplicate");
   });
 });
 

@@ -1,6 +1,7 @@
 import { cp, lstat, mkdir, mkdtemp, readlink, rename, rm, stat } from "node:fs/promises";
 import { basename, dirname, join, resolve } from "node:path";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { readAcpusSkillMetadata } from "./content.js";
 
 const ACPUS_SKILL = "acpus";
@@ -106,9 +107,11 @@ export async function installAcpusSkill(
         ? dryRun ? "would-install" : "installed"
         : dryRun ? "would-update" : "updated";
       if (!dryRun) {
-        const replaced = await replaceDirectory(sourcePath, target.targetPath, existing !== "missing");
-        if (replaced.isErr()) {
-          results.push(failedInstallation(target, replaced.error.message));
+        const replaced = await Effect.runPromise(Effect.result(
+          replaceDirectory(sourcePath, target.targetPath, existing !== "missing"),
+        ));
+        if (Result.isFailure(replaced)) {
+          results.push(failedInstallation(target, replaced.failure.message));
           continue;
         }
       }
@@ -162,21 +165,23 @@ export async function uninstallAcpusSkill(
   return results;
 }
 
-export function replaceDirectory(sourcePath: string, targetPath: string, targetExists: boolean): ResultAsync<void, SkillReplaceFailure> {
-  return new ResultAsync(replaceDirectoryTransaction(sourcePath, targetPath, targetExists));
+export function replaceDirectory(sourcePath: string, targetPath: string, targetExists: boolean): Effect.Effect<void, SkillReplaceFailure> {
+  return Effect.promise(() => replaceDirectoryTransaction(sourcePath, targetPath, targetExists)).pipe(
+    Effect.flatMap(Effect.fromResult),
+  );
 }
 
 async function replaceDirectoryTransaction(
   sourcePath: string,
   targetPath: string,
   targetExists: boolean,
-): Promise<Result<void, SkillReplaceFailure>> {
+): Promise<Result.Result<void, SkillReplaceFailure>> {
   const parent = dirname(targetPath);
   let recoveryPath: string;
   try {
     recoveryPath = await mkdtemp(join(parent, ".acpus-skill-"));
   } catch (cause) {
-    return err(skillReplaceFailure("stage", parent, false, cause));
+    return Result.fail(skillReplaceFailure("stage", parent, false, cause));
   }
   const stagedPath = join(recoveryPath, basename(targetPath));
   const backupPath = join(recoveryPath, ".previous");
@@ -202,7 +207,7 @@ async function replaceDirectoryTransaction(
       try {
         await rename(backupPath, targetPath);
       } catch (restoreCause) {
-        return err(skillReplaceFailure(
+        return Result.fail(skillReplaceFailure(
           "restore",
           recoveryPath,
           false,
@@ -216,9 +221,9 @@ async function replaceDirectoryTransaction(
   try {
     await rm(recoveryPath, { recursive: true, force: true });
   } catch (cause) {
-    return err(skillReplaceFailure("cleanup", recoveryPath, true, cause));
+    return Result.fail(skillReplaceFailure("cleanup", recoveryPath, true, cause));
   }
-  return ok(undefined);
+  return Result.succeed(undefined);
 }
 
 async function classifyRoot(rootPath: string): Promise<"directory" | "missing" | "invalid"> {
@@ -268,12 +273,12 @@ async function cleanupAfterFailure(
   recoveryPath: string,
   published: boolean,
   cause: unknown,
-): Promise<Result<void, SkillReplaceFailure>> {
+): Promise<Result.Result<void, SkillReplaceFailure>> {
   try {
     await rm(recoveryPath, { recursive: true, force: true });
-    return err(skillReplaceFailure(stage, recoveryPath, published, cause));
+    return Result.fail(skillReplaceFailure(stage, recoveryPath, published, cause));
   } catch (cleanupCause) {
-    return err(skillReplaceFailure(
+    return Result.fail(skillReplaceFailure(
       stage,
       recoveryPath,
       published,

@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ArtifactRecord, RunInspectionTargetArtifactsDocument } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
 import { createRunsCommand } from "../src/runs/command.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
@@ -35,9 +36,9 @@ const resolvedArtifact = {
 
 describe("runs artifacts", () => {
   beforeEach(() => {
-    runtime.listArtifacts.mockReset().mockResolvedValue(okList(artifacts));
-    runtime.inspectTargetArtifacts.mockReset().mockResolvedValue(okTarget(artifacts));
-    runtime.resolveArtifact.mockReset().mockResolvedValue(okArtifact(resolvedArtifact));
+    runtime.listArtifacts.mockReset().mockReturnValue(okList(artifacts));
+    runtime.inspectTargetArtifacts.mockReset().mockReturnValue(okTarget(artifacts));
+    runtime.resolveArtifact.mockReset().mockReturnValue(okArtifact(resolvedArtifact));
   });
 
   it("lists all artifact metadata as id, media type, and absolute path", async () => {
@@ -64,7 +65,7 @@ describe("runs artifacts", () => {
   });
 
   it("prints a successful empty result", async () => {
-    runtime.listArtifacts.mockResolvedValue(okList([]));
+    runtime.listArtifacts.mockReturnValue(okList([]));
 
     await expect(runCommand(["artifacts", "run_1"])).resolves.toEqual({
       exitCode: 0,
@@ -74,7 +75,7 @@ describe("runs artifacts", () => {
   });
 
   it("reports missing runs as text", async () => {
-    runtime.listArtifacts.mockResolvedValue(okList(undefined));
+    runtime.listArtifacts.mockReturnValue(okList(undefined));
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
     expect(await runCli(["runs", "artifacts", "missing"], {
@@ -88,20 +89,37 @@ describe("runs artifacts", () => {
   });
 
   it("reports missing targets through inspect errors", async () => {
-    runtime.inspectTargetArtifacts.mockResolvedValue({
-      isErr: () => true,
-      error: { type: "target-not-found", runId: "run_1", target: "missing", message: "Run target 'missing' was not found." },
-    });
+    runtime.inspectTargetArtifacts.mockReturnValue(Effect.fail({
+      type: "target-not-found", runId: "run_1", target: "missing", message: "Run target 'missing' was not found.",
+    }));
     await expect(runCommand(["artifacts", "run_1", "--target", "missing"])).rejects.toMatchObject({
       exitCode: 1,
       result: { phase: "inspect", errorCode: "TARGET_NOT_FOUND" },
     });
   });
+
+  it.each([
+    ["runtime-store-repair-required", "RUNTIME_STORE_REPAIR_REQUIRED", "acpus doctor --fix"],
+    ["runtime-store-unsupported", "RUNTIME_STORE_UNSUPPORTED", "acpus doctor"],
+  ])("maps %s while listing artifacts", async (type, errorCode, recovery) => {
+    runtime.listArtifacts.mockReturnValue(runtimeReadFailure(type));
+    const stdout = new CaptureStream();
+    const stderr = new CaptureStream();
+
+    expect(await runCli(["runs", "artifacts", "run_1"], {
+      cwd: "/workspace",
+      stdout,
+      stderr,
+    })).toBe(1);
+    expect(stdout.text).toBe("");
+    expect(stderr.text).toContain(`Error code: ${errorCode}`);
+    expect(stderr.text).toContain(recovery);
+  });
 });
 
 describe("runs artifact", () => {
   beforeEach(() => {
-    runtime.resolveArtifact.mockReset().mockResolvedValue(okArtifact(resolvedArtifact));
+    runtime.resolveArtifact.mockReset().mockReturnValue(okArtifact(resolvedArtifact));
   });
 
   it("locates one verified local source without reading its body", async () => {
@@ -125,7 +143,7 @@ describe("runs artifact", () => {
 
   it("uses a text placeholder for an absent media type", async () => {
     const { mediaType: _mediaType, ...withoutMediaType } = resolvedArtifact;
-    runtime.resolveArtifact.mockResolvedValue(okArtifact(withoutMediaType));
+    runtime.resolveArtifact.mockReturnValue(okArtifact(withoutMediaType));
 
     expect((await runCommand(["artifact", withoutMediaType.uri])).stdout).toContain("Media-Type: -\n");
   });
@@ -134,8 +152,10 @@ describe("runs artifact", () => {
     ["invalid-artifact-ref", "usage", 2, undefined],
     ["artifact-not-found", "inspect", 1, "ARTIFACT_NOT_FOUND"],
     ["artifact-path-invalid", "inspect", 1, "ARTIFACT_PATH_INVALID"],
+    ["runtime-store-repair-required", "inspect", 1, "RUNTIME_STORE_REPAIR_REQUIRED"],
+    ["runtime-store-unsupported", "inspect", 1, "RUNTIME_STORE_UNSUPPORTED"],
   ])("maps %s failures to text errors", async (type, _phase, exitCode, errorCode) => {
-    runtime.resolveArtifact.mockResolvedValue(errArtifact(type));
+    runtime.resolveArtifact.mockReturnValue(errArtifact(type));
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
 
@@ -181,34 +201,30 @@ function okTarget(value: ArtifactRecord[]) {
     },
     artifacts: value,
   };
-  return {
-    isErr: () => false as const,
-    value: document,
-  };
+  return Effect.succeed(document);
 }
 
 function okArtifact(value: typeof resolvedArtifact | Omit<typeof resolvedArtifact, "mediaType">) {
-  return {
-    isErr: () => false as const,
-    value,
-  };
+  return Effect.succeed(value);
 }
 
 function okList(value: ArtifactRecord[] | undefined) {
-  return {
-    isErr: () => false as const,
-    value,
-  };
+  return Effect.succeed(value);
 }
 
 function errArtifact(type: string) {
-  return {
-    isErr: () => true as const,
-    error: {
-      type,
-      runId: "run_1",
-      artifactId: "artifact_1",
-      message: "Artifact lookup failed.",
-    },
-  };
+  return Effect.fail({
+    type,
+    runId: "run_1",
+    artifactId: "artifact_1",
+    message: "Artifact lookup failed.",
+  });
+}
+
+function runtimeReadFailure(type: string) {
+  return Effect.fail({
+    type,
+    message: "Runtime store cannot be read.",
+    path: "/workspace/.acpus/runtime.sqlite",
+  });
 }

@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
-import { errAsync, ok, okAsync } from "neverthrow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { InspectionCandidates } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
 import { createRunsCommand } from "../src/runs/command.js";
 import { runCli } from "../src/program.js";
 import { CaptureStream } from "./support/capture-stream.js";
@@ -41,7 +41,7 @@ const run = {
 describe("runs steer", () => {
   beforeEach(() => {
     daemon.daemonControlRequestId.mockReset().mockReturnValue("cli:steer-1");
-    daemon.sendDaemonControl.mockReset().mockReturnValue(okAsync({
+    daemon.sendDaemonControl.mockReset().mockReturnValue(Effect.succeed({
       type: "steer",
       state: "applied",
       run,
@@ -88,7 +88,7 @@ describe("runs steer", () => {
   });
 
   it("renders a short-ref candidate view instead of daemon candidate keys for an ambiguous control", async () => {
-    daemon.sendDaemonControl.mockReturnValue(errAsync({
+    daemon.sendDaemonControl.mockReturnValue(Effect.fail({
       type: "control-failed",
       code: "RUN_NOT_CONTROLLABLE",
       controlType: "retry",
@@ -102,7 +102,7 @@ describe("runs steer", () => {
       },
       message: "Control 'retry' for run 'run_1' failed with RUN_NOT_CONTROLLABLE: Scheduler retry target 'review' is ambiguous. Candidate target keys: review~one, review~two.",
     }));
-    runtime.readInspection.mockResolvedValue(ok(candidates()));
+    runtime.readInspection.mockReturnValue(Effect.succeed(candidates()));
 
     const text = await runCliCommand(["runs", "retry", "run_1", "--target", "review"]);
     expect(text.exitCode).toBe(1);
@@ -115,7 +115,7 @@ describe("runs steer", () => {
   });
 
   it("preserves a non-ambiguous daemon failure without querying candidates", async () => {
-    daemon.sendDaemonControl.mockReturnValue(errAsync({
+    daemon.sendDaemonControl.mockReturnValue(Effect.fail({
       type: "control-failed",
       code: "EXECUTION_UNAVAILABLE",
       controlType: "retry",

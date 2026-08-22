@@ -1,15 +1,16 @@
+import * as Effect from "effect/Effect";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { getRuntimeHealth } from "../src/runs/use-cases.js";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
-import { openRuntimeStore } from "../src/store/store.js";
-import { withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
+import { withRuntimeWorkspace } from "./support/runtime-harness.js";
 
 describe("ACP ownership Doctor projection", () => {
   it("warns about residual ownership without changing the manifest", async () => {
     await withRuntimeWorkspace("doctor-acp-residual", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       store.close();
       const layout = resolveRuntimeLayout(workspace);
       await mkdir(layout.acpWorkersRoot, { recursive: true });
@@ -36,7 +37,7 @@ describe("ACP ownership Doctor projection", () => {
       }));
       const before = { bytes: await readFile(path, "utf8"), mtimeMs: (await stat(path)).mtimeMs };
 
-      const report = await getRuntimeHealth(workspace);
+      const report = await Effect.runPromise(getRuntimeHealth(workspace));
 
       expect(report.checks.find(check => check.area === "acp")).toMatchObject({
         status: "warn",

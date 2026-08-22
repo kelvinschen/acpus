@@ -1,9 +1,16 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import { isAbsolute } from "node:path";
 import { defineWorkflow, z } from "@acpus/core";
 import { describe, expect, it } from "vitest";
-import { inspectTargetArtifacts, observeInspection, readInspection } from "@acpus/runtime";
+import {
+  inspectTargetArtifacts as inspectTargetArtifactsEffect,
+  observeInspection as observeInspectionStream,
+  readInspection as readInspectionEffect,
+} from "../src/inspection/use-cases.js";
 import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
 import {
   admitSyntheticWorkflow,
   prepareSyntheticWorkflow,
@@ -13,6 +20,18 @@ import {
 } from "./support/runtime-fixtures.js";
 import { admitRunForTest } from "./support/runtime-store.js";
 
+function readInspection(...args: Parameters<typeof readInspectionEffect>) {
+  return Effect.runPromise(Effect.result(readInspectionEffect(...args)));
+}
+
+function inspectTargetArtifacts(...args: Parameters<typeof inspectTargetArtifactsEffect>) {
+  return Effect.runPromise(Effect.result(inspectTargetArtifactsEffect(...args)));
+}
+
+function observeInspection(...args: Parameters<typeof observeInspectionStream>) {
+  return Stream.toAsyncIterable(Stream.result(observeInspectionStream(...args)));
+}
+
 describe.concurrent("coherent inspection observation", () => {
   it("rejects a forged Forensics observation before reading Runtime state", async () => {
     const iterator = observeInspection("/missing-workspace", {
@@ -21,7 +40,7 @@ describe.concurrent("coherent inspection observation", () => {
     } as never)[Symbol.asyncIterator]();
 
     const result = await iterator.next();
-    expect(result.value?.isErr() ? result.value.error : undefined).toEqual({
+    expect(Result.isFailure(result.value) ? result.value.failure : undefined).toEqual({
       type: "invalid-query",
       message: "Forensics inspection is one-shot and cannot be observed.",
     });
@@ -97,7 +116,7 @@ describe.concurrent("coherent inspection observation", () => {
         signal: controller.signal,
       })[Symbol.asyncIterator]();
       const attached = await iterator.next();
-      expect(attached.value?.isOk() ? attached.value.value : undefined).toMatchObject({
+      expect(Result.isSuccess(attached.value) ? attached.value.success : undefined).toMatchObject({
         kind: "attached",
         view: { kind: "target", detail: "summary" },
       });
@@ -112,7 +131,7 @@ describe.concurrent("coherent inspection observation", () => {
       const root = await readInspection(workspace, {
         kind: "target", runId: admitted.run.id, target: "root", detail: "summary",
       });
-      expect(root.isOk() ? root.value : undefined).toMatchObject({
+      expect(Result.isSuccess(root) ? root.success : undefined).toMatchObject({
         attention: { kind: "awaiting-input" },
       });
 
@@ -136,7 +155,7 @@ describe.concurrent("coherent inspection observation", () => {
   it("resolves root before its runtime frame materializes", async () => {
     await withRuntimeWorkspace("inspection-observe-pending-root", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let run;
       try {
         run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
@@ -147,7 +166,7 @@ describe.concurrent("coherent inspection observation", () => {
       const read = await readInspection(workspace, {
         kind: "target", runId: run.id, target: "root", detail: "summary",
       });
-      expect(read.isOk() ? read.value : undefined).toMatchObject({
+      expect(Result.isSuccess(read) ? read.success : undefined).toMatchObject({
         kind: "target",
         detail: "summary",
         run: { id: run.id, status: "pending" },
@@ -162,7 +181,7 @@ describe.concurrent("coherent inspection observation", () => {
         signal: controller.signal,
       })[Symbol.asyncIterator]();
       const attached = await iterator.next();
-      expect(attached.value?.isOk() ? attached.value.value : undefined).toMatchObject({
+      expect(Result.isSuccess(attached.value) ? attached.value.success : undefined).toMatchObject({
         kind: "attached",
         view: { kind: "target", detail: "summary", subject: { label: "root" } },
       });
@@ -192,27 +211,27 @@ describe.concurrent("coherent inspection observation", () => {
         runId: admitted.run.id,
         target: selector,
       });
-      if (inspected.isErr()) throw new Error(inspected.error.message);
+      if (Result.isFailure(inspected)) throw new Error(inspected.failure.message);
 
-      expect(inspected.value.subject.ref).toBe(selector);
-      expect(inspected.value.artifacts).toEqual([
+      expect(inspected.success.subject.ref).toBe(selector);
+      expect(inspected.success.artifacts).toEqual([
         expect.objectContaining({
           runId: admitted.run.id,
           nodeKey: selected.nodeKey,
           attempt: 1,
         }),
       ]);
-      expect(isAbsolute(inspected.value.artifacts[0]!.path)).toBe(true);
-      expect(inspected.value.artifacts.some(artifact => artifact.nodeKey === occurrences[1]!.nodeKey)).toBe(false);
+      expect(isAbsolute(inspected.success.artifacts[0]!.path)).toBe(true);
+      expect(inspected.success.artifacts.some(artifact => artifact.nodeKey === occurrences[1]!.nodeKey)).toBe(false);
     });
   });
 });
 
-async function collect<T, E>(iterable: AsyncIterable<import("neverthrow").Result<T, E>>): Promise<T[]> {
+async function collect<T, E>(iterable: AsyncIterable<Result.Result<T, E>>): Promise<T[]> {
   const observations: T[] = [];
   for await (const result of iterable) {
-    if (result.isErr()) throw new Error("Expected inspection observation to succeed.");
-    observations.push(result.value);
+    if (Result.isFailure(result)) throw new Error("Expected inspection observation to succeed.");
+    observations.push(result.success);
   }
   return observations;
 }

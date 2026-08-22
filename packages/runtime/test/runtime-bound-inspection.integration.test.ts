@@ -1,3 +1,6 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import { randomUUID } from "node:crypto";
 import { readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -15,7 +18,8 @@ vi.mock("../src/runtime-store-lifecycle.js", async importOriginal => ({
 import { observeInspection, readInspection } from "../src/inspection/use-cases.js";
 import { getRunVisualizationSnapshot, listRuns } from "../src/runs/use-cases.js";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
-import { openRuntimeReadSessionAtLayout, openRuntimeStore } from "../src/store/store.js";
+import { acquireRuntimeReadSessionAtLayout } from "../src/store/service.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
 import { listKnownWorkspaces } from "../src/workspaces.js";
 import { admitRunForTest } from "./support/runtime-store.js";
 import {
@@ -29,7 +33,7 @@ describe("bound Runtime inspection reads", () => {
     await withRuntimeWorkspace("runtime-bound-inspection", async workspace => {
       lifecycleInspector.mockClear();
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const admitted = await admitRunForTest(store, {
         prepared,
         input: { ready: true },
@@ -37,24 +41,26 @@ describe("bound Runtime inspection reads", () => {
       });
       store.close();
 
-      const read = await readInspection(workspace, { kind: "run", runId: admitted.id });
-      expect(read.isOk() ? read.value : undefined).toMatchObject({
+      const read = await Effect.runPromise(Effect.result(
+        readInspection(workspace, { kind: "run", runId: admitted.id }),
+      ));
+      expect(Result.isSuccess(read) ? read.success : undefined).toMatchObject({
         kind: "run",
         run: { id: admitted.id, status: "pending" },
       });
 
       const controller = new AbortController();
-      const iterator = observeInspection(workspace, {
+      const iterator = Stream.toAsyncIterable(Stream.result(observeInspection(workspace, {
         view: { kind: "run", runId: admitted.id },
         until: "subject-terminal",
         signal: controller.signal,
-      })[Symbol.asyncIterator]();
+      })))[Symbol.asyncIterator]();
       const attached = await iterator.next();
-      expect(attached.value?.isOk() ? attached.value.value : undefined).toMatchObject({ kind: "attached" });
+      expect(Result.isSuccess(attached.value) ? attached.value.success : undefined).toMatchObject({ kind: "attached" });
       controller.abort();
       expect((await iterator.next()).done).toBe(true);
 
-      const catalog = await listKnownWorkspaces(workspace);
+      const catalog = await Effect.runPromise(listKnownWorkspaces(workspace));
       expect(catalog.workspaces).toEqual([
         expect.objectContaining({ canonicalPath: workspace, runCount: 1 }),
       ]);
@@ -84,13 +90,13 @@ describe("bound Runtime inspection reads", () => {
   ] as const)("returns repair-required when the active %s is invalid", async (_label, invalidate) => {
     await withRuntimeWorkspace("runtime-bound-read-invalid", async workspace => {
       lifecycleInspector.mockClear();
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       store.close();
       await invalidate(resolveRuntimeLayout(workspace));
 
-      const listed = await listRuns(workspace);
+      const listed = await Effect.runPromise(Effect.result(listRuns(workspace)));
 
-      expect(listed.isErr() ? listed.error : undefined).toMatchObject({
+      expect(Result.isFailure(listed) ? listed.failure : undefined).toMatchObject({
         type: "runtime-store-repair-required",
       });
       expect(lifecycleInspector).not.toHaveBeenCalled();
@@ -100,7 +106,7 @@ describe("bound Runtime inspection reads", () => {
   it("does not downgrade a frozen-run invariant failure to store unavailable", async () => {
     await withRuntimeWorkspace("runtime-bound-read-invariant", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const admitted = await admitRunForTest(store, {
         prepared,
         input: { ready: true },
@@ -110,13 +116,13 @@ describe("bound Runtime inspection reads", () => {
       const layout = resolveRuntimeLayout(workspace);
       await rm(join(layout.runsRoot, admitted.id, "workflow.ir.json"));
 
-      await expect(getRunVisualizationSnapshot(workspace, admitted.id)).rejects.toThrow();
+      await expect(Effect.runPromise(Effect.result(getRunVisualizationSnapshot(workspace, admitted.id)))).rejects.toThrow();
     });
   });
 
   it("rejects a fixed-layout session after the manifest publishes another generation", async () => {
     await withRuntimeWorkspace("runtime-fixed-read-generation", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       store.close();
       const layout = resolveRuntimeLayout(workspace);
       const manifest = JSON.parse(await readFile(layout.manifestPath, "utf8")) as Record<string, unknown>;
@@ -125,9 +131,9 @@ describe("bound Runtime inspection reads", () => {
         activeGenerationId: `gen_${randomUUID()}`,
       }, null, 2)}\n`);
 
-      const session = await openRuntimeReadSessionAtLayout(layout);
+      const session = await Effect.runPromise(Effect.result(Effect.scoped(acquireRuntimeReadSessionAtLayout(layout))));
 
-      expect(session.isErr() ? session.error : undefined).toMatchObject({
+      expect(Result.isFailure(session) ? session.failure : undefined).toMatchObject({
         type: "runtime-store-unavailable",
         message: expect.stringContaining("generation changed"),
       });

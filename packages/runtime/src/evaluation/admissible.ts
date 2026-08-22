@@ -1,5 +1,5 @@
 import type { JsonValue } from "@acpus/expression/ir";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 
 export type WorkflowDataFailure = {
   type: "workflow-data-invalid";
@@ -13,14 +13,14 @@ export function tryNormalizeWorkflowData(
   value: unknown,
   label: string,
   options: { allowTopLevelUndefined?: boolean } = {},
-): Result<JsonValue | undefined, WorkflowDataFailure> {
+): Result.Result<JsonValue | undefined, WorkflowDataFailure> {
   return normalizeValue(value, "$", new Set(), options.allowTopLevelUndefined === true, label);
 }
 
 export function normalizeWorkflowData(value: unknown, label: string, options: { allowTopLevelUndefined?: boolean } = {}): JsonValue | undefined {
   const normalized = tryNormalizeWorkflowData(value, label, options);
-  if (normalized.isErr()) throw new Error(normalized.error.message);
-  return normalized.value;
+  if (Result.isFailure(normalized)) throw new Error(normalized.failure.message);
+  return normalized.success;
 }
 
 function normalizeValue(
@@ -29,14 +29,14 @@ function normalizeValue(
   seen: Set<object>,
   allowUndefined: boolean,
   label: string,
-): Result<JsonValue | undefined, WorkflowDataFailure> {
+): Result.Result<JsonValue | undefined, WorkflowDataFailure> {
   if (value === undefined) {
-    return allowUndefined ? ok(undefined) : invalid(label, path, "undefined", `${path} is undefined`);
+    return allowUndefined ? Result.succeed(undefined) : invalid(label, path, "undefined", `${path} is undefined`);
   }
-  if (value === null || typeof value === "string" || typeof value === "boolean") return ok(value);
+  if (value === null || typeof value === "string" || typeof value === "boolean") return Result.succeed(value);
   if (typeof value === "number") {
     return Number.isFinite(value)
-      ? ok(value)
+      ? Result.succeed(value)
       : invalid(label, path, "non-finite-number", `${path} is non-finite number`);
   }
   if (typeof value === "bigint" || typeof value === "symbol" || typeof value === "function") {
@@ -53,14 +53,14 @@ function normalizeValue(
         return invalid(label, itemPath, "sparse-array-hole", `${itemPath} is a sparse array hole`);
       }
       const item = normalizeValue(value[index], itemPath, seen, false, label);
-      if (item.isErr()) {
+      if (Result.isFailure(item)) {
         seen.delete(value);
-        return err(item.error);
+        return Result.fail(item.failure);
       }
-      normalized.push(item.value as JsonValue);
+      normalized.push(item.success as JsonValue);
     }
     seen.delete(value);
-    return ok(normalized);
+    return Result.succeed(normalized);
   }
   if (typeof value !== "object") return invalid(label, path, "unsupported-type", `${path} is ${typeof value}`);
   if (seen.has(value)) return invalid(label, path, "cyclic", `${path} is cyclic`);
@@ -70,19 +70,19 @@ function normalizeValue(
   for (const [key, item] of Object.entries(value)) {
     if (item === undefined) continue;
     const child = normalizeValue(item, `${path}.${key}`, seen, false, label);
-    if (child.isErr()) {
+    if (Result.isFailure(child)) {
       seen.delete(value);
-      return err(child.error);
+      return Result.fail(child.failure);
     }
     Object.defineProperty(normalized, key, {
-      value: child.value as JsonValue,
+      value: child.success as JsonValue,
       enumerable: true,
       configurable: true,
       writable: true,
     });
   }
   seen.delete(value);
-  return ok(normalized);
+  return Result.succeed(normalized);
 }
 
 function invalid(
@@ -90,8 +90,8 @@ function invalid(
   path: string,
   reason: WorkflowDataFailure["reason"],
   detail: string,
-): Result<never, WorkflowDataFailure> {
-  return err({
+): Result.Result<never, WorkflowDataFailure> {
+  return Result.fail({
     type: "workflow-data-invalid",
     label,
     path,

@@ -15,5 +15,3 @@ and release tags; they are not retained in the current documentation tree.
   and "TBD" here.
 
 ## Active Roadmaps
-
-None.

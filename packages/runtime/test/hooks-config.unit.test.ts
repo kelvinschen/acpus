@@ -1,10 +1,18 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { validateHooksFile } from "../src/hooks/config.js";
 import { loadHooksConfig, loadHooksConfigScopes } from "../src/hooks/loader.js";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map(path => rm(path, { recursive: true, force: true })));
+});
 
 describe("hooks config", () => {
   it("accepts event-map command hooks", () => {
@@ -13,8 +21,8 @@ describe("hooks config", () => {
       "node.failed": [{ match: { nodeId: "^(build|test)$", nodeKey: "build~", kind: "task|agent" }, command: "./alert.sh" }],
     });
 
-    expect(result.isOk()).toBe(true);
-    expect(result._unsafeUnwrap()).toMatchObject({
+    expect(Result.isSuccess(result)).toBe(true);
+    expect(Result.getOrThrow(result)).toMatchObject({
       "run.completed": [{ id: "notify", command: "./notify.sh" }],
       "node.failed": [{ command: "./alert.sh" }],
     });
@@ -26,8 +34,8 @@ describe("hooks config", () => {
       "run.completed": [{ command: "echo ok", match: { nodeId: "build", workflow: "[" } }],
     });
 
-    expect(result.isErr()).toBe(true);
-    expect(result._unsafeUnwrapErr()).toEqual(expect.arrayContaining([
+    expect(Result.isFailure(result)).toBe(true);
+    expect(Result.getOrThrow(Result.flip(result))).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: "$.hooks" }),
       expect.objectContaining({ path: "$.run.completed[0].match.nodeId" }),
       expect.objectContaining({ path: "$.run.completed[0].match.workflow" }),
@@ -37,8 +45,8 @@ describe("hooks config", () => {
   it("rejects non-array event values", () => {
     const result = validateHooksFile({ "run.completed": { command: "echo ok" } });
 
-    expect(result.isErr()).toBe(true);
-    expect(result._unsafeUnwrapErr()).toEqual([expect.objectContaining({ path: "$.run.completed" })]);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(Result.getOrThrow(Result.flip(result))).toEqual([expect.objectContaining({ path: "$.run.completed" })]);
   });
 
   it("rejects unknown hook and match fields", () => {
@@ -46,8 +54,8 @@ describe("hooks config", () => {
       "node.completed": [{ command: "echo ok", unknown: true, match: { extra: ".*" } }],
     });
 
-    expect(result.isErr()).toBe(true);
-    expect(result._unsafeUnwrapErr()).toEqual(expect.arrayContaining([
+    expect(Result.isFailure(result)).toBe(true);
+    expect(Result.getOrThrow(Result.flip(result))).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: "$.node.completed[0].unknown" }),
       expect.objectContaining({ path: "$.node.completed[0].match.extra" }),
     ]));
@@ -58,8 +66,8 @@ describe("hooks config", () => {
       "run.completed": [{ id: "", command: "", timeout: "soon" }],
     });
 
-    expect(result.isErr()).toBe(true);
-    expect(result._unsafeUnwrapErr()).toEqual(expect.arrayContaining([
+    expect(Result.isFailure(result)).toBe(true);
+    expect(Result.getOrThrow(Result.flip(result))).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: "$.run.completed[0].id" }),
       expect.objectContaining({ path: "$.run.completed[0].command" }),
       expect.objectContaining({ path: "$.run.completed[0].timeout" }),
@@ -67,23 +75,23 @@ describe("hooks config", () => {
   });
 
   it("accepts safe integer timeouts and rejects millisecond overflow", () => {
-    expect(validateHooksFile({
+    expect(Result.isSuccess(validateHooksFile({
       "run.completed": [{ command: "echo ok", timeout: String(Number.MAX_SAFE_INTEGER) }],
-    }).isOk()).toBe(true);
+    }))).toBe(true);
 
     const result = validateHooksFile({
       "run.completed": [{ command: "echo ok", timeout: "9007199254740992ms" }],
     });
 
-    expect(result._unsafeUnwrapErr()).toEqual([
+    expect(Result.getOrThrow(Result.flip(result))).toEqual([
       expect.objectContaining({ path: "$.run.completed[0].timeout" }),
     ]);
   });
 
   it("rejects hook commands containing NUL bytes", () => {
-    expect(validateHooksFile({
+    expect(Result.getOrThrow(Result.flip(validateHooksFile({
       "run.completed": [{ command: "echo\0broken" }],
-    })._unsafeUnwrapErr()).toEqual([
+    })))).toEqual([
       expect.objectContaining({ path: "$.run.completed[0].command" }),
     ]);
   });
@@ -94,10 +102,10 @@ describe("hooks config", () => {
     await mkdir(join(workspace, ".acpus"), { recursive: true });
     await writeFile(join(workspace, ".acpus", "config.json"), "{}");
 
-    const loaded = await loadHooksConfig(workspace, { homeDir: home });
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
 
-    expect(loaded.isOk()).toBe(true);
-    expect(loaded._unsafeUnwrap()).toEqual([]);
+    expect(Result.isSuccess(loaded)).toBe(true);
+    expect(Result.getOrThrow(loaded)).toEqual([]);
   });
 
   it("reports validation failures as invalid-config load errors", async () => {
@@ -106,10 +114,10 @@ describe("hooks config", () => {
     await mkdir(join(workspace, ".acpus"), { recursive: true });
     await writeFile(join(workspace, ".acpus", "config.json"), JSON.stringify({ hooks: { "run.completed": [{ command: "" }] } }));
 
-    const loaded = await loadHooksConfig(workspace, { homeDir: home });
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
 
-    expect(loaded.isErr()).toBe(true);
-    expect(loaded._unsafeUnwrapErr()).toMatchObject({ type: "invalid-config", source: "project" });
+    expect(Result.isFailure(loaded)).toBe(true);
+    expect(Result.getOrThrow(Result.flip(loaded))).toMatchObject({ type: "invalid-config", source: "project" });
   });
 
   it("rejects Hooks consumption when another config section is invalid", async () => {
@@ -121,7 +129,7 @@ describe("hooks config", () => {
       hooks: { "run.completed": [{ command: "echo must-not-load" }] },
     }));
 
-    expect((await loadHooksConfig(workspace, { homeDir: home }))._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home }))))))).toMatchObject({
       type: "invalid-config",
       source: "project",
     });
@@ -132,7 +140,7 @@ describe("hooks config", () => {
       "run.awaiting": [{ command: "echo ok", match: { nodeId: "approve", nodeKey: "approve~", kind: "signal" } }],
     });
 
-    expect(result.isOk()).toBe(true);
+    expect(Result.isSuccess(result)).toBe(true);
   });
 
   it("loads project and global hooks by direct union without id override", async () => {
@@ -150,10 +158,10 @@ describe("hooks config", () => {
       "run.completed": [{ id: "same", command: "echo global" }],
     } }));
 
-    const loaded = await loadHooksConfig(workspace, { homeDir: home });
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
 
-    expect(loaded.isOk()).toBe(true);
-    expect(loaded._unsafeUnwrap()).toMatchObject([
+    expect(Result.isSuccess(loaded)).toBe(true);
+    expect(Result.getOrThrow(loaded)).toMatchObject([
       { source: "project", id: "same", command: "echo project", definitionIndex: 0 },
       { source: "project", id: "same", command: "echo project again", definitionIndex: 1 },
       { source: "global", id: "same", command: "echo global", definitionIndex: 0 },
@@ -168,9 +176,9 @@ describe("hooks config", () => {
       "node.failed": [{ command: "echo first" }, { command: "echo second" }],
     } }));
 
-    const loaded = await loadHooksConfig(workspace, { homeDir: home });
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
 
-    expect(loaded._unsafeUnwrap().map(hook => hook.effectiveId)).toEqual([
+    expect(Result.getOrThrow(loaded).map(hook => hook.effectiveId)).toEqual([
       "project:node.failed:0",
       "project:node.failed:1",
     ]);
@@ -180,10 +188,10 @@ describe("hooks config", () => {
     const workspace = await tempDir("hooks-empty-workspace-");
     const home = await tempDir("hooks-empty-home-");
 
-    const loaded = await loadHooksConfigScopes(workspace, { homeDir: home });
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfigScopes(workspace, { homeDir: home })));
 
-    expect(loaded.isOk()).toBe(true);
-    expect(loaded._unsafeUnwrap()).toEqual([
+    expect(Result.isSuccess(loaded)).toBe(true);
+    expect(Result.getOrThrow(loaded)).toEqual([
       { source: "project", path: join(workspace, ".acpus", "config.json"), hooks: [] },
       { source: "global", path: join(home, ".acpus", "config.json"), hooks: [] },
     ]);
@@ -195,13 +203,15 @@ describe("hooks config", () => {
     await mkdir(join(workspace, ".acpus"), { recursive: true });
     await writeFile(join(workspace, ".acpus", "config.json"), "{");
 
-    const loaded = await loadHooksConfig(workspace, { homeDir: home });
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
 
-    expect(loaded.isErr()).toBe(true);
-    expect(loaded._unsafeUnwrapErr()).toMatchObject({ type: "invalid-config", source: "project" });
+    expect(Result.isFailure(loaded)).toBe(true);
+    expect(Result.getOrThrow(Result.flip(loaded))).toMatchObject({ type: "invalid-config", source: "project" });
   });
 });
 
 async function tempDir(prefix: string): Promise<string> {
-  return await mkdtemp(join(tmpdir(), prefix));
+  const path = await mkdtemp(join(tmpdir(), prefix));
+  temporaryDirectories.push(path);
+  return path;
 }

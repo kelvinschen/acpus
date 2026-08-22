@@ -2,11 +2,14 @@ import { createServer } from "node:net";
 import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import {
-  readAcpusSkillResource,
+  readAcpusSkillResource as readAcpusSkillResourceEffect,
   type SkillResourceFailure,
+  type SkillResourceRead,
 } from "../src/skill/content.js";
+import { settle } from "./effect.js";
 
 describe("skill resource reader", () => {
   it("does not alter default-entry bytes or expand the resource tree below direct children", async () => {
@@ -23,13 +26,13 @@ describe("skill resource reader", () => {
 
       const result = await readAcpusSkillResource(root);
 
-      expect(result.isOk()).toBe(true);
-      if (result.isErr()) return;
-      expect(result.value.kind).toBe("file");
-      if (result.value.kind !== "file") return;
-      expect(result.value.absolutePath).toBe(await realpath(join(root, "SKILL.md")));
-      expect(result.value.content.equals(body)).toBe(true);
-      expect(result.value.tree).toEqual([
+      expect(Result.isSuccess(result)).toBe(true);
+      if (Result.isFailure(result)) return;
+      expect(result.success.kind).toBe("file");
+      if (result.success.kind !== "file") return;
+      expect(result.success.absolutePath).toBe(await realpath(join(root, "SKILL.md")));
+      expect(result.success.content.equals(body)).toBe(true);
+      expect(result.success.tree).toEqual([
         {
           kind: "directory",
           path: "assets",
@@ -62,7 +65,7 @@ describe("skill resource reader", () => {
       const guides = await readAcpusSkillResource(root, "guides");
       const empty = await readAcpusSkillResource(root, "empty");
 
-      expect(guides._unsafeUnwrap()).toEqual({
+      expect(success(guides)).toEqual({
         kind: "directory",
         absolutePath: await realpath(join(root, "guides")),
         entries: [
@@ -71,7 +74,7 @@ describe("skill resource reader", () => {
           { kind: "file", path: "guides/z.md" },
         ],
       });
-      expect(empty._unsafeUnwrap()).toEqual({
+      expect(success(empty)).toEqual({
         kind: "directory",
         absolutePath: await realpath(join(root, "empty")),
         entries: [],
@@ -88,7 +91,7 @@ describe("skill resource reader", () => {
 
       const result = await readAcpusSkillResource(root, "guides/usage.md");
 
-      expect(result._unsafeUnwrap()).toEqual({
+      expect(success(result)).toEqual({
         kind: "file",
         absolutePath: await realpath(join(root, "guides", "usage.md")),
         content: body,
@@ -186,6 +189,15 @@ async function withSkillRoot<T>(fn: (root: string) => Promise<T>): Promise<T> {
   }
 }
 
-function failureReason(result: { isErr(): boolean; error?: SkillResourceFailure }): SkillResourceFailure["reason"] | undefined {
-  return result.isErr() ? result.error?.reason : undefined;
+function readAcpusSkillResource(rootPath: string, resourcePath?: string): Promise<Result.Result<SkillResourceRead, SkillResourceFailure>> {
+  return settle(readAcpusSkillResourceEffect(rootPath, resourcePath));
+}
+
+function success<A, E>(result: Result.Result<A, E>): A {
+  if (Result.isFailure(result)) throw new Error("expected success");
+  return result.success;
+}
+
+function failureReason(result: Result.Result<SkillResourceRead, SkillResourceFailure>): SkillResourceFailure["reason"] | undefined {
+  return Result.isFailure(result) ? result.failure.reason : undefined;
 }

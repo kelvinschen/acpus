@@ -1,11 +1,13 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { describe, expect, it, vi } from "vitest";
 import { getRuntimeHealth } from "../src/index.js";
 import { captureProcessIdentity } from "../src/process-liveness.js";
-import type { RuntimeStore } from "../src/store/store.js";
+import type { RuntimeStoreAdapter } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, signalWorkflow } from "./support/runtime-fixtures.js";
 import { withDaemonLeaseWorkspace } from "./support/daemon-lease-fixture.js";
 
-type StoreWithDb = RuntimeStore & {
+type StoreWithDb = RuntimeStoreAdapter & {
   db: {
     prepare(sql: string): {
       run(...params: unknown[]): unknown;
@@ -28,15 +30,15 @@ describe("Runtime authority health", () => {
         idleStopMs: 30_000,
       };
 
-      const first = store.claimRuntimeAuthority({
+      const first = Result.getOrThrow(store.claimRuntimeAuthority({
         ...base,
         ownerId: "owner-1",
-      })._unsafeUnwrap();
+      }));
       expect(first).toMatchObject({ workspaceRealpath: dir, epoch: 1, pid: process.pid });
-      expect(store.claimRuntimeAuthority({
+      expect(Result.getOrThrow(Result.flip(store.claimRuntimeAuthority({
         ...base,
         ownerId: "owner-2",
-      })._unsafeUnwrapErr()).toMatchObject({
+      })))).toMatchObject({
         type: "runtime-authority-busy",
         pid: process.pid,
       });
@@ -60,11 +62,11 @@ describe("Runtime authority health", () => {
         ownerId: first.ownerId,
         epoch: first.epoch,
       })).toBe(true);
-      const second = store.claimRuntimeAuthority({
+      const second = Result.getOrThrow(store.claimRuntimeAuthority({
         ...base,
         ownerId: "owner-2",
         pid: process.pid,
-      })._unsafeUnwrap();
+      }));
       expect(second).toMatchObject({ epoch: 2, ownerId: "owner-2" });
     });
   });
@@ -82,17 +84,17 @@ describe("Runtime authority health", () => {
         execPath: process.execPath,
         idleStopMs: 30_000,
       };
-      store.claimRuntimeAuthority({
+      Result.getOrThrow(store.claimRuntimeAuthority({
         ...base,
         ownerId: "stale-owner",
         processStartToken: `${identity.startToken}:reused`,
-      })._unsafeUnwrap();
+      }));
 
-      const claimed = store.claimRuntimeAuthority({
+      const claimed = Result.getOrThrow(store.claimRuntimeAuthority({
         ...base,
         ownerId: "current-owner",
         processStartToken: identity.startToken,
-      })._unsafeUnwrap();
+      }));
 
       expect(claimed).toMatchObject({ epoch: 2, ownerId: "current-owner" });
     });
@@ -112,9 +114,9 @@ describe("Runtime authority health", () => {
           execPath: process.execPath,
           idleStopMs: 30_000,
         };
-        store.claimRuntimeAuthority({ ...base, ownerId: "unknown-owner" })._unsafeUnwrap();
+        Result.getOrThrow(store.claimRuntimeAuthority({ ...base, ownerId: "unknown-owner" }));
 
-        expect(store.claimRuntimeAuthority({ ...base, ownerId: "replacement-owner" }).isErr())
+        expect(Result.isFailure(store.claimRuntimeAuthority({ ...base, ownerId: "replacement-owner" })))
           .toBe(true);
       } finally {
         kill.mockRestore();
@@ -125,9 +127,8 @@ describe("Runtime authority health", () => {
   it("maps process liveness through the run-execution evidence priority", async () => {
     await withDaemonLeaseWorkspace(async ({ dir, store }) => {
       const prepared = await prepareSyntheticWorkflow(dir, signalWorkflow());
-      const admitted = (await store.admitRun({ prepared, cwd: dir, input: {} }))
-        ._unsafeUnwrap();
-      const authority = store.claimRuntimeAuthority({
+      const admitted = await Effect.runPromise(store.admitRun({ prepared, cwd: dir, input: {} }));
+      const authority = Result.getOrThrow(store.claimRuntimeAuthority({
         workspaceRealpath: dir,
         ownerId: "execution-owner",
         pid: 123,
@@ -136,7 +137,7 @@ describe("Runtime authority health", () => {
         nodeVersion: process.version,
         execPath: process.execPath,
         idleStopMs: 30_000,
-      })._unsafeUnwrap();
+      }));
       const nowMs = Date.parse(authority.heartbeatAt);
       const now = vi.spyOn(Date, "now").mockReturnValue(nowMs);
       const kill = vi.spyOn(process, "kill");
@@ -199,7 +200,7 @@ describe("Runtime authority health", () => {
 
   it("maps process liveness explicitly in doctor output", async () => {
     await withDaemonLeaseWorkspace(async ({ dir, store }) => {
-      const authority = store.claimRuntimeAuthority({
+      const authority = Result.getOrThrow(store.claimRuntimeAuthority({
         workspaceRealpath: dir,
         ownerId: "doctor-owner",
         pid: 123,
@@ -208,11 +209,11 @@ describe("Runtime authority health", () => {
         nodeVersion: process.version,
         execPath: process.execPath,
         idleStopMs: 30_000,
-      })._unsafeUnwrap();
+      }));
       const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse(authority.heartbeatAt));
       const kill = vi.spyOn(process, "kill");
       const daemonCheck = async () =>
-        (await getRuntimeHealth(dir)).checks.find(check => check.area === "daemon")!;
+        (await Effect.runPromise(getRuntimeHealth(dir))).checks.find(check => check.area === "daemon")!;
       try {
         kill.mockImplementation(() => true);
         await expect(daemonCheck()).resolves.toMatchObject({

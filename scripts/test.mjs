@@ -4,10 +4,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projects = [
-  { name: "integration", args: ["--project", "integration", "--maxConcurrency=1"], maxWorkers: "40%" },
-  { name: "unit", args: ["--project", "unit"], maxWorkers: "27%" },
-  { name: "contract+type", args: ["--project", "contract", "--project", "type-contract"], maxWorkers: "12%" },
-  { name: "e2e+regression", args: ["--project", "e2e", "--project", "regression"], maxWorkers: "3%" },
+  { name: "integration", args: ["--project", "integration", "--maxConcurrency=2"], maxWorkers: "40%" },
+  { name: "unit", args: ["--project", "unit"], maxWorkers: "18%" },
+  { name: "unit-isolated", args: ["--project", "unit-isolated"], maxWorkers: "4%" },
+  { name: "contract", args: ["--project", "contract"], maxWorkers: "9%" },
+  { name: "contract-isolated", args: ["--project", "contract-isolated"], maxWorkers: "2%" },
+  { name: "type-contract", args: ["--typecheck.only", "--project", "type-contract"], maxWorkers: "2%" },
+  { name: "e2e+regression", args: ["--project", "e2e", "--project", "regression"], maxWorkers: "5%" },
 ];
 const require = createRequire(import.meta.url);
 const vitestPackagePath = require.resolve("vitest/package.json");

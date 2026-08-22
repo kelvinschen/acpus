@@ -3,7 +3,7 @@ import type {
   AgentPresetProvider,
   HostAgentPreset,
 } from "@acpus/runtime";
-import { okAsync } from "neverthrow";
+import * as Effect from "effect/Effect";
 import type { AgentPresetView } from "../remote/types.js";
 
 const DSH_PRESET: HostAgentPreset = Object.freeze({
@@ -13,7 +13,7 @@ const DSH_PRESET: HostAgentPreset = Object.freeze({
 });
 
 export const dshAgentPresetProvider: AgentPresetProvider = () =>
-  okAsync([DSH_PRESET]);
+  Effect.succeed([DSH_PRESET]);
 
 export function toAgentPresetView(choice: AgentPresetChoice): AgentPresetView {
   return {

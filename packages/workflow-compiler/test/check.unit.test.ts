@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import { rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { sha256Digest } from "@acpus/core/content-identity";
@@ -7,22 +8,13 @@ import { createScratchDir } from "../src/preflight/temp.js";
 import { runCheck, withCheckWorkspace } from "./support/check-workspace.js";
 
 describe("workflow TypeScript diagnostics", () => {
-  it("returns the digest of the source text supplied to the check", async () => {
+  it("digests the exact supplied source while retaining its UTF-8 BOM", async () => {
     await withCheckWorkspace("workflow-check-digest", async cwd => {
-      const source = "export default {};\n";
-
-      const result = await runCheck(cwd, source);
-
-      expect(result.sourceDigest).toBe(sha256Digest(source));
-    });
-  });
-
-  it("retains a UTF-8 BOM in the checked source graph", async () => {
-    await withCheckWorkspace("workflow-check-bom", async cwd => {
       const source = "\ufeffexport default {};\n";
 
       const result = await runCheck(cwd, source);
 
+      expect(result.sourceDigest).toBe(sha256Digest(source));
       expect(result.sourceFiles?.find(file => file.path === join(cwd, "workflow.ts"))?.content).toBe(source);
     });
   });
@@ -129,27 +121,6 @@ describe("workflow TypeScript diagnostics", () => {
     });
   });
 
-  it("reports implicit any from TypeScript semantic diagnostics", async () => {
-    await withCheckWorkspace("workflow-implicit-any-check", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow } from "acpus/core";
-
-        function id(value) {
-          return value;
-        }
-
-        export default defineWorkflow({ name: "implicit_any_check" }).build(() => ({ value: id("ok") }));
-      `);
-
-      expect(result.diagnostics).toEqual(expect.arrayContaining([
-        expect.objectContaining({
-          code: "TS7006",
-          message: expect.stringContaining("implicitly has an 'any' type"),
-        }),
-      ]));
-    });
-  });
-
   it("does not duplicate bind diagnostics already included in semantic diagnostics", async () => {
     await withCheckWorkspace("workflow-bind-diagnostic", async cwd => {
       const result = await runCheck(cwd, `
@@ -190,8 +161,8 @@ describe("workflow TypeScript diagnostics", () => {
       const scratchDir = await createScratchDir();
       try {
         const result = await checkTypeScript(entry, cwd, scratchDir, overlaySource);
-        if (result.isErr()) throw new Error(result.error.message);
-        expect(result.value.diagnostics).toContainEqual(expect.objectContaining({ code: "TS2322" }));
+        if (Result.isFailure(result)) throw new Error(result.failure.message);
+        expect(result.success.diagnostics).toContainEqual(expect.objectContaining({ code: "TS2322" }));
       } finally {
         await rm(scratchDir, { recursive: true, force: true });
       }

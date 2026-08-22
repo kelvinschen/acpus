@@ -62,7 +62,7 @@
   },
   "dependencies": {
     "@acpus/expression": "workspace:*",
-    "neverthrow": "^8.2.0",
+    "effect": "4.0.0-rc.111",
     "zod": "^4.4.3",
     "zx": "^8.8.5"
   },

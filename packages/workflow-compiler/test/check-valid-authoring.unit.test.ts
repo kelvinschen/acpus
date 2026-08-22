@@ -2,10 +2,11 @@ import { describe, expect, it } from "vitest";
 import { runCheck, withCheckWorkspace } from "./support/check-workspace.js";
 
 describe("workflow valid authoring checks", () => {
-  it("allows representative valid authoring and output patterns", async () => {
+  it("allows representative valid authoring in one checked program", async () => {
     await withCheckWorkspace("workflow-valid-patterns", async cwd => {
       const result = await runCheck(cwd, `
         import { defineWorkflow, task, type JsonObject, type JsonValue, z } from "acpus/core";
+        import { lift, md } from "acpus/expression";
 
         const ReviewOut = z.object({ ok: z.boolean() });
         const focuses = ["security", "docs"] as const;
@@ -13,12 +14,12 @@ describe("workflow valid authoring checks", () => {
         function helper(): Output {
           return { ok: true };
         }
-        const inlineHidden = task.define({
+        export const reusableTask = task.define({
           inputSchema: z.string(),
           exec: async (): Promise<Output> => helper(),
         });
 
-        export default defineWorkflow({
+        export const representativePatterns = defineWorkflow({
           name: "valid_lint_patterns",
           agents: { reviewer: { use: "codex" } },
         }).build(({ agents, step }) => {
@@ -37,11 +38,11 @@ describe("workflow valid authoring checks", () => {
             define: (_spec: object) => ({ ok: true }),
           };
           thirdPartyTask.define({ exec: async () => ({ when: new Date() }) });
-          step("inline_hidden").task({
+          step("inline_self_contained").task({
             input: null,
-            exec: async (): Promise<Output> => helper(),
+            exec: async (): Promise<Output> => ({ ok: true }),
           });
-          step("same_file_hidden").task({ input: "value", task: inlineHidden });
+          step("same_file_reusable").task({ input: "value", task: reusableTask });
           step("loop").loop({
             state: { ok: true, count: 0, summary: "" },
             do({ round, state }) {
@@ -59,22 +60,8 @@ describe("workflow valid authoring checks", () => {
           const object = { ok: true } as JsonObject;
           return { first: reviews[0].output.ok, value, object };
         });
-      `);
 
-      expect(result.diagnostics.filter(diagnostic =>
-        diagnostic.code.startsWith("AL")
-        || diagnostic.code === "TB004",
-      )).toEqual([]);
-    });
-  });
-
-  it("accepts optional concurrency expressions without casts or fixed fallbacks", async () => {
-    await withCheckWorkspace("workflow-optional-concurrency", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow, z } from "acpus/core";
-        import { lift } from "acpus/expression";
-
-        export default defineWorkflow({
+        export const optionalConcurrency = defineWorkflow({
           name: "optional_concurrency",
           inputSchema: z.object({
             items: z.array(z.string()),
@@ -92,17 +79,6 @@ describe("workflow valid authoring checks", () => {
           });
           return {};
         });
-      `);
-
-      expect(result.diagnostics).toEqual([]);
-    });
-  });
-
-  it("accepts the original schema-less Agent RPS workflow with a direct Expr Task input", async () => {
-    await withCheckWorkspace("workflow-direct-task-expression", async cwd => {
-      const result = await runCheck(cwd, `
-        import { defineWorkflow } from "acpus/core";
-        import { lift, md } from "acpus/expression";
 
         export default defineWorkflow({
           name: "claude-vs-pi-rps",
@@ -169,7 +145,6 @@ describe("workflow valid authoring checks", () => {
       expect(result.diagnostics).toEqual([]);
     });
   });
-
 });
 
 describe("workflow invalid authoring checks", () => {

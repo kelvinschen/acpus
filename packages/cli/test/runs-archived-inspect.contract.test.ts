@@ -1,6 +1,8 @@
 import { Readable } from "node:stream";
 import type { InspectionError } from "@acpus/runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
 import { createRunsCommand } from "../src/runs/command.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
@@ -19,15 +21,11 @@ vi.mock("@acpus/runtime", async importOriginal => ({
 
 describe("runs inspect archived summaries", () => {
   beforeEach(() => {
-    runtime.readInspection.mockReset().mockResolvedValue(archivedRun());
-    runtime.requestDaemonInspection.mockReset().mockResolvedValue({
-      isOk: () => false,
-      isErr: () => true,
-      error: { type: "rejected", code: "RUN_NOT_FOUND", message: "Run was not active." },
-    });
-    runtime.observeInspection.mockReset().mockImplementation(() => emissions([
-      err(archivedDetailUnavailable()),
-    ]));
+    runtime.readInspection.mockReset().mockReturnValue(Effect.succeed(archivedRun()));
+    runtime.requestDaemonInspection.mockReset().mockReturnValue(Effect.fail({
+      type: "rejected", code: "RUN_NOT_FOUND", message: "Run was not active.",
+    }));
+    runtime.observeInspection.mockReset().mockReturnValue(Stream.fail(archivedDetailUnavailable()));
   });
 
   it("renders the portable summary without exposing storage internals", async () => {
@@ -54,7 +52,7 @@ describe("runs inspect archived summaries", () => {
     ["timeline", ["--target", "root", "--timeline"]],
     ["forensics", ["--forensics"]],
   ] as const)("rejects archived %s detail", async (_name, flags) => {
-    runtime.readInspection.mockResolvedValue(err(archivedDetailUnavailable()));
+    runtime.readInspection.mockReturnValue(Effect.fail(archivedDetailUnavailable()));
     await expect(runCommand(["inspect", "run_archived", ...flags])).rejects.toMatchObject({
       exitCode: 1,
       result: {
@@ -78,7 +76,7 @@ describe("runs inspect archived summaries", () => {
   });
 
   it("preserves an unavailable archived lookup instead of claiming not-found", async () => {
-    runtime.readInspection.mockResolvedValue(err({
+    runtime.readInspection.mockReturnValue(Effect.fail({
       type: "archived-run-lookup-unavailable",
       runId: "run_unknown",
       message: "Archived history cannot be searched for run 'run_unknown'.",
@@ -110,7 +108,7 @@ async function runCommand(argv: string[]): Promise<{ exitCode: number; stdout: s
 }
 
 function archivedRun() {
-  return ok({
+  return {
     kind: "archived-run" as const,
     run: {
       id: "run_archived",
@@ -119,15 +117,7 @@ function archivedRun() {
       createdAt: "2026-07-01T00:00:00.000Z",
       updatedAt: "2026-07-02T00:00:00.000Z",
     },
-  });
-}
-
-function ok<T>(value: T): { isErr(): false; value: T } {
-  return { isErr: () => false, value };
-}
-
-function err(error: InspectionError): { isErr(): true; error: InspectionError } {
-  return { isErr: () => true, error };
+  };
 }
 
 function archivedDetailUnavailable(): InspectionError {
@@ -137,10 +127,4 @@ function archivedDetailUnavailable(): InspectionError {
     command: "acpus runs inspect run_archived",
     message: "Archived run 'run_archived' only has a summary. Run 'acpus runs inspect run_archived'.",
   };
-}
-
-function emissions(results: Array<ReturnType<typeof err>>) {
-  return (async function* () {
-    for (const result of results) yield result;
-  })();
 }

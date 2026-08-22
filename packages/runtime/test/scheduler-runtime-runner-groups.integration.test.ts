@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import {
   advanceFrozenRun,
   holdFirstTaskAttempt,
@@ -18,9 +19,9 @@ import {
   appendNode,
   deriveInstanceKey,
 } from "../src/scheduler/identity.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
 import { tryNormalizeWorkflowInput } from "../src/admission/input.js";
-import { prepareSyntheticWorkflow, runtimeRow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, runtimeRow, withRuntimeWorkspace } from "./support/runtime-harness.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { applySchedulerControlIntent } from "./support/scheduler.js";
 
@@ -28,7 +29,7 @@ describe("runtime scheduler runner", () => {
   it("bootstraps root fanout items with durable item scope for task inputs", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-fanout", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootFanoutTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { items: ["a", "b"] }, cwd: workspace });
           const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
@@ -60,9 +61,9 @@ describe("runtime scheduler runner", () => {
   it("treats defaulted zero fanout concurrency as no local cap and keeps progressing", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-fanout-zero-concurrency", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootFanoutTaskWorkflow({ maxConcurrency: 0, dynamicLimits: true }));
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
-          const input = tryNormalizeWorkflowInput(prepared.ir, { items: ["a", "b"] })._unsafeUnwrap();
+          const input = Result.getOrThrow(tryNormalizeWorkflowInput(prepared.ir, { items: ["a", "b"] }));
           const run = await admitRunForTest(store, { prepared, input, cwd: workspace });
           const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
           const group = Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.groups)[0];
@@ -79,7 +80,7 @@ describe("runtime scheduler runner", () => {
   it("rebuilds effective fanout limits and item scope after reopening the store", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-fanout-resume", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootFanoutTaskWorkflow({ strategy: "quorum", dynamicLimits: true }));
-        const firstStore = await openRuntimeStore(workspace);
+        const firstStore = await openRuntimeStoreAdapter(workspace);
         let runId = "";
         try {
           const run = await admitRunForTest(firstStore, { prepared, input: { items: ["a", "b", "c"], quorum: 2, parallelism: 1 }, cwd: workspace });
@@ -91,7 +92,7 @@ describe("runtime scheduler runner", () => {
           firstStore.close();
         }
 
-        const resumedStore = await openRuntimeStore(workspace);
+        const resumedStore = await openRuntimeStoreAdapter(workspace);
         try {
           const second = await advanceFrozenRun({ cwd: workspace, runId, ownerId: "owner-b", store: resumedStore });
           const projection = throwingSchedulerStore(resumedStore.scheduler).loadRunSnapshot(runId).projection;
@@ -110,16 +111,16 @@ describe("runtime scheduler runner", () => {
       });
     });
 
-  it("honors root fanout quorum and maxConcurrency without running cancelled items", async () => {
+  it("honors root fanout quorum and cancels surplus work admitted before quorum settlement", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-fanout-quorum", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootFanoutTaskWorkflow({ strategy: "quorum", dynamicLimits: true }));
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { items: ["a", "b", "c"], quorum: 2, parallelism: 2 }, cwd: workspace });
           const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
           const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
 
-          expect(summary).toMatchObject({ status: "completed", started: 2, completed: 2, cancelled: 0 });
+          expect(summary).toMatchObject({ status: "completed", started: 3, completed: 2, cancelled: 1 });
           const fanoutFrame = projection.frames[deriveInstanceKey(appendNode([], "items"))];
           expect(fanoutFrame).toMatchObject({ status: "completed" });
           expect(fanoutFrame?.result).toHaveLength(2);
@@ -129,7 +130,7 @@ describe("runtime scheduler runner", () => {
           ]));
           expect(Object.values(projection.groupMembers).filter(member => member.status === "completed")).toHaveLength(2);
           expect(Object.values(projection.groupMembers).filter(member => member.status === "cancelled")).toHaveLength(1);
-          expect(Object.values(projection.attempts).filter(attempt => attempt.status === "cancelled")).toHaveLength(0);
+          expect(Object.values(projection.attempts).filter(attempt => attempt.status === "cancelled")).toHaveLength(1);
           expect(Object.values(projection.instances).filter(instance => instance.status === "completed")).toHaveLength(2);
           expect(Object.values(projection.instances).filter(instance => instance.status === "cancelled")).toHaveLength(1);
           expect(Object.values(projection.groups)[0]).toMatchObject({ quorumCount: 2, maxConcurrency: 2 });
@@ -142,7 +143,7 @@ describe("runtime scheduler runner", () => {
   it("aborts active root fanout quorum losers", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-fanout-active-quorum", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootFanoutTaskWorkflow({ strategy: "quorum", count: 1, maxConcurrency: 2, abortItem: "slow" }));
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { items: ["slow", "fast"] }, cwd: workspace });
           const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
@@ -163,7 +164,7 @@ describe("runtime scheduler runner", () => {
   it("advances a multi-node root parallel branch to completion", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-parallel-multi-node", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, multiNodeRootParallelWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const parallelKey = deriveInstanceKey(appendNode([], "parallel"));
@@ -184,7 +185,7 @@ describe("runtime scheduler runner", () => {
   it("advances multi-node root fanout item bodies to completion", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-fanout-multi-node", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, multiNodeRootFanoutWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { items: ["a", "b"] }, cwd: workspace });
           const fanoutKey = deriveInstanceKey(appendNode([], "items"));
@@ -211,7 +212,7 @@ describe("runtime scheduler runner", () => {
   it("keeps physical execution within the configured per-run leaf ceiling", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-run-leaf-ceiling", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, multiNodeRootFanoutWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { items: ["a", "b"] }, cwd: workspace });
           const controlled = holdFirstTaskAttempt();
@@ -240,7 +241,7 @@ describe("runtime scheduler runner", () => {
   it("executes nested fanout items with ancestor scope and local concurrency", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-nested-fanout-scope", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, nestedFanoutInParallelWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { items: ["a", "b"], parallelism: 1 }, cwd: workspace });
           const firstItemNodeKey = deriveInstanceKey(appendNode(appendFanoutItem(appendBranch([], "combine", "items"), "inner_items", 0), "inner_task"));
@@ -282,7 +283,7 @@ describe("runtime scheduler runner", () => {
   it("counts awaiting signal members against nested local concurrency", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-signal-local-concurrency", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, parallelSignalConcurrencyWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const gateKey = deriveInstanceKey(appendNode([], "gate"));
@@ -333,7 +334,7 @@ describe("runtime scheduler runner", () => {
   it("resumes a root loop single-leaf task from a durable ready checkpoint", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-loop", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootLoopTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         let runId = "";
         try {
           const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
@@ -345,7 +346,7 @@ describe("runtime scheduler runner", () => {
           store.close();
         }
 
-        const resumed = await openRuntimeStore(workspace);
+        const resumed = await openRuntimeStoreAdapter(workspace);
         try {
           const second = await advanceFrozenRun({ cwd: workspace, runId, ownerId: "owner-b", store: resumed });
           const projection = throwingSchedulerStore(resumed.scheduler).loadRunSnapshot(runId).projection;
@@ -383,7 +384,7 @@ describe("runtime scheduler runner", () => {
   it("advances a root loop multi-node body to completion", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-loop-multi-node", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, multiNodeRootLoopWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const loopKey = deriveInstanceKey(appendNode([], "retry"));

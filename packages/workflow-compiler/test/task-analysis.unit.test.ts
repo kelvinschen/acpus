@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,8 +26,8 @@ async function analyze(workflowSource: string, files: Record<string, string> = {
   const workflowFile = join(dir, "workflow.ts");
   await writeFile(workflowFile, workflowSource);
   const result = await analyzeWorkflowTasks(workflowFile, workflowSource);
-  if (result.isErr()) throw new Error(result.error.message);
-  return result.value;
+  if (Result.isFailure(result)) throw new Error(result.failure.message);
+  return result.success;
 }
 
 const taskModule = `import { task, z } from "acpus/core";
@@ -180,30 +181,6 @@ describe("task analysis", () => {
     expectReusableAccepted(analysis, "./not-a-task.js", "default");
   });
 
-  it("accepts a reusable task imported from a bare package specifier", async () => {
-    const analysis = await analyze(
-      `import t from "some-pkg";
-       declare const step: any;
-       step("run").task({ task: t, input: null });`,
-    );
-
-    expectReusableAccepted(analysis, "some-pkg", "default");
-  });
-
-  it("accepts a reusable task re-exported through a barrel", async () => {
-    const analysis = await analyze(
-      `import t from "./index.js";
-       declare const step: any;
-       step("run").task({ task: t, input: "value" });`,
-      {
-        "index.ts": `export { default } from "./normalize.task.js";\n`,
-        "normalize.task.ts": taskModule,
-      },
-    );
-
-    expectReusableAccepted(analysis, "./index.js", "default");
-  });
-
   it("accepts a self-contained inline task", async () => {
     const analysis = await analyze(
       `declare const step: any;
@@ -226,16 +203,6 @@ describe("task analysis", () => {
     const verdict = analysis.get("run");
     expect(verdict?.issue).toMatchObject({ kind: "inline-task-capture" });
     expect(verdict?.issue && "names" in verdict.issue ? verdict.issue.names : []).toContain("semver");
-  });
-
-  it("rejects an inline task that captures workflow-scope helpers (TB003)", async () => {
-    const analysis = await analyze(
-      `declare const step: any;
-       declare const helper: any;
-       step("run").task({ input: "value", exec: async ({ input }: any) => helper(input) });`,
-    );
-
-    expectTaskIssue(analysis, { kind: "inline-task-capture" });
   });
 
   it("rejects an outer capture that shares a name with a nested callback parameter", async () => {

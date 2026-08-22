@@ -1,6 +1,7 @@
 import { writeFile, rm } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import * as ts from "typescript/unstable/ast";
 import { createScratchDir } from "./preflight/temp.js";
 import { withNativeProject } from "./typescript/native.js";
@@ -17,14 +18,17 @@ export type WorkflowMetadataError =
   | { type: "workflow-name-not-static"; message: string };
 
 /** Extract authored workflow metadata without importing or executing the module. */
-export function extractWorkflowMetadata(source: string, fileName: string): ResultAsync<WorkflowMetadata, WorkflowMetadataError> {
-  return ResultAsync.fromPromise(extract(source, resolve(fileName)), cause => ({
-    type: "typescript-analysis-failed",
-    message: `Workflow metadata analysis failed: ${causeMessage(cause)}`,
-  } satisfies WorkflowMetadataError)).andThen(result => result);
+export function extractWorkflowMetadata(source: string, fileName: string): Effect.Effect<WorkflowMetadata, WorkflowMetadataError> {
+  return Effect.tryPromise({
+    try: () => extract(source, resolve(fileName)),
+    catch: cause => ({
+      type: "typescript-analysis-failed",
+      message: `Workflow metadata analysis failed: ${causeMessage(cause)}`,
+    } satisfies WorkflowMetadataError),
+  }).pipe(Effect.flatMap(Effect.fromResult));
 }
 
-async function extract(source: string, fileName: string): Promise<Result<WorkflowMetadata, WorkflowMetadataError>> {
+async function extract(source: string, fileName: string): Promise<Result.Result<WorkflowMetadata, WorkflowMetadataError>> {
   const scratchDir = await createScratchDir();
   const configPath = join(scratchDir, "tsconfig.json");
   try {
@@ -45,23 +49,26 @@ async function extract(source: string, fileName: string): Promise<Result<Workflo
       source,
     }, ({ project, sourceFile }) => {
       if (project.program.getSyntacticDiagnostics(sourceFile.path).length > 0) {
-        return err({
+        return Result.fail({
           type: "syntax-invalid",
           message: "Workflow source contains TypeScript syntax errors.",
         } satisfies WorkflowMetadataError);
       }
       return extractFromSourceFile(sourceFile);
     });
-    return analyzed.mapErr(failure => ({
-      type: "typescript-analysis-failed",
-      message: failure.message,
-    } satisfies WorkflowMetadataError)).andThen(result => result);
+    return Result.flatMap(
+      Result.mapError(analyzed, failure => ({
+        type: "typescript-analysis-failed",
+        message: failure.message,
+      } satisfies WorkflowMetadataError)),
+      result => result,
+    );
   } finally {
     await rm(scratchDir, { recursive: true, force: true });
   }
 }
 
-function extractFromSourceFile(sourceFile: ts.SourceFile): Result<WorkflowMetadata, WorkflowMetadataError> {
+function extractFromSourceFile(sourceFile: ts.SourceFile): Result.Result<WorkflowMetadata, WorkflowMetadataError> {
   const namedFactories = new Set<string>();
   const namespaces = new Set<string>();
   const variables = new Map<string, ts.Expression | undefined>();
@@ -88,7 +95,7 @@ function extractFromSourceFile(sourceFile: ts.SourceFile): Result<WorkflowMetada
     }
     if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
       if (defaultExport) {
-        return err({
+        return Result.fail({
           type: "workflow-definition-not-static",
           message: "Workflow module must have exactly one default export.",
         });
@@ -98,7 +105,7 @@ function extractFromSourceFile(sourceFile: ts.SourceFile): Result<WorkflowMetada
   }
 
   if (!defaultExport) {
-    return err({
+    return Result.fail({
       type: "default-export-missing",
       message: "Workflow module must have a default export.",
     });
@@ -107,7 +114,7 @@ function extractFromSourceFile(sourceFile: ts.SourceFile): Result<WorkflowMetada
   const exported = resolveTopLevelConst(unwrapExpression(defaultExport), variables);
   const config = workflowConfig(exported, namedFactories, namespaces);
   if (!config) {
-    return err({
+    return Result.fail({
       type: "workflow-definition-not-static",
       message: "Default export must be a statically identifiable defineWorkflow(...).build(...) expression.",
     });
@@ -115,12 +122,12 @@ function extractFromSourceFile(sourceFile: ts.SourceFile): Result<WorkflowMetada
 
   const name = staticWorkflowName(config);
   if (name === undefined) {
-    return err({
+    return Result.fail({
       type: "workflow-name-not-static",
       message: "defineWorkflow({ name }) must resolve to a direct string literal after object spread ordering.",
     });
   }
-  return ok({ name });
+  return Result.succeed({ name });
 }
 
 function workflowConfig(

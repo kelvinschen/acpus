@@ -32,7 +32,9 @@
   },
   "dependencies": {
     "@acpus/acp": "workspace:*",
-    "neverthrow": "^8.2.0",
+    "@acpus/owned-process": "workspace:*",
+    "@effect/platform-node": "4.0.0-rc.111",
+    "effect": "4.0.0-rc.111",
     "tsx": "^4.23.0"
   },
   "repository": {

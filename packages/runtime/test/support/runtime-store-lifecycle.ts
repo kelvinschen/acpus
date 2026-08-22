@@ -1,3 +1,5 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { DatabaseSync } from "node:sqlite";
@@ -7,7 +9,7 @@ import {
   resolveRuntimeWorkspaceLayout,
   type RuntimeLayoutOptions,
 } from "../../src/runtime-layout.js";
-import { openRuntimeStoreAtLayout } from "../../src/store/store.js";
+import { openRuntimeStoreAdapterAtLayout } from "../../src/store/store.js";
 
 export type LegacyRunSummary = {
   id: string;
@@ -23,9 +25,9 @@ export async function createLegacyStore(
   run?: LegacyRunSummary,
   options: RuntimeLayoutOptions = {},
 ): Promise<void> {
-  const initialized = await ensureRuntimeLayout(workspace, options);
-  if (initialized.isErr()) throw new Error(initialized.error.message);
-  const store = await openRuntimeStoreAtLayout(initialized.value, { prevalidated: true });
+  const initialized = await Effect.runPromise(Effect.result(ensureRuntimeLayout(workspace, options)));
+  if (Result.isFailure(initialized)) throw new Error(initialized.failure.message);
+  const store = await openRuntimeStoreAdapterAtLayout(initialized.success, { prevalidated: true });
   store.close();
   const current = resolveRuntimeLayout(workspace, options);
   if (run) {

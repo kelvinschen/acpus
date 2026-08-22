@@ -27,7 +27,7 @@
   },
   "dependencies": {
     "@acpus/core": "workspace:*",
-    "neverthrow": "^8.2.0"
+    "effect": "4.0.0-rc.111"
   },
   "devDependencies": {
     "@types/node": "^22.20.1"

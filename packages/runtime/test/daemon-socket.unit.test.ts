@@ -1,3 +1,6 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import { execFile } from "node:child_process";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { connect, createServer, type Socket } from "node:net";
@@ -6,15 +9,16 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { PreparedRunWorkflow, Sha256Digest } from "@acpus/runtime";
+import type { Sha256Digest } from "@acpus/core/content-identity";
+import type { PreparedRunWorkflow } from "../src/admission/prepared-workflow.js";
 import {
   daemonEndpoint,
-  requestDaemonControl,
-  requestDaemonInspection,
-  requestDaemonShutdown,
-  requestDaemonStatus,
-  requestDaemonStatusProbe,
-  requestDaemonSubmitAndObserve,
+  requestDaemonControl as requestDaemonControlEffect,
+  requestDaemonInspection as requestDaemonInspectionEffect,
+  requestDaemonShutdown as requestDaemonShutdownEffect,
+  requestDaemonStatus as requestDaemonStatusEffect,
+  requestDaemonStatusProbe as requestDaemonStatusProbeEffect,
+  requestDaemonSubmitAndObserve as requestDaemonSubmitAndObserveStream,
 } from "../src/daemon/client.js";
 import { sameRuntimeAuthority } from "../src/daemon/authority.js";
 import {
@@ -22,18 +26,63 @@ import {
   type DaemonRunStreamFrame,
   type RuntimeAuthorityIdentity,
 } from "../src/daemon/protocol.js";
-import { startDaemonServer } from "../src/daemon/server.js";
+import { startDaemonServer as startDaemonServerEffect } from "../src/daemon/server.js";
 import { ensureRuntimeLayout, resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
 import {
-  openRuntimeStore,
+  openRuntimeStoreAdapter,
   type RunDetails,
 } from "../src/store/store.js";
-import { err, ok, ResultAsync } from "neverthrow";
 
 const runtimeHomeCleanups: Array<() => Promise<void>> = [];
 const execFileAsync = promisify(execFile);
 
+type ProductionDaemonHandlers = Parameters<typeof startDaemonServerEffect>[1];
+type TestDaemonHandlers = Omit<ProductionDaemonHandlers, "submitAndObserve"> & {
+  submitAndObserve(
+    ...args: Parameters<ProductionDaemonHandlers["submitAndObserve"]>
+  ): AsyncIterable<DaemonRunStreamFrame>;
+};
+
+async function startDaemonServer(cwd: string, handlers: TestDaemonHandlers) {
+  const server = await Effect.runPromise(startDaemonServerEffect(cwd, {
+    ...handlers,
+    submitAndObserve: (...args) => Stream.fromAsyncIterable(
+      handlers.submitAndObserve(...args),
+      error => error,
+    ).pipe(Stream.orDie),
+  }));
+  return {
+    activeConnections: server.activeConnections,
+    close: () => Effect.runPromise(server.close()),
+  };
+}
+
+function requestDaemonControl(...args: Parameters<typeof requestDaemonControlEffect>) {
+  return Effect.runPromise(Effect.result(requestDaemonControlEffect(...args)));
+}
+
+function requestDaemonInspection(...args: Parameters<typeof requestDaemonInspectionEffect>) {
+  return Effect.runPromise(Effect.result(requestDaemonInspectionEffect(...args)));
+}
+
+function requestDaemonShutdown(...args: Parameters<typeof requestDaemonShutdownEffect>) {
+  return Effect.runPromise(Effect.result(requestDaemonShutdownEffect(...args)));
+}
+
+function requestDaemonStatus(...args: Parameters<typeof requestDaemonStatusEffect>) {
+  return Effect.runPromise(Effect.result(requestDaemonStatusEffect(...args)));
+}
+
+function requestDaemonStatusProbe(...args: Parameters<typeof requestDaemonStatusProbeEffect>) {
+  return Effect.runPromise(Effect.result(requestDaemonStatusProbeEffect(...args)));
+}
+
+function requestDaemonSubmitAndObserve(...args: Parameters<typeof requestDaemonSubmitAndObserveStream>) {
+  return Stream.toAsyncIterable(Stream.result(requestDaemonSubmitAndObserveStream(...args)));
+}
+
 afterEach(async () => {
+  vi.useRealTimers();
   await Promise.all(runtimeHomeCleanups.splice(0).map(cleanup => cleanup()));
 });
 
@@ -53,7 +102,7 @@ describe("daemon socket server", () => {
         effect: "cancel_drain_then_continue" as const,
       }],
     };
-    const inspect = vi.fn(() => ok(inspection));
+    const inspect = vi.fn(() => Effect.succeed(inspection));
     const server = await startDaemonServer(workspace, { ...testHandlers(), inspect });
     try {
       await expect(requestDaemonInspection(workspace, {
@@ -61,7 +110,7 @@ describe("daemon socket server", () => {
         runId: "run_1",
         target: "@123456789abc",
         detail: "summary",
-      })).resolves.toEqual(ok(inspection));
+      })).resolves.toEqual(Result.succeed(inspection));
       expect(inspect).toHaveBeenCalledWith({
         view: { kind: "target", runId: "run_1", target: "@123456789abc", detail: "summary" },
       });
@@ -119,11 +168,11 @@ describe("daemon socket server", () => {
 
   it.skipIf(process.platform === "win32")("rejects a symbolic link at the Unix socket path", async () => {
     const workspace = await testWorkspace("acpus-daemon-socket-symlink-");
-    const layout = await ensureRuntimeLayout(workspace);
-    if (layout.isErr()) throw new Error(layout.error.message);
-    const target = join(layout.value.workspaceRoot, "socket-target");
+    const layout = await Effect.runPromise(Effect.result(ensureRuntimeLayout(workspace)));
+    if (Result.isFailure(layout)) throw new Error(layout.failure.message);
+    const target = join(layout.success.workspaceRoot, "socket-target");
     await writeFile(target, "preserve");
-    await symlink(target, layout.value.daemonEndpoint);
+    await symlink(target, layout.success.daemonEndpoint);
     try {
       await expect(startDaemonServer(workspace, testHandlers())).rejects.toBeInstanceOf(Error);
       await expect(readFile(target, "utf8")).resolves.toBe("preserve");
@@ -154,15 +203,16 @@ describe("daemon socket server", () => {
     const shutdownStarted = deferred();
     const releaseShutdown = deferred();
     const server = await startDaemonServer(workspace, {
-      status: () => ok(daemonStatus()),
+      status: () => Effect.succeed(daemonStatus()),
       submitAndObserve: testHandlers().submitAndObserve,
-      inspect: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
-      control: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
-      shutdown: () => new ResultAsync((async () => {
+      inspect: () => Effect.fail({ code: "INTERNAL_ERROR", message: "not used" }),
+      control: () => Effect.fail({ code: "INTERNAL_ERROR", message: "not used" }),
+      shutdownSettled: () => {},
+      shutdown: () => Effect.promise(async () => {
         shutdownStarted.resolve();
         await releaseShutdown.promise;
-        return ok({ status: "shutdown" as const });
-      })()),
+        return { status: "shutdown" as const };
+      }),
     });
     let request: ReturnType<typeof requestDaemonShutdown> | undefined;
     try {
@@ -170,7 +220,7 @@ describe("daemon socket server", () => {
       await shutdownStarted.promise;
       expect(server.activeConnections()).toBe(1);
       releaseShutdown.resolve();
-      expect(await request).toEqual(ok({ status: "shutdown" }));
+      expect(await request).toEqual(Result.succeed({ status: "shutdown" }));
       await waitUntil(() => server.activeConnections() === 0);
       expect(server.activeConnections()).toBe(0);
     } finally {
@@ -193,7 +243,6 @@ describe("daemon socket server", () => {
         yield { kind: "admitted", authority: runtimeAuthority(), run: runDetails() };
       },
     });
-    vi.useFakeTimers();
     const request = collectStream(requestDaemonSubmitAndObserve(workspace, {
       expectedAuthority: runtimeAuthority(),
       requestId: "admission-wait",
@@ -203,9 +252,11 @@ describe("daemon socket server", () => {
     }));
     try {
       await started.promise;
+      vi.useFakeTimers();
       await vi.advanceTimersByTimeAsync(31_000);
       release.resolve();
-      expect(await request).toEqual([ok({ kind: "admitted", authority: runtimeAuthority(), run: runDetails() })]);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await request).toEqual([Result.succeed({ kind: "admitted", authority: runtimeAuthority(), run: runDetails() })]);
     } finally {
       release.resolve();
       vi.useRealTimers();
@@ -243,10 +294,10 @@ describe("daemon socket server", () => {
     const workspace = await testWorkspace("acpus-daemon-socket-readiness-");
     const server = await startDaemonServer(workspace, {
       ...testHandlers(),
-      status: () => err({ code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }),
+      status: () => Effect.fail({ code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }),
     });
     try {
-      expect(await requestDaemonStatus(workspace)).toEqual(err({ type: "rejected", code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }));
+      expect(await requestDaemonStatus(workspace)).toEqual(Result.fail({ type: "rejected", code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }));
     } finally {
       await server.close();
       await rm(workspace, { recursive: true, force: true });
@@ -262,7 +313,7 @@ describe("daemon socket server", () => {
       },
     });
     try {
-      expect(await requestDaemonControl(workspace, { requestId: "cancel", type: "cancel", runId: "run_1" })).toEqual(err({
+      expect(await requestDaemonControl(workspace, { requestId: "cancel", type: "cancel", runId: "run_1" })).toEqual(Result.fail({
         type: "rejected",
         code: "INTERNAL_ERROR",
         message: "Control 'cancel' could not be applied to run 'run_1'.",
@@ -279,7 +330,7 @@ describe("daemon socket server", () => {
       const layout = resolveRuntimeLayout(workspace);
       await mkdir(dirname(layout.workspaceRoot), { recursive: true });
       await writeFile(layout.workspaceRoot, "not a directory");
-      expect(await requestDaemonStatus(workspace)).toEqual(err({
+      expect(await requestDaemonStatus(workspace)).toEqual(Result.fail({
         type: "transport",
         reason: "not-found",
         method: "status",
@@ -295,11 +346,11 @@ describe("daemon socket server", () => {
     const workspace = await testWorkspace("acpus-daemon-socket-prelease-live-");
     const first = await startDaemonServer(workspace, {
       ...testHandlers(),
-      status: () => err({ code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }),
+      status: () => Effect.fail({ code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }),
     });
     try {
       await expect(startDaemonServer(workspace, testHandlers())).rejects.toMatchObject({ code: "EADDRINUSE" });
-      expect(await requestDaemonStatus(workspace)).toEqual(err({ type: "rejected", code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }));
+      expect(await requestDaemonStatus(workspace)).toEqual(Result.fail({ type: "rejected", code: "EXECUTION_UNAVAILABLE", message: "Daemon is still initializing." }));
     } finally {
       await first.close();
       await rm(workspace, { recursive: true, force: true });
@@ -326,11 +377,12 @@ describe("daemon socket server", () => {
       const clientModule = pathToFileURL(join(import.meta.dirname, "../src/daemon/client.ts")).href;
       const layoutModule = pathToFileURL(join(import.meta.dirname, "../src/runtime-layout.ts")).href;
       const script = `
+        import * as Effect from "effect/Effect";
         import { probeDaemonEndpoint } from ${JSON.stringify(clientModule)};
         import { setRuntimeHomeForTest } from ${JSON.stringify(layoutModule)};
         const restore = setRuntimeHomeForTest(process.argv[1], process.argv[2]);
         try {
-          process.stdout.write(String(await probeDaemonEndpoint(process.argv[1])));
+          process.stdout.write(String(await Effect.runPromise(probeDaemonEndpoint(process.argv[1]))));
         } finally {
           restore();
         }
@@ -364,7 +416,7 @@ describe("daemon socket server", () => {
     let server: Awaited<ReturnType<typeof startDaemonServer>> | undefined;
     try {
       server = await startDaemonServer(workspace, testHandlers());
-      await expect(requestDaemonStatus(workspace)).resolves.toEqual(ok(daemonStatus()));
+      await expect(requestDaemonStatus(workspace)).resolves.toEqual(Result.succeed(daemonStatus()));
     } finally {
       await server?.close();
       await rm(workspace, { recursive: true, force: true });
@@ -387,7 +439,7 @@ describe("daemon socket server", () => {
       const failures = starts.flatMap(result => result.status === "rejected" ? [result.reason] : []);
       expect(failures).toHaveLength(1);
       expect(failures[0]).toMatchObject({ code: "EADDRINUSE" });
-      await expect(requestDaemonStatus(workspace)).resolves.toEqual(ok(daemonStatus()));
+      await expect(requestDaemonStatus(workspace)).resolves.toEqual(Result.succeed(daemonStatus()));
     } finally {
       await Promise.allSettled(servers.map(server => server.close()));
       await rm(workspace, { recursive: true, force: true });
@@ -397,8 +449,8 @@ describe("daemon socket server", () => {
   it.skipIf(process.platform === "win32")("keeps an occupied socket when pid liveness is unknown", async () => {
     const workspace = await testWorkspace("acpus-daemon-socket-unknown-pid-");
     const endpoint = daemonEndpoint(workspace);
-    const store = await openRuntimeStore(workspace);
-    const authority = store.claimRuntimeAuthority({
+    const store = await openRuntimeStoreAdapter(workspace);
+    const authority = Result.getOrThrow(store.claimRuntimeAuthority({
       workspaceRealpath: workspace,
       ownerId: "unknown-pid-owner",
       pid: 123,
@@ -407,7 +459,7 @@ describe("daemon socket server", () => {
       nodeVersion: process.version,
       execPath: process.execPath,
       idleStopMs: 30_000,
-    })._unsafeUnwrap();
+    }));
     store.close();
     await mkdir(dirname(endpoint), { recursive: true });
     await writeFile(endpoint, "occupied");
@@ -508,7 +560,7 @@ describe("daemon socket server", () => {
           ...submitInput("admitted"),
           expectedAuthority: expectedAuthority as RuntimeAuthorityIdentity,
         }));
-        expect(frames).toEqual([ok({
+        expect(frames).toEqual([Result.succeed({
           kind: "error",
           phase: "authority",
           outcome: "not-admitted",
@@ -529,7 +581,7 @@ describe("daemon socket server", () => {
       extra: true,
     });
     try {
-      expect(await requestDaemonShutdown(workspace)).toEqual(err({ type: "protocol", stage: "envelope", method: "shutdown", message: "Daemon returned an invalid response." }));
+      expect(await requestDaemonShutdown(workspace)).toEqual(Result.fail({ type: "protocol", stage: "envelope", method: "shutdown", message: "Daemon returned an invalid response." }));
     } finally {
       await closeRawResponseServer(server);
       await rm(workspace, { recursive: true, force: true });
@@ -543,7 +595,7 @@ describe("daemon socket server", () => {
       result: { status: "shutdown", extra: true },
     });
     try {
-      expect(await requestDaemonShutdown(shutdownWorkspace)).toEqual(err({ type: "protocol", stage: "result", method: "shutdown", message: "Daemon returned an invalid shutdown result." }));
+      expect(await requestDaemonShutdown(shutdownWorkspace)).toEqual(Result.fail({ type: "protocol", stage: "result", method: "shutdown", message: "Daemon returned an invalid shutdown result." }));
     } finally {
       await closeRawResponseServer(shutdownServer);
       await rm(shutdownWorkspace, { recursive: true, force: true });
@@ -571,7 +623,7 @@ describe("daemon socket server", () => {
       const controlWorkspace = await testWorkspace("acpus-daemon-socket-control-result-");
       const controlServer = await startRawResponseServer(controlWorkspace, { ok: true, result });
       try {
-        expect((await requestDaemonControl(controlWorkspace, controlIntent(result.type))).isErr()).toBe(true);
+        expect(Result.isFailure((await requestDaemonControl(controlWorkspace, controlIntent(result.type))))).toBe(true);
       } finally {
         await closeRawResponseServer(controlServer);
         await rm(controlWorkspace, { recursive: true, force: true });
@@ -584,7 +636,7 @@ describe("daemon socket server", () => {
       result: { type: "resume", state: "applied", run },
     });
     try {
-      expect(await requestDaemonControl(mismatchedWorkspace, { requestId: "pause", type: "pause", runId: "run_1" })).toEqual(err({
+      expect(await requestDaemonControl(mismatchedWorkspace, { requestId: "pause", type: "pause", runId: "run_1" })).toEqual(Result.fail({
         type: "protocol",
         stage: "result",
         method: "control",
@@ -633,7 +685,7 @@ describe("daemon socket server", () => {
       const controlWorkspace = await testWorkspace("acpus-daemon-socket-valid-control-result-");
       const controlServer = await startRawResponseServer(controlWorkspace, { ok: true, result });
       try {
-        expect(await requestDaemonControl(controlWorkspace, controlIntent(result.type))).toEqual(ok(result));
+        expect(await requestDaemonControl(controlWorkspace, controlIntent(result.type))).toEqual(Result.succeed(result));
       } finally {
         await closeRawResponseServer(controlServer);
         await rm(controlWorkspace, { recursive: true, force: true });
@@ -646,7 +698,7 @@ describe("daemon socket server", () => {
     ]);
     try {
       expect(await collectStream(requestDaemonSubmitAndObserve(admissionWorkspace, submitInput("admitted"))))
-        .toEqual([err(expect.objectContaining({
+        .toEqual([Result.fail(expect.objectContaining({
           type: "protocol",
           stage: "frame",
           reason: "malformed",
@@ -663,7 +715,7 @@ describe("daemon socket server", () => {
     const currentWorkspace = await testWorkspace("acpus-daemon-status-current-");
     const currentServer = await startRawResponseServer(currentWorkspace, { ok: true, result: daemonStatus() });
     try {
-      await expect(requestDaemonStatusProbe(currentWorkspace)).resolves.toEqual(ok({
+      await expect(requestDaemonStatusProbe(currentWorkspace)).resolves.toEqual(Result.succeed({
         kind: "current",
         status: daemonStatus(),
       }));
@@ -676,7 +728,7 @@ describe("daemon socket server", () => {
     const predecessor = { status: "ok", pid: process.pid, generation: 7, protocolVersion: 3, packageVersion: "old" };
     const predecessorServer = await startRawResponseServer(predecessorWorkspace, { ok: true, result: predecessor });
     try {
-      await expect(requestDaemonStatusProbe(predecessorWorkspace)).resolves.toEqual(ok({
+      await expect(requestDaemonStatusProbe(predecessorWorkspace)).resolves.toEqual(Result.succeed({
         kind: "predecessor",
         status: predecessor,
       }));
@@ -691,7 +743,7 @@ describe("daemon socket server", () => {
       result: { status: "ok", pid: process.pid, protocolVersion: 5, packageVersion: "future", authority: {} },
     });
     try {
-      await expect(requestDaemonStatusProbe(futureWorkspace)).resolves.toEqual(ok({
+      await expect(requestDaemonStatusProbe(futureWorkspace)).resolves.toEqual(Result.succeed({
         kind: "unknown",
         protocolVersion: 5,
       }));
@@ -709,7 +761,7 @@ describe("daemon socket server", () => {
       },
     });
     try {
-      await expect(requestDaemonStatusProbe(futureAbiWorkspace)).resolves.toEqual(ok({
+      await expect(requestDaemonStatusProbe(futureAbiWorkspace)).resolves.toEqual(Result.succeed({
         kind: "unknown",
         protocolVersion: 10,
       }));
@@ -728,7 +780,7 @@ describe("daemon socket server", () => {
     const server = await startRawStreamServer(workspace, [first.slice(0, 9), `${first.slice(9)}${second}`]);
     try {
       expect(await collectStream(requestDaemonSubmitAndObserve(workspace, submitInput("subject-terminal"))))
-        .toEqual([ok(admitted), ok(closed)]);
+        .toEqual([Result.succeed(admitted), Result.succeed(closed)]);
     } finally {
       await closeRawResponseServer(server);
       await rm(workspace, { recursive: true, force: true });
@@ -740,7 +792,7 @@ describe("daemon socket server", () => {
     const malformedServer = await startRawStreamServer(malformedWorkspace, ["{not-json}\n"]);
     try {
       expect(await collectStream(requestDaemonSubmitAndObserve(malformedWorkspace, submitInput("admitted"))))
-        .toEqual([err(expect.objectContaining({
+        .toEqual([Result.fail(expect.objectContaining({
           type: "protocol",
           reason: "malformed",
           outcome: "unknown",
@@ -756,8 +808,8 @@ describe("daemon socket server", () => {
     try {
       expect(await collectStream(requestDaemonSubmitAndObserve(truncatedWorkspace, submitInput("subject-terminal"))))
         .toEqual([
-          ok(admitted),
-          err(expect.objectContaining({
+          Result.succeed(admitted),
+          Result.fail(expect.objectContaining({
             type: "protocol",
             reason: "truncated",
             outcome: "admitted",
@@ -797,8 +849,8 @@ describe("daemon socket server", () => {
       try {
         expect(await collectStream(requestDaemonSubmitAndObserve(workspace, submitInput("subject-terminal"))))
           .toEqual([
-            ok(admitted),
-            err(expect.objectContaining({
+            Result.succeed(admitted),
+            Result.fail(expect.objectContaining({
               type: "protocol",
               stage: "frame",
               reason: "malformed",
@@ -827,8 +879,8 @@ describe("daemon socket server", () => {
     try {
       expect(await collectStream(requestDaemonSubmitAndObserve(workspace, submitInput("admitted"))))
         .toEqual([
-          ok(failure),
-          err(expect.objectContaining({ type: "protocol", reason: "unexpected" })),
+          Result.succeed(failure),
+          Result.fail(expect.objectContaining({ type: "protocol", reason: "unexpected" })),
         ]);
     } finally {
       await closeRawResponseServer(server);
@@ -858,7 +910,7 @@ describe("daemon socket server", () => {
     try {
       await admissionStarted.promise;
       detach.abort();
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await new Promise<void>(resolve => setImmediate(resolve));
       expect(observerSignal?.aborted).toBe(false);
       releaseAdmission.resolve();
       await observerAborted.promise;
@@ -892,11 +944,11 @@ describe("daemon socket server", () => {
     try {
       const frames = await collectStream(requestDaemonSubmitAndObserve(workspace, submitInput("subject-terminal")));
       expect(frames).toHaveLength(3);
-      expect(frames[0]).toEqual(ok(admittedFrame()));
-      expect(frames[1]?.isOk() && frames[1].value.kind === "observation"
-        ? frames[1].value.observation.kind === "update" && frames[1].value.observation.changes[0]?.subject.label.length
+      expect(frames[0]).toEqual(Result.succeed(admittedFrame()));
+      expect(Result.isSuccess(frames[1]!) && frames[1]!.success.kind === "observation"
+        ? frames[1]!.success.observation.kind === "update" && frames[1]!.success.observation.changes[0]?.subject.label.length
         : 0).toBe(large.length);
-      expect(frames[2]).toEqual(ok(closedFrame()));
+      expect(frames[2]).toEqual(Result.succeed(closedFrame()));
     } finally {
       await server.close();
       await rm(workspace, { recursive: true, force: true });
@@ -906,7 +958,7 @@ describe("daemon socket server", () => {
 
 function testHandlers(): Parameters<typeof startDaemonServer>[1] {
   return {
-    status: () => ok(daemonStatus()),
+    status: () => Effect.succeed(daemonStatus()),
     submitAndObserve: async function* () {
       yield {
         kind: "error",
@@ -915,9 +967,10 @@ function testHandlers(): Parameters<typeof startDaemonServer>[1] {
         error: { code: "INTERNAL_ERROR", message: "not used" },
       };
     },
-    inspect: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
-    control: () => err({ code: "INTERNAL_ERROR", message: "not used" }),
-    shutdown: () => ok({ status: "shutdown" }),
+    inspect: () => Effect.fail({ code: "INTERNAL_ERROR", message: "not used" }),
+    control: () => Effect.fail({ code: "INTERNAL_ERROR", message: "not used" }),
+    shutdownSettled: () => {},
+    shutdown: () => Effect.succeed({ status: "shutdown" }),
   };
 }
 

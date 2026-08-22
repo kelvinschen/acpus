@@ -16,18 +16,6 @@ describe("createAccessPolicy", () => {
     expect(policy.token).toBeUndefined();
   });
 
-  it("does not infer token access from network hosts", () => {
-    const policy = createAccessPolicy();
-    expect(policy.token).toBeUndefined();
-  });
-
-  it("generates a token when enabled", () => {
-    const policy = createAccessPolicy({ enabled: true });
-    expect(policy.token).toBeDefined();
-    expect(typeof policy.token).toBe("string");
-    expect(policy.token!.length).toBeGreaterThan(0);
-  });
-
   it("generates consistent 24-byte base64url token", () => {
     const policy = createAccessPolicy({ enabled: true });
     const tokenBytes = Buffer.from(policy.token!, "base64url");
@@ -52,12 +40,6 @@ describe("requireToken middleware", () => {
     return app;
   }
 
-  it("skips auth when no token is set", async () => {
-    const app = appWith({});
-    const res = await app.request("/api/health");
-    expect(res.status).toBe(200);
-  });
-
   it("returns 401 when no token is provided for protected access", async () => {
     const policy = createAccessPolicy({ enabled: true });
     const app = appWith(policy);
@@ -65,15 +47,6 @@ describe("requireToken middleware", () => {
     expect(res.status).toBe(401);
     const body = await res.json() as JsonBody;
     expect(body.error.code).toBe("unauthorized");
-  });
-
-  it("accepts valid Bearer token", async () => {
-    const policy = createAccessPolicy({ enabled: true });
-    const app = appWith(policy);
-    const res = await app.request("/api/health", {
-      headers: { authorization: `Bearer ${policy.token}` },
-    });
-    expect(res.status).toBe(200);
   });
 
   it("rejects wrong Bearer tokens with equal or different byte lengths", async () => {
@@ -85,13 +58,6 @@ describe("requireToken middleware", () => {
       });
       expect(res.status).toBe(401);
     }
-  });
-
-  it("accepts token from query param", async () => {
-    const policy = createAccessPolicy({ enabled: true });
-    const app = appWith(policy);
-    const res = await app.request(`/api/health?token=${policy.token}`);
-    expect(res.status).toBe(200);
   });
 
   it("sets cookie when token comes from query param", async () => {

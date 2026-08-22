@@ -1,12 +1,15 @@
-import { describe, expect, it, vi } from "vitest";
+import { it } from "@effect/vitest";
+import { describe, expect, vi } from "vitest";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
+import { AcpusMode } from "../src/host/mode.js";
 import type { StoredRunProjection } from "../src/host/run-projection.js";
 import { AcpusProjectionReader } from "../src/remote/reader.js";
-import {
-  LONG_POLL_MS,
-} from "../src/remote/types.js";
 
 describe("Acpus session activity reader", () => {
-  it("indexes the latest 50 tasks, filters exact names, and resolves fork selectors", async () => {
+  it.effect("indexes the latest 50 tasks, filters exact names, and resolves fork selectors", () => Effect.gen(function* () {
     const runs = Array.from({ length: 52 }, (_, index) => storedRun(
       `run-${index + 1}`,
       `2026-08-14T00:00:${String(index).padStart(2, "0")}.000Z`,
@@ -19,11 +22,11 @@ describe("Acpus session activity reader", () => {
     ));
     const reader = new AcpusProjectionReader(dependencies(runs));
 
-    const projection = await reader.readSessionActivity("session-1", {
+    const projection = yield* reader.readSessionActivity("session-1", {
       name: "review",
       occurrence: 51,
     });
-    const filtered = await reader.readTasks("session-1", "review");
+    const filtered = yield* reader.readTasks("session-1", "review");
 
     expect(projection.tasks).toHaveLength(50);
     expect(projection.tasksTruncated).toBe(true);
@@ -34,9 +37,9 @@ describe("Acpus session activity reader", () => {
     expect(projection.task?.selector).toEqual({ name: "review", occurrence: 51 });
     expect(filtered.tasks).toHaveLength(26);
     expect(filtered.tasks.every(task => task.task.name === "review")).toBe(true);
-  });
+  }));
 
-  it("publishes the complete current activity tree without private identity", async () => {
+  it.effect("publishes the complete current activity tree without private identity", () => Effect.gen(function* () {
     const older = storedRun("run-old", "2026-08-14T00:00:00.000Z");
     const current = storedRun("run-current", "2026-08-14T00:00:01.000Z", {
       unavailable: {
@@ -71,7 +74,7 @@ describe("Acpus session activity reader", () => {
     });
     const reader = new AcpusProjectionReader(dependencies([older, current]));
 
-    const projection = await reader.readSessionActivity("session-1");
+    const projection = yield* reader.readSessionActivity("session-1");
 
     expect(projection).toMatchObject({ sessionId: "session-1", revision: 7 });
     expect(projection.task?.tree).toHaveLength(202);
@@ -106,65 +109,58 @@ describe("Acpus session activity reader", () => {
         },
       },
     });
-  });
+  }));
 
-  it("uses only the Client activity wait channel", async () => {
+  it.effect("uses Effect time for the 200 second Client activity wait", () => Effect.gen(function* () {
     let revision = 1;
-    const waitForActivityRevision = vi.fn(async () => undefined);
+    const started = yield* Deferred.make<void>();
+    const waitForActivityRevision = vi.fn(() => Deferred.succeed(started, undefined).pipe(
+      Effect.andThen(Effect.never),
+      Effect.ensuring(Effect.sync(() => {
+        revision = 2;
+      })),
+    ));
+    const readSession = vi.fn((sessionId: string) => Effect.succeed({
+      sessionId,
+      revision,
+      runs: [],
+    }));
     const reader = new AcpusProjectionReader({
-      sessions: {
-        readSession: vi.fn(async sessionId => ({ sessionId, revision, runs: [] })),
-        waitForActivityRevision,
-      },
+      sessions: { readSession, waitForActivityRevision },
     });
 
-    expect(LONG_POLL_MS).toBe(200_000);
-    await expect(reader.awaitSessionActivityRevision("session-1", 1, undefined, 1))
-      .resolves.toEqual({ revision: 1 });
+    const pending = yield* Effect.forkChild(
+      reader.awaitSessionActivityRevision("session-1", 1),
+    );
+    yield* Deferred.await(started);
+    yield* TestClock.adjust(199_999);
+    expect(readSession).toHaveBeenCalledOnce();
+    yield* TestClock.adjust(1);
+    expect(yield* Fiber.join(pending)).toEqual({ revision: 2 });
     expect(waitForActivityRevision).toHaveBeenCalledOnce();
 
-    revision = 2;
-    await expect(reader.awaitSessionActivityRevision("session-1", 1))
-      .resolves.toEqual({ revision: 2 });
-  });
+    revision = 3;
+    expect(yield* reader.awaitSessionActivityRevision("session-1", 1))
+      .toEqual({ revision: 3 });
+    expect(waitForActivityRevision).toHaveBeenCalledOnce();
+  }));
 
-  it("aborts a pending activity wait with its caller", async () => {
-    const waitForActivityRevision = vi.fn(async (_sessionId, _after, signal: AbortSignal) => {
-      signal.throwIfAborted();
-      await new Promise<void>((_resolve, reject) => {
-        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-      });
-    });
-    const reader = new AcpusProjectionReader({
-      sessions: {
-        readSession: vi.fn(async sessionId => ({ sessionId, revision: 2, runs: [] })),
-        waitForActivityRevision,
+  it("normalizes structured caller abort reasons at the Typert boundary", async () => {
+    const started = Deferred.makeUnsafe<void>();
+    const mode = Object.create(AcpusMode.prototype) as AcpusMode;
+    Object.assign(mode, {
+      projections: {
+        awaitSessionActivityRevision: vi.fn(() => Deferred.succeed(started, undefined).pipe(
+          Effect.andThen(Effect.never),
+        )),
       },
     });
     const controller = new AbortController();
-    const pending = reader.awaitSessionActivityRevision("session-1", 2, controller.signal);
-    await vi.waitFor(() => expect(waitForActivityRevision).toHaveBeenCalledOnce());
-    controller.abort(new Error("session closed"));
-
-    await expect(pending).rejects.toThrow("session closed");
-  });
-
-  it("normalizes structured caller abort reasons to an Error", async () => {
-    const waitForActivityRevision = vi.fn(async (_sessionId, _after, signal: AbortSignal) => {
-      signal.throwIfAborted();
-      await new Promise<void>((_resolve, reject) => {
-        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-      });
-    });
-    const reader = new AcpusProjectionReader({
-      sessions: {
-        readSession: vi.fn(async sessionId => ({ sessionId, revision: 2, runs: [] })),
-        waitForActivityRevision,
-      },
-    });
-    const controller = new AbortController();
-    const pending = reader.awaitSessionActivityRevision("session-1", 2, controller.signal);
-    await vi.waitFor(() => expect(waitForActivityRevision).toHaveBeenCalledOnce());
+    const pending = mode.awaitSessionActivityRevision({
+      sessionId: "session-1",
+      afterRevision: 2,
+    }, controller.signal);
+    await Effect.runPromise(Deferred.await(started));
     controller.abort({ message: "DSH session exited" });
 
     await expect(pending).rejects.toEqual(expect.objectContaining({
@@ -178,12 +174,12 @@ describe("Acpus session activity reader", () => {
 function dependencies(runs: StoredRunProjection[]) {
   return {
     sessions: {
-      readSession: vi.fn(async (sessionId: string) => ({
+      readSession: vi.fn((sessionId: string) => Effect.succeed({
         sessionId,
         revision: 7,
         runs,
       })),
-      waitForActivityRevision: vi.fn(),
+      waitForActivityRevision: vi.fn(() => Effect.never),
     },
   };
 }

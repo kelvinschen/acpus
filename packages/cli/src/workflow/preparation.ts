@@ -13,6 +13,8 @@ import {
 } from "./catalog.js";
 import { CliError, usageError } from "../presentation/errors.js";
 import { summarizeWorkflow } from "../presentation/output.js";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 
 export type WorkflowSourceResolution = {
   source: WorkflowSourceInput;
@@ -51,19 +53,19 @@ export async function prepareWorkflowForCli(
   options: WorkflowSourceOptions,
 ): Promise<{ prepared: PreparedWorkflow; catalog?: AvailableWorkflowCatalogEntry }> {
   const resolved = await resolveWorkflowSourceForCli(options);
-  const result = await tryPrepareWorkflow({
+  const result = await Effect.runPromise(Effect.result(tryPrepareWorkflow({
     workspaceDir: options.workspaceDir,
     source: resolved.source,
-  });
-  return result.match(
-    prepared => ({
+  })));
+  return Result.match(result, {
+    onSuccess: prepared => ({
       prepared,
       ...(resolved.catalog === undefined ? {} : { catalog: resolved.catalog }),
     }),
-    failure => {
+    onFailure: failure => {
       throw workflowPreparationCliError(failure);
     },
-  );
+  });
 }
 
 async function readUtf8(stdin: Readable): Promise<string> {

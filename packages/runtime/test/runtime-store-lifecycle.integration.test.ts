@@ -1,3 +1,5 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { randomUUID } from "node:crypto";
 import { access, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
@@ -14,17 +16,18 @@ import {
   resolveRuntimeWorkspaceLayout,
   runtimeLayoutForGeneration,
 } from "../src/runtime-layout.js";
+import { openRuntimeExclusiveLock } from "../src/runtime-lock-adapter.js";
 import {
   readRuntimeDatabaseFormat,
   RUNTIME_APPLICATION_ID,
   RUNTIME_STORAGE_VERSION,
 } from "../src/storage/database.js";
-import { openRuntimeStoreAtLayout } from "../src/store/store.js";
+import { openRuntimeStoreAdapterAtLayout } from "../src/store/store.js";
 import {
   createLegacyStore,
   startPredecessorDaemon,
 } from "./support/runtime-store-lifecycle.js";
-import { initializeRuntimeStoreForTest } from "./support/runtime-fixtures.js";
+import { initializeRuntimeStoreForTest } from "./support/runtime-harness.js";
 import { withStorageWorkspace } from "./support/storage-workspace.js";
 import { treeFingerprint } from "./support/tree-fingerprint.js";
 
@@ -34,11 +37,11 @@ describe.concurrent("Runtime store repair", () => {
       const root = resolveRuntimeWorkspaceLayout(workspace).home;
       await expect(access(root)).rejects.toMatchObject({ code: "ENOENT" });
 
-      const inspected = await inspectRuntimeStore(workspace);
-      const repaired = await repairRuntimeStore(workspace);
+      const inspected = await Effect.runPromise(Effect.result(inspectRuntimeStore(workspace)));
+      const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
 
-      expect(inspected.isOk() && inspected.value).toEqual({ state: "ready" });
-      expect(repaired.isOk() && repaired.value).toEqual({ changed: false });
+      expect(Result.isSuccess(inspected) && inspected.success).toEqual({ state: "ready" });
+      expect(Result.isSuccess(repaired) && repaired.success).toEqual({ changed: false });
       await expect(access(root)).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
@@ -48,16 +51,16 @@ describe.concurrent("Runtime store repair", () => {
       await initializeRuntimeStoreForTest(workspace);
       const identity = captureProcessIdentity();
       if (identity.startToken === undefined) throw new Error("Expected a Linux process start token.");
-      const store = await openRuntimeStoreAtLayout(resolveRuntimeLayout(workspace));
-      store.claimRuntimeAuthority({
+      const store = await openRuntimeStoreAdapterAtLayout(resolveRuntimeLayout(workspace));
+      Result.getOrThrow(store.claimRuntimeAuthority({
         workspaceRealpath: workspace,
         ownerId: "stale-owner",
         pid: identity.pid,
         processStartToken: `${identity.startToken}:reused`,
-      })._unsafeUnwrap();
+      }));
       store.close();
 
-      expect((await awaitRuntimeStoreOffline(workspace)).isOk()).toBe(true);
+      expect(Result.isSuccess((await Effect.runPromise(Effect.result(awaitRuntimeStoreOffline(workspace)))))).toBe(true);
     });
   });
 
@@ -70,19 +73,21 @@ describe.concurrent("Runtime store repair", () => {
         createdAt: "2026-08-10T00:00:00.000Z",
         updatedAt: "2026-08-10T00:00:01.000Z",
       });
-      expect(await inspectRuntimeStore(workspace)).toMatchObject({
-        value: { state: "repairable" },
+      expect(await Effect.runPromise(Effect.result(inspectRuntimeStore(workspace)))).toMatchObject({
+        success: { state: "repairable" },
       });
 
-      const repaired = await repairRuntimeStore(workspace);
+      const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
 
-      expect(repaired.isOk() && repaired.value).toEqual({ changed: true });
+      expect(Result.isSuccess(repaired) && repaired.success).toEqual({ changed: true });
       const layout = resolveRuntimeLayout(workspace);
       expect(layout.runtimeRoot).toBe(`${layout.generationRoot}/store`);
       const manifest = JSON.parse(await readFile(layout.manifestPath, "utf8")) as Record<string, unknown>;
       expect(manifest).toMatchObject({ manifestVersion: 2, activeGenerationId: layout.generationId });
-      const archived = await readInspection(workspace, { kind: "run", runId: "run_archived" });
-      expect(archived.isOk() && archived.value).toEqual({
+      const archived = await Effect.runPromise(Effect.result(
+        readInspection(workspace, { kind: "run", runId: "run_archived" }),
+      ));
+      expect(Result.isSuccess(archived) && archived.success).toEqual({
         kind: "archived-run",
         run: {
           id: "run_archived",
@@ -107,9 +112,9 @@ describe.concurrent("Runtime store repair", () => {
       const workspaceLayout = resolveRuntimeWorkspaceLayout(workspace);
       const sourceDatabase = await readFile(workspaceLayout.databasePath);
 
-      const repaired = await repairRuntimeStore(workspace);
+      const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
 
-      expect(repaired.isOk() && repaired.value).toEqual({ changed: true });
+      expect(Result.isSuccess(repaired) && repaired.success).toEqual({ changed: true });
       const active = resolveRuntimeLayout(workspace);
       const generationIds = (await readdir(workspaceLayout.generationsRoot)).sort();
       expect(generationIds).toHaveLength(2);
@@ -132,9 +137,11 @@ describe.concurrent("Runtime store repair", () => {
         activeGenerationId: active.generationId,
       });
       await expect(access(workspaceLayout.transitionJournalPath)).rejects.toMatchObject({ code: "ENOENT" });
-      expect(await inspectRuntimeStore(workspace)).toMatchObject({ value: { state: "ready" } });
-      const lookup = await readInspection(workspace, { kind: "run", runId: "run_old" });
-      expect(lookup.isErr() && lookup.error).toMatchObject({
+      expect(await Effect.runPromise(Effect.result(inspectRuntimeStore(workspace)))).toMatchObject({ success: { state: "ready" } });
+      const lookup = await Effect.runPromise(Effect.result(
+        readInspection(workspace, { kind: "run", runId: "run_old" }),
+      ));
+      expect(Result.isFailure(lookup) && lookup.failure).toMatchObject({
         type: "archived-run-lookup-unavailable",
         runId: "run_old",
       });
@@ -164,12 +171,12 @@ describe.concurrent("Runtime store repair", () => {
       await corrupt(layout.databasePath);
       const before = await treeFingerprint(layout.workspaceRoot);
 
-      const inspected = await inspectRuntimeStore(workspace);
-      expect(inspected.isOk() && inspected.value).toMatchObject({ state: "unsupported" });
+      const inspected = await Effect.runPromise(Effect.result(inspectRuntimeStore(workspace)));
+      expect(Result.isSuccess(inspected) && inspected.success).toMatchObject({ state: "unsupported" });
       expect(await treeFingerprint(layout.workspaceRoot)).toBe(before);
 
-      const repaired = await repairRuntimeStore(workspace);
-      expect(repaired.isErr() && repaired.error).toMatchObject({ type: "unsupported" });
+      const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
+      expect(Result.isFailure(repaired) && repaired.failure).toMatchObject({ type: "unsupported" });
       expect(await treeFingerprint(layout.workspaceRoot)).toBe(before);
     });
   });
@@ -179,8 +186,8 @@ describe.concurrent("Runtime store repair", () => {
       await createLegacyStore(workspace, 8);
       const predecessor = await startPredecessorDaemon(workspace);
       try {
-        const repaired = await repairRuntimeStore(workspace);
-        expect(repaired.isOk() && repaired.value).toEqual({ changed: true });
+        const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
+        expect(Result.isSuccess(repaired) && repaired.success).toEqual({ changed: true });
         expect(predecessor.shutdownRequests()).toBe(1);
       } finally {
         await predecessor.close();
@@ -195,8 +202,8 @@ describe.concurrent("Runtime store repair", () => {
       const home = resolveRuntimeWorkspaceLayout(workspace).home;
       const before = await treeFingerprint(home);
       try {
-        const repaired = await repairRuntimeStore(workspace);
-        expect(repaired.isErr() ? repaired.error : undefined).toMatchObject({ type: "busy" });
+        const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
+        expect(Result.isFailure(repaired) ? repaired.failure : undefined).toMatchObject({ type: "busy" });
         expect(predecessor.shutdownRequests()).toBe(1);
         expect(await treeFingerprint(home)).toBe(before);
       } finally {
@@ -212,8 +219,8 @@ describe.concurrent("Runtime store repair", () => {
       const home = resolveRuntimeWorkspaceLayout(workspace).home;
       const before = await treeFingerprint(home);
       try {
-        const repaired = await repairRuntimeStore(workspace);
-        expect(repaired.isErr() ? repaired.error : undefined).toMatchObject({ type: "busy" });
+        const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
+        expect(Result.isFailure(repaired) ? repaired.failure : undefined).toMatchObject({ type: "busy" });
         expect(daemon.shutdownRequests()).toBe(0);
         expect(await treeFingerprint(home)).toBe(before);
       } finally {
@@ -228,11 +235,11 @@ describe.concurrent("Runtime store repair", () => {
       const home = resolveRuntimeWorkspaceLayout(workspace).home;
       const before = await treeFingerprint(home);
 
-      const inspected = await inspectRuntimeStore(workspace);
-      const repaired = await repairRuntimeStore(workspace);
+      const inspected = await Effect.runPromise(Effect.result(inspectRuntimeStore(workspace)));
+      const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
 
-      expect(inspected.isOk() && inspected.value).toMatchObject({ state: "unsupported" });
-      expect(repaired.isErr() && repaired.error).toMatchObject({ type: "unsupported" });
+      expect(Result.isSuccess(inspected) && inspected.success).toMatchObject({ state: "unsupported" });
+      expect(Result.isFailure(repaired) && repaired.failure).toMatchObject({ type: "unsupported" });
       expect(await treeFingerprint(home)).toBe(before);
     });
   });
@@ -242,13 +249,13 @@ describe.concurrent("Runtime store repair", () => {
       await createLegacyStore(workspace, 9);
 
       const repaired = await Promise.all([
-        repairRuntimeStore(workspace),
-        repairRuntimeStore(workspace),
+        Effect.runPromise(Effect.result(repairRuntimeStore(workspace))),
+        Effect.runPromise(Effect.result(repairRuntimeStore(workspace))),
       ]);
 
-      expect(repaired.every(result => result.isOk())).toBe(true);
-      expect(repaired.map(result => result.isOk() && result.value.changed).sort()).toEqual([false, true]);
-      expect(await inspectRuntimeStore(workspace)).toMatchObject({ value: { state: "ready" } });
+      expect(repaired.every(result => Result.isSuccess(result))).toBe(true);
+      expect(repaired.map(result => Result.isSuccess(result) && result.success.changed).sort()).toEqual([false, true]);
+      expect(await Effect.runPromise(Effect.result(inspectRuntimeStore(workspace)))).toMatchObject({ success: { state: "ready" } });
     });
   });
 
@@ -269,11 +276,11 @@ describe.concurrent("Runtime store repair", () => {
         }],
       }, null, 2)}\n`);
 
-      const first = await repairRuntimeStore(workspace);
-      const second = await repairRuntimeStore(workspace);
+      const first = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
+      const second = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
 
-      expect(first.isOk() && first.value).toEqual({ changed: true });
-      expect(second.isOk() && second.value).toEqual({ changed: false });
+      expect(Result.isSuccess(first) && first.success).toEqual({ changed: true });
+      expect(Result.isSuccess(second) && second.success).toEqual({ changed: false });
     });
   });
 
@@ -285,10 +292,10 @@ describe.concurrent("Runtime store repair", () => {
     await withStorageWorkspace(`runtime-repair-${checkpoint}`, async workspace => {
       const interrupted = await createInterruptedTransition(workspace, checkpoint);
 
-      const repaired = await repairRuntimeStore(workspace);
+      const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
 
-      expect(repaired.isOk() && repaired.value).toEqual({ changed: true });
-      expect(await inspectRuntimeStore(workspace)).toMatchObject({ value: { state: "ready" } });
+      expect(Result.isSuccess(repaired) && repaired.success).toEqual({ changed: true });
+      expect(await Effect.runPromise(Effect.result(inspectRuntimeStore(workspace)))).toMatchObject({ success: { state: "ready" } });
       expect(resolveRuntimeLayout(workspace).generationId).toBe(interrupted.nextGenerationId);
       await expect(access(interrupted.workspace.transitionJournalPath)).rejects.toMatchObject({ code: "ENOENT" });
     });
@@ -301,11 +308,11 @@ describe.concurrent("Runtime store repair", () => {
       const corruptIntent = "{ definitely-not-json\n";
       await writeFile(layout.transitionJournalPath, corruptIntent);
 
-      const inspected = await inspectRuntimeStore(workspace);
-      const repaired = await repairRuntimeStore(workspace);
+      const inspected = await Effect.runPromise(Effect.result(inspectRuntimeStore(workspace)));
+      const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
 
-      expect(inspected.isErr() ? inspected.error : undefined).toMatchObject({ type: "unreadable" });
-      expect(repaired.isErr() ? repaired.error : undefined).toMatchObject({ type: "unreadable" });
+      expect(Result.isFailure(inspected) ? inspected.failure : undefined).toMatchObject({ type: "unreadable" });
+      expect(Result.isFailure(repaired) ? repaired.failure : undefined).toMatchObject({ type: "unreadable" });
       expect(await readFile(layout.transitionJournalPath, "utf8")).toBe(corruptIntent);
     });
   });
@@ -331,9 +338,9 @@ describe.concurrent("Runtime store repair", () => {
       const changed = `${JSON.stringify(drift(metadata), null, 2)}\n`;
       await writeFile(interrupted.source.generationMetadataPath, changed);
 
-      const repaired = await repairRuntimeStore(workspace);
+      const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
 
-      expect(repaired.isErr() ? repaired.error : undefined).toMatchObject({ type: "unreadable" });
+      expect(Result.isFailure(repaired) ? repaired.failure : undefined).toMatchObject({ type: "unreadable" });
       expect(await readFile(interrupted.source.generationMetadataPath, "utf8")).toBe(changed);
       expect(await readFile(interrupted.workspace.transitionJournalPath, "utf8")).toBe(intent);
     });
@@ -346,9 +353,9 @@ describe.concurrent("Runtime store repair", () => {
       const manifest = await readFile(interrupted.workspace.manifestPath, "utf8");
       await rm(interrupted.source.generationRoot!, { recursive: true });
 
-      const repaired = await repairRuntimeStore(workspace);
+      const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
 
-      expect(repaired.isErr() ? repaired.error : undefined).toMatchObject({ type: "unreadable" });
+      expect(Result.isFailure(repaired) ? repaired.failure : undefined).toMatchObject({ type: "unreadable" });
       await expect(access(interrupted.source.generationRoot!)).rejects.toMatchObject({ code: "ENOENT" });
       expect(await readFile(interrupted.workspace.transitionJournalPath, "utf8")).toBe(intent);
       expect(await readFile(interrupted.workspace.manifestPath, "utf8")).toBe(manifest);
@@ -369,11 +376,13 @@ describe.concurrent("Runtime store repair", () => {
       await writeFile(next.generationMetadataPath, conflictingMetadata);
       const intent = await readFile(interrupted.workspace.transitionJournalPath, "utf8");
 
-      const repaired = await repairRuntimeStore(workspace);
+      const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
 
-      expect(repaired.isErr() ? repaired.error : undefined).toMatchObject({ type: "unreadable" });
+      expect(Result.isFailure(repaired) ? repaired.failure : undefined).toMatchObject({ type: "unreadable" });
       expect(await readFile(next.generationMetadataPath, "utf8")).toBe(conflictingMetadata);
       expect(await readFile(interrupted.workspace.transitionJournalPath, "utf8")).toBe(intent);
+      const exclusive = await openRuntimeExclusiveLock(resolveRuntimeLayout(workspace));
+      await exclusive.release();
     });
   });
 
@@ -383,16 +392,16 @@ describe.concurrent("Runtime store repair", () => {
       const partial = runtimeLayoutForGeneration(workspaceLayout, `gen_${randomUUID()}`);
       await mkdir(partial.generationRoot!, { recursive: true });
 
-      const repaired = await repairRuntimeStore(workspace);
+      const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
 
-      expect(repaired.isOk() && repaired.value).toEqual({ changed: true });
+      expect(Result.isSuccess(repaired) && repaired.success).toEqual({ changed: true });
       expect(JSON.parse(await readFile(partial.generationMetadataPath, "utf8"))).toMatchObject({
         schemaVersion: 1,
         id: partial.generationId,
         storageVersion: null,
       });
       await expect(access(partial.runtimeRoot)).rejects.toMatchObject({ code: "ENOENT" });
-      expect(await inspectRuntimeStore(workspace)).toMatchObject({ value: { state: "ready" } });
+      expect(await Effect.runPromise(Effect.result(inspectRuntimeStore(workspace)))).toMatchObject({ success: { state: "ready" } });
     });
   });
 });
@@ -452,7 +461,7 @@ async function createInterruptedTransition(workspace: string, checkpoint: Transi
       storageVersion: RUNTIME_STORAGE_VERSION,
       createdAt: startedAt,
     }, null, 2)}\n`);
-    const store = await openRuntimeStoreAtLayout(next, {
+    const store = await openRuntimeStoreAdapterAtLayout(next, {
       lock: false,
       prevalidated: true,
       unpublished: true,

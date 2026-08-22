@@ -1,5 +1,5 @@
-import { errAsync, okAsync } from "neverthrow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as Effect from "effect/Effect";
 import { CaptureStream } from "./support/capture-stream.js";
 
 const mock = vi.hoisted(() => ({
@@ -25,9 +25,9 @@ import { createDoctorCommand } from "../src/doctor/command.js";
 describe("Doctor repair", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mock.getRuntimeHealth.mockResolvedValue(healthyReport());
-    mock.inspectRuntimeStore.mockReturnValue(okAsync({ state: "ready" }));
-    mock.repairRuntimeStore.mockReturnValue(okAsync({ changed: false }));
+    mock.getRuntimeHealth.mockReturnValue(Effect.succeed(healthyReport()));
+    mock.inspectRuntimeStore.mockReturnValue(Effect.succeed({ state: "ready" }));
+    mock.repairRuntimeStore.mockReturnValue(Effect.succeed({ changed: false }));
     mock.getAuthoringHealth.mockResolvedValue({
       checks: [],
       types: [
@@ -48,11 +48,11 @@ describe("Doctor repair", () => {
   });
 
   it("repairs only a repairable store and rechecks health", async () => {
-    mock.inspectRuntimeStore.mockReturnValue(okAsync({
+    mock.inspectRuntimeStore.mockReturnValue(Effect.succeed({
       state: "repairable",
       message: "Runtime store repair is required.",
     }));
-    mock.repairRuntimeStore.mockReturnValue(okAsync({ changed: true }));
+    mock.repairRuntimeStore.mockReturnValue(Effect.succeed({ changed: true }));
 
     const result = await runDoctor(["--fix"]);
 
@@ -73,11 +73,11 @@ describe("Doctor repair", () => {
   });
 
   it("reports a repair failure and does not pretend to recheck", async () => {
-    mock.inspectRuntimeStore.mockReturnValue(okAsync({
+    mock.inspectRuntimeStore.mockReturnValue(Effect.succeed({
       state: "repairable",
       message: "Runtime store repair is required.",
     }));
-    mock.repairRuntimeStore.mockReturnValue(errAsync({
+    mock.repairRuntimeStore.mockReturnValue(Effect.fail({
       type: "busy",
       message: "Runtime store is busy; retry after active work stops.",
     }));

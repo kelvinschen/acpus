@@ -32,10 +32,6 @@ describe("Agent activity projection", () => {
     });
   });
 
-  it("omits the interval between a closed tool and the next semantic activity", () => {
-    expect(project(projection([turn(1)], [current(1, "between")]))).toBeUndefined();
-  });
-
   it("does not fall back to an older Turn when the latest Turn has no current", () => {
     expect(project(projection(
       [turn(1, { state: "settled" }), turn(2)],

@@ -1,5 +1,6 @@
 import type { AcpError, AcpEvent, AcpLaunch, AcpTurnResult } from "@acpus/acp";
-import type { Result, ResultAsync } from "neverthrow";
+import type * as Effect from "effect/Effect";
+import type * as Result from "effect/Result";
 import type { AcpAgentResolutionFailure } from "./agent-resolution.js";
 
 export type AgentPermissionMode = "approve-reads" | "approve-all" | "deny-all";
@@ -20,7 +21,7 @@ export type NamedAcpAgentLaunchRegistry = Readonly<
 
 export type ConfiguredAcpAgentCommandResolver = (
   names: readonly string[],
-) => ResultAsync<string | undefined, AcpAgentResolutionFailure>;
+) => Effect.Effect<string | undefined, AcpAgentResolutionFailure>;
 
 export type AgentToolInputPreview = {
   preview: string;
@@ -175,7 +176,7 @@ export type AgentTurnSettlementEvidence = Readonly<{
 export type TurnInput<E> = Readonly<{
   turnId: string;
   prompt: string;
-  onEvent: (event: AgentTurnEvent) => Result<void, E>;
+  onEvent: (event: AgentTurnEvent) => Result.Result<void, E>;
 }>;
 
 export type AgentTurnOutcome = Readonly<{
@@ -206,7 +207,7 @@ export type AgentSessionLease = Readonly<{
   sessionLeaseId: string;
   projectionRef: string;
   reportedVersion?: string;
-  runTurn<E>(input: TurnInput<E>): ResultAsync<AgentTurnOutcome, AgentTurnFailure<E>>;
+  runTurn<E>(input: TurnInput<E>): Effect.Effect<AgentTurnOutcome, AgentTurnFailure<E>>;
 }>;
 
 export type SessionOwnershipEvidence = Readonly<{
@@ -304,13 +305,13 @@ export type AgentSessionNeutralizationError<E> =
 export type AgentSessionSupervisor = Readonly<{
   withSessionLease<T, E>(
     input: { attempt: AttemptContext; session: AgentSessionIntent },
-    use: (lease: AgentSessionLease) => ResultAsync<T, E>,
-  ): ResultAsync<T, AgentSessionUseError<E>>;
+    use: (lease: AgentSessionLease) => Effect.Effect<T, E>,
+  ): Effect.Effect<T, AgentSessionUseError<E>>;
   withSessionsNeutralized<T, E>(
     input: { sessions: readonly AgentSessionRef[]; signal: AbortSignal },
-    commit: (evidence: readonly SessionNeutralizationEvidence[]) => Result<T, E>,
-  ): ResultAsync<T, AgentSessionNeutralizationError<E>>;
-  shutdown(): ResultAsync<void, AgentSessionShutdownError>;
+    commit: (evidence: readonly SessionNeutralizationEvidence[]) => Result.Result<T, E>,
+  ): Effect.Effect<T, AgentSessionNeutralizationError<E>>;
+  shutdown(): Effect.Effect<void, AgentSessionShutdownError>;
 }>;
 
 export type AcpOwnershipManifest = {

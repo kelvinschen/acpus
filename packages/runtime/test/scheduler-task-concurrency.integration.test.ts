@@ -3,9 +3,9 @@ import { access, mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defineWorkflow, z } from "@acpus/core";
 import { describe, expect, it } from "vitest";
-import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
-import { openRuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { advanceFrozenRun } from "./support/effect-scheduler.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
+import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-harness.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 
 describe.concurrent("runtime scheduler Task concurrency", () => {
@@ -19,7 +19,7 @@ describe.concurrent("runtime scheduler Task concurrency", () => {
         mkdir(releaseDir, { recursive: true }),
       ]);
       const prepared = await prepareSyntheticWorkflow(workspace, nestedGatedTaskWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let advancing: ReturnType<typeof advanceFrozenRun> | undefined;
       try {
         const run = await admitRunForTest(store, {
@@ -132,7 +132,7 @@ async function gatedTask({
   return { branch: input.branch, itemIndex: input.itemIndex };
 }
 
-type RuntimeEvent = ReturnType<Awaited<ReturnType<typeof openRuntimeStore>>["getCommittedRuntimeEventsAfter"]>[number];
+type RuntimeEvent = ReturnType<Awaited<ReturnType<typeof openRuntimeStoreAdapter>>["getCommittedRuntimeEventsAfter"]>[number];
 
 const ATTEMPT_TERMINAL_EVENTS = new Set(["attempt.completed", "attempt.failed", "attempt.timed_out", "attempt.cancelled", "attempt.superseded"]);
 const MEMBER_TERMINAL_EVENTS = new Set(["group.member_completed", "group.member_failed", "group.member_cancelled"]);

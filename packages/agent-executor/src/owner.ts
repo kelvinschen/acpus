@@ -1,4 +1,5 @@
-import { processStartToken } from "./process-tree.js";
+import type { ProcessHostShape } from "@acpus/owned-process";
+import * as Effect from "effect/Effect";
 import type { RuntimeOwnerIdentity } from "./types.js";
 
 export type NormalizedRuntimeOwnerIdentity = {
@@ -7,14 +8,16 @@ export type NormalizedRuntimeOwnerIdentity = {
   epoch: number;
 };
 
-export async function normalizeRuntimeOwner(
+export function normalizeRuntimeOwner(
   owner: RuntimeOwnerIdentity,
-): Promise<NormalizedRuntimeOwnerIdentity> {
-  const pid = owner.pid;
-  const startToken = owner.startToken ?? await processStartToken(pid);
-  return {
-    pid,
-    ...(startToken === undefined ? {} : { startToken }),
-    epoch: owner.epoch,
-  };
+  processes: ProcessHostShape,
+): Effect.Effect<NormalizedRuntimeOwnerIdentity> {
+  return Effect.gen(function*() {
+    const startToken = owner.startToken ?? (yield* processes.startToken(owner.pid));
+    return {
+      pid: owner.pid,
+      ...(startToken === undefined ? {} : { startToken }),
+      epoch: owner.epoch,
+    };
+  });
 }

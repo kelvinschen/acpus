@@ -1,8 +1,9 @@
+import * as Effect from "effect/Effect";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { startDaemonLoop } from "../src/index.js";
-import { prepareSyntheticWorkflow, runtimeRows } from "./support/runtime-fixtures.js";
+import { startDaemonLoop } from "./support/daemon-loop.js";
+import { prepareSyntheticWorkflow, runtimeRows } from "./support/runtime-harness.js";
 import {
   activeTaskWorkflow,
   requestDaemonControl,
@@ -16,40 +17,6 @@ import {
 import { submitRunThroughDaemon } from "./support/daemon-submit.js";
 
 describe.concurrent("daemon lease active execution", () => {
-  it("applies cancel to daemon-owned active execution without lease conflict", async () => {
-    await withDaemonLeaseWorkspace(async ({ dir }) => {
-      const markerPath = join(dir, "active-cancel.marker");
-      const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
-      const loop = await startDaemonLoop(dir, {
-        heartbeatMs: 10,
-        packageVersion: "0.0.0-test",
-      });
-      try {
-        const admitted = await submitRunThroughDaemon(dir, {
-          prepared,
-          input: { markerPath },
-        });
-        await waitUntil(async () =>
-          await readFile(markerPath, "utf8").catch(() => undefined) === "started");
-        await expect(requestDaemonControl(dir, {
-          requestId: "test-active-cancel",
-          type: "cancel",
-          runId: admitted.id,
-        })).resolves.toMatchObject({
-          run: { id: admitted.id, status: "canceled" },
-        });
-        await expect(waitForTerminalRun(dir, admitted.id)).resolves.toMatchObject({
-          status: "canceled",
-          run: { id: admitted.id, status: "canceled" },
-        });
-        await waitUntil(async () =>
-          await readFile(markerPath, "utf8").catch(() => undefined) === "aborted");
-      } finally {
-        await loop.shutdown();
-      }
-    });
-  }, 5_000);
-
   it("aborts only the targeted active Task while a parallel sibling completes", async () => {
     await withDaemonLeaseWorkspace(async ({ dir }) => {
       const leftMarker = join(dir, "targeted-parallel-left.marker");
@@ -189,7 +156,7 @@ describe.concurrent("daemon lease active execution", () => {
     });
   }, 5_000);
 
-  it("rejects shutdown while a run execution session is active", async () => {
+  it("rejects shutdown while active, then cancels through the current owner", async () => {
     await withDaemonLeaseWorkspace(async ({ dir }) => {
       const markerPath = join(dir, "shutdown-active.marker");
       const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
@@ -263,13 +230,11 @@ describe.concurrent("daemon lease active execution", () => {
     await withDaemonLeaseWorkspace(async ({ dir, store }) => {
       const markerPath = join(dir, "idle-active.marker");
       const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
-      const admission = await store.admitRun({
+      const admitted = await Effect.runPromise(store.admitRun({
         prepared,
         cwd: dir,
         input: { markerPath },
-      });
-      if (admission.isErr()) throw new Error(admission.error.message);
-      const admitted = admission.value;
+      }));
       const loop = await startDaemonLoop(dir, {
         heartbeatMs: 10,
         idleStopMs: 0,

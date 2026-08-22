@@ -6,7 +6,7 @@ import { CaptureStream } from "./support/capture-stream.js";
 import { withAuthoringTestWorkspace } from "./support/workspace.js";
 
 describe("workflow Agent injection CLI contract", () => {
-  it("reports slots structurally without --agents and finalizes complete injections when supplied", async () => {
+  it("finalizes a configured Preset injection through the real workflow check boundary", async () => {
     await withAuthoringTestWorkspace("workflow-agent-injection", async workspace => {
       const workflow = join(workspace, "workflow.ts");
       await writeFile(workflow, [
@@ -17,19 +17,6 @@ describe("workflow Agent injection CLI contract", () => {
         "}).build(() => ({ ok: true }));",
         "",
       ].join("\n"));
-
-      const structural = await invoke(workspace, ["workflow", "check", workflow]);
-      expect(structural.exitCode, structural.stderr).toBe(0);
-      expect(structural.stdout).toContain("Unbound Agent slots: reviewer, worker\n");
-      expect(structural.stderr).toBe("");
-
-      const incomplete = await invoke(workspace, [
-        "workflow", "check", workflow, "--agents", '{"worker":{"use":"codex"}}',
-      ]);
-      expect(incomplete.exitCode).toBe(1);
-      expect(incomplete.stdout).toBe("");
-      expect(incomplete.stderr).toContain("Agent bindings are required for: reviewer.");
-
       await mkdir(join(workspace, ".acpus"), { recursive: true });
       await writeFile(join(workspace, ".acpus", "config.json"), `${JSON.stringify({
         presets: {

@@ -1,4 +1,4 @@
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import type { FrozenSchedulerRun } from "./settle.js";
 import type { SchedulerSnapshot } from "./store-port.js";
 import { indexNodes } from "./ir-walk.js";
@@ -17,17 +17,17 @@ export function planRetrySessionImpact(input: Readonly<{
   snapshot: SchedulerSnapshot;
   reexecutedNodeKeys: readonly string[];
   materializedSessions?: readonly Readonly<{ agentSessionId: string; nodeKey: string }>[];
-}>): Result<RetrySessionImpact, RetrySessionImpactError> {
+}>): Result.Result<RetrySessionImpact, RetrySessionImpactError> {
   const nodes = indexNodes(input.frozen.ir.root);
   const reexecuted = new Set(input.reexecutedNodeKeys);
   for (const nodeKey of input.reexecutedNodeKeys) {
     const instance = input.snapshot.projection.instances[nodeKey];
     const node = instance === undefined ? undefined : nodes.get(instance.nodeId);
     if (node?.kind === "agent" && node.run.sessionKey !== undefined) {
-      return err({ type: "shared_session_retry_requires_fork", nodeKey });
+      return Result.fail({ type: "shared_session_retry_requires_fork", nodeKey });
     }
   }
-  return ok({
+  return Result.succeed({
     agentSessionIds: [...new Set((input.materializedSessions ?? [])
       .filter(session => reexecuted.has(session.nodeKey))
       .map(session => session.agentSessionId))].sort(),

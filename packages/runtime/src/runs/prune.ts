@@ -1,12 +1,16 @@
 import { lstat, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { sha256DigestHex } from "@acpus/core/content-identity";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Result from "effect/Result";
 import type { WorkflowSourceRef } from "../admission/prepared-workflow.js";
 import { inspectRuntimeStoreInternal } from "../runtime-store-lifecycle.js";
 import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout, runtimeLayoutForGeneration, type RuntimeLayout } from "../runtime-layout.js";
 import { acquireRuntimeExclusiveLock } from "../runtime-lock.js";
 import { hasNoPendingRuntimeDatabaseWal } from "../storage/database.js";
-import { openExistingRuntimeStoreAtLayout } from "../store/store.js";
+import { acquireExistingRuntimeStoreAtLayout, type RuntimeStoreBusy } from "../store/service.js";
 import { discoverWorkspaceShards, resolveAvailableWorkspaceLayout } from "../workspace-discovery.js";
 
 export type PruneReport = {
@@ -55,7 +59,7 @@ export type PruneSelection = {
   generationIds: string[];
 };
 
-export async function pruneRuns(
+export function pruneRuns(
   cwd: string,
   options: {
     olderThanMs?: number;
@@ -63,45 +67,49 @@ export async function pruneRuns(
     dryRun: boolean;
     selectionCutoff?: string;
   },
-): Promise<PruneReport> {
-  if (options.olderThanMs !== undefined
-    && (!Number.isSafeInteger(options.olderThanMs) || options.olderThanMs < 0)) {
-    throw new Error("Prune olderThanMs must be a non-negative safe integer.");
-  }
-  if (options.selectionCutoff !== undefined && !isCanonicalTimestamp(options.selectionCutoff)) {
-    throw new Error("Prune selectionCutoff must be a canonical UTC timestamp.");
-  }
-  const current = resolveRuntimeWorkspaceLayout(cwd);
-  const cutoff = options.selectionCutoff ?? (options.olderThanMs === undefined
-    ? undefined
-    : new Date(Date.now() - options.olderThanMs).toISOString());
-  const report: PruneReport = {
-    dryRun: options.dryRun,
-    ...(options.olderThanMs === undefined ? {} : { cutoff: cutoff! }),
-    selected: { workspaces: 0, runs: 0, archives: 0, bytes: 0 },
-    deleted: { workspaces: 0, runs: 0, archives: 0, sources: 0, bytes: 0 },
-    removedWorkspaces: 0,
-    failures: [],
-  };
-  const targets = options.allWorkspaces
-    ? await discoverTargets(current.home)
-    : [{ ...current }];
-  for (const target of targets) {
-    if ("failure" in target) {
-      report.failures.push(target.failure);
-      continue;
+): Effect.Effect<PruneReport> {
+  return Effect.gen(function* () {
+    if (options.olderThanMs !== undefined
+      && (!Number.isSafeInteger(options.olderThanMs) || options.olderThanMs < 0)) {
+      throw new Error("Prune olderThanMs must be a non-negative safe integer.");
     }
-    try {
-      mergeShardSummary(report, await pruneShard(target, cutoff, options.dryRun));
-    } catch (error) {
+    if (options.selectionCutoff !== undefined && !isCanonicalTimestamp(options.selectionCutoff)) {
+      throw new Error("Prune selectionCutoff must be a canonical UTC timestamp.");
+    }
+    const current = resolveRuntimeWorkspaceLayout(cwd);
+    const cutoff = options.selectionCutoff ?? (options.olderThanMs === undefined
+      ? undefined
+      : new Date(Date.now() - options.olderThanMs).toISOString());
+    const report: PruneReport = {
+      dryRun: options.dryRun,
+      ...(options.olderThanMs === undefined ? {} : { cutoff: cutoff! }),
+      selected: { workspaces: 0, runs: 0, archives: 0, bytes: 0 },
+      deleted: { workspaces: 0, runs: 0, archives: 0, sources: 0, bytes: 0 },
+      removedWorkspaces: 0,
+      failures: [],
+    };
+    const targets = options.allWorkspaces
+      ? yield* Effect.promise(() => discoverTargets(current.home))
+      : [{ ...current }];
+    for (const target of targets) {
+      if ("failure" in target) {
+        report.failures.push(target.failure);
+        continue;
+      }
+      const pruned = yield* Effect.exit(pruneShard(target, cutoff, options.dryRun));
+      if (Exit.isSuccess(pruned)) {
+        mergeShardSummary(report, pruned.value);
+        continue;
+      }
+      const error = Cause.squash(pruned.cause);
       if (error instanceof PruneShardFailure) mergeShardSummary(report, error.summary);
       report.failures.push({
         workspaceKey: target.workspaceKey,
         message: error instanceof Error ? error.message : String(error),
       });
     }
-  }
-  return report;
+    return report;
+  });
 }
 
 export function planPruneSelection(input: PruneSelectionInput): PruneSelection {
@@ -116,64 +124,64 @@ export function planPruneSelection(input: PruneSelectionInput): PruneSelection {
   };
 }
 
-async function pruneShard(
+function pruneShard(
   initialLayout: RuntimeLayout,
   cutoff: string | undefined,
   dryRun: boolean,
-): Promise<ShardSummary> {
-  const assessment = await inspectRuntimeStoreInternal(initialLayout.canonicalPath);
-  if (assessment.isErr()) throw new Error(assessment.error.message);
-  if (assessment.value.current.state === "unsupported") {
-    throw new Error(
-      "RUNTIME_STORE_UNSUPPORTED: workspace store format is not supported by this Acpus version.",
-    );
-  }
-  if (assessment.value.current.state !== "ready") {
-    throw new Error(
-      "RUNTIME_STORE_REPAIR_REQUIRED: workspace store is not ready; run 'acpus doctor --fix' first.",
-    );
-  }
-  const selection = planPruneSelection({
-    ...(cutoff === undefined ? {} : { cutoff }),
-    runs: await activeRuns(initialLayout, dryRun),
-    generations: assessment.value.generations
-      .filter(generation => generation.state === "sealed")
-      .map(generation => ({
-        id: generation.id,
-        createdAt: generation.createdAt,
-        ...(generation.archivedAt === undefined ? {} : { sealedAt: generation.archivedAt }),
-      })),
-  });
-  const selectedGenerationIds = new Set(selection.generationIds);
-  const activeGenerationId = assessment.value.current.generationId;
-  if (selectedGenerationIds.has(activeGenerationId)) {
-    throw new Error("The current Runtime store cannot be pruned.");
-  }
-  const current = resolveRuntimeLayout(initialLayout.canonicalPath);
-  const generationCandidates = await Promise.all(assessment.value.generations
-    .filter(generation => selectedGenerationIds.has(generation.id))
-    .map(async generation => {
-      const layout = runtimeLayoutForGeneration(current, generation.id);
-      if (!layout.generationRoot) throw new Error("A Runtime archive path is unavailable.");
-      return { id: generation.id, path: layout.generationRoot, bytes: await treeSize(layout.generationRoot) };
-    }));
+): Effect.Effect<ShardSummary, RuntimeStoreBusy> {
+  return Effect.gen(function* () {
+    const assessment = yield* inspectRuntimeStoreInternal(initialLayout.canonicalPath);
+    if (Result.isFailure(assessment)) throw new Error(assessment.failure.message);
+    if (assessment.success.current.state === "unsupported") {
+      throw new Error(
+        "RUNTIME_STORE_UNSUPPORTED: workspace store format is not supported by this Acpus version.",
+      );
+    }
+    if (assessment.success.current.state !== "ready") {
+      throw new Error(
+        "RUNTIME_STORE_REPAIR_REQUIRED: workspace store is not ready; run 'acpus doctor --fix' first.",
+      );
+    }
+    const selection = planPruneSelection({
+      ...(cutoff === undefined ? {} : { cutoff }),
+      runs: yield* activeRuns(initialLayout, dryRun),
+      generations: assessment.success.generations
+        .filter(generation => generation.state === "sealed")
+        .map(generation => ({
+          id: generation.id,
+          createdAt: generation.createdAt,
+          ...(generation.archivedAt === undefined ? {} : { sealedAt: generation.archivedAt }),
+        })),
+    });
+    const selectedGenerationIds = new Set(selection.generationIds);
+    const activeGenerationId = assessment.success.current.generationId;
+    if (selectedGenerationIds.has(activeGenerationId)) {
+      throw new Error("The current Runtime store cannot be pruned.");
+    }
+    const current = resolveRuntimeLayout(initialLayout.canonicalPath);
+    const generationCandidates = yield* Effect.promise(() => Promise.all(assessment.success.generations
+      .filter(generation => selectedGenerationIds.has(generation.id))
+      .map(async generation => {
+        const layout = runtimeLayoutForGeneration(current, generation.id);
+        if (!layout.generationRoot) throw new Error("A Runtime archive path is unavailable.");
+        return { id: generation.id, path: layout.generationRoot, bytes: await treeSize(layout.generationRoot) };
+      })));
 
-  let store = await openExistingRuntimeStoreAtLayout(current, true, {
-    immutable: dryRun,
-    lock: false,
-  });
   const selectedRunIds = new Set(selection.runIds);
-  const runCandidates = store
-    ? await Promise.all(store.listRuns()
-      .filter(run => selectedRunIds.has(run.id))
-      .map(async run => {
-        const path = store!.getRunDir(run.id);
-        if (!path) throw new Error(`Run '${run.id}' has no runtime directory.`);
-        return { id: run.id, bytes: await treeSize(path) };
-      }))
-    : [];
-  store?.close();
-  store = undefined;
+  const runCandidates = yield* Effect.scoped(Effect.gen(function* () {
+    const store = yield* acquireExistingRuntimeStoreAtLayout(current, true, {
+      immutable: dryRun,
+      lock: false,
+    });
+    if (!store) return [];
+    const candidates: Array<{ id: string; bytes: number }> = [];
+    for (const run of (yield* store.listRuns()).filter(run => selectedRunIds.has(run.id))) {
+      const path = yield* store.getRunDir(run.id);
+      if (!path) throw new Error(`Run '${run.id}' has no runtime directory.`);
+      candidates.push({ id: run.id, bytes: yield* Effect.promise(() => treeSize(path)) });
+    }
+    return candidates;
+  }));
 
   const summary: ShardSummary = {
     selected: {
@@ -186,87 +194,79 @@ async function pruneShard(
   };
   if (dryRun) return summary;
 
-  let lock: Awaited<ReturnType<typeof acquireRuntimeExclusiveLock>> | undefined;
-  let failure: unknown;
-  try {
-    lock = await acquireRuntimeExclusiveLock(current);
-    const lockedAssessment = await inspectRuntimeStoreInternal(initialLayout.canonicalPath);
-    if (lockedAssessment.isOk() && lockedAssessment.value.current.state === "unsupported") {
+  const mutation = Effect.scoped(Effect.gen(function* () {
+    yield* acquireRuntimeExclusiveLock(current);
+    const lockedAssessment = yield* inspectRuntimeStoreInternal(initialLayout.canonicalPath);
+    if (Result.isSuccess(lockedAssessment) && lockedAssessment.success.current.state === "unsupported") {
       throw new Error("RUNTIME_STORE_UNSUPPORTED: workspace store changed to an unsupported format before pruning.");
     }
-    if (lockedAssessment.isErr() || lockedAssessment.value.current.state !== "ready") {
+    if (Result.isFailure(lockedAssessment) || lockedAssessment.success.current.state !== "ready") {
       throw new Error("RUNTIME_STORE_REPAIR_REQUIRED: workspace store changed before pruning; run 'acpus doctor --fix'.");
     }
-    if (lockedAssessment.value.current.generationId !== activeGenerationId) {
+    if (lockedAssessment.success.current.generationId !== activeGenerationId) {
       throw new Error("Runtime store changed after prune selection; run prune again.");
     }
-    store = await openExistingRuntimeStoreAtLayout(current, false, { lock: false });
-    if (!store) throw new Error("Active runtime store was not found.");
-    const lockedRuns = new Map(store.listRuns().map(run => [run.id, run]));
-    for (const run of runCandidates) {
-      const lockedRun = lockedRuns.get(run.id);
-      if (!lockedRun || !runEligibleForPrune(lockedRun, cutoff)) continue;
-      const deleted = await store.deleteRun(run.id);
-      if (deleted.isErr()) throw new Error(deleted.error.message);
-      if (!deleted.value) throw new Error(`Run '${run.id}' disappeared during pruning.`);
-      summary.deleted.runs += 1;
-      summary.deleted.bytes += run.bytes;
-    }
-    for (const generation of generationCandidates) {
-      await assertOwnedGeneration(generation.path);
-      await rm(generation.path, { recursive: true });
-      summary.deleted.archives += 1;
-      summary.deleted.bytes += generation.bytes;
-    }
-    await pruneUnreferencedSources(current, store.listWorkflowSources(), bytes => {
-      summary.deleted.sources += 1;
-      summary.deleted.bytes += bytes;
-    });
-    if (store.listRuns().length === 0
-      && lockedAssessment.value.generations.every(generation => generation.state === "active"
-        || selectedGenerationIds.has(generation.id))) {
-      store.close();
-      store = undefined;
-      await assertEmptyShard(current);
-      await rm(current.workspaceRoot, { recursive: true });
+    const removeWorkspace = yield* Effect.scoped(Effect.gen(function* () {
+      const store = yield* acquireExistingRuntimeStoreAtLayout(current, false, { lock: false });
+      if (!store) throw new Error("Active runtime store was not found.");
+      const lockedRuns = new Map((yield* store.listRuns()).map(run => [run.id, run]));
+      for (const run of runCandidates) {
+        const lockedRun = lockedRuns.get(run.id);
+        if (!lockedRun || !runEligibleForPrune(lockedRun, cutoff)) continue;
+        const deleted = yield* store.deleteRun(run.id).pipe(
+          Effect.mapError(error => new Error(error.message)),
+        );
+        if (!deleted) throw new Error(`Run '${run.id}' disappeared during pruning.`);
+        summary.deleted.runs += 1;
+        summary.deleted.bytes += run.bytes;
+      }
+      for (const generation of generationCandidates) {
+        yield* Effect.promise(() => assertOwnedGeneration(generation.path));
+        yield* Effect.promise(() => rm(generation.path, { recursive: true }));
+        summary.deleted.archives += 1;
+        summary.deleted.bytes += generation.bytes;
+      }
+      const sources = yield* store.listWorkflowSources();
+      yield* Effect.promise(() => pruneUnreferencedSources(current, sources, bytes => {
+        summary.deleted.sources += 1;
+        summary.deleted.bytes += bytes;
+      }));
+      return (yield* store.listRuns()).length === 0
+        && lockedAssessment.success.generations.every(generation => generation.state === "active"
+          || selectedGenerationIds.has(generation.id));
+    }));
+    if (removeWorkspace) {
+      yield* Effect.promise(() => assertEmptyShard(current));
+      yield* Effect.promise(() => rm(current.workspaceRoot, { recursive: true }));
       summary.removedWorkspace = true;
     }
-  } catch (error) {
-    failure = error;
-  } finally {
-    try {
-      store?.close();
-    } catch (error) {
-      failure ??= error;
-    }
-    try {
-      await lock?.release();
-    } catch (error) {
-      failure ??= error;
-    }
+  }));
+  const mutated = yield* Effect.exit(mutation);
+  if (Exit.isFailure(mutated)) {
+    throw new PruneShardFailure(summary, Cause.squash(mutated.cause));
   }
-  if (failure !== undefined) throw new PruneShardFailure(summary, failure);
-  return summary;
+    return summary;
+  });
 }
 
-async function activeRuns(
+function activeRuns(
   layout: RuntimeLayout,
   immutable: boolean,
-): Promise<Array<{ id: string; status: string; updatedAt: string }>> {
-  const current = resolveRuntimeLayout(layout.canonicalPath);
-  if (immutable && !await hasNoPendingRuntimeDatabaseWal(current.databasePath)) {
-    throw new Error("Runtime store has an uncheckpointed write-ahead log; dry-run cannot inspect it without mutation.");
-  }
-  const store = await openExistingRuntimeStoreAtLayout(current, true, { immutable, lock: false });
-  try {
-    return store?.listRuns().map(run => ({
-      id: run.id,
-      status: run.status,
-      updatedAt: run.updatedAt,
-    })) ?? [];
-  } finally {
-    store?.close();
-  }
+): Effect.Effect<Array<{ id: string; status: string; updatedAt: string }>, RuntimeStoreBusy> {
+  return Effect.gen(function* () {
+    const current = resolveRuntimeLayout(layout.canonicalPath);
+    if (immutable && !(yield* Effect.promise(() => hasNoPendingRuntimeDatabaseWal(current.databasePath)))) {
+      throw new Error("Runtime store has an uncheckpointed write-ahead log; dry-run cannot inspect it without mutation.");
+    }
+    return yield* Effect.scoped(Effect.gen(function* () {
+      const store = yield* acquireExistingRuntimeStoreAtLayout(current, true, { immutable, lock: false });
+      return store ? (yield* store.listRuns()).map(run => ({
+        id: run.id,
+        status: run.status,
+        updatedAt: run.updatedAt,
+      })) : [];
+    }));
+  });
 }
 
 function runEligibleForPrune(

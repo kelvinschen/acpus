@@ -29,11 +29,12 @@
     "clean": "rm -rf dist tsconfig.build.tsbuildinfo"
   },
   "dependencies": {
+    "@acpus/owned-process": "workspace:*",
     "@acpus/loader": "workspace:*",
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
     "@types/node": "^22.20.1",
-    "neverthrow": "^8.2.0",
+    "effect": "4.0.0-rc.111",
     "typescript": "7.0.2"
   },
   "devDependencies": {

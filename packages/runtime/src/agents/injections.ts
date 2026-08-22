@@ -5,7 +5,7 @@ import type {
   AgentDefinitionIR,
   WorkflowIR,
 } from "@acpus/core/ir";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import { stableJsonLine } from "../stable-json.js";
 import type {
   AgentPresetCatalog,
@@ -102,20 +102,20 @@ export function parseAgentInjectionMap(
   value: unknown,
   declarations?: Record<string, unknown>,
 ): AgentInjectionMap {
-  return tryParseAgentInjectionMap(value, declarations).match(
-    parsed => parsed,
-    failure => {
+  return Result.match(tryParseAgentInjectionMap(value, declarations), {
+    onSuccess: parsed => parsed,
+    onFailure: failure => {
       throw new Error(failure.message);
     },
-  );
+  });
 }
 
 export function tryParseAgentInjectionMap(
   value: unknown,
   declarations?: Record<string, unknown>,
-): Result<AgentInjectionMap, AgentInjectionValidationFailure> {
+): Result.Result<AgentInjectionMap, AgentInjectionValidationFailure> {
   if (!isPlainRecord(value)) {
-    return err({
+    return Result.fail({
       type: "agent-injections-invalid",
       reason: "not-object",
       message: "Agent injections must be a JSON object keyed by declared agent name.",
@@ -124,7 +124,7 @@ export function tryParseAgentInjectionMap(
   if (declarations !== undefined) {
     const unknownAgent = Object.keys(value).sort(codeUnitCompare).find(name => !Object.hasOwn(declarations, name));
     if (unknownAgent !== undefined) {
-      return err({
+      return Result.fail({
         type: "agent-injections-invalid",
         reason: "unknown-agent",
         agentName: unknownAgent,
@@ -142,7 +142,7 @@ export function tryParseAgentInjectionMap(
     if (!parsed.success) {
       const firstPath = parsed.error.issues[0]?.path ?? [];
       const path = `$.${[name, ...firstPath].join(".")}`;
-      return err({
+      return Result.fail({
         type: "agent-injections-invalid",
         reason: "schema",
         path,
@@ -151,7 +151,7 @@ export function tryParseAgentInjectionMap(
     }
     entries.push([name, parsed.data as AgentInjectionSpec]);
   }
-  return ok(Object.fromEntries(entries) as AgentInjectionMap);
+  return Result.succeed(Object.fromEntries(entries) as AgentInjectionMap);
 }
 
 export function finalizeAgentBindings(input: {
@@ -159,8 +159,8 @@ export function finalizeAgentBindings(input: {
   injections?: AgentInjectionMap;
   inherited?: FrozenAgentBindingMap;
   presetCatalog?: AgentPresetCatalog;
-}): ResultAsync<FinalizedAgentBindings, AgentBindingFailure> {
-  return new ResultAsync(Promise.resolve(finalizeBindings(input)));
+}): Result.Result<FinalizedAgentBindings, AgentBindingFailure> {
+  return finalizeBindings(input);
 }
 
 function finalizeBindings(input: {
@@ -168,29 +168,29 @@ function finalizeBindings(input: {
   injections?: AgentInjectionMap;
   inherited?: FrozenAgentBindingMap;
   presetCatalog?: AgentPresetCatalog;
-}): Result<FinalizedAgentBindings, AgentBindingFailure> {
+}): Result.Result<FinalizedAgentBindings, AgentBindingFailure> {
   const parsed = tryParseAgentInjectionMap(input.injections ?? {}, input.declarations);
-  if (parsed.isErr()) return err(parsed.error);
+  if (Result.isFailure(parsed)) return Result.fail(parsed.failure);
 
-  const presetIds = Object.values(parsed.value)
+  const presetIds = Object.values(parsed.success)
     .filter(isPresetInjection)
     .map(injection => injection.preset);
   const resolved = resolvePresets(presetIds, input.presetCatalog);
-  if (resolved.isErr()) return err(resolved.error);
+  if (Result.isFailure(resolved)) return Result.fail(resolved.failure);
 
   const bindingEntries: Array<[string, FrozenAgentBinding]> = [];
   const agentEntries: Array<[string, AgentDefinitionIR]> = [];
   const unresolved: string[] = [];
   for (const name of Object.keys(input.declarations).sort(codeUnitCompare)) {
     const declaration = input.declarations[name]!;
-    const injection = Object.hasOwn(parsed.value, name) ? parsed.value[name] : undefined;
+    const injection = Object.hasOwn(parsed.success, name) ? parsed.success[name] : undefined;
     const inherited = input.inherited !== undefined && Object.hasOwn(input.inherited, name)
       ? input.inherited[name]
       : undefined;
     let binding: FrozenAgentBinding | undefined;
 
     if (injection !== undefined && isPresetInjection(injection)) {
-      binding = bindingFromPreset(resolved.value[injection.preset]!);
+      binding = bindingFromPreset(resolved.success[injection.preset]!);
     } else if (injection !== undefined) {
       const frozenInjection = mergeDirectInjections(
         declaration,
@@ -228,14 +228,14 @@ function finalizeBindings(input: {
   }
 
   if (unresolved.length > 0) {
-    return err({
+    return Result.fail({
       type: "agent-bindings-unresolved",
       agentNames: unresolved,
       message: `Agent bindings are required for: ${unresolved.join(", ")}.`,
     });
   }
   const bindings = Object.fromEntries(bindingEntries) as FrozenAgentBindingMap;
-  return ok({
+  return Result.succeed({
     agents: Object.fromEntries(agentEntries),
     bindings,
   });
@@ -274,11 +274,11 @@ export function rebuildFrozenAgentBindings(
     }
   }
   const rebuilt = finalizeBindings({ declarations, inherited: bindings });
-  if (rebuilt.isErr()) throw new Error(`Frozen Agent bindings are incomplete: ${rebuilt.error.message}`);
-  if (stableJsonLine(rebuilt.value.bindings) !== stableJsonLine(bindings)) {
+  if (Result.isFailure(rebuilt)) throw new Error(`Frozen Agent bindings are incomplete: ${rebuilt.failure.message}`);
+  if (stableJsonLine(rebuilt.success.bindings) !== stableJsonLine(bindings)) {
     throw new Error("Frozen Agent bindings are not canonical for their declarations and injections.");
   }
-  return rebuilt.value;
+  return rebuilt.success;
 }
 
 export function hasPresetInjections(injections: AgentInjectionMap | undefined): boolean {
@@ -307,11 +307,11 @@ function bindingFromPreset(preset: ResolvedAgentPreset): FrozenAgentBinding {
 function resolvePresets(
   ids: readonly string[],
   catalog: AgentPresetCatalog | undefined,
-): Result<Record<string, ResolvedAgentPreset>, AgentPresetResolutionFailure> {
-  if (ids.length === 0) return ok({});
+): Result.Result<Record<string, ResolvedAgentPreset>, AgentPresetResolutionFailure> {
+  if (ids.length === 0) return Result.succeed({});
   if (catalog === undefined) {
     const id = [...ids].sort(codeUnitCompare)[0]!;
-    return err({ type: "agent-preset-not-found", id, message: `Agent Preset '${id}' was not found.` });
+    return Result.fail({ type: "agent-preset-not-found", id, message: `Agent Preset '${id}' was not found.` });
   }
   return catalog.resolve(ids);
 }

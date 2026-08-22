@@ -7,6 +7,8 @@ import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
 import AcpusMode from "@acpus/dsh";
 import * as Supervisor from "@acpus/dsh/supervisor";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 
 export async function loadDshComposition(config: {
   dshHome: string;
@@ -66,13 +68,13 @@ export async function terminalRun(
 ): Promise<{ run: { status: string }; output?: unknown }> {
   const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
-    const result = await runtime.inspect({ kind: "run", runId });
-    if (result.isErr()) throw new Error(result.error.message);
-    if (result.value.kind !== "run") throw new Error("Expected a run view.");
-    if (result.value.run.status === "completed"
-      || result.value.run.status === "failed"
-      || result.value.run.status === "canceled") {
-      return result.value;
+    const result = await Effect.runPromise(Effect.result(runtime.inspect({ kind: "run", runId })));
+    if (Result.isFailure(result)) throw new Error(result.failure.message);
+    if (result.success.kind !== "run") throw new Error("Expected a run view.");
+    if (result.success.run.status === "completed"
+      || result.success.run.status === "failed"
+      || result.success.run.status === "canceled") {
+      return result.success;
     }
     await new Promise(resolve => setTimeout(resolve, 50));
   }

@@ -7,7 +7,7 @@ import {
   statSync,
 } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import type { SourceFile } from "typescript/unstable/ast";
 import type { FileSystem } from "typescript/unstable/fs";
 import { API, type Project, type Snapshot } from "typescript/unstable/sync";
@@ -32,11 +32,11 @@ export async function withNativeProject<T>(
     tsserverPath?: string;
   },
   inspect: (context: NativeProjectContext) => T,
-): Promise<Result<T, TypeScriptNativeFailure>> {
+): Promise<Result.Result<T, TypeScriptNativeFailure>> {
   const sourcePath = resolve(options.sourcePath);
   let api: API | undefined;
   let snapshot: Snapshot | undefined;
-  let result: Result<T, TypeScriptNativeFailure>;
+  let result: Result.Result<T, TypeScriptNativeFailure>;
   try {
     if (options.tsserverPath && !existsSync(options.tsserverPath)) {
       throw new Error(`TypeScript native executable does not exist: ${options.tsserverPath}`);
@@ -59,9 +59,9 @@ export async function withNativeProject<T>(
     if (!project) throw new Error(`TypeScript did not open project '${options.configPath}'.`);
     const sourceFile = project.program.getSourceFile(sourcePath);
     if (!sourceFile) throw new Error(`TypeScript project did not contain workflow source '${sourcePath}'.`);
-    result = ok(inspect({ project, sourceFile }));
+    result = Result.succeed(inspect({ project, sourceFile }));
   } catch (cause) {
-    result = err(nativeFailure(cause));
+    result = Result.fail(nativeFailure(cause));
   }
   let cleanupCause: unknown;
   try {
@@ -74,7 +74,7 @@ export async function withNativeProject<T>(
   } catch (cause) {
     cleanupCause ??= cause;
   }
-  if (result.isOk() && cleanupCause !== undefined) return err(nativeFailure(cleanupCause));
+  if (Result.isSuccess(result) && cleanupCause !== undefined) return Result.fail(nativeFailure(cleanupCause));
   return result;
 }
 

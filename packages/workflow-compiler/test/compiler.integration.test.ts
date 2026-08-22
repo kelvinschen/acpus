@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import { execFile } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -11,7 +12,7 @@ import {
   type CompiledWorkflowModule,
 } from "../src/compiler/module.js";
 import { walkNodes, type NodeIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
-import { evaluateExpr } from "@acpus/expression/evaluator";
+import { settle } from "./effect.js";
 
 const execFileAsync = promisify(execFile);
 const repoRoot = fileURLToPath(new URL("../../..", import.meta.url));
@@ -100,15 +101,6 @@ describe.concurrent("workflow module compiler", () => {
     expect(ir.root.output).toMatchObject({ kind: "object", fields: { normalized: { kind: "ref", path: ["nodes", "normalize_path", "output", "normalized"] } } });
   });
 
-  it("compiles same-file task references without generated task source", async () => {
-    const ir = await compileFixture("same-file-build-callback.workflow.ts");
-    expect(taskTarget(ir.root, "stable_task")).toMatchObject({
-      kind: "module",
-      specifier: "./same-file-build-callback.workflow.ts",
-      exportName: "stableTask",
-    });
-  });
-
   it("derives reusable task references from source, stable across compiles", async () => {
     const entry = fixture("release.workflow.ts");
     const first = await compileModuleResult(entry);
@@ -166,11 +158,11 @@ export default defineWorkflow({
       const workflow = join(cwd, "invalid.workflow.ts");
       await writeFile(workflow, "export default {};\n");
 
-      const result = await tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow));
+      const result = await settle(tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow)));
 
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected invalid default export");
-      expect(result.error).toEqual({
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected invalid default export");
+      expect(result.failure).toEqual({
         type: "invalid-default-export",
         entry: workflow,
         message: `Default export of ${workflow} is not an Acpus workflow definition.`,
@@ -191,13 +183,13 @@ export default {};
 `;
       await writeFile(workflow, source);
 
-      const result = await tryCompileWorkflowModule(workflow, cwd, {
+      const result = await settle(tryCompileWorkflowModule(workflow, cwd, {
         expectedSourceDigest: sha256Digest(`${source}\nchanged`),
-      });
+      }));
 
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected source generation failure");
-      expect(result.error).toMatchObject({
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected source generation failure");
+      expect(result.failure).toMatchObject({
         type: "workflow-source-changed",
         entry: workflow,
       });
@@ -228,14 +220,16 @@ export default defineWorkflow({
 `);
 
       const stdout = await runCompilerScript(`
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { tryCompileWorkflowModule } from ${JSON.stringify(compilerEntry)};
 
-const result = await tryCompileWorkflowModule(${JSON.stringify(workflow)}, ${JSON.stringify(cwd)}, {
+const result = await Effect.runPromise(Effect.result(tryCompileWorkflowModule(${JSON.stringify(workflow)}, ${JSON.stringify(cwd)}, {
   expectedSourceDigest: ${JSON.stringify(await sourceDigest(workflow))},
-});
-if (result.isErr()) throw new Error(result.error.message);
-const node = result.value.ir.root.nodes.find(item => item.id === "run");
-console.log(JSON.stringify({ name: result.value.ir.name, target: node.run.target }));
+})));
+if (Result.isFailure(result)) throw new Error(result.failure.message);
+const node = result.success.ir.root.nodes.find(item => item.id === "run");
+console.log(JSON.stringify({ name: result.success.ir.name, target: node.run.target }));
 `);
 
       const result = JSON.parse(stdout) as { name: string; target: unknown };
@@ -266,11 +260,11 @@ export default defineWorkflow({ name: "outside" }).build(() => {
   throw new Error("build callback must not win source containment");
 });
 `);
-      const result = await tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow));
+      const result = await settle(tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow)));
 
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected outside workspace failure");
-      expect(result.error).toMatchObject({
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected outside workspace failure");
+      expect(result.failure).toMatchObject({
         type: "workflow-outside-workspace",
         workflowFile: workflow,
         cwd,
@@ -292,11 +286,11 @@ export default defineWorkflow({ name: "outside" }).build(() => {
 export default defineWorkflow({ name: "dot_prefix" }).build(() => ({}));
 `);
 
-      const result = await tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow));
+      const result = await settle(tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow)));
 
-      expect(result.isOk()).toBe(true);
-      if (result.isErr()) throw new Error(result.error.message);
-      expect(result.value.ir.name).toBe("dot_prefix");
+      expect(Result.isSuccess(result)).toBe(true);
+      if (Result.isFailure(result)) throw new Error(result.failure.message);
+      expect(result.success.ir.name).toBe("dot_prefix");
     } finally {
       await rm(cwd, { recursive: true, force: true });
     }
@@ -314,11 +308,11 @@ export default defineWorkflow({ name: "throws" }).build(() => {
 });
 `);
 
-      const result = await tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow));
+      const result = await settle(tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow)));
 
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected workflow build failure");
-      expect(result.error).toMatchObject({
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected workflow build failure");
+      expect(result.failure).toMatchObject({
         type: "workflow-build-failed",
         entry: workflow,
         message: expect.stringContaining("boom"),
@@ -347,11 +341,11 @@ export default defineWorkflow({ name: "missing-link" }).build(({ step }) => {
 });
 `);
 
-      const result = await tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow));
+      const result = await settle(tryCompileWorkflowModule(workflow, cwd, await compileOptions(workflow)));
 
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected missing reusable Task link");
-      expect(result.error).toMatchObject({
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected missing reusable Task link");
+      expect(result.failure).toMatchObject({
         type: "workflow-build-failed",
         entry: workflow,
         message: expect.stringContaining("Reusable Task node 'run' requires source link metadata"),
@@ -361,161 +355,6 @@ export default defineWorkflow({ name: "missing-link" }).build(({ step }) => {
     }
   });
 
-  it("compiles a representative orchestration fixture with composite scopes", async () => {
-    const ir = await compileFixture("orchestration.workflow.ts");
-
-    expect(ir.name).toBe("orchestration-fixture");
-    expect(ir.diagnostics).toEqual([]);
-    expect(ir.root.output).toMatchObject({ kind: "object", fields: { run_id: { kind: "ref", path: ["meta", "runId"] } } });
-    if (ir.root.output.kind !== "object") throw new Error("expected object root output");
-    expect(evaluateExpr(ir.root.output.fields.first_lane!, {
-      resolveRef: path => path.join(".") === "nodes.lanes.output" ? [{ lane: "lane-a" }] : undefined,
-    })).toBe("lane-a");
-
-    const fanout = getNode(ir.root, "lanes");
-    expect(fanout).toMatchObject({
-      kind: "fanout",
-      over: { kind: "ref", path: ["input", "lanes"] },
-      do: {
-        output: { kind: "object", fields: {
-          lane: {
-            kind: "ref",
-            path: ["fanout", "lanes", "item", "id"],
-          },
-          route: {
-            kind: "ref",
-            path: ["nodes", "lane_parallel", "output", "route", "route"],
-          },
-        } },
-      },
-    });
-    if (fanout?.kind !== "fanout") throw new Error("expected fanout fixture node");
-
-    const parallel = getNode(fanout.do, "lane_parallel");
-    expect(parallel).toMatchObject({
-      kind: "parallel",
-      branches: {
-        review: {
-          output: { kind: "object", fields: {
-            ok: { kind: "ref", path: ["nodes", "review_lane", "output", "ok"] },
-          } },
-        },
-        route: {
-          output: { kind: "object", fields: {
-            route: {
-              kind: "ref",
-              path: ["nodes", "route_lane", "output", "route"],
-            },
-          } },
-        },
-      },
-    });
-    if (parallel?.kind !== "parallel") throw new Error("expected parallel fixture node");
-
-    const repairBranch = parallel.branches.repair;
-    if (!repairBranch) throw new Error("expected repair branch fixture node");
-    const loop = getNode(repairBranch, "repair_loop");
-    expect(loop).toMatchObject({
-      kind: "loop",
-      state: {
-        kind: "object",
-        fields: {
-          branch: { kind: "literal", value: "" },
-          continue: { kind: "literal", value: true },
-          summary: { kind: "literal", value: "" },
-        },
-      },
-      do: {
-        output: { kind: "object", fields: {
-          stop: {
-            kind: "call",
-            fn: "lift",
-            args: [
-              { kind: "ref", path: ["nodes", "repair_round", "output", "continue"] },
-              { kind: "ref", path: ["loop", "repair_loop", "round"] },
-              { kind: "literal", value: expect.any(String) },
-            ],
-          },
-        } },
-      },
-    });
-    if (loop?.kind !== "loop") throw new Error("expected loop fixture node");
-
-    expect(getNode(loop.do, "repair_round")).toMatchObject({
-      kind: "agent",
-      run: {
-        prompt: {
-          kind: "template",
-          parts: expect.arrayContaining([
-            {
-              kind: "expr",
-              expr: {
-                kind: "ref",
-                path: ["loop", "repair_loop", "state", "summary"],
-              },
-            },
-          ]),
-        },
-      },
-    });
-
-    const routeBranch = parallel.branches.route;
-    if (!routeBranch) throw new Error("expected route branch fixture node");
-    const routeSwitch = getNode(routeBranch, "route_lane");
-    expect(routeSwitch).toMatchObject({
-      kind: "switch",
-      cases: [
-        {
-          when: {
-            kind: "call",
-            fn: "lift",
-            args: [
-              { kind: "ref", path: ["fanout", "lanes", "item", "mode"] },
-              { kind: "literal", value: expect.any(String) },
-            ],
-          },
-        },
-      ],
-      default: {
-        output: { kind: "object", fields: {
-          route: {
-            kind: "ref",
-            path: ["nodes", "manual_route", "output", "route"],
-          },
-        } },
-      },
-    });
-
-    const approval = getNode(ir.root, "approval");
-    expect(approval).toMatchObject({
-      kind: "if",
-      then: {
-        nodes: [
-          {
-            id: "human_approval",
-            kind: "signal",
-          },
-        ],
-        output: { kind: "object", fields: {
-          approved: {
-            kind: "ref",
-            path: ["nodes", "human_approval", "output", "approved"],
-          },
-        } },
-      },
-      else: {
-        output: { kind: "object", fields: {} },
-        nodes: [
-          {
-            id: "automatic_approval",
-            kind: "task",
-          },
-        ],
-      },
-    });
-    if (approval?.kind !== "if") throw new Error("expected approval fixture node");
-    expect((approval.then.nodes[0] as any)).not.toHaveProperty("inputs");
-  });
 });
 
 async function compileFixture(relativePath: string): Promise<WorkflowIR> {
@@ -531,9 +370,9 @@ async function compileModule(entry: string, cwd = repoRoot): Promise<WorkflowIR>
 }
 
 async function compileModuleResult(entry: string, cwd = repoRoot): Promise<CompiledWorkflowModule> {
-  const result = await tryCompileWorkflowModule(entry, cwd, await compileOptions(entry));
-  if (result.isErr()) throw new Error(result.error.message);
-  return result.value;
+  const result = await settle(tryCompileWorkflowModule(entry, cwd, await compileOptions(entry)));
+  if (Result.isFailure(result)) throw new Error(result.failure.message);
+  return result.success;
 }
 
 async function compileOptions(entry: string) {

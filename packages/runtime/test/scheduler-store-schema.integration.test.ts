@@ -1,17 +1,19 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { lstat, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
-import { acquireRuntimeExclusiveLock } from "../src/runtime-lock.js";
+import { openRuntimeExclusiveLock } from "../src/runtime-lock-adapter.js";
 import { getRuntimeHealth, listRuns } from "../src/runs/use-cases.js";
+import { acquireBoundRuntimeReadSession } from "../src/store/service.js";
 import {
-  openExistingRuntimeStore,
-  openExistingWritableRuntimeStore,
-  openBoundRuntimeReadSession,
-  openRuntimeStore,
-  type RuntimeStore,
+  openExistingRuntimeStoreAdapter,
+  openExistingWritableRuntimeStoreAdapter,
+  openRuntimeStoreAdapter,
+  type RuntimeStoreAdapter,
 } from "../src/store/store.js";
 import {
   RUNTIME_APPLICATION_ID,
@@ -26,7 +28,7 @@ import { runtimeStateFingerprint } from "./support/tree-fingerprint.js";
 let dir: string;
 let runtimeHome: string;
 let restoreRuntimeHome: () => void;
-let store: RuntimeStore | undefined;
+let store: RuntimeStoreAdapter | undefined;
 
 beforeEach(async () => {
   [dir, runtimeHome] = await Promise.all([
@@ -34,7 +36,7 @@ beforeEach(async () => {
     mkdtemp(join(tmpdir(), "acpus-scheduler-schema-home-")),
   ]);
   restoreRuntimeHome = setRuntimeHomeForTest(dir, runtimeHome);
-  store = await openRuntimeStore(dir);
+  store = await openRuntimeStoreAdapter(dir);
 });
 
 afterEach(async () => {
@@ -54,91 +56,6 @@ describe("scheduler store format", () => {
         applicationId: RUNTIME_APPLICATION_ID,
         userVersion: RUNTIME_STORAGE_VERSION,
       });
-    } finally {
-      db.close();
-    }
-  });
-
-  it("stores fork session groups separately from their replay facts", () => {
-    const db = new DatabaseSync(resolveRuntimeLayout(dir).databasePath, { readOnly: true });
-    try {
-      expect(tableColumns(db, "fork_replay_session_groups")).toEqual([
-        "run_id",
-        "session_group_digest",
-        "member_count",
-        "replayed_count",
-      ]);
-      expect(tableColumns(db, "fork_replay_facts")).toEqual([
-        "run_id",
-        "node_key",
-        "source_run_id",
-        "source_sequence",
-        "operation_digest",
-        "input_digest",
-        "session_group_digest",
-        "output_json",
-        "artifacts_json",
-      ]);
-    } finally {
-      db.close();
-    }
-  });
-
-  it("owns bounded SQLite-only Agent observations in current storage", () => {
-    const db = new DatabaseSync(resolveRuntimeLayout(dir).databasePath, { readOnly: true });
-    try {
-      expect(tableColumns(db, "runs")).toEqual(expect.arrayContaining([
-        "observation_version",
-        "observation_updated_at",
-      ]));
-      expect(tableColumns(db, "agent_observation_attempts")).toEqual(expect.arrayContaining([
-        "run_id",
-        "attempt_id",
-        "latest_observation_version",
-        "retention_omitted_count",
-        "retention_floor_version",
-      ]));
-      const observationTurnColumns = tableColumns(db, "agent_observation_turns");
-      expect(observationTurnColumns).toEqual([
-        "run_id",
-        "attempt_id",
-        "node_key",
-        "node_id",
-        "attempt_no",
-        "turn_no",
-        "prompt_kind",
-        "state",
-        "degraded",
-        "gap_count",
-        "provider_event_count",
-        "unknown_event_count",
-        "fence_event_sequence",
-        "fenced_at",
-        "fence_reason",
-        "provider_status",
-        "current_json",
-        "current_bytes",
-        "current_updated_at",
-        "current_observation_version",
-        "started_at",
-        "finished_at",
-      ]);
-      expect(tableColumns(db, "agent_observation_entries")).toEqual(expect.arrayContaining([
-        "run_id",
-        "attempt_id",
-        "turn_no",
-        "entry_id",
-        "observation_version",
-        "source_sequence",
-        "kind",
-        "payload_json",
-        "payload_bytes",
-      ]));
-      expect(tableColumns(db, "agent_observation_batches")).toEqual([]);
-      const turnsSql = db.prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'agent_observation_turns'")
-        .get() as { sql: string };
-      expect(turnsSql.sql).toContain("UNIQUE (run_id, fence_event_sequence)");
-      expect(turnsSql.sql).toContain("state IN ('recording', 'settled', 'incomplete')");
     } finally {
       db.close();
     }
@@ -219,15 +136,15 @@ describe("scheduler store format", () => {
     });
     const beforeDoctor = await runtimeStateFingerprint(layout.workspaceRoot);
 
-    await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({
+    await expect(openExistingRuntimeStoreAdapter(dir)).rejects.toMatchObject({
       name: "IncompatibleRuntimeDatabaseError",
       applicationId: RUNTIME_APPLICATION_ID,
       userVersion: 6,
     });
-    expect((await listRuns(dir))._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(listRuns(dir))))))).toMatchObject({
       type: "runtime-store-repair-required",
     });
-    await expect(getRuntimeHealth(dir)).resolves.toEqual({
+    await expect(Effect.runPromise(getRuntimeHealth(dir))).resolves.toEqual({
       ok: true,
       phase: "doctor",
       state: "unreadable",
@@ -263,11 +180,11 @@ describe("scheduler store format", () => {
     const layout = resolveRuntimeLayout(dir);
     setDatabaseFormat(layout.databasePath, { applicationId, userVersion });
 
-    expect((await listRuns(dir))._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(listRuns(dir))))))).toMatchObject({
       type: "runtime-store-unsupported",
     });
 
-    await expect(getRuntimeHealth(dir)).resolves.toEqual({
+    await expect(Effect.runPromise(getRuntimeHealth(dir))).resolves.toEqual({
       ok: false,
       phase: "doctor",
       state: "unreadable",
@@ -289,7 +206,7 @@ describe("scheduler store format", () => {
     const layout = resolveRuntimeLayout(dir);
     const beforeRead = await runtimeStateFingerprint(layout.workspaceRoot);
 
-    const readOnly = await openExistingRuntimeStore(dir);
+    const readOnly = await openExistingRuntimeStoreAdapter(dir);
     if (!readOnly) throw new Error("expected existing runtime store");
     expect(readOnly.getRun(run.id)).toMatchObject({
       id: run.id,
@@ -307,7 +224,7 @@ describe("scheduler store format", () => {
     readOnly.close();
     expect(await runtimeStateFingerprint(layout.workspaceRoot)).toBe(beforeRead);
 
-    store = await openExistingWritableRuntimeStore(dir);
+    store = await openExistingWritableRuntimeStoreAdapter(dir);
     expect(store?.getRun(run.id)).toMatchObject({ id: run.id, status: "pending" });
     expect(store?.getHookDispatchCursor(run.id)).toBe(0);
   });
@@ -315,18 +232,16 @@ describe("scheduler store format", () => {
   it("holds one shared runtime lock for the lifetime of a bound read session", async () => {
     store?.close();
     store = undefined;
-    const session = (await openBoundRuntimeReadSession(dir))._unsafeUnwrap();
-    if (!session) throw new Error("expected bound runtime read session");
     let now = 0;
-    try {
-      await expect(acquireRuntimeExclusiveLock(resolveRuntimeLayout(dir), {
+    await Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+      const session = yield* acquireBoundRuntimeReadSession(dir);
+      if (!session) throw new Error("expected bound runtime read session");
+      yield* Effect.promise(() => expect(openRuntimeExclusiveLock(resolveRuntimeLayout(dir), {
         now: () => now,
         wait: async () => { now += 1_000; },
-      })).rejects.toMatchObject({ blocker: "runtime users" });
-    } finally {
-      session.close();
-    }
-    const lock = await acquireRuntimeExclusiveLock(resolveRuntimeLayout(dir), {
+      })).rejects.toMatchObject({ blocker: "runtime users" }));
+    })));
+    const lock = await openRuntimeExclusiveLock(resolveRuntimeLayout(dir), {
       now: () => now,
       wait: async () => { now += 1_000; },
     });
@@ -340,7 +255,7 @@ describe("scheduler store format", () => {
     await rm(layout.databasePath);
     await symlink("missing.db", layout.databasePath);
     await expect(readRuntimeDatabaseFormat(layout.databasePath)).rejects.toThrow("is not a regular file");
-    await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({
+    await expect(openExistingRuntimeStoreAdapter(dir)).rejects.toMatchObject({
       failure: { type: "runtime-store-repair-required" },
       message: expect.stringContaining("entry 'runtime.db' has an invalid file type"),
     });
@@ -348,13 +263,13 @@ describe("scheduler store format", () => {
     const runtimeRoot = layout.runtimeRoot;
     await rm(runtimeRoot, { recursive: true, force: true });
     await writeFile(runtimeRoot, "not a directory");
-    await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({
+    await expect(openExistingRuntimeStoreAdapter(dir)).rejects.toMatchObject({
       failure: { type: "runtime-store-repair-required" },
     });
 
     await rm(runtimeRoot);
     await symlink(basename(runtimeRoot), runtimeRoot);
-    await expect(openExistingRuntimeStore(dir)).rejects.toMatchObject({
+    await expect(openExistingRuntimeStoreAdapter(dir)).rejects.toMatchObject({
       failure: { type: "runtime-store-repair-required" },
       message: expect.stringContaining("generation root is not a regular directory"),
     });

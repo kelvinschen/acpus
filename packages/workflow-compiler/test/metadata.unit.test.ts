@@ -1,5 +1,8 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import { extractWorkflowMetadata } from "../src/metadata.js";
+import { settle } from "./effect.js";
 
 describe("workflow metadata extraction", () => {
   it.each([
@@ -10,8 +13,8 @@ describe("workflow metadata extraction", () => {
     ["spread before name", 'import { defineWorkflow } from "acpus/core";\nconst base = {};\nexport default defineWorkflow({ ...base, name: "release" }).build(() => ({}));'],
     ["literal overriding a nonliteral", 'import { defineWorkflow } from "acpus/core";\nconst dynamic = "other";\nexport default defineWorkflow({ name: dynamic, name: "release" }).build(() => ({}));'],
   ])("extracts a literal name from %s", async (_label, source) => {
-    await expect(extractWorkflowMetadata(source, "/tmp/workflow.ts")).resolves.toMatchObject({
-      value: { name: "release" },
+    await expect(Effect.runPromise(extractWorkflowMetadata(source, "/tmp/workflow.ts"))).resolves.toEqual({
+      name: "release",
     });
   });
 
@@ -26,8 +29,8 @@ describe("workflow metadata extraction", () => {
     ["ambiguous top-level const", 'import { defineWorkflow } from "acpus/core";\nconst release = defineWorkflow({ name: "release" }).build(() => ({}));\nconst release = defineWorkflow({ name: "other" }).build(() => ({}));\nexport default release;', "workflow-definition-not-static"],
     ["multiple default exports", 'import { defineWorkflow } from "acpus/core";\nexport default defineWorkflow({ name: "release" }).build(() => ({}));\nexport default defineWorkflow({ name: "other" }).build(() => ({}));', "workflow-definition-not-static"],
   ])("rejects %s", async (_label, source, type) => {
-    const result = await extractWorkflowMetadata(source, "/tmp/workflow.ts");
-    expect(result.isErr()).toBe(true);
-    if (result.isErr()) expect(result.error.type).toBe(type);
+    const result = await settle(extractWorkflowMetadata(source, "/tmp/workflow.ts"));
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) expect(result.failure.type).toBe(type);
   });
 });

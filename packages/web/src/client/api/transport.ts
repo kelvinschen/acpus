@@ -1,4 +1,5 @@
-import { err, ok, ResultAsync } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { hasOnlyKeys, isRecord, type JsonRecord } from "./wire.js";
 
 export type WebApiFailure =
@@ -25,11 +26,12 @@ export function requestJson<T>(
   return toWebApiPromise(requestJsonResult(input, init, decode));
 }
 
-export function toWebApiPromise<T>(result: ResultAsync<T, WebApiFailure>): Promise<T> {
-  return result.match(
-    value => value,
-    failure => { throw new WebApiError(failure); },
-  );
+export async function toWebApiPromise<T>(effect: Effect.Effect<T, WebApiFailure>): Promise<T> {
+  const result = await Effect.runPromise(Effect.result(effect));
+  return Result.match(result, {
+    onSuccess: value => value,
+    onFailure: failure => { throw new WebApiError(failure); },
+  });
 }
 
 export function decodeField<T>(
@@ -53,26 +55,32 @@ function requestJsonResult<T>(
   input: RequestInfo | URL,
   init: RequestInit | undefined,
   decode: EndpointDecoder<T>,
-): ResultAsync<T, WebApiFailure> {
-  return ResultAsync.fromPromise(fetch(input, init), cause => ({
-    type: "network-failed" as const,
-    message: errorMessage(cause, "Network request failed."),
-  })).andThen(response => ResultAsync.fromPromise(response.text(), cause => ({
-    type: "network-failed" as const,
-    message: errorMessage(cause, "Response body could not be read."),
-  })).andThen(text => {
-    let body: unknown;
-    try {
-      body = JSON.parse(text) as unknown;
-    } catch {
-      return err({
+): Effect.Effect<T, WebApiFailure> {
+  return Effect.gen(function*() {
+    const response = yield* Effect.tryPromise({
+      try: () => fetch(input, init),
+      catch: cause => ({
+        type: "network-failed" as const,
+        message: errorMessage(cause, "Network request failed."),
+      }),
+    });
+    const text = yield* Effect.tryPromise({
+      try: () => response.text(),
+      catch: cause => ({
+        type: "network-failed" as const,
+        message: errorMessage(cause, "Response body could not be read."),
+      }),
+    });
+    const body = yield* Effect.try({
+      try: () => JSON.parse(text) as unknown,
+      catch: () => ({
         type: "response-invalid-json" as const,
         status: response.status,
         message: `Response from ${requestLabel(input)} was not valid JSON.`,
-      });
-    }
+      }),
+    });
     if (!isRecord(body)) {
-      return err({
+      return yield* Effect.fail({
         type: "response-invalid-envelope" as const,
         status: response.status,
         message: `Response from ${requestLabel(input)} was not an object envelope.`,
@@ -81,14 +89,14 @@ function requestJsonResult<T>(
     if (!response.ok || body.ok !== true) {
       const failure = isRecord(body.error) ? body.error : undefined;
       if (body.ok === false && typeof failure?.code === "string" && typeof failure.message === "string") {
-        return err({
+        return yield* Effect.fail({
           type: "request-failed" as const,
           status: response.status,
           code: failure.code,
           message: failure.message,
         });
       }
-      return err({
+      return yield* Effect.fail({
         type: "response-invalid-envelope" as const,
         status: response.status,
         message: `Response from ${requestLabel(input)} did not contain a valid error envelope.`,
@@ -102,14 +110,14 @@ function requestJsonResult<T>(
       payload = invalidPayload;
     }
     if (payload === invalidPayload) {
-      return err({
+      return yield* Effect.fail({
         type: "response-invalid-envelope" as const,
         status: response.status,
         message: `Response from ${requestLabel(input)} did not contain the expected result.`,
       });
     }
-    return ok(payload);
-  }));
+    return payload;
+  });
 }
 
 function requestLabel(input: RequestInfo | URL): string {

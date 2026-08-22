@@ -1,6 +1,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { ToolDefinition } from "@deepseek-ai/dsh-tools";
 import { describe, expect, it, vi } from "vitest";
+import * as Effect from "effect/Effect";
 import { registerSupervisorTools } from "../src/host/tools.js";
 
 describe("Acpus Supervisor tool contract", () => {
@@ -41,7 +42,7 @@ describe("Acpus Supervisor tool contract", () => {
 
   it("treats read-only placeholder values as omitted", async () => {
     const tasks = vi.fn(async () => ({ tasks: [], truncated: false }));
-    const inspect = vi.fn(async () => success({
+    const inspect = vi.fn(() => success({
       kind: "archived-run",
       run: { status: "completed" },
     }));
@@ -63,9 +64,20 @@ describe("Acpus Supervisor tool contract", () => {
     });
     expect(resolveTask).toHaveBeenCalledWith("session", undefined);
     expect(inspect).toHaveBeenCalledWith({ kind: "run", runId: "run-1" });
+
+    await tool(tools, "acpus_inspect").execute(
+      { target: "@target", timeline: 0 },
+      execution(),
+    );
+    expect(inspect).toHaveBeenLastCalledWith({
+      kind: "target",
+      runId: "run-1",
+      target: "@target",
+      detail: "summary",
+    });
   });
 
-  it("passes Preset Agent injection separately from workflow source", async () => {
+  it("passes explicit input and Preset Agent injection separately from workflow source", async () => {
     const run = vi.fn(async () => ({
       status: "admitted" as const,
       runId: "private-run",
@@ -75,6 +87,7 @@ describe("Acpus Supervisor tool contract", () => {
 
     await expect(tool(tools, "acpus_run").execute({
       workflow: "export default workflow;",
+      input: null,
       agents: { worker: { preset: "dsh" } },
     }, execution("admit"))).resolves.toEqual({
       status: "admitted",
@@ -85,34 +98,13 @@ describe("Acpus Supervisor tool contract", () => {
       sessionId: "session",
       toolCallId: "admit",
       workflow: "export default workflow;",
+      input: null,
       agents: { worker: { preset: "dsh" } },
     }));
   });
 
-  it("treats zero timeline as Target summary detail", async () => {
-    const inspect = vi.fn(async () => success({
-      kind: "archived-run",
-      run: { status: "completed" },
-    }));
-    const { tools } = registerTools({
-      resolveTask: vi.fn(async () => selected({ inspect })),
-    });
-
-    await tool(tools, "acpus_inspect").execute(
-      { target: "@target", timeline: 0 },
-      execution(),
-    );
-
-    expect(inspect).toHaveBeenCalledWith({
-      kind: "target",
-      runId: "run-1",
-      target: "@target",
-      detail: "summary",
-    });
-  });
-
   it("maps generic Retry and Agent Steer without aliases", async () => {
-    const control = vi.fn(async (intent: { type: string }) => success({ type: intent.type }));
+    const control = vi.fn((intent: { type: string }) => success({ type: intent.type }));
     const reconcileTask = vi.fn(async () => undefined);
     const { tools } = registerTools({
       resolveTask: vi.fn(async () => selected({ control })),
@@ -146,7 +138,7 @@ describe("Acpus Supervisor tool contract", () => {
   });
 
   it("preserves an explicit null fork input replacement", async () => {
-    const control = vi.fn(async () => success({
+    const control = vi.fn(() => success({
       type: "fork",
       run: { id: "run-2", name: "workflow" },
     }));
@@ -183,7 +175,7 @@ describe("Acpus Supervisor tool contract", () => {
 
   it("uses the artifact read limit when maxBytes is zero", async () => {
     const bytes = Buffer.alloc(64 * 1024 + 1, "a");
-    const readArtifact = vi.fn(async () => success({
+    const readArtifact = vi.fn(() => success({
       artifact: { id: "artifact", size: bytes.length, mediaType: "text/plain" },
       bytes,
     }));
@@ -257,7 +249,7 @@ function selected(runtime: Record<string, unknown>) {
 }
 
 function success(value: unknown) {
-  return { isErr: () => false, value };
+  return Effect.succeed(value);
 }
 
 function execution(callId = "call") {

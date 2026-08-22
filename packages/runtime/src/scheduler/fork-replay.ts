@@ -1,5 +1,6 @@
 import { sha256Digest } from "@acpus/core/content-identity";
 import type { AgentDefinitionIR, AgentNodeIR, ExprIR, NodeIR, SignalNodeIR, TaskNodeIR } from "@acpus/core/ir";
+import * as Result from "effect/Result";
 import { tryEvaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import { resolveAgentSessionGroupDigest } from "../execution/agent-session.js";
 import { stableJson } from "../stable-json.js";
@@ -20,15 +21,15 @@ export function replayEvaluation(
   artifactDigest: (uri: string) => string | undefined,
 ): ReplayEvaluation {
   const sessionGroupDigest = node.kind === "agent"
-    ? resolveAgentSessionGroupDigest(node, scope).unwrapOr(undefined)
+    ? Result.getOrElse(resolveAgentSessionGroupDigest(node, scope), () => undefined)
     : undefined;
   const group = sessionGroupDigest === undefined ? {} : { sessionGroupDigest };
   if (node.kind === "agent" && node.run.sessionKey !== undefined && sessionGroupDigest === undefined) return {};
 
   const dependencies = declaredRefs(node).map(path => {
     const value = tryEvaluateExpr({ kind: "ref", path }, scope);
-    if (value.isErr()) return undefined;
-    const canonical = canonicalValue(value.value, artifactDigest);
+    if (Result.isFailure(value)) return undefined;
+    const canonical = canonicalValue(value.success, artifactDigest);
     return canonical === missingArtifact ? undefined : [path, canonical];
   });
   if (dependencies.some(value => value === undefined)) return group;

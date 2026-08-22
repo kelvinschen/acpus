@@ -25,8 +25,8 @@ describe("runtime SQLite warning", () => {
     const script = `
       const emitWarning = process.emitWarning;
       await import(${JSON.stringify(runtimeModule)});
-      const { openRuntimeStore } = await import(${JSON.stringify(storeModule)});
-      const store = await openRuntimeStore(process.argv[1]);
+      const { openRuntimeStoreAdapter } = await import(${JSON.stringify(storeModule)});
+      const store = await openRuntimeStoreAdapter(process.argv[1]);
       store.close();
       if (process.emitWarning !== emitWarning) throw new Error("process.emitWarning was not restored");
       process.emitWarning("Acpus warning sentinel", "ExperimentalWarning");

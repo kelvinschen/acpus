@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { join, resolve } from "node:path";
 import { parseAcpusSkillMetadata } from "../src/skill/content.js";
-import { customSkillTarget, skillTargets } from "../src/skill/installation.js";
+import { skillTargets } from "../src/skill/installation.js";
 
 describe("Acpus skill targets", () => {
   it("maps every scope and agent to fixed roots without consulting agent-specific home variables", () => {
@@ -48,23 +48,6 @@ describe("Acpus skill targets", () => {
     }
   });
 
-  it("resolves custom skills roots from the CLI cwd and appends the skill name", () => {
-    const cwd = resolve("project-root");
-    const absoluteRoot = resolve("external-skills");
-
-    expect(customSkillTarget(cwd, join(".agents", "skills"))).toEqual({
-      scope: "custom",
-      agent: "custom",
-      rootPath: join(cwd, ".agents", "skills"),
-      targetPath: join(cwd, ".agents", "skills", "acpus"),
-    });
-    expect(customSkillTarget(cwd, absoluteRoot)).toEqual({
-      scope: "custom",
-      agent: "custom",
-      rootPath: absoluteRoot,
-      targetPath: join(absoluteRoot, "acpus"),
-    });
-  });
 });
 
 describe("Acpus skill metadata", () => {

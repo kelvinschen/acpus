@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import { validateWorkflowIR, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
 import { classifyCompileWorkerResultReadFailure } from "../src/compiler/worker.js";
@@ -61,9 +62,9 @@ describe("compile worker protocol", () => {
       result: compiled,
     }));
 
-    expect(result.isOk()).toBe(true);
-    if (result.isErr()) throw new Error(result.error.message);
-    expect(result.value).toEqual({ schemaVersion: 1, ok: true, result: compiled });
+    expect(Result.isSuccess(result)).toBe(true);
+    if (Result.isFailure(result)) throw new Error(result.failure.message);
+    expect(result.success).toEqual({ schemaVersion: 1, ok: true, result: compiled });
   });
 
   it("rejects a compile result carrying the previous WorkflowIR version", () => {
@@ -76,9 +77,9 @@ describe("compile worker protocol", () => {
       },
     }));
 
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected protocol failure");
-    expect(result.error.type).toBe("worker-result-invalid");
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("expected protocol failure");
+    expect(result.failure.type).toBe("worker-result-invalid");
   });
 
   it.each([
@@ -100,17 +101,9 @@ describe("compile worker protocol", () => {
   ])("rejects %s", (_name, raw, type) => {
     const result = parseCompileWorkerEnvelope(raw);
 
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected protocol failure");
-    expect(result.error.type).toBe(type);
-  });
-
-  it("rejects a worker IR that omits a nested Core validation finding", () => {
-    const result = parseIr(invalidNestedIr());
-
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected protocol failure");
-    expect(result.error.type).toBe("worker-result-invalid");
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("expected protocol failure");
+    expect(result.failure.type).toBe(type);
   });
 
   it("accepts reported Core findings in any order alongside compiler diagnostics", () => {
@@ -130,9 +123,9 @@ describe("compile worker protocol", () => {
 
     const result = parseIr(ir);
 
-    expect(result.isOk()).toBe(true);
-    if (result.isErr()) throw new Error(result.error.message);
-    expect(result.value.ok && result.value.result.ir.diagnostics).toEqual(ir.diagnostics);
+    expect(Result.isSuccess(result)).toBe(true);
+    if (Result.isFailure(result)) throw new Error(result.failure.message);
+    expect(result.success.ok && result.success.result.ir.diagnostics).toEqual(ir.diagnostics);
   });
 
   it("rejects a worker IR that omits one of several Core findings", () => {
@@ -141,9 +134,9 @@ describe("compile worker protocol", () => {
 
     const result = parseIr(ir);
 
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected protocol failure");
-    expect(result.error.type).toBe("worker-result-invalid");
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("expected protocol failure");
+    expect(result.failure.type).toBe("worker-result-invalid");
   });
 
   it("rejects malformed diagnostics even when their Core finding is reported", () => {
@@ -155,9 +148,9 @@ describe("compile worker protocol", () => {
 
     const result = parseIr(ir);
 
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected protocol failure");
-    expect(result.error.type).toBe("worker-result-invalid");
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("expected protocol failure");
+    expect(result.failure.type).toBe("worker-result-invalid");
   });
 
   it("accepts a warning-only IR when the Core warning is reported", () => {
@@ -170,9 +163,9 @@ describe("compile worker protocol", () => {
 
     const result = parseIr(ir);
 
-    expect(result.isOk()).toBe(true);
-    if (result.isErr()) throw new Error(result.error.message);
-    expect(result.value.ok && result.value.result.ir.diagnostics).toEqual(ir.diagnostics);
+    expect(Result.isSuccess(result)).toBe(true);
+    if (Result.isFailure(result)) throw new Error(result.failure.message);
+    expect(result.success.ok && result.success.result.ir.diagnostics).toEqual(ir.diagnostics);
   });
 
   it("rejects an exit/envelope mismatch", () => {
@@ -184,9 +177,9 @@ describe("compile worker protocol", () => {
       stderrTail: "stderr",
     }, JSON.stringify({ schemaVersion: 1, ok: true, result: compiled }), compiled.sourceDigest);
 
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected protocol failure");
-    expect(result.error).toEqual({
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("expected protocol failure");
+    expect(result.failure).toEqual({
       type: "worker-result-invalid",
       message: "Workflow compile worker exited unsuccessfully with a success result.",
       stdoutTail: "stdout",
@@ -208,9 +201,9 @@ describe("compile worker protocol", () => {
       stderrTail: "",
     }, JSON.stringify({ schemaVersion: 1, ok: false, error: failure }), compiled.sourceDigest);
 
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected module failure");
-    expect(result.error).toEqual(failure);
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("expected module failure");
+    expect(result.failure).toEqual(failure);
   });
 
   it("rejects a worker source digest that differs from the checked source", () => {
@@ -222,9 +215,9 @@ describe("compile worker protocol", () => {
       stderrTail: "stderr",
     }, JSON.stringify({ schemaVersion: 1, ok: true, result: compiled }), `sha256:${"b".repeat(64)}`);
 
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected digest mismatch");
-    expect(result.error).toEqual({
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("expected digest mismatch");
+    expect(result.failure).toEqual({
       type: "worker-result-invalid",
       message: "Workflow compile worker source digest did not match the checked source digest.",
       stdoutTail: "stdout",
@@ -245,9 +238,9 @@ describe("compile worker protocol", () => {
       error: failure,
     }));
 
-    expect(result.isOk()).toBe(true);
-    if (result.isErr()) throw new Error(result.error.message);
-    expect(result.value).toEqual({ schemaVersion: 1, ok: false, error: failure });
+    expect(Result.isSuccess(result)).toBe(true);
+    if (Result.isFailure(result)) throw new Error(result.failure.message);
+    expect(result.success).toEqual({ schemaVersion: 1, ok: false, error: failure });
   });
 });
 

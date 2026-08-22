@@ -1,6 +1,6 @@
 import { sha256Digest } from "@acpus/core/content-identity";
 import type { AgentNodeIR } from "@acpus/core/ir";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import { tryResolveString, type ResolutionError } from "../evaluation/resolvable.js";
 
@@ -21,22 +21,22 @@ export function resolveAgentSessionIdentity(
   runId: string | undefined,
   nodeKey: string,
   generation = 1,
-): Result<AgentSessionIdentity, ResolutionError> {
+): Result.Result<AgentSessionIdentity, ResolutionError> {
   const explicitSessionKey = renderSessionKey(node, scope);
-  if (explicitSessionKey.isErr()) return err(explicitSessionKey.error);
+  if (Result.isFailure(explicitSessionKey)) return Result.fail(explicitSessionKey.failure);
   if (!Number.isInteger(generation) || generation < 1) throw new TypeError("Agent Session generation must be a positive integer.");
   const canonicalRunId = runId ?? "local";
   const scopeDigest = agentSessionScopeDigest(
     canonicalRunId,
-    explicitSessionKey.value === undefined ? "node" : "key",
-    explicitSessionKey.value ?? nodeKey,
+    explicitSessionKey.success === undefined ? "node" : "key",
+    explicitSessionKey.success ?? nodeKey,
   );
-  return ok({
+  return Result.succeed({
     agentSessionId: agentSessionIdForScope(scopeDigest, generation),
     scopeDigest,
     generation,
-    explicitShared: explicitSessionKey.value !== undefined,
-    ...(explicitSessionKey.value === undefined ? {} : { explicitSessionKey: explicitSessionKey.value }),
+    explicitShared: explicitSessionKey.success !== undefined,
+    ...(explicitSessionKey.success === undefined ? {} : { explicitSessionKey: explicitSessionKey.success }),
   });
 }
 
@@ -59,24 +59,24 @@ export function agentSessionIdForScope(
 export function resolveAgentSessionGroupDigest(
   node: AgentNodeIR,
   scope: EvaluationScope,
-): Result<string | undefined, ResolutionError> {
-  return renderSessionKey(node, scope).map(sessionKey => sessionKey === undefined
+): Result.Result<string | undefined, ResolutionError> {
+  return Result.map(renderSessionKey(node, scope), sessionKey => sessionKey === undefined
     ? undefined
     : sha256Digest(`${SESSION_GROUP_DOMAIN}${sessionKey}`));
 }
 
-function renderSessionKey(node: AgentNodeIR, scope: EvaluationScope): Result<string | undefined, ResolutionError> {
-  if (!node.run.sessionKey) return ok(undefined);
+function renderSessionKey(node: AgentNodeIR, scope: EvaluationScope): Result.Result<string | undefined, ResolutionError> {
+  if (!node.run.sessionKey) return Result.succeed(undefined);
   const field = `Agent node '${node.id}' sessionKey`;
   const rendered = tryResolveString(node.run.sessionKey, scope, field);
-  if (rendered.isErr()) return err(rendered.error);
-  if (rendered.value.trim().length === 0) {
-    return err({
+  if (Result.isFailure(rendered)) return Result.fail(rendered.failure);
+  if (rendered.success.trim().length === 0) {
+    return Result.fail({
       type: "constraint",
       field,
       expected: "non-empty string",
       message: `${field} must render to a non-empty string.`,
     });
   }
-  return ok(rendered.value);
+  return Result.succeed(rendered.success);
 }

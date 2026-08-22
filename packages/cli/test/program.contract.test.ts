@@ -388,47 +388,20 @@ describe("CLI program usage contracts", () => {
     }
   });
 
-  it("queries an empty workflow catalog", async () => {
+  it("queries an empty workflow catalog through both command names", async () => {
     await withPlainTestWorkspace("catalog-empty", async workspace => {
-      const stdout = new CaptureStream();
-      const stderr = new CaptureStream();
       const previousHome = process.env.HOME;
       process.env.HOME = workspace;
 
       try {
-        const exitCode = await runCli(["workflow", "catalog"], {
-          cwd: workspace,
-          stdout,
-          stderr,
-        });
-
-        expect(exitCode).toBe(0);
-        expect(stdout.text).toBe("No cataloged workflows.\n");
-        expect(stderr.text).toBe("");
-      } finally {
-        if (previousHome === undefined) delete process.env.HOME;
-        else process.env.HOME = previousHome;
-      }
-    });
-  });
-
-  it("accepts wf as the workflow command alias", async () => {
-    await withPlainTestWorkspace("catalog-empty-alias", async workspace => {
-      const stdout = new CaptureStream();
-      const stderr = new CaptureStream();
-      const previousHome = process.env.HOME;
-      process.env.HOME = workspace;
-
-      try {
-        const exitCode = await runCli(["wf", "catalog"], {
-          cwd: workspace,
-          stdout,
-          stderr,
-        });
-
-        expect(exitCode).toBe(0);
-        expect(stdout.text).toBe("No cataloged workflows.\n");
-        expect(stderr.text).toBe("");
+        for (const command of ["workflow", "wf"]) {
+          const stdout = new CaptureStream();
+          const stderr = new CaptureStream();
+          const exitCode = await runCli([command, "catalog"], { cwd: workspace, stdout, stderr });
+          expect(exitCode).toBe(0);
+          expect(stdout.text).toBe("No cataloged workflows.\n");
+          expect(stderr.text).toBe("");
+        }
       } finally {
         if (previousHome === undefined) delete process.env.HOME;
         else process.env.HOME = previousHome;

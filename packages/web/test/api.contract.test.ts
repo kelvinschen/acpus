@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { errAsync, okAsync } from "neverthrow";
+import * as Effect from "effect/Effect";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -59,22 +59,22 @@ describe("web API contract", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTryVisualizeWorkflowSource.mockReset();
-    mockListKnownWorkspaces.mockResolvedValue({
+    mockListKnownWorkspaces.mockReturnValue(Effect.succeed({
       currentWorkspaceKey,
       workspaces: [],
       failures: [],
-    });
+    }));
     mockResolveKnownWorkspace.mockImplementation((cwd: string, workspaceKey: string) =>
       workspaceKey === currentWorkspaceKey
-        ? okAsync({ workspaceKey, canonicalPath: cwd })
+        ? Effect.succeed({ workspaceKey, canonicalPath: cwd })
         : workspaceKey === otherWorkspaceKey
-          ? okAsync({ workspaceKey, canonicalPath: "/tmp/acpus-web-other" })
-          : errAsync({ type: "workspace-not-found", workspaceKey, message: "Workspace not found." }),
+          ? Effect.succeed({ workspaceKey, canonicalPath: "/tmp/acpus-web-other" })
+          : Effect.fail({ type: "workspace-not-found", workspaceKey, message: "Workspace not found." }),
     );
-    mockInspectRuntimeStore.mockReturnValue(okAsync({ state: "ready" }));
-    mockRepairRuntimeStore.mockReturnValue(okAsync({ changed: true }));
-    mockListRuns.mockReturnValue(okAsync([]));
-    mockRequestDaemonInspection.mockReturnValue(errAsync({
+    mockInspectRuntimeStore.mockReturnValue(Effect.succeed({ state: "ready" }));
+    mockRepairRuntimeStore.mockReturnValue(Effect.succeed({ changed: true }));
+    mockListRuns.mockReturnValue(Effect.succeed([]));
+    mockRequestDaemonInspection.mockReturnValue(Effect.fail({
       type: "transport",
       reason: "not-found",
       method: "inspect",
@@ -89,12 +89,12 @@ describe("web API contract", () => {
 
   describe("GET /api/health", () => {
     it("returns the health fields rendered by the status popover", async () => {
-      mockGetRuntimeHealth.mockResolvedValue({
+      mockGetRuntimeHealth.mockReturnValue(Effect.succeed({
         ok: true,
         phase: "doctor",
         state: "ready",
         checks: [{ area: "daemon", status: "ok", message: "Daemon is healthy.", details: { pid: 42 } }],
-      });
+      }));
       const res = await app.request("/api/health");
       expect(res.status).toBe(200);
       const body = await res.json() as JsonBody;
@@ -118,7 +118,7 @@ describe("web API contract", () => {
         { state: "unavailable", message: "Use a compatible Acpus version." },
       ],
     ] as const)("projects %s to the small Web status", async (status, expected) => {
-      mockInspectRuntimeStore.mockReturnValue(okAsync(status));
+      mockInspectRuntimeStore.mockReturnValue(Effect.succeed(status));
 
       const res = await app.request("/api/runtime-store");
 
@@ -137,7 +137,7 @@ describe("web API contract", () => {
     });
 
     it("maps an explicitly requested repair blocked by a runtime user to HTTP 409", async () => {
-      mockRepairRuntimeStore.mockReturnValueOnce(errAsync({
+      mockRepairRuntimeStore.mockReturnValueOnce(Effect.fail({
         type: "busy",
         message: "Runtime store is in use.",
       }));
@@ -169,7 +169,7 @@ describe("web API contract", () => {
       ["runtime-store-unsupported", 422, "runtime_store_unavailable"],
       ["runtime-store-unavailable", 503, "runtime_store_unavailable"],
     ] as const)("maps %s directly from the Runtime read", async (type, status, code) => {
-      mockListRuns.mockReturnValueOnce(errAsync({ type, message: "Runtime read is unavailable." }));
+      mockListRuns.mockReturnValueOnce(Effect.fail({ type, message: "Runtime read is unavailable." }));
 
       const read = await app.request(runApi());
 
@@ -184,7 +184,7 @@ describe("web API contract", () => {
     });
   });
   it("sanitizes unexpected server failures", async () => {
-    mockListRuns.mockRejectedValue(new Error("/secret/runtime.db EACCES"));
+    mockListRuns.mockReturnValue(Effect.die(new Error("/secret/runtime.db EACCES")));
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
     try {
       const res = await app.request(runApi());
@@ -201,7 +201,7 @@ describe("web API contract", () => {
 
   describe("GET /api/workspaces", () => {
     it("returns the public workspace projection and ignores discovery failures", async () => {
-      mockListKnownWorkspaces.mockResolvedValue({
+      mockListKnownWorkspaces.mockReturnValue(Effect.succeed({
         currentWorkspaceKey,
         workspaces: [{
           workspaceKey: currentWorkspaceKey,
@@ -215,7 +215,7 @@ describe("web API contract", () => {
           runCount: 0,
         }],
         failures: [{ workspaceKey: "bad", message: "/secret/runtime.db failed" }],
-      });
+      }));
 
       const res = await app.request("/api/workspaces");
 
@@ -272,7 +272,7 @@ describe("web API contract", () => {
 
   describe("GET /api/workspaces/:workspaceKey/runs", () => {
     it("returns the run-card projection without runtime-private data", async () => {
-      mockListRuns.mockReturnValue(okAsync([{
+      mockListRuns.mockReturnValue(Effect.succeed([{
         id: "run_1",
         name: "release",
         status: "running",
@@ -302,7 +302,7 @@ describe("web API contract", () => {
     });
 
     it("keeps identical run IDs isolated by resolved workspace", async () => {
-      mockListRuns.mockImplementation((cwd: string) => okAsync([{
+      mockListRuns.mockImplementation((cwd: string) => Effect.succeed([{
         id: "same_run",
         name: cwd,
         status: "completed",
@@ -319,7 +319,7 @@ describe("web API contract", () => {
 
     it("returns the same workspace-not-found envelope for invalid and unavailable keys", async () => {
       for (const type of ["workspace-key-invalid", "workspace-unavailable"] as const) {
-        mockResolveKnownWorkspace.mockReturnValueOnce(errAsync({
+        mockResolveKnownWorkspace.mockReturnValueOnce(Effect.fail({
           type,
           workspaceKey: "bad",
           message: "private resolver detail",
@@ -336,7 +336,7 @@ describe("web API contract", () => {
 
   describe("GET /api/workspaces/:workspaceKey/runs/:id/runtime-snapshot", () => {
     it("returns run and graph from the same runtime snapshot", async () => {
-      mockGetRunVisualizationSnapshot.mockReturnValue(okAsync({
+      mockGetRunVisualizationSnapshot.mockReturnValue(Effect.succeed({
         run: {
           id: "run_1",
           name: "test",
@@ -406,7 +406,7 @@ describe("web API contract", () => {
     });
 
     it("returns 404 for unknown run", async () => {
-      mockGetRunVisualizationSnapshot.mockReturnValue(okAsync(undefined));
+      mockGetRunVisualizationSnapshot.mockReturnValue(Effect.succeed(undefined));
       const res = await app.request(runApi("/run_1/runtime-snapshot"));
       expect(res.status).toBe(404);
       const body = await res.json() as JsonBody;
@@ -418,7 +418,7 @@ describe("web API contract", () => {
 
   describe("GET /api/workspaces/:workspaceKey/runs/:id/nodes/:target", () => {
     it("requests the Runtime execution projection by canonical target and performs no artifact reads", async () => {
-      mockInspectAgentExecution.mockResolvedValue(inspectionOk(executionInspection()));
+      mockInspectAgentExecution.mockReturnValue(inspectionOk(executionInspection()));
 
       const res = await app.request(runApi("/run_1/nodes/%401a2b3c4d5e6f/execution"));
 
@@ -462,7 +462,7 @@ describe("web API contract", () => {
     });
 
     it("maps Runtime execution unavailability to Web-owned copy", async () => {
-      mockInspectAgentExecution.mockResolvedValue(inspectionOk({
+      mockInspectAgentExecution.mockReturnValue(inspectionOk({
         ...executionInspection(),
         available: false,
         reason: "not-started",
@@ -483,7 +483,7 @@ describe("web API contract", () => {
     });
 
     it("returns a conflict for an ambiguous execution target", async () => {
-      mockInspectAgentExecution.mockResolvedValue(inspectionErr({
+      mockInspectAgentExecution.mockReturnValue(inspectionErr({
         type: "target-ambiguous",
         runId: "run_1",
         target: "review",
@@ -512,7 +512,7 @@ describe("web API contract", () => {
     });
 
     it("delegates a deep canonical target to narrow runtime inspection", async () => {
-      mockInspectNode.mockResolvedValue(inspectionOk(targetInspection()));
+      mockInspectNode.mockReturnValue(inspectionOk(targetInspection()));
       const res = await app.request(runApi("/run_1/nodes/%401a2b3c4d5e6f"));
 
       expect(res.status).toBe(200);
@@ -540,8 +540,8 @@ describe("web API contract", () => {
     });
 
     it("overlays live Steer controls from the daemon authority", async () => {
-      mockInspectNode.mockResolvedValue(inspectionOk(targetInspection({ availableControls: [] })));
-      mockRequestDaemonInspection.mockReturnValue(okAsync({
+      mockInspectNode.mockReturnValue(inspectionOk(targetInspection({ availableControls: [] })));
+      mockRequestDaemonInspection.mockReturnValue(Effect.succeed({
         kind: "target",
         detail: "summary",
         run: { id: "run_1", status: "running" },
@@ -567,7 +567,7 @@ describe("web API contract", () => {
     });
 
     it("projects composite runtime values from one canonical Forensics read", async () => {
-      mockReadInspection.mockResolvedValue(inspectionOk({
+      mockReadInspection.mockReturnValue(inspectionOk({
         kind: "target",
         detail: "forensics",
         run: { id: "run_1", status: "running" },
@@ -615,7 +615,7 @@ describe("web API contract", () => {
     });
 
     it("maps ambiguous runtime-values targets to a conflict", async () => {
-      mockReadInspection.mockResolvedValue(inspectionOk({
+      mockReadInspection.mockReturnValue(inspectionOk({
         kind: "candidates",
         run: { id: "run_1", status: "running" },
         target: "items",
@@ -638,7 +638,7 @@ describe("web API contract", () => {
     });
 
     it("maps a missing runtime-values target through the inspection error contract", async () => {
-      mockReadInspection.mockResolvedValue(inspectionErr({
+      mockReadInspection.mockReturnValue(inspectionErr({
         type: "target-not-found",
         runId: "run_1",
         target: "missing",
@@ -669,11 +669,11 @@ describe("web API contract", () => {
         size: bytes.byteLength,
         path,
       };
-      mockInspectNode.mockResolvedValue(inspectionOk(targetInspection({
+      mockInspectNode.mockReturnValue(inspectionOk(targetInspection({
         prompt: { kind: "artifact", artifactId: artifact.id, path, mediaType: artifact.mediaType, field: "prompt" },
         artifacts: [artifact],
       })));
-      mockReadArtifact.mockReturnValue(okAsync({ artifact, bytes }));
+      mockReadArtifact.mockReturnValue(Effect.succeed({ artifact, bytes }));
       const artifactApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
 
       const res = await artifactApp.request(runApi("/run_1/nodes/review~abc"));
@@ -692,7 +692,7 @@ describe("web API contract", () => {
     });
 
     it("returns 404 for unknown run", async () => {
-      mockInspectNode.mockResolvedValue(inspectionErr({
+      mockInspectNode.mockReturnValue(inspectionErr({
         type: "run-not-found",
         runId: "nonexistent",
         message: "Run 'nonexistent' was not found.",
@@ -705,7 +705,7 @@ describe("web API contract", () => {
     });
 
     it("returns 404 for an unknown inspection target", async () => {
-      mockInspectNode.mockResolvedValue(inspectionErr({
+      mockInspectNode.mockReturnValue(inspectionErr({
         type: "target-not-found",
         runId: "run_1",
         target: "missing",
@@ -720,7 +720,7 @@ describe("web API contract", () => {
 
     it("does not expose inspection storage failures", async () => {
       const cause = new Error("/secret/runtime.db EIO");
-      mockInspectNode.mockResolvedValue(inspectionErr({
+      mockInspectNode.mockReturnValue(inspectionErr({
         type: "inspection-read-failed",
         runId: "run_1",
         message: cause.message,
@@ -755,7 +755,7 @@ describe("web API contract", () => {
         size: bytes.byteLength,
         path,
       };
-      mockReadArtifact.mockReturnValue(okAsync({ artifact, bytes }));
+      mockReadArtifact.mockReturnValue(Effect.succeed({ artifact, bytes }));
       const artifactApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
 
       const res = await artifactApp.request(runApi("/run_1/artifacts/artifact_1/preview"));
@@ -775,7 +775,7 @@ describe("web API contract", () => {
     });
 
     it("returns 404 when the verified reader finds no registered artifact", async () => {
-      mockReadArtifact.mockReturnValue(okAsync(undefined));
+      mockReadArtifact.mockReturnValue(Effect.succeed(undefined));
 
       const res = await app.request(runApi("/run_1/artifacts/artifact_1/preview"));
 
@@ -784,7 +784,7 @@ describe("web API contract", () => {
     });
 
     it("redacts verified reader failures as internal errors", async () => {
-      mockReadArtifact.mockRejectedValue(new Error("/secret/artifacts/output.txt failed verification"));
+      mockReadArtifact.mockReturnValue(Effect.die(new Error("/secret/artifacts/output.txt failed verification")));
       const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
       try {
         const res = await app.request(runApi("/run_1/artifacts/artifact_1/preview"));
@@ -814,7 +814,7 @@ describe("web API contract", () => {
         path: "/tmp/acpus-web-test/runs/run_1/artifacts/report.json",
         mediaType: "application/json",
       };
-      mockReadArtifact.mockReturnValue(okAsync({ artifact, bytes }));
+      mockReadArtifact.mockReturnValue(Effect.succeed({ artifact, bytes }));
 
       const res = await app.request(runApi("/run_1/artifacts/artifact_1/content"));
 
@@ -846,7 +846,7 @@ describe("web API contract", () => {
         size: bytes.byteLength,
         path: `/tmp/acpus-web-test/runs/run_1/artifacts/${path}`,
       };
-      mockReadArtifact.mockReturnValue(okAsync({ artifact, bytes }));
+      mockReadArtifact.mockReturnValue(Effect.succeed({ artifact, bytes }));
 
       const res = await app.request(runApi("/run_1/artifacts/artifact_1/content"));
 
@@ -865,7 +865,7 @@ describe("web API contract", () => {
         path: "/tmp/acpus-web-test/runs/run_1/artifacts/report.html",
         mediaType: "text/html; charset=utf-8",
       };
-      mockReadArtifact.mockReturnValue(okAsync({ artifact, bytes }));
+      mockReadArtifact.mockReturnValue(Effect.succeed({ artifact, bytes }));
 
       const res = await app.request(runApi("/run_1/artifacts/artifact_1/content"));
       const csp = res.headers.get("content-security-policy") ?? "";
@@ -887,7 +887,7 @@ describe("web API contract", () => {
         size: bytes.byteLength,
         path: "/tmp/acpus-web-other/runs/same_run/artifacts/output.txt",
       };
-      mockReadArtifact.mockReturnValue(okAsync({ artifact, bytes }));
+      mockReadArtifact.mockReturnValue(Effect.succeed({ artifact, bytes }));
 
       const res = await app.request(runApi("/same_run/artifacts/artifact_1/content", otherWorkspaceKey));
 
@@ -913,7 +913,7 @@ describe("web API contract", () => {
         size: bytes.byteLength,
         path: "/tmp/acpus-web-test/runs/run_1/artifacts/output.txt",
       };
-      mockReadArtifact.mockReturnValue(okAsync({ artifact, bytes }));
+      mockReadArtifact.mockReturnValue(Effect.succeed({ artifact, bytes }));
       const url = runApi("/run_1/artifacts/artifact_1/content");
 
       expect((await protectedApp.request(url)).status).toBe(401);
@@ -923,7 +923,7 @@ describe("web API contract", () => {
     });
 
     it("returns 404 when the verified reader finds no registered artifact", async () => {
-      mockReadArtifact.mockReturnValue(okAsync(undefined));
+      mockReadArtifact.mockReturnValue(Effect.succeed(undefined));
 
       const res = await app.request(runApi("/run_1/artifacts/artifact_1/content"));
 
@@ -932,7 +932,7 @@ describe("web API contract", () => {
     });
 
     it("redacts verified reader failures as internal errors", async () => {
-      mockReadArtifact.mockRejectedValue(new Error("/secret/artifacts/output.txt failed verification"));
+      mockReadArtifact.mockReturnValue(Effect.die(new Error("/secret/artifacts/output.txt failed verification")));
       const logged = vi.spyOn(console, "error").mockImplementation(() => undefined);
       try {
         const res = await app.request(runApi("/run_1/artifacts/artifact_1/content"));
@@ -1055,11 +1055,11 @@ describe("web API contract", () => {
     });
 
     it("accepts pause control", async () => {
-      mockResolveKnownWorkspace.mockReturnValueOnce(okAsync({
+      mockResolveKnownWorkspace.mockReturnValueOnce(Effect.succeed({
         workspaceKey: currentWorkspaceKey,
         canonicalPath: "/canonical/acpus-web-test",
       }));
-      mockRequestDaemonControl.mockReturnValue(okAsync({ run: { id: "run_1", status: "paused" } }));
+      mockRequestDaemonControl.mockReturnValue(Effect.succeed({ run: { id: "run_1", status: "paused" } }));
       const res = await app.request(runApi("/run_1/controls"), {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1079,7 +1079,7 @@ describe("web API contract", () => {
     });
 
     it("maps a retry target directly onto the daemon intent", async () => {
-      mockRequestDaemonControl.mockReturnValue(okAsync({ run: { id: "run_1", status: "running" } }));
+      mockRequestDaemonControl.mockReturnValue(Effect.succeed({ run: { id: "run_1", status: "running" } }));
       const res = await app.request(runApi("/run_1/controls"), {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1100,7 +1100,7 @@ describe("web API contract", () => {
         { type: "steer", target: "@active", instruction: "Focus on the failing assertion." },
       ],
     ])("maps Agent control %j directly onto the daemon intent", async (command, expected) => {
-      mockRequestDaemonControl.mockReturnValue(okAsync({ run: { id: "run_1", status: "running" } }));
+      mockRequestDaemonControl.mockReturnValue(Effect.succeed({ run: { id: "run_1", status: "running" } }));
       const res = await app.request(runApi("/run_1/controls"), {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1119,7 +1119,7 @@ describe("web API contract", () => {
       [{ type: "cancel" }, undefined],
       [{ type: "cancel", target: "step_1" }, "step_1"],
     ])("maps cancel target %s onto the daemon intent", async (command, target) => {
-      mockRequestDaemonControl.mockReturnValue(okAsync({ run: { id: "run_1", status: "canceled" } }));
+      mockRequestDaemonControl.mockReturnValue(Effect.succeed({ run: { id: "run_1", status: "canceled" } }));
       const res = await app.request(runApi("/run_1/controls"), {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1134,7 +1134,7 @@ describe("web API contract", () => {
     });
 
     it("accepts signal control", async () => {
-      mockRequestDaemonControl.mockReturnValue(okAsync({ run: { id: "run_1", status: "running" } }));
+      mockRequestDaemonControl.mockReturnValue(Effect.succeed({ run: { id: "run_1", status: "running" } }));
       const res = await app.request(runApi("/run_1/controls"), {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1154,7 +1154,7 @@ describe("web API contract", () => {
     });
 
     it("maps daemon control errors to the existing HTTP error contract", async () => {
-      mockRequestDaemonControl.mockReturnValue(errAsync({ type: "rejected", code: "RUN_NOT_CONTROLLABLE", message: "Run cannot be paused." }));
+      mockRequestDaemonControl.mockReturnValue(Effect.fail({ type: "rejected", code: "RUN_NOT_CONTROLLABLE", message: "Run cannot be paused." }));
       const res = await app.request(runApi("/run_1/controls"), {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1192,7 +1192,7 @@ describe("web API contract", () => {
     });
 
     it("returns 404 for unknown run", async () => {
-      mockRequestDaemonControl.mockReturnValue(errAsync({ type: "rejected", code: "RUN_NOT_FOUND", message: "Run 'nonexistent' was not found." }));
+      mockRequestDaemonControl.mockReturnValue(Effect.fail({ type: "rejected", code: "RUN_NOT_FOUND", message: "Run 'nonexistent' was not found." }));
       const res = await app.request(runApi("/nonexistent/controls"), {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -1301,7 +1301,7 @@ describe("web API contract", () => {
         },
         sourceGraphDigest: "sha256:source",
       };
-      mockTryVisualizeWorkflowSource.mockReturnValue(okAsync(result));
+      mockTryVisualizeWorkflowSource.mockReturnValue(Effect.succeed(result));
       const cwd = "/virtual/acpus-web-visualize";
       const visualizeApp = createWebApp({ cwd, ensureDaemonRunning: mockEnsureDaemonRunning });
       const source = { kind: "file", path: "release.workflow.ts" };
@@ -1320,7 +1320,7 @@ describe("web API contract", () => {
     it.each(["source", "check", "compile", "lock", "validate"] as const)(
       "preserves a %s visualization failure at the HTTP adapter",
       async phase => {
-        mockTryVisualizeWorkflowSource.mockReturnValue(errAsync({
+        mockTryVisualizeWorkflowSource.mockReturnValue(Effect.fail({
           type: "test-preparation-failure",
           phase,
           message: `${phase} preparation failed`,
@@ -1361,15 +1361,6 @@ describe("web API contract", () => {
   });
 
   describe("error handling", () => {
-    it("returns 500 for unexpected errors", async () => {
-      mockGetRuntimeHealth.mockRejectedValue(new Error("db corrupted"));
-      const res = await app.request("/api/health");
-      expect(res.status).toBe(500);
-      const body = await res.json() as JsonBody;
-      expect(body.ok).toBe(false);
-      expect(body.error.code).toBe("internal_error");
-    });
-
     it("returns 404 for unknown routes", async () => {
       const res = await app.request("/api/unknown");
       expect(res.status).toBe(404);
@@ -1389,19 +1380,11 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 }
 
 function inspectionOk(value: JsonBody) {
-  return {
-    value,
-    isOk: () => true,
-    isErr: () => false,
-  };
+  return Effect.succeed(value);
 }
 
 function inspectionErr(error: JsonBody) {
-  return {
-    error,
-    isOk: () => false,
-    isErr: () => true,
-  };
+  return Effect.fail(error);
 }
 
 function executionInspection(): JsonBody {

@@ -3,6 +3,7 @@ import { access, chmod, link, mkdir, readFile, rm, stat, symlink, writeFile } fr
 import { join } from "node:path";
 import { TextReader, Uint8ArrayWriter, ZipWriter } from "@zip.js/zip.js";
 import { create as createTar } from "tar";
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import {
   globalImportRoot,
@@ -224,13 +225,13 @@ function expectOk(
   scope: "project" | "global",
   checked = false,
 ): void {
-  if (result.isErr()) throw new Error(`Expected import success, received ${JSON.stringify(result.error)}`);
-  expect(result.value).toMatchObject({ checked, catalog: { name, scope, status: "available" } });
+  if (Result.isFailure(result)) throw new Error(`Expected import success, received ${JSON.stringify(result.failure)}`);
+  expect(result.success).toMatchObject({ checked, catalog: { name, scope, status: "available" } });
 }
 
 function expectImportFailure(result: Awaited<ReturnType<typeof importDirect>>, errorCode: string): void {
-  expect(result.isErr()).toBe(true);
-  if (result.isErr()) expect(result.error).toMatchObject({ type: "import", errorCode });
+  expect(Result.isFailure(result)).toBe(true);
+  if (Result.isFailure(result)) expect(result.failure).toMatchObject({ type: "import", errorCode });
 }
 
 function executableWorkflowSource(name: string, marker: string): string {

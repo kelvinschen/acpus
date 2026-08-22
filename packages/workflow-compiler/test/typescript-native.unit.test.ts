@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { typescriptNativeDiagnostic } from "../src/check/runner.js";
@@ -14,9 +15,9 @@ describe("TypeScript native boundary", () => {
       tsserverPath: join(cwd, "missing-tsgo"),
     }, () => undefined);
 
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) return;
-    expect(result.error).toEqual(expect.objectContaining({
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) return;
+    expect(result.failure).toEqual(expect.objectContaining({
       type: "typescript-native-failed",
       message: expect.stringContaining("does not exist"),
     }));

@@ -10,7 +10,7 @@
 
 - The package MUST expose `prepareWorkflow(options)`.
 - The package MUST expose `tryPrepareWorkflow(options)`.
-- The package MUST expose `extractWorkflowMetadata(source, fileName)` as a `ResultAsync<WorkflowMetadata, WorkflowMetadataError>` static-analysis API.
+- The package MUST expose `extractWorkflowMetadata(source, fileName)` as an `Effect.Effect<WorkflowMetadata, WorkflowMetadataError>` static-analysis API.
 - The package MUST expose `WorkflowPreparationError` and public preparation, lock, and failure types.
 - The package MUST expose the canonical Core `Sha256Digest` type alongside `WorkflowSourceFile`, `WorkflowSourceInput`, `WorkflowSourceRef`, and `WorkflowSourceBundle`.
 - The package MUST expose `CompileWorkerFailure` and `PackageLockFailure` as public failure types without exposing the worker process entrypoint.
@@ -112,7 +112,7 @@
 - Successful preparation MUST merge non-blocking check diagnostics into the returned `WorkflowIR.diagnostics` without duplicating an identical compiler diagnostic.
 
 - Full preparation MUST compile through a worker/import path that loads TypeScript workflow modules and supported official `acpus/*` authoring facade specifiers through `@acpus/loader`.
-- The internal `compileWorkflow(...)` boundary MUST return `ResultAsync<CompiledWorkflowModule, CompileWorkerFailure>` for recoverable worker, protocol, and module failures.
+- The internal `compileWorkflow(...)` boundary MUST return `Effect.Effect<CompiledWorkflowModule, CompileWorkerFailure>` for recoverable worker, protocol, and module failures.
 - The compile worker MUST require the checked source digest as an input and MUST retain `workflow-source-changed` as a compile-phase failure.
 - The compile worker wire envelope MUST be exactly `{ schemaVersion: 1, ok: true, result }` or `{ schemaVersion: 1, ok: false, error }`.
 - The compile worker parent MUST validate the envelope version, discriminant, top-level result shape, source digest format and equality with the checked digest, error tag, and process-exit consistency before consuming it.
@@ -127,11 +127,11 @@
 - Workflow check infrastructure diagnostics MUST use `WF001` for an unreadable workflow source and `WF002` for an unavailable or failed TypeScript 7 native analysis service.
 - Module import or compile failures MUST be reported as phase `"compile"`.
 - IR diagnostics containing any `severity: "error"` MUST be reported as phase `"validate"`.
-- `tryPrepareWorkflow(options)` MUST return a neverthrow `ResultAsync<PreparedWorkflow, WorkflowPreparationFailure>` instead of throwing for check, compile, package-lock read, and validate failures.
+- `tryPrepareWorkflow(options)` MUST return an `Effect.Effect<PreparedWorkflow, WorkflowPreparationFailure>` instead of throwing for check, compile, package-lock read, and validate failures.
 - `WorkflowPreparationFailure` MUST include a stable `type` tag while preserving the existing `phase` field.
 - A compile-phase `WorkflowPreparationFailure` MUST retain its typed `CompileWorkerFailure`.
 - A package-lock read failure MUST use type `package-lock-read-failed` and phase `lock`.
-- Compile worker failure payloads MUST be plain JSON objects and MUST NOT serialize neverthrow values.
+- Compile worker failure payloads MUST be plain JSON objects and MUST NOT serialize Effect or Result wrapper values.
 - `prepareWorkflow(options)` MUST return the successful `tryPrepareWorkflow(options)` value or throw `WorkflowPreparationError` carrying the preparation failure.
 
 ### Task Analysis And Reusable References

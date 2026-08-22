@@ -1,22 +1,23 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as TestClock from "effect/testing/TestClock";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { access, mkdir, readFile, utimes, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
+import type { Sha256Digest } from "@acpus/core/content-identity";
 import { describe, expect, it } from "vitest";
-import type { Result } from "neverthrow";
 import {
-  DAEMON_PROTOCOL_VERSION,
   daemonEndpoint,
-  getRun,
   requestDaemonControl as requestDaemonControlResult,
   requestDaemonShutdown as requestDaemonShutdownResult,
   requestDaemonStatus as requestDaemonStatusResult,
-  startDaemonLoop,
-  type DaemonClientFailure,
-  type Sha256Digest,
-} from "@acpus/runtime";
+} from "../src/daemon/client.js";
+import { DAEMON_PROTOCOL_VERSION, type DaemonClientFailure } from "../src/daemon/protocol.js";
+import { getRun } from "../src/runs/use-cases.js";
+import { startDaemonLoop } from "./support/daemon-loop.js";
 import { runRuntimeTick } from "../src/daemon/tick.js";
 import type { HookJournalEntry } from "../src/hooks/journal.js";
 import { applySchedulerControlIntent } from "../src/scheduler/control.js";
@@ -27,27 +28,39 @@ import { settleFrozenRunTransitions } from "../src/scheduler/runtime-runner.js";
 import { frozenRunScope } from "../src/scheduler/settle.js";
 import { cancellationEventsForNode, nextGroupCompletionBatchEvents } from "../src/scheduler/group-policy.js";
 import { applySchedulerEvents } from "../src/scheduler/transitions.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter, type RunDetails, type RuntimeStoreAdapter } from "../src/store/store.js";
+import { makeRuntimeStoreService } from "../src/store/service.js";
 import { initializeRuntimeStoreForTest, admitSyntheticWorkflow, fanoutSignalWorkflow, parallelSignalAllWorkflow, preparedWorkflow, prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRow, runtimeRows, runtimeRunsRoot, signalWorkflow, taskArtifactWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
-import { advanceRuntimeRun } from "./support/scheduler.js";
 import { submitRunThroughDaemon } from "./support/daemon-submit.js";
 
+function runTick(store: RuntimeStoreAdapter, options: {
+  startSession: (runId: string) => "started" | "already-active" | "terminal" | "quarantined";
+  dispatchHooks?: (runId: string) => "dispatched" | "retry" | "quarantined";
+}) {
+  return Effect.runPromise(runRuntimeTick(makeRuntimeStoreService(store), {
+    startSession: runId => Effect.sync(() => options.startSession(runId)),
+    ...(options.dispatchHooks === undefined
+      ? {}
+      : { dispatchHooks: (runId: string) => Effect.sync(() => options.dispatchHooks!(runId)) }),
+  }));
+}
+
 async function requestDaemonControl(...args: Parameters<typeof requestDaemonControlResult>) {
-  return unwrapDaemon(await requestDaemonControlResult(...args));
+  return unwrapDaemon(await Effect.runPromise(Effect.result(requestDaemonControlResult(...args))));
 }
 
 async function requestDaemonShutdown(...args: Parameters<typeof requestDaemonShutdownResult>) {
-  return unwrapDaemon(await requestDaemonShutdownResult(...args));
+  return unwrapDaemon(await Effect.runPromise(Effect.result(requestDaemonShutdownResult(...args))));
 }
 
 async function requestDaemonStatus(...args: Parameters<typeof requestDaemonStatusResult>) {
-  return unwrapDaemon(await requestDaemonStatusResult(...args));
+  return unwrapDaemon(await Effect.runPromise(Effect.result(requestDaemonStatusResult(...args))));
 }
 
-function unwrapDaemon<T>(result: Result<T, DaemonClientFailure>): T {
-  if (result.isOk()) return result.value;
-  throw Object.assign(new Error(result.error.message), result.error.type === "rejected" ? { code: result.error.code } : {});
+function unwrapDaemon<T>(result: Result.Result<T, DaemonClientFailure>): T {
+  if (Result.isSuccess(result)) return result.success;
+  throw Object.assign(new Error(result.failure.message), result.failure.type === "rejected" ? { code: result.failure.code } : {});
 }
 
 describe.concurrent("runtime daemon ticks", () => {
@@ -269,34 +282,34 @@ describe.concurrent("runtime daemon ticks", () => {
         packageVersion: "test",
       });
       try {
-        const ambiguous = await requestDaemonControlResult(workspace, {
+        const ambiguous = await Effect.runPromise(Effect.result(requestDaemonControlResult(workspace, {
           requestId: "fork-repeated-authored-target",
           type: "fork",
           runId: source.run.id,
           target: "approve",
-        });
-        expect(ambiguous.isErr()).toBe(true);
-        if (ambiguous.isErr()) {
-          expect(ambiguous.error).toMatchObject({
+        })));
+        expect(Result.isFailure(ambiguous)).toBe(true);
+        if (Result.isFailure(ambiguous)) {
+          expect(ambiguous.failure).toMatchObject({
             type: "rejected",
             code: "RUN_NOT_CONTROLLABLE",
             ambiguity: true,
           });
         }
 
-        const missing = await requestDaemonControlResult(workspace, {
+        const missing = await Effect.runPromise(Effect.result(requestDaemonControlResult(workspace, {
           requestId: "fork-missing-target",
           type: "fork",
           runId: source.run.id,
           target: "missing",
-        });
-        expect(missing.isErr()).toBe(true);
-        if (missing.isErr()) {
-          expect(missing.error).toMatchObject({
+        })));
+        expect(Result.isFailure(missing)).toBe(true);
+        if (Result.isFailure(missing)) {
+          expect(missing.failure).toMatchObject({
             type: "rejected",
             code: "RUN_NOT_CONTROLLABLE",
           });
-          expect(missing.error).not.toHaveProperty("ambiguity");
+          expect(missing.failure).not.toHaveProperty("ambiguity");
         }
       } finally {
         await loop.shutdown();
@@ -354,7 +367,7 @@ describe.concurrent("runtime daemon ticks", () => {
   it("closes instead of silently retrying a corrupted durable deadline", async () => {
     await withRuntimeWorkspace("runtime-daemon-corrupted-deadline", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let runId: string;
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
@@ -404,7 +417,7 @@ describe.concurrent("runtime daemon ticks", () => {
           const row = runtimeRow(workspace, "SELECT idle_since_at, idle_stop_ms FROM runtime_authority") as { idle_since_at: string | null; idle_stop_ms: number | null } | undefined;
           return row !== undefined && row.idle_since_at !== null && row.idle_stop_ms === 60_000;
         });
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           expect(store.getRuntimeDiagnostics().authority).toMatchObject({
             idleSinceAt: expect.any(String),
@@ -444,7 +457,7 @@ describe.concurrent("runtime daemon ticks", () => {
 
         await mkdir(late);
         await utimes(late, old, old);
-        const probeStore = await openRuntimeStore(workspace);
+        const probeStore = await openRuntimeStoreAdapter(workspace);
         try {
           probeStore.writeHookJournal(hookJournalEntry(completed.run.id, "startup-cleanup-probe", "2000-01-01T00:00:00.000Z"));
         } finally {
@@ -462,7 +475,7 @@ describe.concurrent("runtime daemon ticks", () => {
 
   it("rejects an orphan final run directory at startup without deleting it", async () => {
     await withRuntimeWorkspace("runtime-daemon-orphan-run", async workspace => {
-      const initialized = await openRuntimeStore(workspace);
+      const initialized = await openRuntimeStoreAdapter(workspace);
       initialized.close();
       const orphan = join(runtimeRunsRoot(workspace), "20990101000000F2CF49A02B2A537F5E8A");
       const sentinel = join(orphan, "sentinel.txt");
@@ -484,31 +497,10 @@ describe.concurrent("runtime daemon ticks", () => {
     });
   });
 
-  it("prunes expired hook journal rows during daemon ticks", async () => {
-    await withRuntimeWorkspace("runtime-daemon-hook-journal-prune", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        await expect(advanceRuntimeRun(workspace, store, run.id, "hook-prune-owner")).resolves.toMatchObject({ status: "completed" });
-        store.writeHookJournal(hookJournalEntry(run.id, "old", "2000-01-01T00:00:00.000Z"));
-        store.writeHookJournal(hookJournalEntry(run.id, "fresh", "2099-01-01T00:00:00.000Z"));
-
-        await expect(runRuntimeTick(store, { startSession: () => {
-          throw new Error("no run should start");
-        } })).resolves.toMatchObject({ runs: 0 });
-
-        expect(store.getHookJournal(run.id).map(entry => entry.handlerId)).toEqual(["fresh"]);
-      } finally {
-        store.close();
-      }
-    });
-  });
-
   it("treats timed signal waits as daemon work without starting future deadlines", async () => {
     await withRuntimeWorkspace("runtime-daemon-signal-timeout-work", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         appendTimedSignalWait(store, run.id, "2099-01-01T00:00:00.000Z");
@@ -519,7 +511,7 @@ describe.concurrent("runtime daemon ticks", () => {
         });
 
         const started: string[] = [];
-        await expect(runRuntimeTick(store, { startSession: runId => {
+        await expect(runTick(store, { startSession: runId => {
           started.push(runId);
           return "started";
         } })).resolves.toMatchObject({
@@ -536,13 +528,13 @@ describe.concurrent("runtime daemon ticks", () => {
   it("starts runs with due signal timeout work", async () => {
     await withRuntimeWorkspace("runtime-daemon-signal-timeout-due", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         appendTimedSignalWait(store, run.id, "2000-01-01T00:00:00.000Z");
 
         const started: string[] = [];
-        await expect(runRuntimeTick(store, { startSession: runId => {
+        await expect(runTick(store, { startSession: runId => {
           started.push(runId);
           return "started";
         } })).resolves.toMatchObject({
@@ -564,17 +556,17 @@ describe.concurrent("runtime daemon ticks", () => {
   ] as const)("restarts an awaiting run with a reconcilable $label group", async groupCase => {
     await withRuntimeWorkspace(`runtime-daemon-awaiting-group-reconciliation-${groupCase.strategy}-${groupCase.terminal}`, async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const initial = await openRuntimeStore(workspace);
+      const initial = await openRuntimeStoreAdapter(workspace);
       const run = await admitRunForTest(initial, { prepared, input: { ready: true }, cwd: workspace });
       appendAwaitingStuckGroup(initial, run.id, groupCase);
       expect(initial.getRun(run.id)?.status).toBe("awaiting");
       initial.close();
 
-      const reopened = await openRuntimeStore(workspace);
+      const reopened = await openRuntimeStoreAdapter(workspace);
       try {
         expect(reopened.listRuntimeWork(new Date("2026-07-01T00:00:00.000Z")).startableRuns.map(candidate => candidate.id)).toContain(run.id);
         const started: string[] = [];
-        await expect(runRuntimeTick(reopened, { startSession: runId => {
+        await expect(runTick(reopened, { startSession: runId => {
           started.push(runId);
           return "started";
         } })).resolves.toMatchObject({ runs: 1 });
@@ -588,7 +580,7 @@ describe.concurrent("runtime daemon ticks", () => {
   it("restarts an awaiting run after group termination was persisted before frame propagation", async () => {
     await withRuntimeWorkspace("runtime-daemon-terminal-group-frame-reconciliation", async workspace => {
       const awaiting = await admitSyntheticWorkflow(workspace, parallelSignalAllWorkflow());
-      const initial = await openRuntimeStore(workspace);
+      const initial = await openRuntimeStoreAdapter(workspace);
       const claim = initial.scheduler.claimRun(awaiting.run.id, "terminal-group-owner", 60_000);
       if (!claim) throw new Error("failed to claim terminal-group test run");
       const snapshot = throwingSchedulerStore(initial.scheduler).loadRunSnapshot(awaiting.run.id);
@@ -613,12 +605,16 @@ describe.concurrent("runtime daemon ticks", () => {
       expect(initial.getRun(awaiting.run.id)?.status).toBe("awaiting");
       initial.close();
 
-      const reopened = await openRuntimeStore(workspace);
+      const reopened = await openRuntimeStoreAdapter(workspace);
       try {
         expect(reopened.listRuntimeWork().startableRuns.map(run => run.id)).toContain(awaiting.run.id);
         const recoveryClaim = reopened.scheduler.claimRun(awaiting.run.id, "terminal-group-recovery", 60_000);
         if (!recoveryClaim) throw new Error("failed to claim terminal-group recovery");
-        settleFrozenRunTransitions({ store: reopened, runId: awaiting.run.id, ownerEpoch: recoveryClaim.ownerEpoch });
+        await Effect.runPromise(settleFrozenRunTransitions({
+          store: makeRuntimeStoreService(reopened),
+          runId: awaiting.run.id,
+          ownerEpoch: recoveryClaim.ownerEpoch,
+        }));
         reopened.scheduler.releaseRun(recoveryClaim);
         expect(reopened.getRun(awaiting.run.id)?.status).toBe("failed");
         expect(reopened.listRuntimeWork().startableRuns.map(run => run.id)).not.toContain(awaiting.run.id);
@@ -631,21 +627,25 @@ describe.concurrent("runtime daemon ticks", () => {
   it("does not restart an awaiting group that has terminal members but no derivable transition", async () => {
     await withRuntimeWorkspace("runtime-daemon-group-reconciliation-no-spin", async workspace => {
       const awaiting = await admitSyntheticWorkflow(workspace, fanoutSignalWorkflow(), { items: ["a", "b"] });
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const claim = store.scheduler.claimRun(awaiting.run.id, "partial-fanout-owner", 60_000);
         if (!claim) throw new Error("failed to claim partial fanout run");
         const wait = Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(awaiting.run.id).projection.signalWaits)[0];
         if (!wait) throw new Error("fanout signal run has no awaiting node");
-        const result = applySchedulerControlIntent(store, {
+        const result = await Effect.runPromise(Effect.result(applySchedulerControlIntent(makeRuntimeStoreService(store), {
           requestId: "partial-fanout-signal",
           runId: awaiting.run.id,
           type: "signal",
           node: wait.nodeKey,
           payload: { ok: true },
-        }, claim.ownerEpoch);
-        expect(result.isOk()).toBe(true);
-        settleFrozenRunTransitions({ store, runId: awaiting.run.id, ownerEpoch: claim.ownerEpoch });
+        }, claim.ownerEpoch)));
+        expect(Result.isSuccess(result)).toBe(true);
+        await Effect.runPromise(settleFrozenRunTransitions({
+          store: makeRuntimeStoreService(store),
+          runId: awaiting.run.id,
+          ownerEpoch: claim.ownerEpoch,
+        }));
         store.scheduler.releaseRun(claim);
         expect(store.getRun(awaiting.run.id)?.status).toBe("awaiting");
         expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(awaiting.run.id).projection.groupMembers))
@@ -660,7 +660,7 @@ describe.concurrent("runtime daemon ticks", () => {
   it("restarts an awaiting run when a terminal leaf still needs frame propagation", async () => {
     await withRuntimeWorkspace("runtime-daemon-terminal-leaf-reconciliation", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, parallelTaskSignalRecoveryWorkflow());
-      const initial = await openRuntimeStore(workspace);
+      const initial = await openRuntimeStoreAdapter(workspace);
       const run = await admitRunForTest(initial, { prepared, input: {}, cwd: workspace });
       appendParallelTaskSignalCrash(initial, run.id, "completed");
       const before = throwingSchedulerStore(initial.scheduler).loadRunSnapshot(run.id).projection;
@@ -668,12 +668,16 @@ describe.concurrent("runtime daemon ticks", () => {
       expect(initial.getRun(run.id)?.status).toBe("awaiting");
       initial.close();
 
-      const reopened = await openRuntimeStore(workspace);
+      const reopened = await openRuntimeStoreAdapter(workspace);
       try {
         expect(reopened.listRuntimeWork().startableRuns.map(candidate => candidate.id)).toContain(run.id);
         const claim = reopened.scheduler.claimRun(run.id, "terminal-leaf-recovery", 60_000);
         if (!claim) throw new Error("failed to claim terminal-leaf recovery");
-        settleFrozenRunTransitions({ store: reopened, runId: run.id, ownerEpoch: claim.ownerEpoch });
+        await Effect.runPromise(settleFrozenRunTransitions({
+          store: makeRuntimeStoreService(reopened),
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+        }));
         reopened.scheduler.releaseRun(claim);
         expect(Object.values(throwingSchedulerStore(reopened.scheduler).loadRunSnapshot(run.id).projection.groupMembers))
           .toEqual(expect.arrayContaining([expect.objectContaining({ status: "completed" })]));
@@ -688,19 +692,26 @@ describe.concurrent("runtime daemon ticks", () => {
   it("restarts an awaiting run when another branch attempt is due", async () => {
     await withRuntimeWorkspace("runtime-daemon-due-attempt-with-signal", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, parallelTaskSignalRecoveryWorkflow());
-      const initial = await openRuntimeStore(workspace);
+      const initial = await openRuntimeStoreAdapter(workspace);
       const run = await admitRunForTest(initial, { prepared, input: {}, cwd: workspace });
       appendParallelTaskSignalCrash(initial, run.id, "due_attempt");
       expect(initial.getRun(run.id)?.status).toBe("awaiting");
       initial.close();
 
       const now = new Date("2026-07-01T00:00:01.000Z");
-      const reopened = await openRuntimeStore(workspace);
+      const reopened = await openRuntimeStoreAdapter(workspace);
       try {
         expect(reopened.listRuntimeWork(now).startableRuns.map(candidate => candidate.id)).toContain(run.id);
         const claim = reopened.scheduler.claimRun(run.id, "due-attempt-recovery", 60_000);
         if (!claim) throw new Error("failed to claim due-attempt recovery");
-        settleFrozenRunTransitions({ store: reopened, runId: run.id, ownerEpoch: claim.ownerEpoch, now });
+        await Effect.runPromise(Effect.gen(function* () {
+          yield* TestClock.setTime(now.getTime());
+          return yield* settleFrozenRunTransitions({
+            store: makeRuntimeStoreService(reopened),
+            runId: run.id,
+            ownerEpoch: claim.ownerEpoch,
+          });
+        }).pipe(Effect.provide(TestClock.layer())));
         reopened.scheduler.releaseRun(claim);
         expect(reopened.getRun(run.id)?.status).toBe("failed");
       } finally {
@@ -715,17 +726,17 @@ describe.concurrent("runtime daemon ticks", () => {
   ] as const)("restarts an awaiting run with a $label", async ({ state }) => {
     await withRuntimeWorkspace(`runtime-daemon-awaiting-${state}`, async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, parallelTaskSignalRecoveryWorkflow());
-      const initial = await openRuntimeStore(workspace);
+      const initial = await openRuntimeStoreAdapter(workspace);
       const run = await admitRunForTest(initial, { prepared, input: {}, cwd: workspace });
       appendParallelTaskSignalCrash(initial, run.id, state);
       expect(initial.getRun(run.id)?.status).toBe("awaiting");
       initial.close();
 
-      const reopened = await openRuntimeStore(workspace);
+      const reopened = await openRuntimeStoreAdapter(workspace);
       try {
         expect(reopened.listRuntimeWork().startableRuns.map(candidate => candidate.id)).toContain(run.id);
         const started: string[] = [];
-        await expect(runRuntimeTick(reopened, { startSession: runId => {
+        await expect(runTick(reopened, { startSession: runId => {
           started.push(runId);
           return "started";
         } })).resolves.toMatchObject({ runs: 1 });
@@ -739,7 +750,7 @@ describe.concurrent("runtime daemon ticks", () => {
   it("does not restart ready work blocked by a running member's local concurrency slot", async () => {
     await withRuntimeWorkspace("runtime-daemon-awaiting-ready-local-cap", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, parallelTaskSignalRecoveryWorkflow(1));
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         appendParallelTaskSignalCrash(store, run.id, "ready");
@@ -754,17 +765,17 @@ describe.concurrent("runtime daemon ticks", () => {
   it("recovers signal controls that were consumed without a follow-up drive", async () => {
     await withRuntimeWorkspace("runtime-daemon-signal-control-recovery", async workspace => {
       const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const claim = store.scheduler.claimRun(awaiting.run.id, "signal-control-owner", 30_000)!;
-        applySchedulerControlIntent(store, {
+        await Effect.runPromise(applySchedulerControlIntent(makeRuntimeStoreService(store), {
           requestId: "test-signal-control",
           runId: awaiting.run.id,
           type: "signal",
           node: "approve",
           payload: { ok: true },
           commandIdempotencyKey: "test-signal-control",
-        }, claim.ownerEpoch);
+        }, claim.ownerEpoch));
         store.scheduler.releaseRun(claim);
       } finally {
         store.close();
@@ -810,9 +821,9 @@ describe.concurrent("runtime daemon ticks", () => {
   });
 });
 
-async function waitForTerminalRun(cwd: string, runId: string): Promise<{ status: string; run: NonNullable<ReturnType<Awaited<ReturnType<typeof getRun>>["_unsafeUnwrap"]>> }> {
+async function waitForTerminalRun(cwd: string, runId: string): Promise<{ status: string; run: RunDetails }> {
   for (let attempt = 0; attempt < 400; attempt += 1) {
-    const run = (await getRun(cwd, runId))._unsafeUnwrap();
+    const run = Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(cwd, runId)))));
     if (run && ["completed", "failed", "canceled"].includes(run.status)) return { status: run.status, run };
     await new Promise(resolve => setTimeout(resolve, 10));
   }
@@ -827,7 +838,7 @@ async function waitUntil(predicate: () => boolean): Promise<void> {
   throw new Error("condition was not met");
 }
 
-function appendTimedSignalWait(store: Awaited<ReturnType<typeof openRuntimeStore>>, runId: string, deadlineAt: string): void {
+function appendTimedSignalWait(store: Awaited<ReturnType<typeof openRuntimeStoreAdapter>>, runId: string, deadlineAt: string): void {
   const claim = store.scheduler.claimRun(runId, "owner-a", 60_000);
   if (!claim) throw new Error("failed to claim test run");
   try {
@@ -848,7 +859,7 @@ function appendTimedSignalWait(store: Awaited<ReturnType<typeof openRuntimeStore
 }
 
 function appendAwaitingStuckGroup(
-  store: Awaited<ReturnType<typeof openRuntimeStore>>,
+  store: Awaited<ReturnType<typeof openRuntimeStoreAdapter>>,
   runId: string,
   groupCase: {
     strategy: "all" | "race" | "quorum";
@@ -903,7 +914,7 @@ function appendAwaitingStuckGroup(
 }
 
 function appendParallelTaskSignalCrash(
-  store: Awaited<ReturnType<typeof openRuntimeStore>>,
+  store: Awaited<ReturnType<typeof openRuntimeStoreAdapter>>,
   runId: string,
   state: "completed" | "due_attempt" | "started_attempt" | "ready",
 ): void {

@@ -8,6 +8,8 @@ import {
   type AgentPresetSpec,
   type WritableAgentPresetScope,
 } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { agentError, usageError } from "../presentation/errors.js";
 import { parseJsonArgument } from "../presentation/json-input.js";
 
@@ -70,12 +72,12 @@ export function createAgentCommand(ctx: AgentCommandContext): Command {
 
 async function listAgentPresets(ctx: AgentCommandContext, options: ScopeOptions): Promise<void> {
   const scope = selectedScope(options);
-  const catalog = await loadAgentPresetCatalog({
+  const catalog = await Effect.runPromise(Effect.result(loadAgentPresetCatalog({
     workspaceDir: ctx.cwd,
     ...(scope === undefined ? {} : { scopes: [scope] }),
-  });
-  if (catalog.isErr()) throw agentError(catalog.error.message);
-  const choices = catalog.value.choices.map(choiceView);
+  })));
+  if (Result.isFailure(catalog)) throw agentError(catalog.failure.message);
+  const choices = catalog.success.choices.map(choiceView);
   writeAgentPresetChoices(ctx.stdout, choices);
   ctx.setExitCode(0);
 }
@@ -84,21 +86,23 @@ async function addAgentPresetFromCli(ctx: AgentCommandContext, id: string, optio
   const scope = selectedScope(options, "add");
   const value = await parseJsonArgument(options.definition, ctx.cwd, "--definition");
   if (!isRecord(value)) throw usageError("--definition must be a JSON object.");
-  const added = await addAgentPreset({
+  const added = await Effect.runPromise(Effect.result(addAgentPreset({
     workspaceDir: ctx.cwd,
     scope,
     id,
     preset: value as AgentPresetSpec,
-  });
-  if (added.isErr()) throw agentError(added.error.message);
+  })));
+  if (Result.isFailure(added)) throw agentError(added.failure.message);
   ctx.stdout.write(`Agent Preset '${id}' added to ${scope} scope.\n`);
   ctx.setExitCode(0);
 }
 
 async function removeAgentPresetFromCli(ctx: AgentCommandContext, id: string, options: ScopeOptions): Promise<void> {
   const scope = selectedScope(options, "remove");
-  const removed = await removeAgentPreset({ workspaceDir: ctx.cwd, scope, id });
-  if (removed.isErr()) throw agentError(removed.error.message);
+  const removed = await Effect.runPromise(Effect.result(
+    removeAgentPreset({ workspaceDir: ctx.cwd, scope, id }),
+  ));
+  if (Result.isFailure(removed)) throw agentError(removed.failure.message);
   ctx.stdout.write(`Agent Preset '${id}' removed from ${scope} scope.\n`);
   ctx.setExitCode(0);
 }

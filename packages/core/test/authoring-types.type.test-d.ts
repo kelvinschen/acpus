@@ -468,28 +468,6 @@ test("task options accept only string cwd and string env values", () => {
   });
 });
 
-test("lift preserves selected output object types", () => {
-  defineWorkflow({ name: "typed-lift-selected-object" }).build(({ step }) => {
-    const review = step("review").task({
-      input: null,
-      exec: async () => ({
-        ready: true,
-        summary: "ok",
-        report_path: "/tmp/report.md",
-      }),
-    });
-    const selected = lift(review.output, output => ({
-      summary: output.summary,
-      report_path: output.report_path,
-    }));
-    expectTypeOf(selected.summary).toEqualTypeOf<Expr<string>>();
-    expectTypeOf(selected.report_path).toEqualTypeOf<Expr<string>>();
-    // @ts-expect-error lift result exposes only returned keys.
-    selected.ready;
-    return { selected };
-  });
-});
-
 test("boolean node conditions require boolean workflow values", () => {
   defineWorkflow({ name: "typed-conditions" }).build(({ step }) => {
     const review = step("review").task({

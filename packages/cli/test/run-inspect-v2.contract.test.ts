@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { InspectionCandidates, InspectionError, InspectionView } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
 import { createRunsCommand } from "../src/runs/command.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
@@ -22,12 +23,10 @@ vi.mock("../src/runs/follow.js", async importOriginal => ({
 
 describe("runs inspect observation grammar", () => {
   beforeEach(() => {
-    runtime.readInspection.mockReset().mockResolvedValue(ok(runView()));
-    runtime.requestDaemonInspection.mockReset().mockResolvedValue({
-      isOk: () => false,
-      isErr: () => true,
-      error: { type: "transport", reason: "not-found", method: "inspect", message: "offline" },
-    });
+    runtime.readInspection.mockReset().mockReturnValue(Effect.succeed(runView()));
+    runtime.requestDaemonInspection.mockReset().mockReturnValue(Effect.fail({
+      type: "transport", reason: "not-found", method: "inspect", message: "offline",
+    }));
     follow.followRun.mockReset().mockResolvedValue({
       kind: "closed",
       reason: "subject-terminal",
@@ -45,11 +44,7 @@ describe("runs inspect observation grammar", () => {
   });
 
   it("prefers the daemon authority for live one-shot controls", async () => {
-    runtime.requestDaemonInspection.mockResolvedValueOnce({
-      isOk: () => true,
-      isErr: () => false,
-      value: runView(),
-    });
+    runtime.requestDaemonInspection.mockReturnValueOnce(Effect.succeed(runView()));
 
     const result = await runCommand(["inspect", "run_1"]);
 
@@ -58,7 +53,7 @@ describe("runs inspect observation grammar", () => {
   });
 
   it("renders every ambiguous Timeline candidate and preserves detail", async () => {
-    runtime.readInspection.mockResolvedValue(ok(candidates()));
+    runtime.readInspection.mockReturnValue(Effect.succeed(candidates()));
 
     const result = await runCommand(["inspect", "run_1", "--target", "review", "--timeline"]);
 
@@ -88,7 +83,7 @@ describe("runs inspect observation grammar", () => {
       kind: "target", runId: "run_1", target: "@1a2b3c4d5e6f#2", detail: "forensics",
     });
 
-    runtime.readInspection.mockResolvedValueOnce(ok(candidates()));
+    runtime.readInspection.mockReturnValueOnce(Effect.succeed(candidates()));
     const result = await runCommand(["inspect", "run_1", "--target", "review", "--forensics"]);
     expect(runtime.readInspection).toHaveBeenLastCalledWith("/workspace", {
       kind: "target", runId: "run_1", target: "review", detail: "forensics",
@@ -127,7 +122,7 @@ describe("runs inspect observation grammar", () => {
   });
 
   it("keeps one-shot ambiguity successful while a Runtime query failure is operational", async () => {
-    runtime.readInspection.mockResolvedValue(ok(candidates()));
+    runtime.readInspection.mockReturnValue(Effect.succeed(candidates()));
     const ambiguous = await runCommand(["inspect", "run_1", "--target", "review"]);
     expect(ambiguous.exitCode).toBe(0);
     expect(ambiguous.stdout).toContain("Target review  matches=13");
@@ -137,7 +132,7 @@ describe("runs inspect observation grammar", () => {
     expect(ambiguous.stdout).not.toContain("--forensics");
 
     const error: InspectionError = { type: "run-not-found", runId: "missing", message: "Run missing was not found." };
-    runtime.readInspection.mockResolvedValue(err(error));
+    runtime.readInspection.mockReturnValue(Effect.fail(error));
     await expect(runCommand(["inspect", "missing"])).rejects.toMatchObject({
       exitCode: 1,
       result: { phase: "inspect", errorCode: "RUN_NOT_FOUND" },
@@ -180,12 +175,4 @@ function candidates(): InspectionCandidates {
       breadcrumb: `batch[${index}] › review`,
     })),
   };
-}
-
-function ok<T>(value: T): { isErr(): false; value: T } {
-  return { isErr: () => false, value };
-}
-
-function err(error: InspectionError): { isErr(): true; error: InspectionError } {
-  return { isErr: () => true, error };
 }

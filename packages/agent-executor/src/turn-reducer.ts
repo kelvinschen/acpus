@@ -10,7 +10,10 @@ import type {
 
 export type AgentTurnReducer = Readonly<{
   observe(envelope: AgentTurnEvent): void;
-  snapshot(terminal?: AcpTurnResult): AgentTurnSnapshot;
+  snapshot(
+    terminal?: AcpTurnResult,
+    timing?: Readonly<{ finishedAt: string; elapsedMs: number }>,
+  ): AgentTurnSnapshot;
   finalResponse(): string;
 }>;
 
@@ -67,9 +70,12 @@ export function createAgentTurnReducer(startedAt = new Date().toISOString()): Ag
     }
   };
 
-  const snapshot = (terminal?: AcpTurnResult): AgentTurnSnapshot => {
+  const snapshot = (
+    terminal?: AcpTurnResult,
+    timing?: Readonly<{ finishedAt: string; elapsedMs: number }>,
+  ): AgentTurnSnapshot => {
     if (terminal?.usage) tokenUsage = { source: "prompt_response", ...terminal.usage };
-    const finishedAt = new Date().toISOString();
+    const finishedAt = timing?.finishedAt ?? new Date().toISOString();
     const summary: AgentTurnSummary = {
       eventCount,
       availability: {
@@ -87,7 +93,7 @@ export function createAgentTurnReducer(startedAt = new Date().toISOString()): Ag
       timing: {
         startedAt,
         finishedAt,
-        elapsedMs: Math.max(0, Math.round(performance.now() - startedAtMonotonic)),
+        elapsedMs: timing?.elapsedMs ?? Math.max(0, Math.round(performance.now() - startedAtMonotonic)),
       },
     };
   };

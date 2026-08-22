@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import { resolveSignalPayload, type RunControlIntent } from "../src/scheduler/control.js";
 import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
@@ -30,9 +31,11 @@ describe("scheduler signal target resolution", () => {
       payload: { ok: true },
     };
 
-    expect(resolveSignalPayload(intent, snapshot)).toEqual(expect.objectContaining({
-      value: { nodeKey: consumedKey, nodeId: "approve", payload: { ok: true } },
-    }));
+    expect(Result.getOrThrow(resolveSignalPayload(intent, snapshot))).toEqual({
+      nodeKey: consumedKey,
+      nodeId: "approve",
+      payload: { ok: true },
+    });
     expect(snapshot.projection.signalWaits[awaitingKey]).toMatchObject({ status: "awaiting" });
   });
 
@@ -59,12 +62,12 @@ describe("scheduler signal target resolution", () => {
       payload: { ok: true },
     };
 
-    expect(resolveSignalPayload(intent, snapshot)._unsafeUnwrap()).toEqual({
+    expect(Result.getOrThrow(resolveSignalPayload(intent, snapshot))).toEqual({
       nodeKey,
       nodeId: "approve",
       payload: { ok: true },
     });
-    expect(resolveSignalPayload({ ...intent, node: `${ref}#1` }, snapshot)._unsafeUnwrapErr())
+    expect(Result.getOrThrow(Result.flip(resolveSignalPayload({ ...intent, node: `${ref}#1` }, snapshot))))
       .toMatchObject({
         type: "signal-target-not-found",
         target: `${ref}#1`,

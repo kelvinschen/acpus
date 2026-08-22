@@ -1,9 +1,11 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import { discoverWorkflowCatalog, prepareWorkflowCatalogCommit } from "../src/workflow/catalog.js";
 import { repoRoot } from "./support/cli-runner.js";
 import { withPlainTestWorkspace } from "./support/workspace.js";
+import { settle } from "./effect.js";
 
 describe("workflow catalog discovery", () => {
   it("discovers first-level project and global workflow packages", async () => {
@@ -94,19 +96,19 @@ describe("workflow catalog discovery", () => {
           await writeFile(join(path, "writer"), String(index));
         }));
         const prepared = await Promise.all([
-          prepareWorkflowCatalogCommit(workspace, "project", "release"),
-          prepareWorkflowCatalogCommit(workspace, "project", "release"),
+          settle(prepareWorkflowCatalogCommit(workspace, "project", "release")),
+          settle(prepareWorkflowCatalogCommit(workspace, "project", "release")),
         ]);
         const publications = prepared.map((result, index) => {
-          if (result.isErr()) throw new Error("Both writers must prepare before publication starts.");
-          return result.value.commit(staged[index]!);
+          if (Result.isFailure(result)) throw new Error("Both writers must prepare before publication starts.");
+          return settle(result.success.commit(staged[index]!));
         });
 
         const committed = await Promise.all(publications);
-        const winner = committed.findIndex(result => result.isOk());
-        const loser = committed.findIndex(result => result.isErr());
+        const winner = committed.findIndex(Result.isSuccess);
+        const loser = committed.findIndex(Result.isFailure);
 
-        expect(committed.map(result => result.isOk() ? "success" : result.error.type).sort()).toEqual(["collision", "success"]);
+        expect(committed.map(result => Result.isSuccess(result) ? "success" : result.failure.type).sort()).toEqual(["collision", "success"]);
         expect(await readFile(join(workspace, ".acpus", "workflows", "release", "writer"), "utf8")).toBe(String(winner));
         await expect(readFile(join(staged[winner]!, "workflow.ts"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
         await expect(readFile(join(staged[loser]!, "workflow.ts"), "utf8")).resolves.toContain('name: "release"');

@@ -6,9 +6,18 @@ import {
   type AgentSessionSupervisor,
   type NamedAcpAgentLaunchRegistry,
 } from "@acpus/agent-executor";
+import { makeNodeProcessHost, type ProcessHostShape } from "@acpus/owned-process";
 import { isAbsolute } from "node:path";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
-import { readVerifiedArtifact } from "./artifacts/access.js";
+import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as FiberSet from "effect/FiberSet";
+import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
+import { ArtifactReadUnavailableError, readVerifiedArtifact } from "./artifacts/access.js";
 import type { ArtifactRecord } from "./artifacts/types.js";
 import {
   resolveConfiguredAgentCommand,
@@ -26,7 +35,7 @@ import {
   type RunSessionControlFailure,
 } from "./daemon/sessions.js";
 import { runRuntimeTick } from "./daemon/tick.js";
-import { formatHookLoadError, loadHooksConfig } from "./hooks/loader.js";
+import { formatHookLoadError, loadHooksConfigResult } from "./hooks/loader.js";
 import { createHookRunner } from "./hooks/runner.js";
 import {
   observeInspectionAtStore,
@@ -49,6 +58,7 @@ import {
   resolveRuntimeWorkspaceLayout,
   runAcpStateRoot,
   runtimeLayoutForGeneration,
+  type RuntimeLayout,
   type RuntimeLayoutOptions,
 } from "./runtime-layout.js";
 import {
@@ -58,7 +68,7 @@ import {
   type RuntimeStoreAssessment,
   type RuntimeStoreFailure,
 } from "./runtime-store-lifecycle.js";
-import { acquireRuntimeSharedLock } from "./runtime-lock.js";
+import { openRuntimeSharedLock } from "./runtime-lock-adapter.js";
 import type {
   RuntimeAuthorityIdentity,
   RuntimeControlFailure,
@@ -70,14 +80,18 @@ import type {
 import { isRuntimeStoreBusyError } from "./storage/database.js";
 import { captureProcessIdentity } from "./process-liveness.js";
 import {
-  openRuntimeReadSessionAtLayout,
-  openRuntimeStoreAtLayout,
+  openRuntimeStoreAdapterAtLayout,
   runtimeReadFailureFromError,
   type RunDetails,
   type RuntimeAuthorityBusy,
   type RuntimeReadFailure,
-  type RuntimeStore,
+  type RuntimeStoreAdapter,
 } from "./store/store.js";
+import {
+  acquireRuntimeReadSessionAtLayout,
+  makeRuntimeStoreService,
+  type RuntimeStoreShape,
+} from "./store/service.js";
 
 const EXECUTOR_SHUTDOWN_GRACE_MS = 10_000;
 
@@ -111,26 +125,26 @@ type WorkspaceRuntimeInternalOptions = {
 
 export interface WorkspaceRuntime {
   readonly workspace: string;
-  submit(input: RuntimeSubmission): ResultAsync<RunDetails, RuntimeSubmitFailure>;
+  submit(input: RuntimeSubmission): Effect.Effect<RunDetails, RuntimeSubmitFailure>;
   control(
     input: RuntimeControlIntent,
-  ): ResultAsync<RuntimeControlResult, RuntimeControlFailure>;
-  inspect(input: InspectionViewQuery): ResultAsync<InspectionRead, InspectionError>;
+  ): Effect.Effect<RuntimeControlResult, RuntimeControlFailure>;
+  inspect(input: InspectionViewQuery): Effect.Effect<InspectionRead, InspectionError>;
   observeInspection(
     input: ObserveInspectionQuery,
     signal?: AbortSignal,
-  ): AsyncIterable<Result<InspectionObservation, InspectionError>>;
+  ): Stream.Stream<InspectionObservation, InspectionError>;
   listArtifacts(
     runId: string,
-  ): ResultAsync<ArtifactRecord[] | undefined, RuntimeReadFailure>;
+  ): Effect.Effect<ArtifactRecord[] | undefined, RuntimeReadFailure>;
   readArtifact(
     runId: string,
     artifactId: string,
-  ): ResultAsync<{ artifact: ArtifactRecord; bytes: Buffer } | undefined, RuntimeReadFailure>;
+  ): Effect.Effect<{ artifact: ArtifactRecord; bytes: Buffer } | undefined, RuntimeReadFailure>;
   findAdmission(
     requestId: string,
-  ): ResultAsync<RunDetails | undefined, RuntimeReadFailure>;
-  close(): Promise<void>;
+  ): Effect.Effect<RunDetails | undefined, RuntimeReadFailure>;
+  close(): Effect.Effect<void>;
 }
 
 type WorkspaceRuntimeActivity = {
@@ -142,23 +156,29 @@ type WorkspaceRuntimeActivity = {
   idleBlockers: number;
 };
 
+type WorkspaceSupervisorOwner = {
+  cleanup: Effect.Effect<void, Error>;
+  observed: boolean;
+};
+
 export type OwnedWorkspaceRuntime = WorkspaceRuntime & {
   readonly authority: RuntimeAuthorityIdentity;
   activity(): WorkspaceRuntimeActivity;
   setIdleState(idleSinceAt: string | undefined, idleStopMs: number): boolean;
+  stopScheduling(): void;
 };
 
 export function openWorkspaceRuntime(
   location: WorkspaceRuntimeLocation,
   dependencies: WorkspaceRuntimeHostDependencies = {},
-): ResultAsync<WorkspaceRuntime, WorkspaceRuntimeOpenFailure> {
+): Effect.Effect<WorkspaceRuntime, WorkspaceRuntimeOpenFailure> {
   if (!isAbsolute(location.stateRoot)) {
-    return new ResultAsync(Promise.resolve(err({
+    return Effect.fail({
       type: "runtime-open-failed" as const,
       message: "Workspace Runtime stateRoot must be an absolute path.",
-    })));
+    });
   }
-  return new ResultAsync(openHostWorkspaceRuntimeValue(location.workspace, {
+  return openHostWorkspaceRuntime(location.workspace, {
     stateRoot: location.stateRoot,
     ...(dependencies.namedAgentLaunches === undefined
       ? {}
@@ -166,56 +186,79 @@ export function openWorkspaceRuntime(
     ...(dependencies.agentPresetProvider === undefined
       ? {}
       : { agentPresetProvider: dependencies.agentPresetProvider }),
-  }));
+  });
 }
 
 export function openWorkspaceRuntimeInternal(
   cwd: string,
   options: WorkspaceRuntimeInternalOptions = {},
-): ResultAsync<OwnedWorkspaceRuntime, WorkspaceRuntimeOpenFailure> {
-  return new ResultAsync(openPreparedWorkspaceRuntimeValue(cwd, options));
+): Effect.Effect<OwnedWorkspaceRuntime, WorkspaceRuntimeOpenFailure> {
+  return openPreparedWorkspaceRuntime(cwd, options);
 }
 
-async function openHostWorkspaceRuntimeValue(
+function openHostWorkspaceRuntime(
   cwd: string,
   options: WorkspaceRuntimeInternalOptions,
-): Promise<Result<OwnedWorkspaceRuntime, WorkspaceRuntimeOpenFailure>> {
-  const configuration = loadWorkspaceRuntimeConfiguration();
-  if (configuration.isErr()) return err(configuration.error);
-  const repaired = await repairRuntimeStoreInternal(cwd, runtimeLayoutOptions(options));
-  if (repaired.isErr()) return err(storeRepairOpenFailure(repaired.error));
-  return openWorkspaceRuntimeValue(cwd, options, configuration.value);
+): Effect.Effect<OwnedWorkspaceRuntime, WorkspaceRuntimeOpenFailure> {
+  return Effect.gen(function*() {
+    const configuration = yield* Effect.fromResult(loadWorkspaceRuntimeConfiguration());
+    const repaired = yield* repairRuntimeStoreInternal(cwd, runtimeLayoutOptions(options));
+    if (Result.isFailure(repaired)) {
+      return yield* Effect.fail(storeRepairOpenFailure(repaired.failure));
+    }
+    return yield* openWorkspaceRuntimeWithScope(cwd, options, configuration);
+  });
 }
 
-async function openPreparedWorkspaceRuntimeValue(
+function openPreparedWorkspaceRuntime(
   cwd: string,
   options: WorkspaceRuntimeInternalOptions,
-): Promise<Result<OwnedWorkspaceRuntime, WorkspaceRuntimeOpenFailure>> {
-  const configuration = loadWorkspaceRuntimeConfiguration();
-  if (configuration.isErr()) return err(configuration.error);
-  return openWorkspaceRuntimeValue(cwd, options, configuration.value);
+): Effect.Effect<OwnedWorkspaceRuntime, WorkspaceRuntimeOpenFailure> {
+  return Effect.fromResult(loadWorkspaceRuntimeConfiguration()).pipe(
+    Effect.flatMap(configuration => openWorkspaceRuntimeWithScope(cwd, options, configuration)),
+  );
 }
 
-async function openWorkspaceRuntimeValue(
+function openWorkspaceRuntimeWithScope(
   cwd: string,
   options: WorkspaceRuntimeInternalOptions,
   configuration: RuntimeConfiguration,
-): Promise<Result<OwnedWorkspaceRuntime, WorkspaceRuntimeOpenFailure>> {
-  let store: RuntimeStore | undefined;
-  let supervisor: AgentSessionSupervisor | undefined;
-  let authorityFence:
-    | { workspaceRealpath: string; ownerId: string; epoch: number }
-    | undefined;
-  try {
-    const opened = await openReadyWorkspaceRuntimeStore(
+): Effect.Effect<OwnedWorkspaceRuntime, WorkspaceRuntimeOpenFailure> {
+  return Effect.gen(function*() {
+    const rootScope = yield* Scope.make();
+    const opened = yield* Effect.exit(openWorkspaceRuntimeInScope(
       cwd,
-      runtimeLayoutOptions(options),
-      options.agentPresetProvider,
-    );
-    store = opened.store;
+      options,
+      configuration,
+      rootScope,
+    ));
+    if (Exit.isSuccess(opened)) return opened.value;
+    const released = yield* Effect.exit(Scope.close(rootScope, opened));
+    const failures = [Cause.squash(opened.cause), ...exitFailures(released)];
+    return yield* Effect.fail(openFailure(failures.length === 1
+      ? failures[0]
+      : new AggregateError(failures, "Workspace Runtime startup could not release every resource.")));
+  });
+}
+
+function openWorkspaceRuntimeInScope(
+  cwd: string,
+  options: WorkspaceRuntimeInternalOptions,
+  configuration: RuntimeConfiguration,
+  rootScope: Scope.Closeable,
+): Effect.Effect<OwnedWorkspaceRuntime, WorkspaceRuntimeOpenFailure> {
+  return Effect.gen(function*() {
+    const ownedScope = yield* Scope.fork(rootScope);
+    const opened = yield* Scope.provide(ownedScope)(acquireReadyWorkspaceRuntimeStore(
+        cwd,
+        runtimeLayoutOptions(options),
+        options.agentPresetProvider,
+      )).pipe(Effect.mapError(openFailure));
+    const store = opened.store;
     const ownerId = randomUUID();
     const ownerProcess = captureProcessIdentity();
-    const claim = store.claimRuntimeAuthority({
+    const claim = yield* Effect.try({
+      try: () => store.claimRuntimeAuthority({
       workspaceRealpath: opened.layout.canonicalPath,
       ownerId,
       pid: ownerProcess.pid,
@@ -225,24 +268,34 @@ async function openWorkspaceRuntimeValue(
       nodeVersion: process.version,
       execPath: process.execPath,
       ...(options.idleStopMs === undefined ? {} : { idleStopMs: options.idleStopMs }),
-    });
-    if (claim.isErr()) {
-      store.close();
-      return err(claim.error);
-    }
-    authorityFence = {
-      workspaceRealpath: claim.value.workspaceRealpath,
-      ownerId: claim.value.ownerId,
-      epoch: claim.value.epoch,
+      }),
+      catch: openFailure,
+    }).pipe(Effect.flatMap(Effect.fromResult));
+    const authorityFence = {
+      workspaceRealpath: claim.workspaceRealpath,
+      ownerId: claim.ownerId,
+      epoch: claim.epoch,
     };
-    const hooksConfig = await loadHooksConfig(opened.layout.canonicalPath);
-    if (hooksConfig.isErr()) throw new Error(formatHookLoadError(hooksConfig.error));
-    const hookRunner = createHookRunner(hooksConfig.value, store);
+    yield* Scope.addFinalizer(ownedScope, Effect.sync(() => {
+      store.releaseRuntimeAuthority(authorityFence);
+    }));
+    const hooksConfig = yield* Effect.tryPromise({
+      try: () => loadHooksConfigResult(opened.layout.canonicalPath),
+      catch: openFailure,
+    });
+    if (Result.isFailure(hooksConfig)) {
+      return yield* Effect.fail(openFailure(new Error(formatHookLoadError(hooksConfig.failure))));
+    }
+    const processes = makeNodeProcessHost();
+    const hookScope = yield* Scope.fork(ownedScope);
+    const hookRunner = yield* Scope.provide(hookScope)(
+      createHookRunner(hooksConfig.success, store, processes),
+    );
     const configHomeDir = homedir();
     const supervisorOptions = {
       workersRoot: opened.layout.acpWorkersRoot,
       sessionStateDirectoryForRun: (runId: string) => runAcpStateRoot(opened.layout, runId),
-      owner: { epoch: claim.value.epoch, ...ownerProcess },
+      owner: { epoch: claim.epoch, ...ownerProcess },
       ...(options.namedAgentLaunches === undefined
         ? {}
         : { namedAgentLaunches: options.namedAgentLaunches }),
@@ -250,271 +303,255 @@ async function openWorkspaceRuntimeValue(
         workspaceDir: opened.layout.canonicalPath,
         homeDir: configHomeDir,
         names,
-      }).mapErr(failure => ({
+      }).pipe(Effect.mapError(failure => ({
         type: "agent-config" as const,
         message: `Invalid Acpus config at '${failure.path}': ${failure.message}`,
-      })),
+      }))),
     };
-    if (options.agentSessionSupervisor) {
-      supervisor = options.agentSessionSupervisor;
-    } else {
-      const created = await createAgentSessionSupervisor(supervisorOptions);
-      if (created.isErr()) throw new Error(created.error.message);
-      supervisor = created.value;
+    let supervisor = options.agentSessionSupervisor;
+    if (supervisor === undefined) {
+      supervisor = yield* Scope.provide(ownedScope)(
+        createAgentSessionSupervisor(supervisorOptions, processes),
+      ).pipe(Effect.mapError(failure => openFailure(new Error(failure.message))));
     }
+    const supervisorOwner: WorkspaceSupervisorOwner = {
+      cleanup: yield* Effect.cached(supervisor.shutdown().pipe(
+        Effect.mapError(error => new Error(error.message)),
+      )),
+      observed: false,
+    };
+    yield* Scope.addFinalizer(ownedScope, Effect.suspend(() => supervisorOwner.observed
+      ? supervisorOwner.cleanup.pipe(Effect.ignoreCause)
+      : supervisorOwner.cleanup.pipe(Effect.orDie)));
     const sessions = new RunExecutionSessions(
       opened.layout.canonicalPath,
       store,
       hookRunner,
       configuration,
+      processes,
+      ownedScope,
       options.onRunIncident,
       supervisor,
-      claim.value.epoch,
+      claim.epoch,
       ownerId,
     );
-    await store.observationLog.reconcileTerminalTurns();
-    await store.cleanupStagedRunDirectories();
-    return ok(new WorkspaceRuntimeImplementation({
+    yield* store.observationLog.reconcileTerminalTurns().pipe(
+      Effect.catchDefect(error => Effect.fail(openFailure(error))),
+    );
+    yield* Effect.tryPromise({
+      try: () => store.cleanupStagedRunDirectories(),
+      catch: openFailure,
+    });
+    const operations = yield* Scope.provide(ownedScope)(FiberSet.make<void>());
+    const runtime = new WorkspaceRuntimeImplementation({
       cwd: opened.layout.canonicalPath,
       store,
       layout: opened.layout,
-      authority: createRuntimeAuthorityIdentity(opened.layout, claim.value.ownerId, claim.value.epoch),
+      authority: createRuntimeAuthorityIdentity(opened.layout, claim.ownerId, claim.epoch),
       authorityFence,
-      supervisor,
+      supervisorOwner,
       sessions,
-      heartbeatMs: options.heartbeatMs ?? 1_000,
+      processes,
+      rootScope,
+      ownedScope,
+      operations,
       ...(options.onAuthorityLost === undefined ? {} : { onAuthorityLost: options.onAuthorityLost }),
-    }));
-  } catch (error) {
-    const failures = [error];
-    await settleResources(failures, [
-      async () => {
-        if (!supervisor) return;
-        const shutdown = await supervisor.shutdown();
-        if (shutdown.isErr()) throw new Error(shutdown.error.message);
-      },
-      () => {
-        if (store && authorityFence) store.releaseRuntimeAuthority(authorityFence);
-      },
-      () => store?.close(),
-    ]);
-    const settled = failures.length === 1
-      ? failures[0]
-      : new AggregateError(failures, "Workspace Runtime startup could not release every resource.");
-    return err(openFailure(settled));
-  }
+    });
+    yield* runtime.initialize(options.heartbeatMs ?? 1_000);
+    return runtime;
+  });
 }
 
 class WorkspaceRuntimeImplementation implements OwnedWorkspaceRuntime {
   readonly workspace: string;
   readonly authority: RuntimeAuthorityIdentity;
   private readonly cwd: string;
-  private readonly store: RuntimeStore;
-  private readonly layout: Awaited<ReturnType<typeof openReadyWorkspaceRuntimeStore>>["layout"];
+  private readonly store: RuntimeStoreAdapter;
+  private readonly runtimeStore: RuntimeStoreShape;
+  private readonly layout: Effect.Success<ReturnType<typeof acquireReadyWorkspaceRuntimeStore>>["layout"];
   private readonly authorityFence: { workspaceRealpath: string; ownerId: string; epoch: number };
-  private readonly supervisor: AgentSessionSupervisor;
+  private readonly supervisorOwner: WorkspaceSupervisorOwner;
   private readonly sessions: RunExecutionSessions;
+  private readonly processes: ProcessHostShape;
+  private readonly rootScope: Scope.Closeable;
+  private readonly ownedScope: Scope.Closeable;
+  private readonly operations: FiberSet.FiberSet<void>;
+  private readonly shutdownRequested = Deferred.makeUnsafe<void>();
   private readonly mutations = new RuntimeMutationQueue();
-  private readonly heartbeatTimer: NodeJS.Timeout;
-  private readonly tickTimer: NodeJS.Timeout;
   private readonly onAuthorityLost: ((runtime: OwnedWorkspaceRuntime) => void) | undefined;
-  private activeHeartbeat?: Promise<void>;
-  private activeTick?: Promise<void>;
-  private closePromise?: Promise<void>;
+  private cleanup: Effect.Effect<void> = Effect.void;
+  private cleanupObserved = false;
+  private lifecycle?: Fiber.Fiber<void>;
+  private closeEffect: Effect.Effect<void> = Effect.void;
   private stopped = false;
   private ticking = false;
-  private heartbeating = false;
   private latestTick = { runsStarted: 0, idleBlockers: 0 };
 
   constructor(input: {
     cwd: string;
-    store: RuntimeStore;
-    layout: Awaited<ReturnType<typeof openReadyWorkspaceRuntimeStore>>["layout"];
+    store: RuntimeStoreAdapter;
+    layout: Effect.Success<ReturnType<typeof acquireReadyWorkspaceRuntimeStore>>["layout"];
     authority: RuntimeAuthorityIdentity;
     authorityFence: { workspaceRealpath: string; ownerId: string; epoch: number };
-    supervisor: AgentSessionSupervisor;
+    supervisorOwner: WorkspaceSupervisorOwner;
     sessions: RunExecutionSessions;
-    heartbeatMs: number;
+    processes: ProcessHostShape;
+    rootScope: Scope.Closeable;
+    ownedScope: Scope.Closeable;
+    operations: FiberSet.FiberSet<void>;
     onAuthorityLost?: (runtime: OwnedWorkspaceRuntime) => void;
   }) {
     this.cwd = input.cwd;
     this.workspace = input.cwd;
     this.store = input.store;
+    this.runtimeStore = makeRuntimeStoreService(input.store);
     this.layout = input.layout;
     this.authority = input.authority;
     this.authorityFence = input.authorityFence;
-    this.supervisor = input.supervisor;
+    this.supervisorOwner = input.supervisorOwner;
     this.sessions = input.sessions;
+    this.processes = input.processes;
+    this.rootScope = input.rootScope;
+    this.ownedScope = input.ownedScope;
+    this.operations = input.operations;
     this.onAuthorityLost = input.onAuthorityLost;
-    this.heartbeatTimer = setInterval(() => {
-      this.activeHeartbeat = this.heartbeat();
-    }, input.heartbeatMs);
-    this.tickTimer = setInterval(() => {
-      this.startTick();
-    }, input.heartbeatMs);
-    this.startTick();
   }
 
-  submit(input: RuntimeSubmission): ResultAsync<RunDetails, RuntimeSubmitFailure> {
-    if (this.stopped) {
-      return new ResultAsync(Promise.resolve(err(submitFailure(
-        "not-admitted", "EXECUTION_UNAVAILABLE", "Workspace Runtime is closed.",
-      ))));
-    }
-    let admittedRunId: string | undefined;
-    return new ResultAsync(this.mutations.enqueue(async () => {
-      try {
-        const result = await this.store.admitRun({
+  initialize(heartbeatMs: number): Effect.Effect<void> {
+    const runtime = this;
+    return Effect.gen(function*() {
+      runtime.cleanup = yield* Effect.cached(Effect.uninterruptible(runtime.shutdownOwned()));
+      yield* Scope.addFinalizer(runtime.ownedScope, Effect.suspend(() => runtime.cleanupObserved
+        ? runtime.cleanup.pipe(Effect.ignoreCause)
+        : runtime.cleanup));
+      yield* FiberSet.run(runtime.operations, runtime.tickLoop(heartbeatMs), { startImmediately: true });
+      yield* FiberSet.run(runtime.operations, runtime.heartbeatLoop(heartbeatMs), { startImmediately: true });
+      runtime.lifecycle = yield* Effect.forkIn(runtime.lifecycleEffect(), runtime.rootScope, {
+        startImmediately: true,
+      });
+      runtime.closeEffect = yield* Effect.cached(Effect.uninterruptible(runtime.closeWorkspace()));
+    });
+  }
+
+  submit(input: RuntimeSubmission): Effect.Effect<RunDetails, RuntimeSubmitFailure> {
+    const runtime = this;
+    return this.mutations.enqueue(Effect.gen(function* () {
+      if (runtime.stopped) {
+        return yield* Effect.fail(submitFailure(
+          "not-admitted", "EXECUTION_UNAVAILABLE", "Workspace Runtime is closed.",
+        ));
+      }
+      const admitted = yield* runtime.runtimeStore.admitRun({
           requestId: input.requestId,
           prepared: input.prepared,
-          cwd: this.cwd,
+          cwd: runtime.cwd,
           input: input.input,
           ...(input.agentInjections === undefined ? {} : { agentInjections: input.agentInjections }),
-        });
-        if (result.isErr()) {
-          return err(submitFailure(
+        }).pipe(Effect.mapError(failure => failure.type === "runtime-store-busy"
+          ? submitFailure("unknown", "STORE_BUSY", "Runtime store is busy. Retry the request.")
+          : submitFailure(
             "not-admitted",
-            result.error.type === "admission-request-conflict" ? "CONTROL_CONFLICT" : "INVALID_REQUEST",
-            result.error.message,
-          ));
-        }
-        admittedRunId = result.value.id;
-        try {
-          const run = result.value.status === "pending"
-            ? this.sessions.start(result.value.id).run
-            : this.store.getRun(result.value.id);
-          if (!run) throw new Error(`Admitted run '${result.value.id}' was not found.`);
-          return ok(run);
-        } catch {
-          return err(submitFailure(
+            failure.type === "admission-request-conflict" ? "CONTROL_CONFLICT" : "INVALID_REQUEST",
+            failure.message,
+          )));
+      const unavailable = () => submitFailure(
             "admitted",
             "EXECUTION_UNAVAILABLE",
             "Run was admitted, but its execution session could not be started.",
-            result.value.id,
-          ));
-        }
-      } catch (error) {
-        if (isRuntimeStoreBusyError(error)) {
-          return err(submitFailure(
-            admittedRunId === undefined ? "unknown" : "admitted",
-            "STORE_BUSY",
-            "Runtime store is busy. Retry the request.",
-            admittedRunId,
-          ));
-        }
-        return err(submitFailure(
-          admittedRunId === undefined ? "unknown" : "admitted",
-          "INTERNAL_ERROR",
-          "Run admission failed.",
-          admittedRunId,
-        ));
-      }
+            admitted.id,
+          );
+      const run = admitted.status === "pending"
+        ? yield* runtime.sessions.start(admitted.id).pipe(
+          Effect.map(started => started.run),
+          Effect.mapError(unavailable),
+        )
+        : yield* runtime.runtimeStore.getRun(admitted.id).pipe(Effect.mapError(unavailable));
+      if (!run) return yield* Effect.fail(unavailable());
+      return run;
     }));
   }
 
-  control(input: RuntimeControlIntent): ResultAsync<RuntimeControlResult, RuntimeControlFailure> {
-    if (this.stopped) {
-      return new ResultAsync(Promise.resolve(err({
-        type: "runtime-control-failed",
-        code: "RUN_NOT_CONTROLLABLE",
-        message: "Workspace Runtime is closed.",
-      })));
-    }
-    return new ResultAsync(this.mutations.enqueue(async () => {
-      if (!this.store.getRun(input.runId)) {
-        return err({
-          type: "runtime-control-failed",
-          code: "RUN_NOT_FOUND",
+  control(input: RuntimeControlIntent): Effect.Effect<RuntimeControlResult, RuntimeControlFailure> {
+    const runtime = this;
+    return this.mutations.enqueue(Effect.gen(function* () {
+      if (runtime.stopped) {
+        return yield* Effect.fail({
+          type: "runtime-control-failed" as const,
+          code: "RUN_NOT_CONTROLLABLE" as const,
+          message: "Workspace Runtime is closed.",
+        });
+      }
+      const existing = yield* runtime.runtimeStore.getRun(input.runId).pipe(
+        Effect.mapError(() => runtimeControlStoreBusy()),
+      );
+      if (!existing) {
+        return yield* Effect.fail({
+          type: "runtime-control-failed" as const,
+          code: "RUN_NOT_FOUND" as const,
           message: `Run '${input.runId}' was not found.`,
         });
       }
-      try {
-        const result = await this.sessions.control(input);
-        return result.isErr() ? err(controlFailure(input, result.error)) : ok(result.value);
-      } catch (error) {
-        if (isRuntimeStoreBusyError(error)) {
-          return err({
-            type: "runtime-control-failed",
-            code: "STORE_BUSY",
-            message: "Runtime store is busy. Retry the request.",
-          });
-        }
-        throw error;
-      }
+      return yield* runtime.sessions.control(input).pipe(
+        Effect.mapError(failure => failure.type === "runtime-store-busy"
+          ? runtimeControlStoreBusy()
+          : controlFailure(input, failure)),
+      );
     }));
   }
 
-  inspect(input: InspectionViewQuery): ResultAsync<InspectionRead, InspectionError> {
-    return new ResultAsync((async () => {
-      const session = await openRuntimeReadSessionAtLayout(this.layout);
-      if (session.isErr()) return err({ ...session.error, runId: input.runId });
-      try {
-        const read = await readInspectionAtStore(
-          session.value.store,
-          input,
-          proof => this.sessions.provesAgentTurn(proof),
-        );
-        if (read.isErr()) return read;
-        const processIdentity = captureProcessIdentity();
-        const ownership = await inspectAcpOwnership({
-          workersRoot: this.layout.acpWorkersRoot,
-          owner: {
-            epoch: this.authorityFence.epoch,
-            pid: processIdentity.pid,
-            ...(processIdentity.startToken === undefined ? {} : { startToken: processIdentity.startToken }),
-          },
-        });
-        return ok(withInspectionOwnershipHealth(read.value, ownershipHealthProjection(ownership)));
-      } finally {
-        session.value.close();
-      }
-    })());
+  inspect(input: InspectionViewQuery): Effect.Effect<InspectionRead, InspectionError> {
+    const runtime = this;
+    return Effect.scoped(Effect.gen(function* () {
+      const session = yield* acquireRuntimeReadSessionAtLayout(runtime.layout).pipe(
+        Effect.mapError(failure => ({ ...failure, runId: input.runId })),
+      );
+      const read = yield* readInspectionAtStore(
+        session.store,
+        input,
+        proof => runtime.sessions.provesAgentTurn(proof),
+      );
+      const processIdentity = captureProcessIdentity();
+      const ownership = yield* inspectAcpOwnership({
+        workersRoot: runtime.layout.acpWorkersRoot,
+        owner: {
+          epoch: runtime.authorityFence.epoch,
+          pid: processIdentity.pid,
+          ...(processIdentity.startToken === undefined ? {} : { startToken: processIdentity.startToken }),
+        },
+      }, runtime.processes);
+      return withInspectionOwnershipHealth(read, ownershipHealthProjection(ownership));
+    }));
   }
 
   observeInspection(
     input: ObserveInspectionQuery,
     signal?: AbortSignal,
-  ): AsyncIterable<Result<InspectionObservation, InspectionError>> {
-    return this.observeInspectionFromReadSession(input, signal);
-  }
-
-  private async *observeInspectionFromReadSession(
-    input: ObserveInspectionQuery,
-    signal?: AbortSignal,
-  ): AsyncIterable<Result<InspectionObservation, InspectionError>> {
-    const session = await openRuntimeReadSessionAtLayout(this.layout);
-    if (session.isErr()) {
-      yield err({ ...session.error, runId: input.view.runId });
-      return;
-    }
-    try {
-      for await (const observed of observeInspectionAtStore(session.value.store, {
-        ...input,
-        ...(signal === undefined ? {} : { signal }),
-      }, proof => this.sessions.provesAgentTurn(proof))) {
-        if (observed.isErr() || observed.value.kind === "update") {
-          yield observed;
-          continue;
-        }
+  ): Stream.Stream<InspectionObservation, InspectionError> {
+    return Stream.unwrap(acquireRuntimeReadSessionAtLayout(this.layout).pipe(
+      Effect.mapError(failure => ({ ...failure, runId: input.view.runId })),
+      Effect.map(session => observeInspectionAtStore(session.store, {
+      ...input,
+      ...(signal === undefined ? {} : { signal }),
+    }, proof => this.sessions.provesAgentTurn(proof)).pipe(
+      Stream.mapEffect(observed => {
+        if (observed.kind === "update") return Effect.succeed(observed);
         const processIdentity = captureProcessIdentity();
-        const ownership = await inspectAcpOwnership({
+        return inspectAcpOwnership({
           workersRoot: this.layout.acpWorkersRoot,
           owner: {
             epoch: this.authorityFence.epoch,
             pid: processIdentity.pid,
             ...(processIdentity.startToken === undefined ? {} : { startToken: processIdentity.startToken }),
           },
-        });
-        yield ok(withObservationOwnershipHealth(observed.value, ownershipHealthProjection(ownership)));
-      }
-    } finally {
-      session.value.close();
-    }
+        }, this.processes).pipe(Effect.map(ownership =>
+          withObservationOwnershipHealth(observed, ownershipHealthProjection(ownership))));
+      }),
+    ))));
   }
 
   listArtifacts(
     runId: string,
-  ): ResultAsync<ArtifactRecord[] | undefined, RuntimeReadFailure> {
+  ): Effect.Effect<ArtifactRecord[] | undefined, RuntimeReadFailure> {
     return this.boundRead(() =>
       this.store.getRun(runId) ? this.store.listArtifacts(runId) : undefined);
   }
@@ -522,11 +559,11 @@ class WorkspaceRuntimeImplementation implements OwnedWorkspaceRuntime {
   readArtifact(
     runId: string,
     artifactId: string,
-  ): ResultAsync<{ artifact: ArtifactRecord; bytes: Buffer } | undefined, RuntimeReadFailure> {
+  ): Effect.Effect<{ artifact: ArtifactRecord; bytes: Buffer } | undefined, RuntimeReadFailure> {
     return this.boundRead(() => readVerifiedArtifact({ runId, store: this.store }, artifactId));
   }
 
-  findAdmission(requestId: string): ResultAsync<RunDetails | undefined, RuntimeReadFailure> {
+  findAdmission(requestId: string): Effect.Effect<RunDetails | undefined, RuntimeReadFailure> {
     return this.boundRead(() => {
       const record = this.store.lookupAdmission(requestId);
       return record === undefined ? undefined : this.store.getRun(record.id);
@@ -551,76 +588,135 @@ class WorkspaceRuntimeImplementation implements OwnedWorkspaceRuntime {
     });
   }
 
-  close(): Promise<void> {
-    if (this.closePromise) return this.closePromise;
+  close(): Effect.Effect<void> {
+    this.requestShutdown();
+    return this.closeEffect;
+  }
+
+  stopScheduling(): void {
     this.stopped = true;
-    clearInterval(this.heartbeatTimer);
-    clearInterval(this.tickTimer);
-    this.closePromise = (async () => {
+  }
+
+  private closeWorkspace(): Effect.Effect<void> {
+    const runtime = this;
+    return Effect.gen(function*() {
+      runtime.requestShutdown();
+      const lifecycle = runtime.lifecycle;
+      if (lifecycle === undefined) return;
+      const settled = yield* Fiber.await(lifecycle);
+      const released = yield* Effect.exit(Scope.close(runtime.rootScope, settled));
+      return yield* failCleanup(
+        [...exitFailures(settled), ...exitFailures(released)],
+        "Workspace Runtime shutdown could not release every resource.",
+      );
+    });
+  }
+
+  private lifecycleEffect(): Effect.Effect<void> {
+    return Deferred.await(this.shutdownRequested).pipe(
+      Effect.andThen(Effect.uninterruptible(this.closeOwnedScope())),
+    );
+  }
+
+  private closeOwnedScope(): Effect.Effect<void> {
+    const runtime = this;
+    return Effect.gen(function*() {
+      const semantic = yield* Effect.exit(runtime.cleanup);
+      runtime.cleanupObserved = true;
+      const structural = yield* Effect.exit(Scope.close(runtime.ownedScope, semantic));
+      return yield* failCleanup(
+        [...exitFailures(semantic), ...exitFailures(structural)],
+        "Workspace Runtime shutdown could not release every resource.",
+      );
+    });
+  }
+
+  private shutdownOwned(): Effect.Effect<void> {
+    const runtime = this;
+    return Effect.gen(function*() {
+      runtime.stopped = true;
       const failures: unknown[] = [];
-      await settleResources(failures, [
-        () => this.activeTick,
-        () => this.activeHeartbeat,
-        () => this.mutations.drain(),
-        () => settleConcurrentResources(failures, [
-          () => this.sessions.stopExecutors(EXECUTOR_SHUTDOWN_GRACE_MS),
-          async () => {
-            const shutdown = await this.supervisor.shutdown();
-            if (shutdown.isErr()) throw new Error(shutdown.error.message);
-          },
-        ]),
-        () => this.sessions.drainHooks(),
-        () => this.store.releaseRuntimeAuthority(this.authorityFence),
-        () => this.store.close(),
-      ]);
-      if (failures.length === 1) throw failures[0];
-      if (failures.length > 1) {
-        throw new AggregateError(failures, "Workspace Runtime shutdown could not release every resource.");
-      }
-    })();
-    return this.closePromise;
+      failures.push(...exitFailures(yield* Effect.exit(
+        FiberSet.clear(runtime.operations).pipe(
+          Effect.andThen(FiberSet.awaitEmpty(runtime.operations)),
+        ),
+      )));
+      failures.push(...exitFailures(yield* Effect.exit(runtime.mutations.drain())));
+      runtime.supervisorOwner.observed = true;
+      const concurrent = yield* Effect.forEach([
+        runtime.sessions.stopExecutors(EXECUTOR_SHUTDOWN_GRACE_MS),
+        runtime.supervisorOwner.cleanup,
+      ], operation => Effect.exit(operation), { concurrency: "unbounded" });
+      for (const settled of concurrent) failures.push(...exitFailures(settled));
+      failures.push(...exitFailures(yield* Effect.exit(runtime.sessions.drainHooks())));
+      return yield* failCleanup(
+        failures,
+        "Workspace Runtime shutdown could not release every resource.",
+      );
+    });
   }
 
-  private boundRead<T>(read: () => T): ResultAsync<T, RuntimeReadFailure> {
-    return new ResultAsync((async () => {
+  private boundRead<T>(read: () => T): Effect.Effect<T, RuntimeReadFailure> {
+    return Effect.try({
+      try: read,
+      catch: error => error instanceof ArtifactReadUnavailableError
+        ? { type: "runtime-store-unavailable" as const, message: error.message }
+        : runtimeReadFailureFromError(error),
+    });
+  }
+
+  private tickLoop(heartbeatMs: number): Effect.Effect<void> {
+    const runtime = this;
+    return Effect.gen(function*() {
+      while (!runtime.stopped) {
+        yield* Effect.uninterruptible(runtime.tick());
+        if (runtime.stopped) return;
+        yield* Effect.sleep(heartbeatMs);
+      }
+    });
+  }
+
+  private heartbeatLoop(heartbeatMs: number): Effect.Effect<void> {
+    const runtime = this;
+    return Effect.gen(function*() {
+      while (true) {
+        yield* Effect.sleep(heartbeatMs);
+        yield* Effect.uninterruptible(runtime.heartbeat());
+      }
+    });
+  }
+
+  private heartbeat(): Effect.Effect<void> {
+    return Effect.sync(() => {
+      if (this.stopped) return;
       try {
-        return ok(read());
+        if (!this.store.heartbeatRuntimeAuthority(this.authorityFence)) this.authorityLost();
       } catch (error) {
-        return err(runtimeReadFailureFromError(error));
+        if (!this.stopped && !isRuntimeStoreBusyError(error)) this.authorityLost();
       }
-    })());
+    });
   }
 
-  private startTick(): void {
-    if (this.ticking || this.stopped) return;
-    this.activeTick = this.tick();
-  }
-
-  private async heartbeat(): Promise<void> {
-    if (this.heartbeating || this.stopped) return;
-    this.heartbeating = true;
-    try {
-      if (!this.store.heartbeatRuntimeAuthority(this.authorityFence)) this.authorityLost();
-    } catch (error) {
-      if (!this.stopped && !isRuntimeStoreBusyError(error)) this.authorityLost();
-    } finally {
-      this.heartbeating = false;
-    }
-  }
-
-  private async tick(): Promise<void> {
-    this.ticking = true;
-    try {
-      const result = await runRuntimeTick(this.store, {
-        startSession: runId => this.sessions.start(runId).disposition,
-        dispatchHooks: runId => this.sessions.dispatchHooks(runId),
-      });
-      this.latestTick = { runsStarted: result.runs, idleBlockers: result.idleBlockers };
-    } catch (error) {
-      if (!this.stopped && !isRuntimeStoreBusyError(error)) this.authorityLost();
-    } finally {
-      this.ticking = false;
-    }
+  private tick(): Effect.Effect<void> {
+    const runtime = this;
+    return Effect.suspend(() => {
+      runtime.ticking = true;
+      return runRuntimeTick(runtime.runtimeStore, {
+        startSession: runId => runtime.sessions.start(runId).pipe(Effect.map(started => started.disposition)),
+        dispatchHooks: runId => runtime.sessions.dispatchHooks(runId),
+      }).pipe(
+        Effect.tap(result => Effect.sync(() => {
+          runtime.latestTick = { runsStarted: result.runs, idleBlockers: result.idleBlockers };
+        })),
+        Effect.catch(() => Effect.void),
+        Effect.catchCause(() => Effect.sync(() => {
+          if (!runtime.stopped) runtime.authorityLost();
+        })),
+        Effect.ensuring(Effect.sync(() => {
+          runtime.ticking = false;
+        })),
+      );
+    });
   }
 
   private authorityLost(): void {
@@ -628,102 +724,123 @@ class WorkspaceRuntimeImplementation implements OwnedWorkspaceRuntime {
     try {
       this.onAuthorityLost?.(this);
     } catch {}
-    if (!this.onAuthorityLost) void this.close().catch(() => {});
+    this.requestShutdown();
+  }
+
+  private requestShutdown(): void {
+    this.stopped = true;
+    Deferred.doneUnsafe(this.shutdownRequested, Effect.void);
   }
 }
 
-async function openReadyWorkspaceRuntimeStore(
+type ReadyWorkspaceRuntimeStore = {
+  store: RuntimeStoreAdapter;
+  layout: RuntimeLayout;
+};
+
+function acquireReadyWorkspaceRuntimeStore(
   cwd: string,
   options: RuntimeLayoutOptions,
   agentPresetProvider?: AgentPresetProvider,
-): Promise<{
-  store: RuntimeStore;
-  layout: ReturnType<typeof runtimeLayoutForGeneration>;
-}> {
-  const first = await inspectRuntimeStoreInternal(cwd, options);
-  if (first.isErr()) {
-    if (first.error.reason === "busy") return openPublishedWorkspaceRuntimeStore(cwd, options, agentPresetProvider);
-    throw openReadinessError(first.error);
-  }
-  if (first.value.current.state === "absent") await initializeRuntimeStoreIfAbsent(cwd, options);
-  else if (first.value.current.state !== "ready") throw assessmentReadinessError(first.value);
+): Effect.Effect<ReadyWorkspaceRuntimeStore, unknown, Scope.Scope> {
+  return Effect.gen(function*() {
+    const first = yield* inspectRuntimeStoreInternal(cwd, options);
+    if (Result.isFailure(first)) {
+      if (first.failure.reason === "busy") {
+        return yield* acquirePublishedWorkspaceRuntimeStore(cwd, options, agentPresetProvider);
+      }
+      return yield* Effect.fail(openReadinessError(first.failure));
+    }
+    if (first.success.current.state === "absent") yield* initializeRuntimeStoreIfAbsent(cwd, options);
+    else if (first.success.current.state !== "ready") {
+      return yield* Effect.fail(assessmentReadinessError(first.success));
+    }
+    const workspace = resolveRuntimeWorkspaceLayout(cwd, options);
+    return yield* acquireWorkspaceRuntimeStoreResource(
+      workspace,
+      Effect.gen(function*() {
+        const checked = yield* inspectRuntimeStoreInternal(cwd, options);
+        if (Result.isFailure(checked)) {
+          if (checked.failure.reason !== "busy") return yield* Effect.fail(openReadinessError(checked.failure));
+          const layout = resolveRuntimeLayout(cwd, options);
+          if (layout.generationId === undefined) return yield* Effect.fail(openReadinessError(checked.failure));
+          return layout;
+        }
+        if (checked.success.current.state !== "ready") {
+          return yield* Effect.fail(assessmentReadinessError(checked.success));
+        }
+        return runtimeLayoutForGeneration(workspace, checked.success.current.generationId);
+      }),
+      agentPresetProvider,
+    );
+  });
+}
+
+function acquirePublishedWorkspaceRuntimeStore(
+  cwd: string,
+  options: RuntimeLayoutOptions,
+  agentPresetProvider?: AgentPresetProvider,
+): Effect.Effect<ReadyWorkspaceRuntimeStore, unknown, Scope.Scope> {
   const workspace = resolveRuntimeWorkspaceLayout(cwd, options);
-  let lock;
-  try {
-    lock = await acquireRuntimeSharedLock(workspace);
-  } catch (error) {
-    throw openReadinessError(error);
-  }
-  let adopted = false;
-  try {
-    const checked = await inspectRuntimeStoreInternal(cwd, options);
-    if (checked.isErr()) {
-      if (checked.error.reason !== "busy") throw openReadinessError(checked.error);
-      const layout = resolveRuntimeLayout(cwd, options);
-      if (layout.generationId === undefined) throw openReadinessError(checked.error);
-      adopted = true;
-      return {
-        store: await openRuntimeStoreAtLayout(layout, {
-          lock,
+  return acquireWorkspaceRuntimeStoreResource(
+    workspace,
+    Effect.gen(function*() {
+      const layout = yield* Effect.try({
+        try: () => resolveRuntimeLayout(cwd, options),
+        catch: error => error,
+      });
+      if (layout.generationId === undefined) {
+        return yield* Effect.fail(new Error("The current Runtime generation is not published."));
+      }
+      return layout;
+    }),
+    agentPresetProvider,
+  );
+}
+
+function acquireWorkspaceRuntimeStoreResource(
+  workspace: RuntimeLayout,
+  selectLayout: Effect.Effect<RuntimeLayout, unknown>,
+  agentPresetProvider?: AgentPresetProvider,
+): Effect.Effect<ReadyWorkspaceRuntimeStore, unknown, Scope.Scope> {
+  const acquire = Effect.gen(function*() {
+    const lock = yield* Effect.tryPromise({
+      try: () => openRuntimeSharedLock(workspace),
+      catch: openReadinessError,
+    });
+    return yield* Effect.gen(function*() {
+      const layout = yield* selectLayout;
+      const store = yield* Effect.tryPromise({
+        try: () => openRuntimeStoreAdapterAtLayout(layout, {
+          lock: false,
           prevalidated: true,
           ...(agentPresetProvider === undefined ? {} : { agentPresetProvider }),
         }),
-        layout,
-      };
-    }
-    if (checked.value.current.state !== "ready") throw assessmentReadinessError(checked.value);
-    const layout = runtimeLayoutForGeneration(workspace, checked.value.current.generationId);
-    adopted = true;
-    return {
-      store: await openRuntimeStoreAtLayout(layout, {
-        lock,
-        prevalidated: true,
-        ...(agentPresetProvider === undefined ? {} : { agentPresetProvider }),
-      }),
-      layout,
-    };
-  } catch (error) {
-    if (!adopted) lock.release();
-    throw error;
-  }
-}
-
-async function openPublishedWorkspaceRuntimeStore(
-  cwd: string,
-  options: RuntimeLayoutOptions,
-  agentPresetProvider?: AgentPresetProvider,
-): Promise<{
-  store: RuntimeStore;
-  layout: ReturnType<typeof runtimeLayoutForGeneration>;
-}> {
-  const workspace = resolveRuntimeWorkspaceLayout(cwd, options);
-  const lock = await acquireRuntimeSharedLock(workspace);
-  let adopted = false;
-  try {
-    const layout = resolveRuntimeLayout(cwd, options);
-    if (layout.generationId === undefined) {
-      throw new Error("The current Runtime generation is not published.");
-    }
-    adopted = true;
-    return {
-      store: await openRuntimeStoreAtLayout(layout, {
-        lock,
-        prevalidated: true,
-        ...(agentPresetProvider === undefined ? {} : { agentPresetProvider }),
-      }),
-      layout,
-    };
-  } finally {
-    if (!adopted) lock.release();
-  }
+        catch: error => error,
+      });
+      return { store, layout, lock };
+    }).pipe(Effect.onExit(exit => Exit.isFailure(exit)
+      ? Effect.sync(() => lock.release())
+      : Effect.void));
+  });
+  return Effect.acquireRelease(
+    acquire,
+    ({ store, lock }) => Effect.sync(() => {
+      try {
+        store.close();
+      } finally {
+        lock.release();
+      }
+    }),
+  ).pipe(Effect.map(({ store, layout }) => ({ store, layout })));
 }
 
 function runtimeLayoutOptions(options: WorkspaceRuntimeInternalOptions): RuntimeLayoutOptions {
   return options.stateRoot === undefined ? {} : { runtimeHome: options.stateRoot };
 }
 
-function loadWorkspaceRuntimeConfiguration(): Result<RuntimeConfiguration, WorkspaceRuntimeOpenFailure> {
-  return tryLoadRuntimeConfiguration(process.env).mapErr(failure => ({
+function loadWorkspaceRuntimeConfiguration(): Result.Result<RuntimeConfiguration, WorkspaceRuntimeOpenFailure> {
+  return Result.mapError(tryLoadRuntimeConfiguration(process.env), failure => ({
     type: "runtime-configuration-invalid" as const,
     message: failure.message,
   }));
@@ -835,30 +952,21 @@ function controlFailure(
   };
 }
 
-async function settleResources(
-  failures: unknown[],
-  steps: Array<() => void | Promise<void> | undefined>,
-): Promise<void> {
-  for (const step of steps) {
-    try {
-      await step();
-    } catch (error) {
-      failures.push(error);
-    }
-  }
+function runtimeControlStoreBusy(): RuntimeControlFailure {
+  return {
+    type: "runtime-control-failed",
+    code: "STORE_BUSY",
+    message: "Runtime store is busy. Retry the request.",
+  };
 }
 
-async function settleConcurrentResources(
-  failures: unknown[],
-  steps: Array<() => void | Promise<void> | undefined>,
-): Promise<void> {
-  const pending = steps.map(step => {
-    try {
-      return Promise.resolve(step());
-    } catch (error) {
-      return Promise.reject(error);
-    }
-  });
-  failures.push(...(await Promise.allSettled(pending))
-    .flatMap(result => result.status === "rejected" ? [result.reason] : []));
+function exitFailures(exit: Exit.Exit<unknown, unknown>): unknown[] {
+  return Exit.isFailure(exit) ? [Cause.squash(exit.cause)] : [];
+}
+
+function failCleanup(failures: readonly unknown[], message: string): Effect.Effect<void> {
+  if (failures.length === 0) return Effect.void;
+  return Effect.die(failures.length === 1
+    ? failures[0]
+    : new AggregateError(failures, message));
 }

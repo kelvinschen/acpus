@@ -8,6 +8,8 @@ import type {
 } from "@acpus/runtime";
 import type { RuntimeControlIntent } from "@acpus/runtime/host";
 import type { PreparedWorkflow } from "@acpus/workflow-compiler";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import type { Context } from "@deepseek-ai/cordis";
 import { HarnessError } from "@deepseek-ai/dsh-llm";
 import {
@@ -344,19 +346,19 @@ function inspectTool(ctx: Context) {
         String(initiatingAgent(exec).id),
         task,
       );
-      const result = await selected.runtime.inspect(target === undefined
+      const result = await Effect.runPromise(Effect.result(selected.runtime.inspect(target === undefined
         ? { kind: "run", runId: selected.runId }
         : {
             kind: "target",
             runId: selected.runId,
             target,
             detail: timeline === undefined ? "summary" : "timeline",
-          });
-      if (result.isErr()) {
-        throw failure(hideRunIdentity(result.error.message, selected.runId), "ACPUS_INSPECT_FAILED");
+          })));
+      if (Result.isFailure(result)) {
+        throw failure(hideRunIdentity(result.failure.message, selected.runId), "ACPUS_INSPECT_FAILED");
       }
       return json(compactInspection(
-        result.value,
+        result.success,
         selected.selector,
         timeline,
       ));
@@ -468,20 +470,20 @@ function controlTool(ctx: Context) {
       if (cancel?.status === "rejected") {
         return json({ status: "rejected", reason: cancel.reason, task: selected.selector });
       }
-      const result = await selected.runtime.control(intent);
-      if (result.isErr()) {
+      const result = await Effect.runPromise(Effect.result(selected.runtime.control(intent)));
+      if (Result.isFailure(result)) {
         if (cancel?.status === "ready") {
           await service.settleModelCancel(
             cancel.control.id,
             "rejected",
-            result.error.code === "RUN_NOT_CONTROLLABLE"
+            result.failure.code === "RUN_NOT_CONTROLLABLE"
               ? "not-controllable"
               : "temporarily-unavailable",
           );
         }
         return json({
           status: "rejected",
-          reason: hideRunIdentity(result.error.message, selected.runId),
+          reason: hideRunIdentity(result.failure.message, selected.runId),
           task: selected.selector,
         });
       }
@@ -489,13 +491,13 @@ function controlTool(ctx: Context) {
         await service.settleModelCancel(cancel.control.id, "applied");
       }
       let task = selected.selector;
-      if (result.value.type === "fork") {
+      if (result.success.type === "fork") {
         task = await service.linkFork(
           String(agent.id),
           String(exec.callId),
           selected.generation,
           selected.workspace,
-          result.value.run,
+          result.success.run,
         );
       } else {
         await service.reconcileTask(selected.link);
@@ -536,37 +538,41 @@ function artifactTool(ctx: Context) {
         | { type: "list" }
         | { type: "read"; id: string; maxBytes?: number };
       if (action.type === "list") {
-        const listed = await selected.runtime.listArtifacts(selected.runId);
-        if (listed.isErr()) {
-          throw failure(hideRunIdentity(listed.error.message, selected.runId), "ACPUS_ARTIFACT_READ_FAILED");
+        const listed = await Effect.runPromise(Effect.result(
+          selected.runtime.listArtifacts(selected.runId),
+        ));
+        if (Result.isFailure(listed)) {
+          throw failure(hideRunIdentity(listed.failure.message, selected.runId), "ACPUS_ARTIFACT_READ_FAILED");
         }
-        if (listed.value === undefined) {
+        if (listed.success === undefined) {
           throw failure("The selected delegated task was not found.", "ACPUS_TASK_NOT_FOUND");
         }
         return json({
-          artifacts: listed.value.slice(0, ARTIFACT_LIMIT).map(safeArtifact),
-          truncated: listed.value.length > ARTIFACT_LIMIT,
+          artifacts: listed.success.slice(0, ARTIFACT_LIMIT).map(safeArtifact),
+          truncated: listed.success.length > ARTIFACT_LIMIT,
         });
       }
       const maxBytes = action.maxBytes || ARTIFACT_READ_LIMIT;
       if (maxBytes < 1 || maxBytes > ARTIFACT_READ_LIMIT) {
         throw failure(`maxBytes must be from 1 to ${ARTIFACT_READ_LIMIT}.`, "ACPUS_ARTIFACT_INVALID");
       }
-      const read = await selected.runtime.readArtifact(selected.runId, action.id);
-      if (read.isErr()) {
-        throw failure(hideRunIdentity(read.error.message, selected.runId), "ACPUS_ARTIFACT_READ_FAILED");
+      const read = await Effect.runPromise(Effect.result(
+        selected.runtime.readArtifact(selected.runId, action.id),
+      ));
+      if (Result.isFailure(read)) {
+        throw failure(hideRunIdentity(read.failure.message, selected.runId), "ACPUS_ARTIFACT_READ_FAILED");
       }
-      if (read.value === undefined) {
+      if (read.success === undefined) {
         throw failure(`Artifact '${action.id}' was not found.`, "ACPUS_ARTIFACT_NOT_FOUND");
       }
-      const artifact = safeArtifact(read.value.artifact);
-      if (!isTextArtifact(read.value.artifact.mediaType)) {
+      const artifact = safeArtifact(read.success.artifact);
+      if (!isTextArtifact(read.success.artifact.mediaType)) {
         return json({ status: "unreadable", artifact, reason: "binary" });
       }
-      const bytes = read.value.bytes.subarray(0, maxBytes);
+      const bytes = read.success.bytes.subarray(0, maxBytes);
       const text = bytes.toString("utf8").replace(/\uFFFD$/u, "");
-      const truncated = read.value.bytes.length > bytes.length;
-      if (!truncated && isJsonArtifact(read.value.artifact.mediaType)) {
+      const truncated = read.success.bytes.length > bytes.length;
+      if (!truncated && isJsonArtifact(read.success.artifact.mediaType)) {
         try {
           return json({ status: "read", artifact, content: JSON.parse(text), truncated: false });
         } catch {
@@ -589,7 +595,7 @@ async function prepareFork(
 } | InvalidWorkflow> {
   if (action.type !== "fork") return { status: "ready" };
   const prepared = action.workflow.type === "replace"
-    ? await prepareAuthoringWorkflow(workspace, action.workflow.source)
+    ? await Effect.runPromise(prepareAuthoringWorkflow(workspace, action.workflow.source))
     : undefined;
   if (prepared?.status === "invalid") return prepared;
   const agents = action.agents.type === "replace"

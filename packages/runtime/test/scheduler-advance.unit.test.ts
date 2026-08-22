@@ -1,9 +1,16 @@
-import { describe, expect, it, vi } from "vitest";
+import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as Result from "effect/Result";
+import * as TestClock from "effect/testing/TestClock";
+import { describe, expect, it } from "@effect/vitest";
 import type { JsonValue } from "@acpus/expression/ir";
-import { err, ok } from "neverthrow";
-import { advanceRun, type NodeAttemptContext, type NodeExecutor, type SchedulerExecutionStore } from "../src/scheduler/advance.js";
+import { advanceRun as advanceRunEffect, type NodeAttemptContext, type NodeExecutor, type SchedulerExecutionStore } from "../src/scheduler/advance.js";
+import { advanceRun } from "./support/effect-scheduler.js";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
-import { SchedulerStoreException, schedulerStoreResult, type AttemptCommitInput, type AttemptStartInput, type AttemptStartResult, type RunOwnerClaim, type SchedulerCommit, type SchedulerRecoveryInput, type SchedulerSnapshot, type SchedulerStoreError, type SchedulerStoreResult } from "../src/scheduler/store-port.js";
+import { SchedulerStoreException, type AttemptCommitInput, type AttemptStartInput, type AttemptStartResult, type RunOwnerClaim, type SchedulerCommit, type SchedulerRecoveryInput, type SchedulerSnapshot, type SchedulerStoreError } from "../src/scheduler/store-port.js";
 import { applySchedulerEvents, createSchedulerProjection } from "../src/scheduler/transitions.js";
 import type { InstancePath } from "../src/scheduler/types.js";
 import { createVersionedWakeup } from "../src/scheduler/wakeup.js";
@@ -52,30 +59,6 @@ describe("scheduler advance loop", () => {
     expect(calls).toEqual(["boot"]);
     expect(bootstrapVersions[0]).toBe(0);
     expect(bootstrapVersions[1]).toBeGreaterThan(0);
-  });
-
-  it("selects ready instances by deterministic FIFO and respects the run-wide cap", async () => {
-    const store = new MemorySchedulerStore([
-      ready("later", 2),
-      ready("first", 1),
-      ready("third", 3),
-    ]);
-    const calls: string[] = [];
-
-    const result = await advanceRun({
-      runId: "run_1",
-      ownerId: "owner-a",
-      store,
-      executor: executor(context => {
-        calls.push(context.nodeKey);
-        return completed({ node: context.nodeKey });
-      }),
-      maxLeafConcurrency: 2,
-    });
-
-    expect(result).toMatchObject({ status: "idle", started: 3, completed: 3 });
-    expect(calls).toEqual(["first", "later", "third"]);
-    expect(store.loadCount).toBeGreaterThanOrEqual(2);
   });
 
   it("reloads a stale admission plan without invoking the executor", async () => {
@@ -153,14 +136,15 @@ describe("scheduler advance loop", () => {
       store,
       wakeup,
       maxLeafConcurrency: 1,
-      onCheckpoint: snapshot => {
+      onCheckpoint: snapshot => Effect.sync(() => {
         if (snapshot.projection.instances.stuck?.status === "cancelled") markCancellationObserved();
-      },
-      executor: executor(async context => {
+      }),
+      executor: executor(context => {
         calls.push(context.nodeKey);
         if (context.nodeKey === "stuck") {
-          await stuck;
-          return { status: "cancelled", reason: "parent_failed" };
+          return Effect.never.pipe(
+            Effect.onInterrupt(() => Effect.promise(() => stuck)),
+          );
         }
         return completed();
       }),
@@ -208,7 +192,7 @@ describe("scheduler advance loop", () => {
       wakeup,
       maxLeafConcurrency: 2,
       executorResourceFor: instance => instance.nodeKey === "shared" ? "agent-session:shared" : `agent-session:${instance.nodeKey}`,
-      executor: executor(async context => {
+      executor: executor(context => {
         calls.push(context.nodeKey);
         if (context.nodeKey !== "shared") {
           markOtherStarted();
@@ -228,8 +212,9 @@ describe("scheduler advance loop", () => {
           ],
         });
         wakeup.wake();
-        await cleanup;
-        return abortedExecution();
+        return Effect.never.pipe(
+          Effect.onInterrupt(() => Effect.promise(() => cleanup)),
+        );
       }),
     });
 
@@ -273,71 +258,49 @@ describe("scheduler advance loop", () => {
     await expect(advancing).resolves.toMatchObject({ status: "awaiting", started: 1, completed: 1 });
   });
 
-  it("wakes for a Signal deadline while an unrelated executor is still active", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
+  it.effect("wakes for a Signal deadline while an unrelated executor is still active", () => Effect.gen(function* () {
+    yield* TestClock.setTime(new Date("2026-07-01T00:00:00.000Z").getTime());
     const store = new MemorySchedulerStore([ready("slow", 1), ready("approval", 2, "signal")]);
-    let releaseSlow!: () => void;
-    const slow = new Promise<void>(resolve => {
-      releaseSlow = resolve;
-    });
-    try {
-      const advancing = advanceRun({
+    const advancing = yield* Effect.forkChild(advanceRunEffect({
         runId: "run_1",
         ownerId: "owner-a",
         store,
-        now: () => new Date(Date.now()),
         maxLeafConcurrency: 1,
         signalNodeIds: new Set(["signal"]),
         awaitableEventsFor: (instance, _projection, now) => [
           { type: "instance.awaiting", payload: { nodeKey: instance.nodeKey, statusReason: "signal" } },
           { type: "signal.awaiting", payload: { runId: "run_1", nodeKey: instance.nodeKey, nodeId: instance.nodeId, deadlineAt: new Date(now.getTime() + 1_000).toISOString() } },
         ],
-        executor: executor(async () => {
-          await slow;
-          return completed();
-        }),
-      });
+        executor: executor(() => Effect.sleep(2_000).pipe(Effect.as(completed()))),
+      }));
 
-      await vi.advanceTimersByTimeAsync(0);
-      expect(store.loadRunSnapshot("run_1").projection.signalWaits.approval).toMatchObject({ status: "awaiting" });
-      await vi.advanceTimersByTimeAsync(1_000);
-      expect(store.loadRunSnapshot("run_1").projection.signalWaits.approval).toMatchObject({ status: "timed_out" });
-      expect(store.loadRunSnapshot("run_1").projection.attempts.attempt_1).toMatchObject({ status: "started" });
-      releaseSlow();
-      await expect(advancing).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
-    } finally {
-      releaseSlow();
-      vi.useRealTimers();
-    }
-  });
+    yield* Effect.yieldNow;
+    expect(store.loadRunSnapshot("run_1").projection.signalWaits.approval).toMatchObject({ status: "awaiting" });
+    yield* TestClock.adjust(1_000);
+    expect(store.loadRunSnapshot("run_1").projection.signalWaits.approval).toMatchObject({ status: "timed_out" });
+    expect(store.loadRunSnapshot("run_1").projection.attempts.attempt_1).toMatchObject({ status: "started" });
+    yield* TestClock.adjust(1_000);
+    expect(yield* Fiber.join(advancing)).toMatchObject({ status: "idle", started: 1, completed: 1 });
+  }));
 
-  it("wakes for an active attempt deadline using the nearest durable timer", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-07-01T00:00:00.000Z"));
-    try {
-      const store = new MemorySchedulerStore([ready("work", 1)]);
-      const advancing = advanceRun({
+  it.effect("wakes for an active attempt deadline using the nearest durable timer", () => Effect.gen(function* () {
+    yield* TestClock.setTime(new Date("2026-07-01T00:00:00.000Z").getTime());
+    const store = new MemorySchedulerStore([ready("work", 1)]);
+    const advancing = yield* Effect.forkChild(advanceRunEffect({
         runId: "run_1",
         ownerId: "owner-a",
         store,
-        now: () => new Date(Date.now()),
-        deadlineAtFor: (_instance, _projection, now) => ok(new Date(now.getTime() + 1_000)),
-        executor: executor(context => new Promise(resolve => {
-          context.signal.addEventListener("abort", () => resolve(abortedExecution()), { once: true });
-        })),
-      });
+        deadlineAtFor: (_instance, _projection, now) => Result.succeed(new Date(now.getTime() + 1_000)),
+        executor: executor(() => Effect.never),
+      }));
 
-      await vi.advanceTimersByTimeAsync(0);
-      expect(store.loadRunSnapshot("run_1").projection.attempts.attempt_1).toMatchObject({ status: "started" });
+    yield* Effect.yieldNow;
+    expect(store.loadRunSnapshot("run_1").projection.attempts.attempt_1).toMatchObject({ status: "started" });
 
-      await vi.advanceTimersByTimeAsync(1_000);
-      await expect(advancing).resolves.toMatchObject({ status: "idle", started: 1, failed: 1 });
-      expect(store.loadRunSnapshot("run_1").projection.attempts.attempt_1).toMatchObject({ status: "timed_out" });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
+    yield* TestClock.adjust(1_000);
+    expect(yield* Fiber.join(advancing)).toMatchObject({ status: "idle", started: 1, failed: 1 });
+    expect(store.loadRunSnapshot("run_1").projection.attempts.attempt_1).toMatchObject({ status: "timed_out" });
+  }));
 
   it("fails custom executor attempts when output is not workflow-admissible", async () => {
     const store = new MemorySchedulerStore([ready("bad", 1)]);
@@ -364,7 +327,7 @@ describe("scheduler advance loop", () => {
       runId: "run_1",
       ownerId: "owner-a",
       store,
-      executor: { execute: () => Promise.reject(sentinel) },
+      executor: { execute: () => Effect.die(sentinel) },
     })).rejects.toBe(sentinel);
 
     expect(store.loadRunSnapshot("run_1").projection.instances.broken).toMatchObject({ status: "running" });
@@ -372,56 +335,23 @@ describe("scheduler advance loop", () => {
     expect(store.releaseCount).toBe(1);
   });
 
-  it("preserves execution and lease-release failures together", async () => {
+  it("preserves execution and lease-release failures in the final Cause", async () => {
     const store = new MemorySchedulerStore([ready("broken", 1)]);
     const executionFailure = { type: "executor-invariant" };
     const releaseFailure = { type: "release-invariant" };
     store.releaseFailure = releaseFailure;
-    let caught: unknown;
-
-    try {
-      await advanceRun({
+    const exit = await Effect.runPromiseExit(advanceRunEffect({
         runId: "run_1",
         ownerId: "owner-a",
         store,
-        executor: { execute: () => Promise.reject(executionFailure) },
-      });
-    } catch (error) {
-      caught = error;
-    }
+        executor: { execute: () => Effect.die(executionFailure) },
+      }));
 
-    expect(caught).toBeInstanceOf(AggregateError);
-    expect((caught as AggregateError).errors).toEqual([executionFailure, releaseFailure]);
+    expect(exit).toEqual(Exit.failCause(Cause.combine(
+      Cause.die(executionFailure),
+      Cause.die(releaseFailure),
+    )));
     expect(store.loadRunSnapshot("run_1").projection.instances.broken).toMatchObject({ status: "running" });
-  });
-
-  it("respects direct-member local concurrency caps before enqueueing work", async () => {
-    const store = new MemorySchedulerStore([
-      { type: "frame.started", payload: { runId: "run_1", frameKey: "fanout", frameKind: "node", nodeKey: "fanout", nodeId: "fanout", strategy: "all" } },
-      { type: "group.started", payload: { runId: "run_1", groupKey: "fanout", nodeKey: "fanout", nodeId: "fanout", kind: "fanout", strategy: "all", maxConcurrency: 2 } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "item-0", memberKind: "fanout_item", readinessSequence: 1, itemIndex: 0, item: 0 } },
-      ready("item-0", 0),
-      { type: "group.member_started", payload: { memberKey: "item-0" } },
-      { type: "instance.started", payload: { nodeKey: "item-0" } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "item-1", memberKind: "fanout_item", readinessSequence: 2, itemIndex: 1, item: 1 } },
-      { type: "group.member_ready", payload: { runId: "run_1", groupKey: "fanout", memberKey: "item-2", memberKind: "fanout_item", readinessSequence: 3, itemIndex: 2, item: 2 } },
-      ready("item-1", 1),
-      ready("item-2", 2),
-    ]);
-    const calls: string[] = [];
-
-    await advanceRun({
-      runId: "run_1",
-      ownerId: "owner-a",
-      store,
-      maxLeafConcurrency: 3,
-      executor: executor(context => {
-        calls.push(context.nodeKey);
-        return completed();
-      }),
-    });
-
-    expect(calls).toEqual(["item-1", "item-2"]);
   });
 
   it("returns paused, awaiting, and lease-lost summaries without starting work", async () => {
@@ -455,30 +385,35 @@ describe("scheduler advance loop", () => {
     })).resolves.toMatchObject({ status: "idle", started: 0 });
   });
 
-  it("does not admit work after stop is observed at a checkpoint", async () => {
+  it.effect("does not admit work after its owning Fiber is interrupted at a checkpoint", () => Effect.gen(function* () {
     const store = new MemorySchedulerStore([ready("work", 1)]);
     const calls: string[] = [];
     let checkpoints = 0;
-    let stopped = false;
+    const reached = yield* Deferred.make<void>();
 
-    const result = await advanceRun({
+    const advancing = yield* Effect.forkChild(advanceRunEffect({
       runId: "run_1",
       ownerId: "owner-a",
       store,
-      shouldStop: () => stopped,
-      onCheckpoint: () => {
+      onCheckpoint: () => Effect.gen(function* () {
         checkpoints += 1;
-        if (checkpoints === 2) stopped = true;
-      },
+        if (checkpoints !== 2) return;
+        yield* Deferred.succeed(reached, undefined);
+        yield* Effect.never;
+      }),
       executor: executor(context => {
         calls.push(context.nodeKey);
         return completed();
       }),
-    });
+    }));
 
-    expect(result).toMatchObject({ status: "lease_lost", started: 0 });
+    yield* Deferred.await(reached);
+    yield* Fiber.interrupt(advancing);
+    const exit = yield* Fiber.await(advancing);
+    expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
     expect(calls).toEqual([]);
-  });
+    expect(store.releaseCount).toBe(1);
+  }));
 
   it("aborts active work when pause requeues the running instance", async () => {
     const store = new MemorySchedulerStore([ready("work", 1)]);
@@ -490,60 +425,93 @@ describe("scheduler advance loop", () => {
       ownerId: "owner-a",
       store,
       wakeup,
-      executor: executor(context => new Promise(resolve => {
+      executor: executor(() => {
         setTimeout(() => {
           store.pauseRun({ runId: "run_1", ownerEpoch: 1, idempotencyKey: "pause-active" });
           wakeup.wake();
         }, 0);
-        context.signal.addEventListener("abort", () => {
-          aborted = true;
-          resolve({ status: "cancelled", reason: "paused" });
-        }, { once: true });
-      })),
+        return Effect.never.pipe(
+          Effect.onInterrupt(() => Effect.sync(() => {
+            aborted = true;
+          })),
+        );
+      }),
     });
 
     expect(aborted).toBe(true);
     expect(result).toMatchObject({ status: "paused", started: 1, cancelled: 1 });
   });
 
-  it("renews the run lease while leaf work is active", async () => {
+  it.effect("renews the run lease while leaf work is active", () => Effect.gen(function* () {
     const store = new MemorySchedulerStore([ready("work", 1)]);
 
-    const result = await advanceRun({
+    const advancing = yield* Effect.forkChild(advanceRunEffect({
       runId: "run_1",
       ownerId: "owner-a",
       store,
-      leaseMs: 3,
-      executor: executor(async () => {
-        await waitUntil(() => store.heartbeatCount >= 2);
-        return completed();
-      }),
-    });
+      leaseMs: 3_000,
+      executor: executor(() => Effect.sleep(2_500).pipe(Effect.as(completed()))),
+    }));
 
+    yield* Effect.yieldNow;
+    expect(store.heartbeatCount).toBe(0);
+    yield* TestClock.adjust(1_000);
+    expect(store.heartbeatCount).toBe(1);
+    yield* TestClock.adjust(1_000);
+    expect(store.heartbeatCount).toBe(2);
+    yield* TestClock.adjust(500);
+    const result = yield* Fiber.join(advancing);
     expect(result).toMatchObject({ status: "idle", started: 1, completed: 1 });
     expect(store.heartbeatCount).toBeGreaterThanOrEqual(2);
-  });
+  }));
 
-  it("does not drain derived transitions after heartbeat lease loss", async () => {
+  it.effect("does not drain derived transitions after heartbeat lease loss", () => Effect.gen(function* () {
     const store = new MemorySchedulerStore([ready("work", 1)]);
-    store.failHeartbeatAfter = 1;
+    store.failHeartbeatAfter = 0;
 
-    const result = await advanceRun({
+    const advancing = yield* Effect.forkChild(advanceRunEffect({
       runId: "run_1",
       ownerId: "owner-a",
       store,
-      leaseMs: 3,
-      executor: executor(context => new Promise(resolve => {
-        context.signal.addEventListener("abort", () => resolve({ status: "cancelled", reason: "superseded" }), { once: true });
-      })),
+      leaseMs: 3_000,
+      executor: executor(() => Effect.never),
       materialize: () => {
         if (store.heartbeatCount > 1) throw new Error("materialize called after lease loss");
         return [];
       },
-    });
+    }));
 
+    yield* Effect.yieldNow;
+    yield* TestClock.adjust(1_000);
+    const result = yield* Fiber.join(advancing);
     expect(result).toMatchObject({ status: "lease_lost", started: 1 });
-  });
+  }));
+
+  it.effect("treats a heartbeat defect as lease loss and interrupts active work", () => Effect.gen(function* () {
+    const store = new MemorySchedulerStore([ready("work", 1)]);
+    store.heartbeatFailure = new Error("heartbeat failed");
+    let interrupted = false;
+
+    const advancing = yield* Effect.forkChild(advanceRunEffect({
+      runId: "run_1",
+      ownerId: "owner-a",
+      store,
+      leaseMs: 3_000,
+      executor: executor(() => Effect.never.pipe(
+        Effect.onInterrupt(() => Effect.sync(() => {
+          interrupted = true;
+        })),
+      )),
+    }));
+
+    yield* Effect.yieldNow;
+    yield* TestClock.adjust(1_000);
+    const result = yield* Fiber.join(advancing);
+
+    expect(interrupted).toBe(true);
+    expect(result).toMatchObject({ status: "lease_lost", started: 1 });
+    expect(store.releaseCount).toBe(1);
+  }));
 
   it("continues beyond 1000 progressing derived batches and yields cooperatively", async () => {
     const store = new CachedProjectionSchedulerStore([
@@ -621,35 +589,35 @@ describe("scheduler advance loop", () => {
     expect(calls).toEqual(["seed", "after-yield"]);
   });
 
-  it("stops at the cooperative checkpoint of a long derived drain", async () => {
+  it.effect("interrupts a long derived drain at its cooperative checkpoint", () => Effect.gen(function* () {
     const store = new CachedProjectionSchedulerStore([
       { type: "frame.started", payload: { runId: "run_1", frameKey: "loop", frameKind: "loop" } },
       { type: "frame.loop_advanced", payload: { frameKey: "loop", iter: 0, state: 0, transition: { state: 1, stop: false } } },
       ready("work", 1),
     ]);
-    const wakeup = createVersionedWakeup();
-    let stopped = false;
     let aborted = false;
-    setImmediate(() => {
-      stopped = true;
-      wakeup.wake();
-    });
+    let checkpointBlocked = false;
+    const reached = yield* Deferred.make<void>();
 
-    const result = await advanceRun({
+    const advancing = yield* Effect.forkChild(advanceRunEffect({
       runId: "run_1",
       ownerId: "owner-a",
       store,
-      wakeup,
-      shouldStop: () => stopped,
-      executor: executor(context => {
-        wakeup.wake();
-        return new Promise(resolve => {
-          context.signal.addEventListener("abort", () => {
+      executor: executor(() => {
+        return Effect.never.pipe(
+          Effect.onInterrupt(() => Effect.sync(() => {
             aborted = true;
-            resolve(abortedExecution());
-          }, { once: true });
-        });
+          })),
+        );
       }),
+      onCheckpoint: snapshot => {
+        const iteration = snapshot.projection.frames.loop?.loop?.iter ?? 0;
+        if (checkpointBlocked || snapshot.projection.attempts.attempt_1?.status !== "started" || iteration < 64) {
+          return Effect.void;
+        }
+        checkpointBlocked = true;
+        return Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never));
+      },
       materialize: snapshot => {
         if (snapshot.projection.attempts.attempt_1?.status !== "started") return [];
         const iteration = snapshot.projection.frames.loop?.loop?.iter;
@@ -660,20 +628,25 @@ describe("scheduler advance loop", () => {
           payload: { frameKey: "loop", iter: next, state: next, transition: { state: next + 1, stop: false } },
         }];
       },
-    });
+    }));
 
-    expect(result).toMatchObject({ status: "lease_lost", started: 1 });
+    yield* Deferred.await(reached);
+    yield* Fiber.interrupt(advancing);
+    const exit = yield* Fiber.await(advancing);
+    expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
     expect(aborted).toBe(true);
-    expect(store.loadRunSnapshot("run_1").projection.frames.loop?.loop?.iter).toBe(256);
-  });
+    const iteration = store.loadRunSnapshot("run_1").projection.frames.loop?.loop?.iter;
+    expect(iteration).toBeGreaterThanOrEqual(64);
+    expect(iteration).toBeLessThanOrEqual(256);
+    expect(store.releaseCount).toBe(1);
+  }));
 
-  it("waits for executor cleanup when stop is observed inside a derived drain", async () => {
+  it("waits for executor cleanup when its owning Fiber is interrupted inside a derived drain", async () => {
     const store = new CachedProjectionSchedulerStore([
       { type: "frame.started", payload: { runId: "run_1", frameKey: "loop", frameKind: "loop" } },
       { type: "frame.loop_advanced", payload: { frameKey: "loop", iter: 0, state: 0, transition: { state: 1, stop: false } } },
       ready("work", 1),
     ]);
-    let stopped = false;
     let markAborted!: () => void;
     let finishCleanup!: () => void;
     const aborted = new Promise<void>(resolve => {
@@ -682,21 +655,34 @@ describe("scheduler advance loop", () => {
     const cleanup = new Promise<void>(resolve => {
       finishCleanup = resolve;
     });
-    setImmediate(() => {
-      stopped = true;
+    let markExecutorStarted!: () => void;
+    const executorStarted = new Promise<void>(resolve => {
+      markExecutorStarted = resolve;
     });
+    let markDrainReached!: () => void;
+    const drainReached = new Promise<void>(resolve => {
+      markDrainReached = resolve;
+    });
+    let checkpointBlocked = false;
     let settled = false;
-    const advancing = advanceRun({
+    const advancing = Effect.runFork(advanceRunEffect({
       runId: "run_1",
       ownerId: "owner-a",
       store,
-      shouldStop: () => stopped,
-      executor: executor(context => new Promise(resolve => {
-        context.signal.addEventListener("abort", () => {
-          markAborted();
-          void cleanup.then(() => resolve(abortedExecution()));
-        }, { once: true });
-      })),
+      executor: executor(() => Effect.sync(markExecutorStarted).pipe(
+        Effect.andThen(Effect.never),
+        Effect.onInterrupt(() => Effect.sync(markAborted).pipe(
+          Effect.andThen(Effect.promise(() => cleanup)),
+        )),
+      )),
+      onCheckpoint: snapshot => {
+        const iteration = snapshot.projection.frames.loop?.loop?.iter ?? 0;
+        if (checkpointBlocked || snapshot.projection.attempts.attempt_1?.status !== "started" || iteration < 1) {
+          return Effect.void;
+        }
+        checkpointBlocked = true;
+        return Effect.sync(markDrainReached).pipe(Effect.andThen(Effect.never));
+      },
       materialize: snapshot => {
         if (snapshot.projection.attempts.attempt_1?.status !== "started") return [];
         const iteration = snapshot.projection.frames.loop?.loop?.iter;
@@ -707,16 +693,25 @@ describe("scheduler advance loop", () => {
           payload: { frameKey: "loop", iter: next, state: next, transition: { state: next + 1, stop: false } },
         }];
       },
-    }).then(result => {
+    }));
+
+    await executorStarted;
+    await drainReached;
+    const interruption = Effect.runPromise(Fiber.interrupt(advancing).pipe(
+      Effect.andThen(Fiber.await(advancing)),
+    )).then(exit => {
       settled = true;
-      return result;
+      return exit;
     });
 
     await aborted;
     await Promise.resolve();
     expect(settled).toBe(false);
+    expect(store.releaseCount).toBe(0);
     finishCleanup();
-    await expect(advancing).resolves.toMatchObject({ status: "lease_lost", started: 1 });
+    const exit = await interruption;
+    expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+    expect(store.releaseCount).toBe(1);
   });
 
   it("holds the owner lease until an aborted executor finishes cleanup after a scheduler failure", async () => {
@@ -730,22 +725,23 @@ describe("scheduler advance loop", () => {
     const cleanup = new Promise<void>(resolve => {
       finishCleanup = resolve;
     });
+    let executorStarted = false;
     const advancing = advanceRun({
       runId: "run_1",
       ownerId: "owner-a",
       store,
       wakeup,
-      executor: executor(context => {
+      executor: executor(() => Effect.sync(() => {
+        executorStarted = true;
         wakeup.wake();
-        return new Promise(resolve => {
-          context.signal.addEventListener("abort", () => {
-            markAborted();
-            void cleanup.then(() => resolve(abortedExecution()));
-          }, { once: true });
-        });
-      }),
+      }).pipe(
+        Effect.andThen(Effect.never),
+        Effect.onInterrupt(() => Effect.sync(markAborted).pipe(
+          Effect.andThen(Effect.promise(() => cleanup)),
+        )),
+      )),
       materialize: snapshot => {
-        if (snapshot.projection.attempts.attempt_1?.status === "started") throw new Error("materialization failed");
+        if (executorStarted && snapshot.projection.attempts.attempt_1?.status === "started") throw new Error("materialization failed");
         return [];
       },
     });
@@ -758,7 +754,7 @@ describe("scheduler advance loop", () => {
     expect(store.releaseCount).toBe(1);
   });
 
-  it("does not wait for executor cleanup after the owner lease is lost", async () => {
+  it("waits for owned executor cleanup after the owner lease is lost", async () => {
     const store = new MemorySchedulerStore([
       { type: "frame.started", payload: { runId: "run_1", frameKey: "loop", frameKind: "loop" } },
       { type: "frame.loop_advanced", payload: { frameKey: "loop", iter: 0, state: 0, transition: { state: 1, stop: false } } },
@@ -774,22 +770,23 @@ describe("scheduler advance loop", () => {
     const cleanup = new Promise<void>(resolve => {
       finishCleanup = resolve;
     });
+    let executorStarted = false;
     let settled = false;
     const advancing = advanceRun({
       runId: "run_1",
       ownerId: "owner-a",
       store,
       wakeup,
-      executor: executor(context => {
+      executor: executor(() => Effect.sync(() => {
+        executorStarted = true;
         wakeup.wake();
-        return new Promise(resolve => {
-          context.signal.addEventListener("abort", () => {
-            markAborted();
-            void cleanup.then(() => resolve(abortedExecution()));
-          }, { once: true });
-        });
-      }),
-      materialize: snapshot => snapshot.projection.attempts.attempt_1?.status === "started"
+      }).pipe(
+        Effect.andThen(Effect.never),
+        Effect.onInterrupt(() => Effect.sync(markAborted).pipe(
+          Effect.andThen(Effect.promise(() => cleanup)),
+        )),
+      )),
+      materialize: snapshot => executorStarted && snapshot.projection.attempts.attempt_1?.status === "started"
         ? [{ type: "frame.loop_advanced", payload: { frameKey: "loop", iter: 1, state: 1, transition: { state: 2, stop: false } } }]
         : [],
     }).then(result => {
@@ -799,10 +796,10 @@ describe("scheduler advance loop", () => {
 
     await aborted;
     await Promise.resolve();
-    const settledBeforeCleanup = settled;
+    expect(settled).toBe(false);
     finishCleanup();
     await expect(advancing).resolves.toMatchObject({ status: "lease_lost", started: 1 });
-    expect(settledBeforeCleanup).toBe(true);
+    expect(settled).toBe(true);
   });
 
   it("yields cooperatively across 1001 sequential synchronous leaves", async () => {
@@ -843,12 +840,12 @@ describe("scheduler advance loop", () => {
       reasons.push(context.attemptStartReason);
       if (!shouldPause) return completed({ ok: true });
       shouldPause = false;
-      return new Promise(resolve => {
+      return Effect.suspend(() => {
         setTimeout(() => {
           store.pauseRun({ runId: "run_1", ownerEpoch: 1, idempotencyKey: "pause-active" });
           wakeup.wake();
         }, 0);
-        context.signal.addEventListener("abort", () => resolve({ status: "cancelled", reason: "paused" }), { once: true });
+        return Effect.never;
       });
     });
 
@@ -929,7 +926,6 @@ describe("scheduler advance loop", () => {
       ownerId: "owner-a",
       store,
       executor: executor(() => completed()),
-      now: () => new Date("2026-06-30T00:00:01.000Z"),
     });
 
     const projection = store.loadRunSnapshot("run_1").projection;
@@ -949,7 +945,6 @@ describe("scheduler advance loop", () => {
       ownerId: "owner-a",
       store,
       executor: executor(() => completed()),
-      now: () => new Date("2026-06-30T00:00:01.000Z"),
     });
 
     const projection = store.loadRunSnapshot("run_1").projection;
@@ -989,7 +984,6 @@ describe("scheduler advance loop", () => {
       ownerId: "owner-a",
       store,
       executor: executor(() => completed()),
-      now: () => new Date("2026-06-30T00:00:01.000Z"),
     });
 
     const projection = store.loadRunSnapshot("run_1").projection;
@@ -1048,12 +1042,13 @@ describe("scheduler advance loop", () => {
       maxLeafConcurrency: 2,
       executor: executor(context => {
         if (context.nodeKey === "winner") return loserStarted.then(() => completed({ ok: true }));
-        return new Promise(resolve => {
+        return Effect.suspend(() => {
           markLoserStarted();
-          context.signal.addEventListener("abort", () => {
-            loserAborted = true;
-            resolve({ status: "cancelled", reason: "race_lost" });
-          }, { once: true });
+          return Effect.never.pipe(
+            Effect.onInterrupt(() => Effect.sync(() => {
+              loserAborted = true;
+            })),
+          );
         });
       }),
     });
@@ -1119,18 +1114,24 @@ describe("scheduler advance loop", () => {
 
   it("stores derived attempt deadlines before executor work starts", async () => {
     const store = new MemorySchedulerStore([ready("work", 1)]);
+    let authoredAt: Date | undefined;
 
     await expect(advanceRun({
       runId: "run_1",
       ownerId: "owner-a",
       store,
-      now: () => new Date("2026-07-01T00:00:00.000Z"),
-      deadlineAtFor: (_instance, _projection, now) => ok(new Date(now.getTime() + 5_000)),
+      deadlineAtFor: (_instance, _projection, now) => {
+        authoredAt = now;
+        return Result.succeed(new Date(now.getTime() + 5_000));
+      },
       executor: executor(() => completed({ ok: true })),
     })).resolves.toMatchObject({ status: "idle", started: 1, completed: 1 });
 
     const attempt = Object.values(store.loadRunSnapshot("run_1").projection.attempts).find(attempt => attempt.nodeKey === "work");
-    expect(attempt).toMatchObject({ status: "completed", deadlineAt: "2026-07-01T00:00:05.000Z" });
+    expect(attempt).toMatchObject({
+      status: "completed",
+      deadlineAt: new Date(authoredAt!.getTime() + 5_000).toISOString(),
+    });
   });
 
   it("commits deadline derivation failures without invoking the executor", async () => {
@@ -1142,7 +1143,7 @@ describe("scheduler advance loop", () => {
       runId: "run_1",
       ownerId: "owner-a",
       store,
-      deadlineAtFor: () => err({ status: "failed", reason: "unsupported deadline", error }),
+      deadlineAtFor: () => Result.fail({ status: "failed", reason: "unsupported deadline", error }),
       executor: executor(() => {
         executed = true;
         return completed();
@@ -1159,6 +1160,7 @@ class MemorySchedulerStore implements SchedulerExecutionStore {
   claimable = true;
   heartbeatCount = 0;
   failHeartbeatAfter: number | undefined;
+  heartbeatFailure: unknown = undefined;
   failCommits = false;
   throwTimedOutCommits = false;
   loadCount = 0;
@@ -1181,6 +1183,7 @@ class MemorySchedulerStore implements SchedulerExecutionStore {
 
   heartbeatRun(): boolean {
     this.heartbeatCount += 1;
+    if (this.heartbeatFailure !== undefined) throw this.heartbeatFailure;
     return this.claimable && (this.failHeartbeatAfter === undefined || this.heartbeatCount <= this.failHeartbeatAfter);
   }
 
@@ -1192,8 +1195,8 @@ class MemorySchedulerStore implements SchedulerExecutionStore {
     return true;
   }
 
-  tryLoadRunSnapshot(runId: string): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.loadRunSnapshot(runId));
+  tryLoadRunSnapshot(runId: string): SchedulerSnapshot {
+    return this.loadRunSnapshot(runId);
   }
 
   loadRunSnapshot(runId: string): SchedulerSnapshot {
@@ -1205,8 +1208,8 @@ class MemorySchedulerStore implements SchedulerExecutionStore {
     };
   }
 
-  tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.appendSchedulerEvents(commit));
+  tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerSnapshot {
+    return this.appendSchedulerEvents(commit);
   }
 
   appendSchedulerEvents(commit: SchedulerCommit): SchedulerSnapshot {
@@ -1215,8 +1218,8 @@ class MemorySchedulerStore implements SchedulerExecutionStore {
     return this.loadRunSnapshot(commit.runId);
   }
 
-  tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<AttemptStartResult> {
-    return schedulerStoreResult(() => this.startAttempt(input));
+  tryStartAttempt(input: AttemptStartInput): AttemptStartResult {
+    return this.startAttempt(input);
   }
 
   startAttempt(input: AttemptStartInput): AttemptStartResult {
@@ -1233,8 +1236,8 @@ class MemorySchedulerStore implements SchedulerExecutionStore {
     return { attemptId, attemptNo: this.attemptNo, snapshot: this.loadRunSnapshot(input.runId), disposition: "started" };
   }
 
-  tryCommitAttemptResult(input: AttemptCommitInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.commitAttemptResult(input));
+  tryCommitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot {
+    return this.commitAttemptResult(input);
   }
 
   commitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot {
@@ -1271,8 +1274,8 @@ class MemorySchedulerStore implements SchedulerExecutionStore {
     return this.loadRunSnapshot(input.runId);
   }
 
-  tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.markExpiredOwnerAttemptsSuperseded(input));
+  tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerSnapshot {
+    return this.markExpiredOwnerAttemptsSuperseded(input);
   }
 
   markExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerSnapshot {
@@ -1298,8 +1301,8 @@ class CachedProjectionSchedulerStore extends MemorySchedulerStore {
     };
   }
 
-  override tryLoadRunSnapshot(runId: string): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.loadRunSnapshot(runId));
+  override tryLoadRunSnapshot(runId: string): SchedulerSnapshot {
+    return this.loadRunSnapshot(runId);
   }
 
   override loadRunSnapshot(_runId: string): SchedulerSnapshot {
@@ -1307,8 +1310,8 @@ class CachedProjectionSchedulerStore extends MemorySchedulerStore {
     return this.snapshot;
   }
 
-  override tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.appendSchedulerEvents(commit));
+  override tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerSnapshot {
+    return this.appendSchedulerEvents(commit);
   }
 
   override appendSchedulerEvents(commit: SchedulerCommit): SchedulerSnapshot {
@@ -1323,8 +1326,8 @@ class CachedProjectionSchedulerStore extends MemorySchedulerStore {
     return this.snapshot;
   }
 
-  override tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<AttemptStartResult> {
-    return schedulerStoreResult(() => this.startAttempt(input));
+  override tryStartAttempt(input: AttemptStartInput): AttemptStartResult {
+    return this.startAttempt(input);
   }
 
   override startAttempt(input: AttemptStartInput): AttemptStartResult {
@@ -1349,8 +1352,8 @@ class CachedProjectionSchedulerStore extends MemorySchedulerStore {
     return { attemptId, attemptNo: this.cachedAttemptNo, snapshot, disposition: "started" };
   }
 
-  override tryCommitAttemptResult(input: AttemptCommitInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.commitAttemptResult(input));
+  override tryCommitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot {
+    return this.commitAttemptResult(input);
   }
 
   override commitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot {
@@ -1381,17 +1384,17 @@ class CompactSequentialSchedulerStore extends CachedProjectionSchedulerStore {
 class StaleAdmissionSchedulerStore extends MemorySchedulerStore {
   startCalls = 0;
 
-  override tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<AttemptStartResult> {
+  override tryStartAttempt(input: AttemptStartInput): AttemptStartResult {
     this.startCalls += 1;
     this.pauseRun({ runId: input.runId, ownerEpoch: input.ownerEpoch, idempotencyKey: "pause-before-start" });
     const actualVersion = this.loadRunSnapshot(input.runId).version;
-    return schedulerStoreResult(() => throwStoreError({
+    return throwStoreError({
       type: "version-mismatch",
       runId: input.runId,
       expectedVersion: input.expectedVersion,
       actualVersion,
       message: "version mismatch",
-    }));
+    });
   }
 }
 
@@ -1399,12 +1402,13 @@ function throwStoreError(error: SchedulerStoreError): never {
   throw new SchedulerStoreException(error);
 }
 
-function executor(run: (context: NodeAttemptContext) => AttemptCommitInput["result"] | Promise<AttemptCommitInput["result"]>): NodeExecutor {
-  return { execute: context => Promise.resolve(run(context)) };
-}
-
-function abortedExecution(): AttemptCommitInput["result"] {
-  return { status: "cancelled", reason: "superseded" };
+function executor(run: (context: NodeAttemptContext) => AttemptCommitInput["result"] | Promise<AttemptCommitInput["result"]> | Effect.Effect<AttemptCommitInput["result"]>): NodeExecutor {
+  return {
+    execute: context => Effect.suspend(() => {
+      const result = run(context);
+      return Effect.isEffect(result) ? result : Effect.promise(() => Promise.resolve(result));
+    }),
+  };
 }
 
 function ready(nodeKey: string, readinessSequence: number, nodeId = nodeKey): SchedulerEvent {

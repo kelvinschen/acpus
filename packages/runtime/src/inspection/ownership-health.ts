@@ -1,7 +1,10 @@
 import { inspectAcpOwnership, type AcpOwnershipHealth } from "@acpus/agent-executor";
+import { makeNodeProcessHost } from "@acpus/owned-process";
+import * as Effect from "effect/Effect";
 import { resolveRuntimeLayout } from "../runtime-layout.js";
 import type { RuntimeAgentSessionInspection } from "../scheduler/store-port.js";
-import type { RunInspectionStoreRead, RuntimeStore } from "../store/store.js";
+import type { RunInspectionStoreRead } from "../store/store.js";
+import type { RuntimeStoreBusy, RuntimeStoreShape } from "../store/service.js";
 import type { InspectionObservation, InspectionRead } from "./types.js";
 
 type OwnershipHealth = NonNullable<RuntimeAgentSessionInspection["ownershipHealth"]>;
@@ -11,22 +14,24 @@ export type AgentSessionOwnershipHealth = Readonly<{
   fallback: OwnershipHealth;
 }>;
 
-export async function readAgentSessionOwnershipHealth(
+export function readAgentSessionOwnershipHealth(
   cwd: string,
-  store: RuntimeStore,
-): Promise<AgentSessionOwnershipHealth> {
-  const authority = store.getRuntimeDiagnostics().authority;
-  const ownership = await inspectAcpOwnership({
-    workersRoot: resolveRuntimeLayout(cwd).acpWorkersRoot,
-    ...(authority?.pid === undefined ? {} : {
-      owner: {
-        epoch: authority.epoch,
-        pid: authority.pid,
-        ...(authority.processStartToken === undefined ? {} : { startToken: authority.processStartToken }),
-      },
-    }),
+  store: RuntimeStoreShape,
+): Effect.Effect<AgentSessionOwnershipHealth, RuntimeStoreBusy> {
+  return Effect.gen(function* () {
+    const authority = (yield* store.getRuntimeDiagnostics()).authority;
+    const ownership = yield* inspectAcpOwnership({
+      workersRoot: resolveRuntimeLayout(cwd).acpWorkersRoot,
+      ...(authority?.pid === undefined ? {} : {
+        owner: {
+          epoch: authority.epoch,
+          pid: authority.pid,
+          ...(authority.processStartToken === undefined ? {} : { startToken: authority.processStartToken }),
+        },
+      }),
+    }, makeNodeProcessHost());
+    return ownershipHealthProjection(ownership);
   });
-  return ownershipHealthProjection(ownership);
 }
 
 export function ownershipHealthProjection(ownership: AcpOwnershipHealth): AgentSessionOwnershipHealth {

@@ -1,12 +1,15 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import { readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-  requestDaemonControl,
-  requestDaemonStatus,
-  requestDaemonSubmitAndObserve,
+  requestDaemonControl as requestDaemonControlEffect,
+  requestDaemonStatus as requestDaemonStatusEffect,
+  requestDaemonSubmitAndObserve as requestDaemonSubmitAndObserveStream,
 } from "../src/daemon/client.js";
-import { startDaemonLoop } from "../src/daemon/loop.js";
+import { startDaemonLoop } from "./support/daemon-loop.js";
 import type {
   DaemonRunStreamFrame,
   RuntimeAuthorityIdentity,
@@ -23,6 +26,18 @@ import {
   validWorkflow,
   withRuntimeWorkspace,
 } from "./support/runtime-fixtures.js";
+
+function requestDaemonControl(...args: Parameters<typeof requestDaemonControlEffect>) {
+  return Effect.runPromise(Effect.result(requestDaemonControlEffect(...args)));
+}
+
+function requestDaemonStatus(...args: Parameters<typeof requestDaemonStatusEffect>) {
+  return Effect.runPromise(Effect.result(requestDaemonStatusEffect(...args)));
+}
+
+function requestDaemonSubmitAndObserve(...args: Parameters<typeof requestDaemonSubmitAndObserveStream>) {
+  return Stream.toAsyncIterable(Stream.result(requestDaemonSubmitAndObserveStream(...args)));
+}
 
 describe("daemon v4 submit authority", () => {
   it("rejects every authority field mismatch before any run mutation", async () => {
@@ -151,7 +166,7 @@ describe("daemon v4 submit authority", () => {
           type: "pause",
           runId,
         });
-        expect(paused.isOk() ? paused.value.run.status : undefined).toBe("paused");
+        expect(Result.isSuccess(paused) ? paused.success.run.status : undefined).toBe("paused");
         const beforePausedReplay = await durableAdmissionFootprint(workspace, runId);
 
         const pausedReplay = await submit(workspace, {
@@ -164,7 +179,6 @@ describe("daemon v4 submit authority", () => {
           kind: "admitted",
           run: { id: runId, status: "paused" },
         });
-        await new Promise(resolve => setTimeout(resolve, 100));
         expect(await durableAdmissionFootprint(workspace, runId)).toEqual(beforePausedReplay);
       } finally {
         await loop.shutdown();
@@ -175,8 +189,8 @@ describe("daemon v4 submit authority", () => {
 
 async function currentAuthority(cwd: string): Promise<RuntimeAuthorityIdentity> {
   const status = await requestDaemonStatus(cwd);
-  if (status.isErr()) throw new Error(status.error.message);
-  return status.value.authority;
+  if (Result.isFailure(status)) throw new Error(status.failure.message);
+  return status.success.authority;
 }
 
 async function submit(
@@ -190,8 +204,8 @@ async function submit(
 ): Promise<DaemonRunStreamFrame[]> {
   const frames: DaemonRunStreamFrame[] = [];
   for await (const frame of requestDaemonSubmitAndObserve(cwd, { ...input, until: "admitted" })) {
-    if (frame.isErr()) throw new Error(frame.error.message);
-    frames.push(frame.value);
+    if (Result.isFailure(frame)) throw new Error(frame.failure.message);
+    frames.push(frame.success);
   }
   return frames;
 }

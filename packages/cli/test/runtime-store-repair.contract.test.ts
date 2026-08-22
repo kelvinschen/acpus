@@ -6,7 +6,7 @@ import {
   resolveRuntimeWorkspaceLayout,
 } from "../../runtime/src/runtime-layout.js";
 import {
-  openRuntimeStore,
+  openRuntimeStoreAdapter,
 } from "../../runtime/src/store/store.js";
 import {
   RUNTIME_APPLICATION_ID,
@@ -20,7 +20,7 @@ import { withPlainTestWorkspace } from "./support/workspace.js";
 describe("Runtime store repair diagnostics", () => {
   it("directs inspection of a legacy store to Doctor repair", async () => {
     await withPlainTestWorkspace("runtime-store-repair-required", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       store.close();
 
       const current = resolveRuntimeLayout(workspace);
@@ -65,7 +65,7 @@ describe("Runtime store repair diagnostics", () => {
 
   it("keeps unsupported storage out of generic inspection read failures", async () => {
     await withPlainTestWorkspace("runtime-store-unsupported", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       store.close();
       const layout = resolveRuntimeLayout(workspace);
       const database = new DatabaseSync(layout.databasePath);

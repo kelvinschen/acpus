@@ -1,18 +1,19 @@
+import * as Result from "effect/Result";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { describe, expect, it } from "vitest";
-import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter, type RuntimeStoreAdapter } from "../src/store/store.js";
 import { deriveInstanceKey } from "../src/scheduler/identity.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
 import { stableJson } from "../src/stable-json.js";
 import { prepareSyntheticWorkflow, timedSignalWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
-import { throwingSchedulerStore } from "./support/scheduler-store.js";
+import { captureSchedulerCall, throwingSchedulerStore } from "./support/scheduler-store.js";
 import { awaitingSignal, dbRow, dbRun, dbScalar } from "./support/store-port-fixtures.js";
 
 describe("scheduler store signals and timeout settlement", () => {
   it("consumes signal waits idempotently through scheduler events", async () => {
     await withRuntimeWorkspace("scheduler-store-signal-consume", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -114,7 +115,7 @@ describe("scheduler store signals and timeout settlement", () => {
   it("applies duplicate signal consumption for running group members", async () => {
     await withRuntimeWorkspace("scheduler-store-signal-group-member-consume", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -159,7 +160,7 @@ describe("scheduler store signals and timeout settlement", () => {
   it("rejects signal consumption after timeout without appending events", async () => {
     await withRuntimeWorkspace("scheduler-store-signal-timeout-race", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -195,7 +196,7 @@ describe("scheduler store signals and timeout settlement", () => {
   it("drops a terminal signal wait when retrying the failed signal node", async () => {
     await withRuntimeWorkspace("scheduler-store-signal-timeout-retry", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -230,7 +231,7 @@ describe("scheduler store signals and timeout settlement", () => {
   it("rejects signal consumption while paused", async () => {
     await withRuntimeWorkspace("scheduler-store-signal-paused", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -263,7 +264,7 @@ describe("scheduler store signals and timeout settlement", () => {
   it("freezes and resumes signal timeout deadlines while paused", async () => {
     await withRuntimeWorkspace("scheduler-store-signal-timeout-pause-resume", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -306,7 +307,7 @@ describe("scheduler store signals and timeout settlement", () => {
   it("rejects an out-of-range resumed signal deadline atomically", async () => {
     await withRuntimeWorkspace("scheduler-store-signal-timeout-resume-range", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -324,12 +325,12 @@ describe("scheduler store signals and timeout settlement", () => {
         expect(paused.projection.signalWaits["approve~1"]?.timeoutRemainingMs).toBe(remainingMs);
         const eventCount = dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", run.id);
 
-        expect(store.scheduler.tryResumeRun({
+        expect(Result.getOrThrow(Result.flip(captureSchedulerCall(() => store.scheduler.tryResumeRun({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "signal-timeout-range:resume",
           now: new Date(1),
-        })._unsafeUnwrapErr()).toEqual({
+        }))))).toEqual({
           type: "deadline-out-of-range",
           runId: run.id,
           nodeKey: "approve~1",
@@ -350,7 +351,7 @@ describe("scheduler store signals and timeout settlement", () => {
   it("times out overdue signal waits before consuming late payloads", async () => {
     await withRuntimeWorkspace("scheduler-store-signal-timeout-before-consume", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, timedSignalWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -382,7 +383,7 @@ describe("scheduler store signals and timeout settlement", () => {
   it("settles overdue signal timeouts before applying pause", async () => {
     await withRuntimeWorkspace("scheduler-store-signal-timeout-before-pause", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, timedSignalWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -410,7 +411,7 @@ describe("scheduler store signals and timeout settlement", () => {
   it("preserves the scheduler diagnostic for missing frozen workflows", async () => {
     await withRuntimeWorkspace("scheduler-store-signal-timeout-missing-frozen-workflow", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, timedSignalWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -435,7 +436,7 @@ describe("scheduler store signals and timeout settlement", () => {
   });
 });
 
-function awaitingRootSignal(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string, signal: { deadlineAt?: string; timeoutMessage?: string } = {}): string {
+function awaitingRootSignal(store: RuntimeStoreAdapter, runId: string, claim: RunOwnerClaim, idempotencyKey: string, signal: { deadlineAt?: string; timeoutMessage?: string } = {}): string {
   const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
   const nodeKey = deriveInstanceKey([{ kind: "node", nodeId: "approve" }]);
   throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
@@ -453,7 +454,7 @@ function awaitingRootSignal(store: RuntimeStore, runId: string, claim: RunOwnerC
   return nodeKey;
 }
 
-function awaitingGroupSignal(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string): void {
+function awaitingGroupSignal(store: RuntimeStoreAdapter, runId: string, claim: RunOwnerClaim, idempotencyKey: string): void {
   const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
   throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,

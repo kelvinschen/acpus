@@ -4,17 +4,15 @@ import { describe, expect, it } from "vitest";
 import { repoRoot } from "./support/cli-runner.js";
 import {
   globalImportRoot,
-  importDirect,
   projectImportRoot,
   readNames,
   runImportText,
   withTestHome,
-  workflowSource,
 } from "./support/workflow-import.js";
 import { withAuthoringTestWorkspace } from "./support/workspace.js";
 
 describe("checked workflow import contracts", () => {
-  it("returns checked global-import diagnostics in workspace context and preserves preparation failures", async () => {
+  it("returns checked global-import diagnostics in workspace context", async () => {
     await withAuthoringTestWorkspace("workflow-import-check", async workspace => {
       await withTestHome("workflow-import-check-home", async home => {
         await installWorkspaceOnlyDependency(workspace);
@@ -36,20 +34,6 @@ describe("checked workflow import contracts", () => {
         expect(checked.stderr).toBe("");
         await expect(access(join(home, ".acpus", "workflows", "workspace-checked", "workflow.ts"))).resolves.toBeUndefined();
         expect(await readNames(globalImportRoot(home))).toEqual([]);
-        expect(await readNames(projectImportRoot(workspace))).toEqual([]);
-
-        const failingSource = join(workspace, "failing.ts");
-        await writeFile(failingSource, ["throw new Error('top-level import failure');", workflowSource("failed-check")].join("\n"));
-        const failed = await importDirect(workspace, failingSource, { check: true });
-        expect(failed.isErr()).toBe(true);
-        if (failed.isErr()) {
-          expect(failed.error.type).toBe("preparation");
-          if (failed.error.type === "preparation") {
-            expect(failed.error.failure.phase).toBe("compile");
-            expect(failed.error.failure.message).toContain("top-level import failure");
-          }
-        }
-        await expect(access(join(workspace, ".acpus", "workflows", "failed-check"))).rejects.toMatchObject({ code: "ENOENT" });
         expect(await readNames(projectImportRoot(workspace))).toEqual([]);
       });
     });

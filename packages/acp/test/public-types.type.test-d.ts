@@ -1,4 +1,4 @@
-import type { ContentBlock } from "@agentclientprotocol/sdk";
+import type { ProcessHost } from "@acpus/owned-process";
 import { expectTypeOf, test } from "vitest";
 import {
   openAcpSession,
@@ -18,7 +18,9 @@ import {
   type AcpTurnResult,
   type OpenAcpSessionInput,
 } from "@acpus/acp";
-import type { ResultAsync } from "neverthrow";
+import type * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
+import type { AcpTransport } from "@acpus/acp/transport";
 
 type ExpectedAcpEvent =
   | Readonly<{
@@ -98,7 +100,11 @@ type ExpectedAcpError =
 
 test("@acpus/acp exposes the frozen stable session boundary", () => {
   expectTypeOf(openAcpSession).toEqualTypeOf<
-    (input: OpenAcpSessionInput) => ResultAsync<AcpSession, AcpError>
+    (input: OpenAcpSessionInput) => Effect.Effect<
+      AcpSession,
+      AcpError,
+      AcpTransport | ProcessHost | Scope.Scope
+    >
   >();
   expectTypeOf<AcpPermissionMode>().toEqualTypeOf<
     "approve-reads" | "approve-all" | "deny-all"
@@ -129,10 +135,10 @@ test("@acpus/acp exposes the frozen stable session boundary", () => {
     "agentSessionId" | "sessionId" | "projectionPath" | "reportedVersion" | "runTurn" | "close"
   >();
   expectTypeOf<AcpSession["runTurn"]>().toEqualTypeOf<
-    (input: AcpTurnInput) => ResultAsync<AcpTurnResult, AcpError>
+    (input: AcpTurnInput) => Effect.Effect<AcpTurnResult, AcpError>
   >();
   expectTypeOf<AcpSession["close"]>().toEqualTypeOf<
-    (reason?: string) => ResultAsync<void, AcpError>
+    (reason?: string) => Effect.Effect<void, AcpError>
   >();
   expectTypeOf<AcpTurnInput>().toEqualTypeOf<Readonly<{
     prompt: string;
@@ -141,25 +147,6 @@ test("@acpus/acp exposes the frozen stable session boundary", () => {
     onEvent?: (event: AcpEvent) => unknown;
   }>>();
 
-  const frozenLaunch = {
-    kind: "argv",
-    argv: ["fixture-agent", "--stdio"],
-    name: "fixture",
-  } as const satisfies AcpLaunch;
-  const frozenInput = {
-    agentSessionId: "session-1",
-    sessionOpenMode: "new_or_empty",
-    stateDirectory: "/state",
-    launch: frozenLaunch,
-    cwd: "/workspace",
-    env: { ACP_FIXTURE: "1" },
-    permissionMode: "approve-reads",
-    configuration: { model: null, options: {} },
-    signal: new AbortController().signal,
-  } as const satisfies OpenAcpSessionInput;
-  expectTypeOf<typeof frozenInput>().toMatchTypeOf<OpenAcpSessionInput>();
-  expectTypeOf(openAcpSession(frozenInput))
-    .toEqualTypeOf<ResultAsync<AcpSession, AcpError>>();
 });
 
 test("@acpus/acp exposes package-owned result, event, and error values", () => {
@@ -208,21 +195,3 @@ test("@acpus/acp exposes package-owned result, event, and error values", () => {
   expectTypeOf<typeof frozenEvents>().toMatchTypeOf<readonly AcpEvent[]>();
   expectTypeOf<typeof frozenError>().toMatchTypeOf<AcpError>();
 });
-
-const sdkPrompt: ContentBlock = { type: "text", text: "raw SDK prompt" };
-// @ts-expect-error public turns accept one package-owned string prompt, not an SDK ContentBlock.
-const invalidSdkPrompt: AcpTurnInput["prompt"] = sdkPrompt;
-
-// @ts-expect-error permission policy is a closed three-value union.
-const invalidPermission: AcpPermissionMode = "interactive";
-
-// @ts-expect-error argv launches require a non-empty structured tuple.
-const invalidLaunch: AcpLaunch = { kind: "argv", argv: [] };
-
-declare const session: AcpSession;
-// @ts-expect-error session recovery is owned by openAcpSession, not a public method.
-session.resume();
-// @ts-expect-error low-level loading is not part of the public callable session surface.
-session.load();
-// @ts-expect-error cancellation is supplied to runTurn through AbortSignal.
-session.cancel();

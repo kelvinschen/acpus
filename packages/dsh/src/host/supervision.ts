@@ -2,7 +2,18 @@ import type {
   InspectionView,
 } from "@acpus/runtime";
 import type { WorkspaceRuntime } from "@acpus/runtime/host";
-import type { Result } from "neverthrow";
+import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as FiberMap from "effect/FiberMap";
+import * as FiberSet from "effect/FiberSet";
+import * as Option from "effect/Option";
+import * as Result from "effect/Result";
+import * as Semaphore from "effect/Semaphore";
+import type * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import type { RuntimePool } from "./runtime-pool.js";
 import type {
   OpenedWorkspaceRuntime,
@@ -25,13 +36,12 @@ import type {
   ParentSessionAgentAdapter,
 } from "./session-agent.js";
 
-type RevisionWaiter = {
-  afterRevision: number;
-  resolve(): void;
-  reject(error: unknown): void;
-  signal: AbortSignal;
-  abort(): void;
+type RevisionPulse = {
+  revision: number;
+  deferred: Deferred.Deferred<void, Error>;
 };
+
+const SUPERVISION_DISPOSED = new Error("Acpus supervision was disposed.");
 
 export type SupervisionOptions = {
   runtimes: RuntimePool;
@@ -39,274 +49,280 @@ export type SupervisionOptions = {
   admit: (
     admissionRequestId: string,
     run: { id: string; name: string },
-  ) => Promise<AdmittedRunLink>;
+  ) => Effect.Effect<AdmittedRunLink, Error>;
   notices?: ParentSessionAgentAdapter;
   report?: (error: unknown, context: string) => void;
 };
 
+export function makeAcpusSupervision(
+  options: SupervisionOptions,
+): Effect.Effect<AcpusSupervision, never, Scope.Scope> {
+  return AcpusSupervision.make(options);
+}
+
 export class AcpusSupervision {
-  private readonly observers = new Map<string, {
-    controller: AbortController;
-    task: Promise<void>;
-    closing: boolean;
-  }>();
-  private readonly reconciliations = new Map<string, Promise<void>>();
-  private readonly activityWaiters = new Map<string, Set<RevisionWaiter>>();
-  private startupTask: Promise<void> = Promise.resolve();
-  private started = false;
-  private disposed = false;
-
-  constructor(private readonly options: SupervisionOptions) {}
-
-  start(): void {
-    if (this.started || this.disposed) return;
-    this.started = true;
-    this.startupTask = this.startupReconciliation().catch(error =>
-      this.report(error, "startup reconciliation"));
-  }
-
-  async whenReady(): Promise<void> {
-    await this.startupTask;
-  }
-
-  async reconcileRun(link: RunLink): Promise<void> {
-    if (this.disposed || link.runId === undefined) return;
-    if (!isAdmittedRunLink(link)) return;
-    const admittedLink = link;
-    const key = runKey(admittedLink);
-    const current = this.reconciliations.get(key) ?? Promise.resolve();
-    const pending = current.then(
-      () => this.reconcile(admittedLink),
-      () => this.reconcile(admittedLink),
-    ).finally(() => {
-      if (this.reconciliations.get(key) === pending) {
-        this.reconciliations.delete(key);
-      }
+  static make(
+    options: SupervisionOptions,
+  ): Effect.Effect<AcpusSupervision, never, Scope.Scope> {
+    return Effect.gen(function* () {
+      const reconciliations = yield* FiberMap.make<string, void, Error>();
+      const observers = yield* FiberMap.make<string, void, Error>();
+      const notices = yield* FiberSet.make<void, Error>();
+      const ready = yield* Deferred.make<void, Error>();
+      const supervision = new AcpusSupervision(
+        options,
+        reconciliations,
+        observers,
+        notices,
+        ready,
+      );
+      yield* Effect.addFinalizer(() => Effect.sync(() => supervision.closePulses()));
+      yield* supervision.startupReconciliation().pipe(
+        Effect.catchCause(cause => supervision.reportCause(cause, "startup reconciliation")),
+        Effect.andThen(Deferred.succeed(ready, undefined)),
+        Effect.forkScoped,
+      );
+      return supervision;
     });
-    this.reconciliations.set(key, pending);
-    return pending;
   }
 
-  async openLinkedRuntime(
+  private readonly admission = Semaphore.makeUnsafe(1);
+  private readonly closingObservers = new Set<string>();
+  private readonly activityPulses = new Map<string, RevisionPulse>();
+  private closed = false;
+
+  private constructor(
+    private readonly options: SupervisionOptions,
+    private readonly reconciliations: FiberMap.FiberMap<string, void, Error>,
+    private readonly observers: FiberMap.FiberMap<string, void, Error>,
+    private readonly noticeFibers: FiberSet.FiberSet<void, Error>,
+    private readonly ready: Deferred.Deferred<void, Error>,
+  ) {}
+
+  whenReady(): Effect.Effect<void, Error> {
+    return Deferred.await(this.ready);
+  }
+
+  reconcileRun(link: RunLink): Effect.Effect<void, Error> {
+    if (!isAdmittedRunLink(link)) return Effect.void;
+    const supervision = this;
+    const key = runKey(link);
+    return this.admission.withPermit(Effect.suspend(() => {
+      const current = FiberMap.getUnsafe(supervision.reconciliations, key);
+      if (Option.isSome(current)) return Effect.succeed(current.value);
+      return FiberMap.run(
+        supervision.reconciliations,
+        key,
+        supervision.reconcile(link),
+      );
+    })).pipe(Effect.flatMap(Fiber.join));
+  }
+
+  openLinkedRuntime(
     link: RunLink,
-  ): Promise<Result<OpenedWorkspaceRuntime, RuntimePoolOpenFailure>> {
-    const opened = await this.options.runtimes.open(link.workspace);
-    const unavailable = opened.isErr()
-      ? {
-          reason: opened.error.type,
-          detail: opened.error.message,
-          detectedAt: new Date().toISOString(),
+  ): Effect.Effect<OpenedWorkspaceRuntime, RuntimePoolOpenFailure | Error> {
+    const supervision = this;
+    return Effect.gen(function* () {
+      const opened = yield* Effect.result(supervision.options.runtimes.open(link.workspace));
+      const detectedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
+      const unavailable = Result.isFailure(opened) ? {
+        reason: opened.failure.type,
+        detail: opened.failure.message,
+        detectedAt,
+      } : undefined;
+      const committed = yield* supervision.options.store.setRunUnavailable({
+        link,
+        ...(unavailable === undefined ? {} : { unavailable }),
+      });
+      if (committed.changed) {
+        supervision.wakeSession(link.parentSessionId, committed.revision);
+      }
+      return yield* Effect.fromResult(opened);
+    });
+  }
+
+  waitForActivityRevision(
+    sessionId: string,
+    afterRevision: number,
+  ): Effect.Effect<void, Error> {
+    const supervision = this;
+    return Effect.gen(function* () {
+      if (supervision.closed) return yield* Effect.fail(SUPERVISION_DISPOSED);
+      const current = yield* supervision.options.store.readSession(sessionId);
+      if (current.revision !== afterRevision) return;
+      const pulse = yield* Effect.suspend(() => {
+        if (supervision.closed) return Effect.fail(SUPERVISION_DISPOSED);
+        const existing = supervision.activityPulses.get(sessionId);
+        if (existing !== undefined && existing.revision !== afterRevision) {
+          return Effect.succeed(undefined);
         }
-      : undefined;
-    const committed = await this.options.store.setRunUnavailable({
-      link,
-      ...(unavailable === undefined ? {} : { unavailable }),
-    });
-    if (committed.changed) {
-      this.wakeSession(this.activityWaiters, link.parentSessionId, committed.revision);
-    }
-    return opened;
-  }
-
-  async waitForActivityRevision(
-    sessionId: string,
-    afterRevision: number,
-    signal: AbortSignal,
-  ): Promise<void> {
-    return this.waitForRevision(
-      this.activityWaiters,
-      sessionId,
-      afterRevision,
-      signal,
-      () => true,
-    );
-  }
-
-  private async waitForRevision(
-    registry: Map<string, Set<RevisionWaiter>>,
-    sessionId: string,
-    afterRevision: number,
-    signal: AbortSignal,
-    shouldWake: (runs: readonly StoredRunProjection[]) => boolean,
-  ): Promise<void> {
-    if (this.disposed) throw new Error("Acpus supervision was disposed.");
-    signal.throwIfAborted();
-    const current = await this.options.store.readSession(sessionId);
-    if (current.revision !== afterRevision && shouldWake(current.runs)) return;
-    if (this.disposed) throw new Error("Acpus supervision was disposed.");
-    let registered: RevisionWaiter | undefined;
-    await new Promise<void>((resolve, reject) => {
-      const waiters = registry.get(sessionId) ?? new Set<RevisionWaiter>();
-      const waiter: RevisionWaiter = {
-        afterRevision,
-        resolve,
-        reject,
-        signal,
-        abort: () => reject(signal.reason),
-      };
-      registered = waiter;
-      waiters.add(waiter);
-      registry.set(sessionId, waiters);
-      signal.addEventListener("abort", waiter.abort, { once: true });
-      void this.options.store.readSession(sessionId).then(latest => {
-        if (latest.revision !== afterRevision && shouldWake(latest.runs)) resolve();
-      }, reject);
-    }).finally(() => {
-      const waiters = registry.get(sessionId);
-      if (waiters === undefined || registered === undefined) return;
-      registered.signal.removeEventListener("abort", registered.abort);
-      waiters.delete(registered);
-      if (waiters.size === 0) registry.delete(sessionId);
+        if (existing !== undefined) return Effect.succeed(existing.deferred);
+        const deferred = Deferred.makeUnsafe<void, Error>();
+        supervision.activityPulses.set(sessionId, { revision: afterRevision, deferred });
+        return Effect.succeed(deferred);
+      });
+      if (pulse !== undefined) yield* Deferred.await(pulse);
     });
   }
 
-  async dispose(): Promise<void> {
-    if (this.disposed) return;
-    this.disposed = true;
-    for (const observer of this.observers.values()) observer.controller.abort();
-    for (const registry of [this.activityWaiters]) {
-      for (const waiters of registry.values()) {
-        for (const waiter of waiters) waiter.reject(new Error("Acpus supervision was disposed."));
-      }
-      registry.clear();
-    }
-    await Promise.allSettled([
-      this.startupTask,
-      ...[...this.observers.values()].map(observer => observer.task),
-      ...this.reconciliations.values(),
-    ]);
-    this.observers.clear();
-    this.reconciliations.clear();
+  private startupReconciliation(): Effect.Effect<void, Error> {
+    const supervision = this;
+    return this.options.store.listReconciliationLinks().pipe(Effect.flatMap(links =>
+      Effect.forEach(
+        links,
+        link => supervision.reconcileStartupLink(link).pipe(
+          Effect.catchCause(cause => supervision.reportCause(
+            cause,
+            `startup reconciliation for ${link.runId ?? link.admissionRequestId}`,
+          )),
+        ),
+        { concurrency: "unbounded", discard: true },
+      )));
   }
 
-  private async startupReconciliation(): Promise<void> {
-    const links = await this.options.store.listReconciliationLinks();
-    await Promise.all(links.map(async link => {
-      try {
-        await this.reconcileStartupLink(link);
-      } catch (error) {
-        this.report(
-          error,
-          `startup reconciliation for ${link.runId ?? link.admissionRequestId}`,
-        );
-      }
-    }));
-  }
-
-  private async reconcileStartupLink(link: RunLink): Promise<void> {
+  private reconcileStartupLink(link: RunLink): Effect.Effect<void, Error> {
     if (link.runId !== undefined) {
-      await this.reconcileRun(link);
-      return;
+      return this.reconcileRun(link);
     }
-    const opened = await this.openLinkedRuntime(link);
-    if (opened.isErr()) return;
-    const runtime = opened.value.runtime;
-    const admission = await runtime.findAdmission(link.admissionRequestId);
-    if (admission.isErr()) throw new Error(admission.error.message);
-    if (admission.value === undefined) return;
-    await this.reconcileRun(
-      await this.options.admit(link.admissionRequestId, admission.value),
-    );
+    const supervision = this;
+    return Effect.gen(function* () {
+      const opened = yield* Effect.result(supervision.openLinkedRuntime(link));
+      if (Result.isFailure(opened)) return;
+      const admission = yield* Effect.result(
+        opened.success.runtime.findAdmission(link.admissionRequestId),
+      );
+      if (Result.isFailure(admission)) {
+        return yield* Effect.fail(new Error(admission.failure.message));
+      }
+      if (admission.success === undefined) return;
+      const admitted = yield* supervision.options.admit(
+        link.admissionRequestId,
+        admission.success,
+      );
+      yield* supervision.reconcileRun(admitted);
+    });
   }
 
-  private async reconcile(link: AdmittedRunLink): Promise<void> {
-    if (this.disposed) return;
-    const opened = await this.openLinkedRuntime(link);
-    if (opened.isErr()) return;
-    const runtime = opened.value.runtime;
-    if (this.disposed) return;
-    const projection = await this.readProjection(runtime, link);
-    await this.commit(link, projection);
-    if (this.disposed) return;
-    this.scheduleNoticeDelivery(link.parentSessionId);
-    if (isTerminalProjection(projection) || isParkedProjection(projection)) return;
-    await this.startObserver(runtime, link);
+  private reconcile(link: AdmittedRunLink): Effect.Effect<void, Error> {
+    const supervision = this;
+    return Effect.gen(function* () {
+      const opened = yield* Effect.result(supervision.openLinkedRuntime(link));
+      if (Result.isFailure(opened)) return;
+      const projection = yield* supervision.readProjection(opened.success.runtime, link);
+      yield* supervision.commit(link, projection);
+      yield* supervision.scheduleNoticeDelivery(link.parentSessionId);
+      if (isTerminalProjection(projection) || isParkedProjection(projection)) return;
+      yield* supervision.startObserver(opened.success.runtime, link);
+    });
   }
 
-  private async startObserver(
+  private startObserver(
     runtime: WorkspaceRuntime,
     link: AdmittedRunLink,
-  ): Promise<void> {
-    if (this.disposed) return;
+  ): Effect.Effect<void> {
+    const supervision = this;
     const key = runKey(link);
-    const current = this.observers.get(key);
-    if (current !== undefined) {
-      if (!current.closing) return;
-      await current.task;
-      if (this.disposed || this.observers.has(key)) return;
-    }
-    const controller = new AbortController();
-    const task = this.observe(runtime, link, key, controller.signal)
-      .catch(error => this.report(error, `observer for run ${link.runId}`))
-      .finally(() => {
-        if (this.observers.get(key)?.task === task) this.observers.delete(key);
-      });
-    this.observers.set(key, { controller, task, closing: false });
+    return Effect.gen(function* () {
+      const current = FiberMap.getUnsafe(supervision.observers, key);
+      if (Option.isSome(current)) {
+        if (!supervision.closingObservers.has(key)) return;
+        yield* Fiber.await(current.value);
+        if (FiberMap.hasUnsafe(supervision.observers, key)) return;
+      }
+      const observer = supervision.observe(runtime, link, key).pipe(
+        Effect.catchCause(cause => supervision.reportCause(
+          cause,
+          `observer for run ${link.runId}`,
+        )),
+        Effect.ensuring(Effect.sync(() => supervision.closingObservers.delete(key))),
+      );
+      yield* FiberMap.run(supervision.observers, key, observer, { onlyIfMissing: true });
+    });
   }
 
-  private async observe(
+  private observe(
     runtime: WorkspaceRuntime,
     link: AdmittedRunLink,
     key: string,
-    signal: AbortSignal,
-  ): Promise<void> {
-    for await (const observed of runtime.observeInspection({
-      view: { kind: "run", runId: link.runId, structure: "materialized" },
-      until: "decision-boundary",
-      updates: "activity",
-    }, signal)) {
-      if (observed.isErr()) {
-        this.report(
-          new Error(observed.error.message),
-          `Runtime observation for run ${link.runId}`,
-        );
-        return;
-      }
-      const value = observed.value;
-      const view = value.kind === "update"
-        ? await this.readRunView(runtime, link.runId)
-        : value.view;
-      if (view.kind !== "run") {
-        throw new Error(`Run '${link.runId}' returned an unexpected observation view.`);
-      }
-      const projection = projectStoredRun(link, view);
-      const closing = isTerminalProjection(projection)
-        || isParkedProjection(projection)
-        || value.kind === "closed";
-      if (closing) {
-        const observer = this.observers.get(key);
-        if (observer !== undefined) observer.closing = true;
-      }
-      await this.commit(link, projection);
-      if (this.disposed) return;
-      this.scheduleNoticeDelivery(link.parentSessionId);
-      if (closing) return;
-    }
+  ): Effect.Effect<void, Error> {
+    const supervision = this;
+    return Effect.scoped(Effect.gen(function* () {
+      const signal = yield* Effect.abortSignal;
+      const observations = runtime.observeInspection({
+        view: { kind: "run", runId: link.runId, structure: "materialized" },
+        until: "decision-boundary",
+        updates: "activity",
+      }, signal).pipe(
+        Stream.map(value => ({ type: "value" as const, value })),
+        Stream.catch(failure => Stream.succeed({ type: "failure" as const, failure })),
+      );
+      yield* Stream.runForEachWhile(observations, observed => {
+        if (observed.type === "failure") {
+          return Effect.sync(() => {
+            supervision.report(
+              new Error(observed.failure.message),
+              `Runtime observation for run ${link.runId}`,
+            );
+            return false;
+          });
+        }
+        return Effect.gen(function* () {
+          const value = observed.value;
+          const view = value.kind === "update"
+            ? yield* supervision.readRunView(runtime, link.runId)
+            : value.view;
+          if (view.kind !== "run") {
+            return yield* Effect.fail(
+              new Error(`Run '${link.runId}' returned an unexpected observation view.`),
+            );
+          }
+          const projection = projectStoredRun(link, view);
+          const closing = isTerminalProjection(projection)
+            || isParkedProjection(projection)
+            || value.kind === "closed";
+          if (closing) supervision.closingObservers.add(key);
+          yield* supervision.commit(link, projection);
+          yield* supervision.scheduleNoticeDelivery(link.parentSessionId);
+          return !closing;
+        });
+      });
+    }));
   }
 
-  private async readProjection(
+  private readProjection(
     runtime: WorkspaceRuntime,
     link: AdmittedRunLink,
-  ): Promise<StoredRunProjection> {
-    return projectStoredRun(link, await this.readRunView(runtime, link.runId));
+  ): Effect.Effect<StoredRunProjection, Error> {
+    return this.readRunView(runtime, link.runId).pipe(
+      Effect.map(view => projectStoredRun(link, view)),
+    );
   }
 
-  private async readRunView(
+  private readRunView(
     runtime: WorkspaceRuntime,
     runId: string,
-  ): Promise<Extract<InspectionView, { kind: "run" }>> {
-    const inspected = await runtime.inspect({ kind: "run", runId, structure: "materialized" });
-    if (inspected.isErr()) throw new Error(inspected.error.message);
-    if (inspected.value.kind !== "run") {
-      throw new Error(`Run '${runId}' returned an unexpected inspection view.`);
-    }
-    return inspected.value;
+  ): Effect.Effect<Extract<InspectionView, { kind: "run" }>, Error> {
+    return Effect.result(runtime.inspect({
+      kind: "run",
+      runId,
+      structure: "materialized",
+    })).pipe(Effect.flatMap(inspected => {
+      if (Result.isFailure(inspected)) {
+        return Effect.fail(new Error(inspected.failure.message));
+      }
+      if (inspected.success.kind !== "run") {
+        return Effect.fail(new Error(
+          `Run '${runId}' returned an unexpected inspection view.`,
+        ));
+      }
+      return Effect.succeed(inspected.success);
+    }));
   }
 
-  private async commit(
+  private commit(
     link: AdmittedRunLink,
     projection: StoredRunProjection,
-  ): Promise<void> {
+  ): Effect.Effect<void, Error> {
     const derived = deriveNotice({
       runId: projection.runId,
       task: { name: link.workflowName, occurrence: link.occurrence },
@@ -333,62 +349,77 @@ export class AcpusSupervision {
     const notice = derived === undefined
       ? undefined
       : storedNotice(link, projection, derived.id);
-    const committed = await this.options.store.commitObservation({
+    const supervision = this;
+    return this.options.store.commitObservation({
       link,
       projection,
       ...(notice === undefined ? {} : { notice }),
-    });
-    if (committed.wakeWaiters) {
-      this.wakeSession(this.activityWaiters, link.parentSessionId, committed.revision);
-    }
-  }
-
-  scheduleNoticeDelivery(sessionId?: string): void {
-    void this.deliverPendingNotices(sessionId).catch(error =>
-      this.report(error, "attention delivery"));
-  }
-
-  private async deliverPendingNotices(sessionId?: string): Promise<void> {
-    if (this.disposed) return;
-    const adapter = this.options.notices;
-    if (adapter === undefined) return;
-    const notices = await this.options.store.pendingNotices();
-    for (const notice of notices) {
-      if (this.disposed) return;
-      if (sessionId !== undefined && notice.parentSessionId !== sessionId) continue;
-      try {
-        const delivered = await adapter.deliver({
-          id: notice.id,
-          sessionId: notice.parentSessionId,
-          message: noticeMessage(notice),
-        });
-        if (delivered.delivered) {
-          await this.options.store.markNoticeDelivered(notice.id);
-        }
-      } catch (error) {
-        this.report(error, `notice ${notice.id}`);
+    }).pipe(Effect.tap(committed => Effect.sync(() => {
+      if (committed.wakeWaiters) {
+        supervision.wakeSession(link.parentSessionId, committed.revision);
       }
-    }
+    })), Effect.asVoid);
   }
 
-  private wakeSession(
-    registry: Map<string, Set<RevisionWaiter>>,
-    sessionId: string,
-    revision: number,
-  ): void {
-    const waiters = registry.get(sessionId);
-    if (waiters === undefined) return;
-    for (const waiter of [...waiters]) {
-      if (waiter.afterRevision === revision) continue;
-      waiter.signal.removeEventListener("abort", waiter.abort);
-      waiters.delete(waiter);
-      waiter.resolve();
+  scheduleNoticeDelivery(sessionId?: string): Effect.Effect<void> {
+    const delivery = this.deliverPendingNotices(sessionId).pipe(
+      Effect.catchCause(cause => this.reportCause(cause, "attention delivery")),
+    );
+    return FiberSet.run(this.noticeFibers, delivery).pipe(Effect.asVoid);
+  }
+
+  private deliverPendingNotices(sessionId?: string): Effect.Effect<void, Error> {
+    const adapter = this.options.notices;
+    if (adapter === undefined) return Effect.void;
+    const supervision = this;
+    return this.options.store.pendingNotices().pipe(Effect.flatMap(notices => Effect.forEach(
+      notices,
+      notice => {
+        if (sessionId !== undefined && notice.parentSessionId !== sessionId) return Effect.void;
+        return Effect.tryPromise({
+          try: () => adapter.deliver({
+            id: notice.id,
+            sessionId: notice.parentSessionId,
+            message: noticeMessage(notice),
+          }),
+          catch: error => error instanceof Error ? error : new Error(String(error)),
+        }).pipe(
+          Effect.flatMap(delivered => delivered.delivered
+            ? supervision.options.store.markNoticeDelivered(notice.id)
+            : Effect.void),
+          Effect.catchCause(cause => supervision.reportCause(cause, `notice ${notice.id}`)),
+        );
+      },
+      { concurrency: 1, discard: true },
+    )));
+  }
+
+  private wakeSession(sessionId: string, revision: number): void {
+    if (this.closed) return;
+    const current = this.activityPulses.get(sessionId);
+    const next = Deferred.makeUnsafe<void, Error>();
+    this.activityPulses.set(sessionId, { revision, deferred: next });
+    if (current !== undefined) Deferred.doneUnsafe(current.deferred, Effect.void);
+  }
+
+  private closePulses(): void {
+    if (this.closed) return;
+    this.closed = true;
+    Deferred.doneUnsafe(this.ready, Effect.fail(SUPERVISION_DISPOSED));
+    for (const pulse of this.activityPulses.values()) {
+      Deferred.doneUnsafe(pulse.deferred, Effect.fail(SUPERVISION_DISPOSED));
     }
-    if (waiters.size === 0) registry.delete(sessionId);
+    this.activityPulses.clear();
   }
 
   private report(error: unknown, context: string): void {
     (this.options.report ?? defaultReport)(error, context);
+  }
+
+  private reportCause<E>(cause: Cause.Cause<E>, context: string): Effect.Effect<void, E> {
+    return Cause.hasInterruptsOnly(cause)
+      ? Effect.failCause(cause)
+      : Effect.sync(() => this.report(Cause.squash(cause), context));
   }
 }
 

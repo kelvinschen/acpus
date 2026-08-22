@@ -1,12 +1,15 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { createHash } from "node:crypto";
 import { access, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { defineWorkflow, z } from "@acpus/core";
-import { getRun, listRuns, tryNormalizeForkInput, type PreparedRunWorkflow } from "@acpus/runtime";
+import type { PreparedRunWorkflow } from "../src/admission/prepared-workflow.js";
+import { getRun, listRuns, tryNormalizeForkInput } from "../src/runs/use-cases.js";
 import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
-import { openExistingWritableRuntimeStore } from "../src/store/store.js";
+import { openExistingWritableRuntimeStoreAdapter } from "../src/store/store.js";
 import {
   admitSyntheticWorkflow,
   inputEchoWorkflow,
@@ -52,15 +55,15 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(forkArtifacts.map(row => String(row.relative_path))).toEqual([
         expect.stringContaining(join("artifacts", ".fork-replay")),
       ]);
-      expect((await getRun(workspace, fork.run.id))._unsafeUnwrap()).toMatchObject({ status: "completed", output: { ok: true }, fork: { sourceRunId: source.run.id } });
-      expect((await getRun(workspace, fork.run.id))._unsafeUnwrap()).toMatchObject({ fork: {
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, fork.run.id)))))).toMatchObject({ status: "completed", output: { ok: true }, fork: { sourceRunId: source.run.id } });
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, fork.run.id)))))).toMatchObject({ fork: {
         sourceRunId: source.run.id,
       } });
 
       const forkOfFork = await forkRun(workspace, fork.run.id);
       expect(forkOfFork.run).toMatchObject({ status: "pending", fork: { sourceRunId: fork.run.id } });
       await advanceRun(workspace, forkOfFork.run.id);
-      expect((await getRun(workspace, forkOfFork.run.id))._unsafeUnwrap()).toMatchObject({ status: "completed", output: { ok: true } });
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, forkOfFork.run.id)))))).toMatchObject({ status: "completed", output: { ok: true } });
     });
   });
 
@@ -163,7 +166,7 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(fork.run.status).toBe("pending");
       expect(fork.run.output).toBeUndefined();
       await advanceRun(workspace, fork.run.id);
-      expect((await getRun(workspace, fork.run.id))._unsafeUnwrap()).toMatchObject({ status: "completed", output: "ready" });
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, fork.run.id)))))).toMatchObject({ status: "completed", output: "ready" });
     });
   });
 
@@ -188,7 +191,7 @@ describe.concurrent("runtime controls and recovery", () => {
 
       expect(second.run.id).toBe(forkId);
       expect(third.run.id).toBe(forkId);
-      expect((await listRuns(workspace))._unsafeUnwrap().map(run => run.id).sort())
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(listRuns(workspace))))).map(run => run.id).sort())
         .toEqual([source.run.id, forkId].sort());
     });
   });
@@ -220,7 +223,7 @@ describe.concurrent("runtime controls and recovery", () => {
       });
 
       expect(replay.run.id).toBe(first.run.id);
-      expect((await listRuns(workspace))._unsafeUnwrap().map(run => run.id).sort())
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(listRuns(workspace))))).map(run => run.id).sort())
         .toEqual([source.run.id, first.run.id].sort());
     });
   });
@@ -228,8 +231,8 @@ describe.concurrent("runtime controls and recovery", () => {
   it("rejects a reused fork request id with different input", async () => {
     await withRuntimeWorkspace("runtime-fork-idempotent-conflict", async workspace => {
       const source = await admitSyntheticWorkflow(workspace, inputEchoWorkflow(), { value: "old" });
-      const firstInput = (await tryNormalizeForkInput(workspace, source.run.id, { value: "first" }))._unsafeUnwrap();
-      const secondInput = (await tryNormalizeForkInput(workspace, source.run.id, { value: "second" }))._unsafeUnwrap();
+      const firstInput = Result.getOrThrow((await Effect.runPromise(Effect.result(tryNormalizeForkInput(workspace, source.run.id, { value: "first" })))));
+      const secondInput = Result.getOrThrow((await Effect.runPromise(Effect.result(tryNormalizeForkInput(workspace, source.run.id, { value: "second" })))));
       if (firstInput === undefined || secondInput === undefined) throw new Error("expected fork input to normalize");
 
       await expect(forkRun(workspace, source.run.id, { requestId: "fork-request-1", input: firstInput })).resolves.toMatchObject({
@@ -320,7 +323,7 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(fork.run.status).toBe("pending");
       expect(fork?.run.id).not.toBe(source.run.id);
       await advanceRun(workspace, fork.run.id);
-      expect((await getRun(workspace, fork.run.id))._unsafeUnwrap()).toMatchObject({
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, fork.run.id)))))).toMatchObject({
         status: "completed",
         output: {
           runId: fork.run.id,
@@ -332,7 +335,7 @@ describe.concurrent("runtime controls and recovery", () => {
     });
   });
 
-  it("forks with replacement workflow and input override without inheriting stale output", async () => {
+  it("forks with a replacement workflow without inheriting stale output", async () => {
     await withRuntimeWorkspace("runtime-fork-replacement", async workspace => {
       const source = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
       expect(source.status).toBe("completed");
@@ -341,15 +344,15 @@ describe.concurrent("runtime controls and recovery", () => {
       const fork = await forkRun(workspace, source.run.id, { prepared: replacement });
 
       expect(fork?.run).toMatchObject({ name: "cli-task-replacement", status: "pending" });
-      const store = await openExistingWritableRuntimeStore(workspace);
+      const store = await openExistingWritableRuntimeStoreAdapter(workspace);
       expect(store).toBeDefined();
       try {
         await advanceRuntimeRun(workspace, store!, fork!.run.id, `test:${fork!.run.id}`);
       } finally {
         store?.close();
       }
-      expect((await getRun(workspace, fork!.run.id))._unsafeUnwrap()).toMatchObject({ status: "completed", output: { ok: true, extra: true } });
-      expect((await getRun(workspace, fork!.run.id))._unsafeUnwrap()).toMatchObject({
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, fork!.run.id)))))).toMatchObject({ status: "completed", output: { ok: true, extra: true } });
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, fork!.run.id)))))).toMatchObject({
         id: fork!.run.id,
         name: "cli-task-replacement",
       });
@@ -358,21 +361,25 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(String(replacementArtifacts[0]!.relative_path)).not.toContain(".fork-replay");
       await expect(readFile(join(runtimeRunDir(workspace, fork.run.id), String(replacementArtifacts[0]!.relative_path)), "utf8"))
         .resolves.toBe("replacement\n");
+    });
+  }, 20_000);
 
+  it("forks with a normalized input override", async () => {
+    await withRuntimeWorkspace("runtime-fork-input-override", async workspace => {
       const inputSource = await admitSyntheticWorkflow(workspace, inputEchoWorkflow(), { value: "old" });
-      const input = (await tryNormalizeForkInput(workspace, inputSource.run.id, { value: "new" }))._unsafeUnwrap();
+      const input = Result.getOrThrow((await Effect.runPromise(Effect.result(tryNormalizeForkInput(workspace, inputSource.run.id, { value: "new" })))));
       if (input === undefined) throw new Error("expected fork input to normalize");
       const inputFork = await forkRun(workspace, inputSource.run.id, { input });
-      const store2 = await openExistingWritableRuntimeStore(workspace);
+      const store2 = await openExistingWritableRuntimeStoreAdapter(workspace);
       expect(store2).toBeDefined();
       try {
         await advanceRuntimeRun(workspace, store2!, inputFork!.run.id, `test:${inputFork!.run.id}`);
       } finally {
         store2?.close();
       }
-      expect((await getRun(workspace, inputFork!.run.id))._unsafeUnwrap()).toMatchObject({ status: "completed", output: { value: "new" } });
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, inputFork!.run.id)))))).toMatchObject({ status: "completed", output: { value: "new" } });
     });
-  }, 20_000);
+  });
 
   it("preserves an explicit null fork input instead of inheriting the source input", async () => {
     await withRuntimeWorkspace("runtime-fork-null-input", async workspace => {
@@ -388,7 +395,7 @@ describe.concurrent("runtime controls and recovery", () => {
       const fork = await forkRun(workspace, source.run.id, { input: null });
       await advanceRun(workspace, fork.run.id);
 
-      expect((await getRun(workspace, fork.run.id))._unsafeUnwrap()).toMatchObject({
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, fork.run.id)))))).toMatchObject({
         status: "completed",
         output: { value: null },
       });

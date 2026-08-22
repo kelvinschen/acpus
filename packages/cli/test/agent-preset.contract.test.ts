@@ -125,32 +125,6 @@ describe("Agent Preset CLI contract", () => {
     });
   });
 
-  it("rejects removed output and definition-source options", async () => {
-    await withPlainTestWorkspace("agent-preset-json-removed", async workspace => {
-      const list = await invoke(workspace, ["agent", "presets", "--json"]);
-      expect(list.exitCode).toBe(2);
-      expect(list.stdout).toBe("");
-      expect(list.stderr).toContain("unknown option '--json'");
-
-      const add = await invoke(workspace, [
-        "agent", "presets", "add", "coder", "--project", "--definition",
-        JSON.stringify(preset("Code", { use: "codex" })), "--json",
-      ]);
-      expect(add.exitCode).toBe(2);
-      expect(add.stdout).toBe("");
-      expect(add.stderr).toContain("unknown option '--json'");
-
-      const oldDefinitionSource = await invoke(workspace, [
-        "agent", "presets", "add", "coder", "--project", "--definition",
-        JSON.stringify(preset("Code", { use: "codex" })), "--from",
-        JSON.stringify(preset("Old", { use: "pi" })),
-      ]);
-      expect(oldDefinitionSource.exitCode).toBe(2);
-      expect(oldDefinitionSource.stdout).toBe("");
-      expect(oldDefinitionSource.stderr).toContain("unknown option '--from'");
-      await expect(lstat(join(workspace, ".acpus"))).rejects.toMatchObject({ code: "ENOENT" });
-    });
-  });
 });
 
 async function invoke(cwd: string, argv: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {

@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { sha256Digest, type Sha256Digest } from "@acpus/core/content-identity";
 import type { DiagnosticIR } from "@acpus/core/ir";
+import * as Result from "effect/Result";
 import { checkTypeScript } from "./typescript.js";
 import type { TypeScriptNativeFailure } from "../typescript/native.js";
 import type { CheckedSourceFile } from "./source-capture.js";
@@ -28,11 +29,11 @@ export async function checkWorkflow(
 
   const result = await checkTypeScript(entry, cwd, scratchDir, source, options);
   const sourceDigest = sha256Digest(source);
-  if (result.isErr()) {
-    return { diagnostics: [typescriptNativeDiagnostic(entry, result.error)], sourceDigest };
+  if (Result.isFailure(result)) {
+    return { diagnostics: [typescriptNativeDiagnostic(entry, result.failure)], sourceDigest };
   }
   const entryPath = resolve(entry);
-  const sourceFiles = await Promise.all(result.value.sourceFiles.map(async file => {
+  const sourceFiles = await Promise.all(result.success.sourceFiles.map(async file => {
     if (resolve(file.path) === entryPath) return { ...file, content: source };
     try {
       return { ...file, content: await readFile(file.path, "utf8") };
@@ -40,7 +41,7 @@ export async function checkWorkflow(
       return file;
     }
   }));
-  return { ...result.value, sourceFiles, sourceDigest };
+  return { ...result.success, sourceFiles, sourceDigest };
 }
 
 function workflowReadDiagnostic(entry: string, error: unknown): DiagnosticIR {

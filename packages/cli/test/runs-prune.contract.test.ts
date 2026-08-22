@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import * as Effect from "effect/Effect";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PruneReport } from "@acpus/runtime";
 import { createRunsCommand } from "../src/runs/command.js";
@@ -53,7 +54,7 @@ describe("runs prune", () => {
   });
 
   it("parses selection options and emits a compact text dry-run report", async () => {
-    runtime.pruneRuns.mockResolvedValue(agedPreview);
+    runtime.pruneRuns.mockReturnValue(Effect.succeed(agedPreview));
 
     const result = await runCommand(["prune", "--older-than", "30d", "--all-workspaces", "--dry-run"]);
 
@@ -78,7 +79,7 @@ describe("runs prune", () => {
   });
 
   it("previews once, presents one aggregate TTY confirmation, then deletes", async () => {
-    runtime.pruneRuns.mockResolvedValueOnce(preview).mockResolvedValueOnce(deleted);
+    runtime.pruneRuns.mockReturnValueOnce(Effect.succeed(preview)).mockReturnValueOnce(Effect.succeed(deleted));
 
     const result = await runCommand(["prune"], true);
 
@@ -104,7 +105,7 @@ describe("runs prune", () => {
       dryRun: false,
       removedWorkspaces: 1,
     };
-    runtime.pruneRuns.mockResolvedValueOnce(empty).mockResolvedValueOnce(maintained);
+    runtime.pruneRuns.mockReturnValueOnce(Effect.succeed(empty)).mockReturnValueOnce(Effect.succeed(maintained));
 
     const result = await runCommand(["prune", "--yes"]);
 
@@ -125,7 +126,7 @@ describe("runs prune", () => {
         message: "database is unreadable",
       }],
     };
-    runtime.pruneRuns.mockResolvedValueOnce(preview).mockResolvedValueOnce(partial);
+    runtime.pruneRuns.mockReturnValueOnce(Effect.succeed(preview)).mockReturnValueOnce(Effect.succeed(partial));
 
     const result = await runCommand(["prune", "--yes"]);
 

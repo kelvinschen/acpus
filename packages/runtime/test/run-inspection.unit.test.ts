@@ -21,7 +21,7 @@ import type { RunDynamicNodeInstance } from "../src/store/inspection-read-model.
 import type { RunDetails } from "../src/store/store.js";
 
 describe("run inspection projection", () => {
-  it("projects the public run contract directly without a legacy snapshot envelope", () => {
+  it("projects the public run contract without private evidence", () => {
     const view = projectInspectionRunView({
       ir: compositeWorkflow(),
       run: repeatedAgentRun(3),
@@ -45,12 +45,6 @@ describe("run inspection projection", () => {
         state: { status: "ready" },
       }),
     ]);
-    expect(view).not.toHaveProperty("schemaVersion");
-    expect(view).not.toHaveProperty("items");
-    expect(view).not.toHaveProperty("availableActions");
-    expect(view).not.toHaveProperty("hooks");
-    expect(view).not.toHaveProperty("all");
-    expect(view).not.toHaveProperty("scope");
     expect(JSON.stringify(view)).not.toContain("private/repository");
     expect(JSON.stringify(view)).not.toContain("tokenUsage");
   });

@@ -1,4 +1,4 @@
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import type { AgentSessionCheckpoint } from "../execution/agent-operation-plan.js";
 import type { SchedulerEvent } from "./events.js";
 
@@ -27,7 +27,7 @@ export function projectSteerLifecycle(
   steerId: string,
   events: readonly SequencedSchedulerEvent[],
   checkpoint?: AgentSessionCheckpoint,
-): Result<RuntimeSteerProjection, SteerLifecycleError> {
+): Result.Result<RuntimeSteerProjection, SteerLifecycleError> {
   if (events.some((item, index) => !Number.isInteger(item.sequence)
     || item.sequence < 1
     || (index > 0 && events[index - 1]!.sequence >= item.sequence))) {
@@ -68,7 +68,7 @@ export function projectSteerLifecycle(
       return invalid(steerId, "blocked lifecycle events are out of order");
     }
     if (checkpoint !== block.event.payload.checkpoint) return invalid(steerId, "blocked checkpoint does not match durable Session state");
-    return ok({
+    return Result.succeed({
       steerId,
       delivery: request.event.payload.delivery,
       fencedAttemptId: request.event.payload.fencedAttemptId,
@@ -80,7 +80,7 @@ export function projectSteerLifecycle(
   if (requeued.length > 1 || replacements.length > 1) return invalid(steerId, "lifecycle contains duplicate queue or replacement events");
   if (requeued.length === 0) {
     if (replacements.length > 0) return invalid(steerId, "replacement started before the directive was queued");
-    return ok({ steerId, delivery: request.event.payload.delivery, fencedAttemptId: request.event.payload.fencedAttemptId, phase: "draining" });
+    return Result.succeed({ steerId, delivery: request.event.payload.delivery, fencedAttemptId: request.event.payload.fencedAttemptId, phase: "draining" });
   }
   const queued = requeued[0]!;
   if (queued.event.payload.nodeKey !== request.event.payload.nodeKey
@@ -90,7 +90,7 @@ export function projectSteerLifecycle(
   if (queued.sequence <= supersede.sequence) return invalid(steerId, "directive was queued before the fenced Attempt settled");
   if (replacements.length === 0) {
     if (checkpoint !== "terminal_observed") return invalid(steerId, "queue requires a terminal-observed checkpoint");
-    return ok({ steerId, delivery: request.event.payload.delivery, fencedAttemptId: request.event.payload.fencedAttemptId, phase: "queued" });
+    return Result.succeed({ steerId, delivery: request.event.payload.delivery, fencedAttemptId: request.event.payload.fencedAttemptId, phase: "queued" });
   }
   const replacement = replacements[0]!;
   if (replacement.sequence <= queued.sequence) return invalid(steerId, "replacement started before the directive was queued");
@@ -98,7 +98,7 @@ export function projectSteerLifecycle(
     || replacement.event.payload.steerEventSequence !== request.sequence) {
     return invalid(steerId, "replacement Attempt does not preserve queue admission lineage");
   }
-  return ok({
+  return Result.succeed({
     steerId,
     delivery: request.event.payload.delivery,
     fencedAttemptId: request.event.payload.fencedAttemptId,
@@ -107,8 +107,8 @@ export function projectSteerLifecycle(
   });
 }
 
-function invalid(steerId: string, reason: string): Result<never, SteerLifecycleError> {
-  return err({
+function invalid(steerId: string, reason: string): Result.Result<never, SteerLifecycleError> {
+  return Result.fail({
     type: "invalid_steer_lifecycle",
     steerId,
     message: `Steer '${steerId}' ${reason}.`,

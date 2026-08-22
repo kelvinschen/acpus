@@ -1,11 +1,12 @@
+import * as Result from "effect/Result";
 import type { AgentNodeIR } from "@acpus/core/ir";
 import { describe, expect, it } from "vitest";
 import { resolveAgentSessionIdentity } from "../src/execution/agent-session.js";
 
 describe("Agent session identity", () => {
   it("locks the node-local scope and generation golden vectors", () => {
-    const first = resolveAgentSessionIdentity(agentNode(), {}, "run-1", "agent~abc")._unsafeUnwrap();
-    const second = resolveAgentSessionIdentity(agentNode(), {}, "run-1", "agent~abc", 2)._unsafeUnwrap();
+    const first = Result.getOrThrow(resolveAgentSessionIdentity(agentNode(), {}, "run-1", "agent~abc"));
+    const second = Result.getOrThrow(resolveAgentSessionIdentity(agentNode(), {}, "run-1", "agent~abc", 2));
 
     expect(first).toEqual({
       agentSessionId: "acpus-ec29acea756f750b2036306a307551059020c13952bbbd7d73ffb2e0166812b0-g1",
@@ -21,8 +22,8 @@ describe("Agent session identity", () => {
   });
 
   it("locks the explicit shared Unicode scope golden vector", () => {
-    const first = resolveAgentSessionIdentity(agentNode("team/α"), {}, "run-1", "node#1")._unsafeUnwrap();
-    const second = resolveAgentSessionIdentity(agentNode("team/α"), {}, "run-1", "other-node")._unsafeUnwrap();
+    const first = Result.getOrThrow(resolveAgentSessionIdentity(agentNode("team/α"), {}, "run-1", "node#1"));
+    const second = Result.getOrThrow(resolveAgentSessionIdentity(agentNode("team/α"), {}, "run-1", "other-node"));
 
     expect(first).toEqual({
       agentSessionId: "acpus-75456fb6c293211e6eece5f13689ec5014b41bcded5e17deb0e84a21ad14ca8e-g1",

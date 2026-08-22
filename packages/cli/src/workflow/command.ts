@@ -16,6 +16,8 @@ import {
   type RunDetails,
 } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { importError, runError, usageError, validationError, vizError } from "../presentation/errors.js";
 import { RunInspectionTranscriptPresenter } from "../runs/follow.js";
 import { discoverWorkflowCatalog, lookupWorkflowCatalogEntry, type WorkflowCatalogScope, type WorkflowCatalogScopeOptions } from "./catalog.js";
@@ -167,14 +169,14 @@ async function writeCatalogEntryResult(ctx: WorkflowCommandContext, name: string
 
 async function importWorkflow(ctx: WorkflowCommandContext, source: string, options: ImportWorkflowOptions): Promise<void> {
   const scope = importScope(options);
-  const imported = await importWorkflowPackage({
+  const imported = await Effect.runPromise(Effect.result(importWorkflowPackage({
     cwd: ctx.cwd,
     source,
     scope,
     check: options.check ?? false,
-  });
-  imported.match(
-    result => {
+  })));
+  Result.match(imported, {
+    onSuccess: result => {
       ctx.setExitCode(writeResult(result.checked
         ? {
             ok: true,
@@ -193,12 +195,12 @@ async function importWorkflow(ctx: WorkflowCommandContext, source: string, optio
             checked: false,
           }, ctx, 0));
     },
-    failure => {
+    onFailure: failure => {
       if (failure.type === "preparation") throw workflowPreparationCliError(failure.failure);
       if (failure.type === "usage") throw usageError(failure.message);
       throw importError(failure.message, { errorCode: failure.errorCode });
     },
-  );
+  });
 }
 
 function importScope(options: WorkflowCatalogScopeOptions): WorkflowCatalogScope {
@@ -218,24 +220,26 @@ async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, opti
   });
   if (input !== undefined) {
     const normalized = tryNormalizeWorkflowInput(prepared.ir, input);
-    if (normalized.isErr()) throw validationError(normalized.error.message);
+    if (Result.isFailure(normalized)) throw validationError(normalized.failure.message);
   }
   const unresolved = agentInjections === undefined ? unboundAgentNames(prepared.ir.agents) : [];
   if (agentInjections !== undefined) {
     const parsed = tryParseAgentInjectionMap(agentInjections, prepared.ir.agents);
-    if (parsed.isErr()) throw validationError(parsed.error.message);
+    if (Result.isFailure(parsed)) throw validationError(parsed.failure.message);
     let presetCatalog: AgentPresetCatalog | undefined;
-    if (hasPresetInjections(parsed.value)) {
-      const loaded = await loadAgentPresetCatalog({ workspaceDir: ctx.cwd });
-      if (loaded.isErr()) throw validationError(loaded.error.message);
-      presetCatalog = loaded.value;
+    if (hasPresetInjections(parsed.success)) {
+      const loaded = await Effect.runPromise(Effect.result(
+        loadAgentPresetCatalog({ workspaceDir: ctx.cwd }),
+      ));
+      if (Result.isFailure(loaded)) throw validationError(loaded.failure.message);
+      presetCatalog = loaded.success;
     }
-    const finalized = await finalizeAgentBindings({
+    const finalized = finalizeAgentBindings({
       declarations: prepared.ir.agents,
-      injections: parsed.value,
+      injections: parsed.success,
       ...(presetCatalog === undefined ? {} : { presetCatalog }),
     });
-    if (finalized.isErr()) throw validationError(finalized.error.message);
+    if (Result.isFailure(finalized)) throw validationError(finalized.failure.message);
   }
   ctx.setExitCode(writeResult({
     ok: true,
@@ -260,12 +264,12 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
     ...(options.global ? { global: true } : {}),
   });
   const normalizedInput = tryNormalizeWorkflowInput(prepared.ir, input);
-  if (normalizedInput.isErr()) throw validationError(normalizedInput.error.message);
+  if (Result.isFailure(normalizedInput)) throw validationError(normalizedInput.failure.message);
   let admittedInjections: AgentInjectionMap | undefined;
   if (agentInjections !== undefined) {
     const parsed = tryParseAgentInjectionMap(agentInjections, prepared.ir.agents);
-    if (parsed.isErr()) throw validationError(parsed.error.message);
-    admittedInjections = parsed.value;
+    if (Result.isFailure(parsed)) throw validationError(parsed.failure.message);
+    admittedInjections = parsed.success;
   }
   const until = options.follow
     ? "subject-terminal" as const
@@ -275,7 +279,7 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   const submitted = await submitWorkflowThroughDaemon(
     ctx,
     prepared,
-    normalizedInput.value,
+    normalizedInput.success,
     admittedInjections,
     until,
   );
@@ -339,8 +343,8 @@ async function submitWorkflowThroughDaemon(
       const next = await iterator.next();
       if (controller.signal.aborted) break;
       if (next.done) break;
-      if (next.value.isErr()) throw daemonRunError(next.value.error);
-      const frame = next.value.value;
+      if (Result.isFailure(next.value)) throw daemonRunError(next.value.failure);
+      const frame = next.value.success;
       if (frame.kind === "admitted") {
         admitted = frame.run;
         if (until !== "admitted") {

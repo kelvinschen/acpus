@@ -1,21 +1,23 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { defineWorkflow, z } from "@acpus/core";
-import type { Result } from "neverthrow";
 import {
   getRun,
   requestDaemonControl as requestDaemonControlResult,
   requestDaemonShutdown as requestDaemonShutdownResult,
   requestDaemonStatus as requestDaemonStatusResult,
   type DaemonClientFailure,
+  type RunDetails,
 } from "../../src/index.js";
 import { setRuntimeHomeForTest } from "../../src/runtime-layout.js";
-import { openRuntimeStore, type RuntimeStore } from "../../src/store/store.js";
+import { openRuntimeStoreAdapter, type RuntimeStoreAdapter } from "../../src/store/store.js";
 
 export type DaemonLeaseFixture = {
   dir: string;
-  store: RuntimeStore;
+  store: RuntimeStoreAdapter;
 };
 
 export async function withDaemonLeaseWorkspace<T>(
@@ -26,9 +28,9 @@ export async function withDaemonLeaseWorkspace<T>(
     mkdtemp(join(tmpdir(), "acpus-daemon-home-")),
   ]);
   const restoreHome = setRuntimeHomeForTest(dir, home);
-  let store: RuntimeStore | undefined;
+  let store: RuntimeStoreAdapter | undefined;
   try {
-    store = await openRuntimeStore(dir);
+    store = await openRuntimeStoreAdapter(dir);
     return await test({ dir, store });
   } finally {
     store?.close();
@@ -43,26 +45,26 @@ export async function withDaemonLeaseWorkspace<T>(
 export async function requestDaemonControl(
   ...args: Parameters<typeof requestDaemonControlResult>
 ) {
-  return unwrapDaemon(await requestDaemonControlResult(...args));
+  return unwrapDaemon(await Effect.runPromise(Effect.result(requestDaemonControlResult(...args))));
 }
 
 export async function requestDaemonShutdown(
   ...args: Parameters<typeof requestDaemonShutdownResult>
 ) {
-  return unwrapDaemon(await requestDaemonShutdownResult(...args));
+  return unwrapDaemon(await Effect.runPromise(Effect.result(requestDaemonShutdownResult(...args))));
 }
 
 export async function requestDaemonStatus(
   ...args: Parameters<typeof requestDaemonStatusResult>
 ) {
-  return unwrapDaemon(await requestDaemonStatusResult(...args));
+  return unwrapDaemon(await Effect.runPromise(Effect.result(requestDaemonStatusResult(...args))));
 }
 
-function unwrapDaemon<T>(result: Result<T, DaemonClientFailure>): T {
-  if (result.isOk()) return result.value;
+function unwrapDaemon<T>(result: Result.Result<T, DaemonClientFailure>): T {
+  if (Result.isSuccess(result)) return result.success;
   throw Object.assign(
-    new Error(result.error.message),
-    result.error.type === "rejected" ? { code: result.error.code } : {},
+    new Error(result.failure.message),
+    result.failure.type === "rejected" ? { code: result.failure.code } : {},
   );
 }
 
@@ -174,10 +176,10 @@ export async function waitForTerminalRun(
   runId: string,
 ): Promise<{
   status: string;
-  run: NonNullable<ReturnType<Awaited<ReturnType<typeof getRun>>["_unsafeUnwrap"]>>;
+  run: RunDetails;
 }> {
   for (let attempt = 0; attempt < 400; attempt += 1) {
-    const run = (await getRun(cwd, runId))._unsafeUnwrap();
+    const run = Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(cwd, runId)))));
     if (run && ["completed", "failed", "canceled"].includes(run.status)) {
       return { status: run.status, run };
     }

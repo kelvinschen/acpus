@@ -6,8 +6,13 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAgentSessionSupervisor, type AcpOwnershipManifest } from "@acpus/agent-executor";
-import { okAsync } from "neverthrow";
-import { stopProcessTreeWithDisposition } from "../src/process-tree.js";
+import { makeNodeProcessHost } from "@acpus/owned-process";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
+import { processTreeDeadline, stopProcessTreeWithDisposition } from "../src/process-tree.js";
+import { settle } from "./effect.js";
 
 const roots: string[] = [];
 const children: ChildProcess[] = [];
@@ -28,18 +33,30 @@ describe("ACP ownership recovery", () => {
     const child = await detachedFixture("console.log('ready'); setInterval(() => {}, 1000)");
     const manifestPath = await writeManifest(workersRoot, manifestFor(child, "session-exact", await startToken(child.pid!)));
 
-    const created = await createAgentSessionSupervisor(supervisorOptions(root, workersRoot));
-
-    expect(created.isOk()).toBe(true);
-    expect(await processDead(child.pid!)).toBe(true);
-    await expect(access(manifestPath)).rejects.toMatchObject({ code: "ENOENT" });
-    if (created.isOk()) expect((await created.value.shutdown()).isOk()).toBe(true);
+    const { created, closeScope } = await createScopedSupervisor(createAgentSessionSupervisor(
+      supervisorOptions(root, workersRoot),
+      makeNodeProcessHost(),
+    ));
+    try {
+      expect(Result.isSuccess(created)).toBe(true);
+      expect(await processDead(child.pid!)).toBe(true);
+      await expect(access(manifestPath)).rejects.toMatchObject({ code: "ENOENT" });
+      if (Result.isSuccess(created)) expect(Result.isSuccess(await settle(created.success.shutdown()))).toBe(true);
+    } finally {
+      await closeScope();
+    }
   });
 
   it.skipIf(process.platform === "win32")("escalates an ignored TERM to KILL and proves group death", async () => {
     const child = await detachedFixture("process.on('SIGTERM', () => {}); console.log('ready'); setInterval(() => {}, 1000)");
 
-    const stopped = await stopProcessTreeWithDisposition(child.pid!, performance.now() + 3_000);
+    const processes = makeNodeProcessHost();
+    const deadline = await Effect.runPromise(processTreeDeadline(3_000));
+    const stopped = await Effect.runPromise(stopProcessTreeWithDisposition(
+      processes,
+      { pid: child.pid!, processGroupId: child.pid! },
+      deadline,
+    ));
 
     expect(stopped).toEqual({ alive: false, disposition: "kill" });
     expect(await processDead(child.pid!)).toBe(true);
@@ -49,12 +66,18 @@ describe("ACP ownership recovery", () => {
     const { root, workersRoot } = await fixtureRoot();
     await writeFile(join(workersRoot, "acp_capsule_00000000-0000-4000-8000-000000000009.json"), "not-json\n");
 
-    const created = await createAgentSessionSupervisor(supervisorOptions(root, workersRoot));
-
-    expect(created.isErr() && created.error).toMatchObject({
-      type: "ownership_state_unsupported",
-      manifestName: "acp_capsule_00000000-0000-4000-8000-000000000009.json",
-    });
+    const { created, closeScope } = await createScopedSupervisor(createAgentSessionSupervisor(
+      supervisorOptions(root, workersRoot),
+      makeNodeProcessHost(),
+    ));
+    try {
+      expect(Result.isFailure(created) && created.failure).toMatchObject({
+        type: "ownership_state_unsupported",
+        manifestName: "acp_capsule_00000000-0000-4000-8000-000000000009.json",
+      });
+    } finally {
+      await closeScope();
+    }
   });
 
   it("preserves a live process group when the recorded root token mismatches", async () => {
@@ -66,13 +89,17 @@ describe("ACP ownership recovery", () => {
       manifestFor(child, "session-quarantined", "linux:reused-pid"),
     );
 
-    const created = await createAgentSessionSupervisor(supervisorOptions(root, workersRoot));
-    expect(created.isOk()).toBe(true);
-    if (created.isErr()) return;
-    expect(() => process.kill(child.pid!, 0)).not.toThrow();
-    await rm(manifestPath);
+    const { created, closeScope } = await createScopedSupervisor(createAgentSessionSupervisor(
+      supervisorOptions(root, workersRoot),
+      makeNodeProcessHost(),
+    ));
+    try {
+      expect(Result.isSuccess(created)).toBe(true);
+      if (Result.isFailure(created)) return;
+      expect(() => process.kill(child.pid!, 0)).not.toThrow();
+      await rm(manifestPath);
 
-    const acquired = await created.value.withSessionLease({
+    const acquired = await settle(created.success.withSessionLease({
       attempt: {
         runId: "run",
         nodeKey: "node",
@@ -89,15 +116,15 @@ describe("ACP ownership recovery", () => {
         permissionMode: "deny-all",
         configuration: { options: {} },
       },
-    }, () => { throw new Error("quarantined Session callback must not run"); });
-    expect(acquired.isErr() && acquired.error).toMatchObject({
+    }, () => { throw new Error("quarantined Session callback must not run"); }));
+    expect(Result.isFailure(acquired) && acquired.failure).toMatchObject({
       type: "acquire",
       error: { type: "session_quarantined" },
     });
 
     process.kill(-child.pid!, "SIGKILL");
     expect(await processDead(child.pid!)).toBe(true);
-    const afterDeath = await created.value.withSessionLease({
+    const afterDeath = await settle(created.success.withSessionLease({
       attempt: {
         runId: "run",
         nodeKey: "node",
@@ -117,11 +144,28 @@ describe("ACP ownership recovery", () => {
         permissionMode: "deny-all",
         configuration: { options: {} },
       },
-    }, () => okAsync("acquired"));
-    expect(afterDeath.isOk() && afterDeath.value).toBe("acquired");
-    expect((await created.value.shutdown()).isOk()).toBe(true);
+    }, () => Effect.succeed("acquired")));
+    expect(Result.isSuccess(afterDeath) && afterDeath.success).toBe("acquired");
+      expect(Result.isSuccess(await settle(created.success.shutdown()))).toBe(true);
+    } finally {
+      await closeScope();
+    }
   });
 });
+
+async function createScopedSupervisor<A, E>(effect: Effect.Effect<A, E, Scope.Scope>) {
+  const scope = Scope.makeUnsafe();
+  try {
+    const created = await settle(Scope.provide(scope)(effect));
+    return {
+      created,
+      closeScope: () => Effect.runPromise(Scope.close(scope, Exit.void)),
+    };
+  } catch (error) {
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    throw error;
+  }
+}
 
 async function fixtureRoot(): Promise<{ root: string; workersRoot: string }> {
   const root = await mkdtemp(join(tmpdir(), "acpus-ownership-recovery-"));

@@ -7,6 +7,8 @@ import {
   type AgentPresetCatalog,
 } from "@acpus/runtime";
 import type { WorkspaceRuntime } from "@acpus/runtime/host";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import {
   tryPrepareWorkflow,
   type PreparedWorkflow,
@@ -42,22 +44,21 @@ export type AcpusRunReceipt = {
   task: ResolvedTaskSelector;
 };
 
-export async function prepareAuthoringWorkflow(
+export function prepareAuthoringWorkflow(
   workspace: string,
   workflow: string,
-): Promise<PreparedAuthoringWorkflow | InvalidWorkflow> {
-  const prepared = await tryPrepareWorkflow({
+): Effect.Effect<PreparedAuthoringWorkflow | InvalidWorkflow> {
+  return Effect.result(tryPrepareWorkflow({
     workspaceDir: workspace,
     source: {
       kind: "files",
       entry: "workflow.ts",
       files: [{ path: "workflow.ts", content: workflow }],
     },
-  });
-  return prepared.match(
-    value => ({ status: "prepared", prepared: value }),
-    invalidWorkflow,
-  );
+  })).pipe(Effect.map(prepared => Result.match(prepared, {
+    onSuccess: value => ({ status: "prepared" as const, prepared: value }),
+    onFailure: invalidWorkflow,
+  })));
 }
 
 export function normalizeAuthoringInput(
@@ -65,9 +66,9 @@ export function normalizeAuthoringInput(
   value: JsonValue,
 ): { status: "valid"; input: JsonValue } | InvalidWorkflow {
   const normalized = tryNormalizeWorkflowInput(prepared.ir, value);
-  return normalized.match(
-    input => ({ status: "valid", input }),
-    error => ({
+  return Result.match(normalized, {
+    onSuccess: input => ({ status: "valid" as const, input }),
+    onFailure: error => ({
       status: "invalid",
       phase: "input",
       diagnostics: [{
@@ -76,7 +77,7 @@ export function normalizeAuthoringInput(
         message: error.message,
       }],
     }),
-  );
+  });
 }
 
 export function normalizeAgentInjections(
@@ -84,9 +85,9 @@ export function normalizeAgentInjections(
   declarations?: Record<string, unknown>,
 ): { status: "valid"; agents: AgentInjectionMap } | InvalidWorkflow {
   const parsed = tryParseAgentInjectionMap(value, declarations);
-  return parsed.match(
-    agents => ({ status: "valid", agents }),
-    error => ({
+  return Result.match(parsed, {
+    onSuccess: agents => ({ status: "valid" as const, agents }),
+    onFailure: error => ({
       status: "invalid",
       phase: "agents",
       diagnostics: [{
@@ -96,22 +97,22 @@ export function normalizeAgentInjections(
         ...(error.path === undefined ? {} : { path: error.path }),
       }],
     }),
-  );
+  });
 }
 
-export async function preflightAgentBindings(
+export function preflightAgentBindings(
   declarations: PreparedWorkflow["ir"]["agents"],
   agents: AgentInjectionMap,
   presetCatalog?: AgentPresetCatalog,
-): Promise<{ status: "valid" } | InvalidWorkflow> {
-  const finalized = await finalizeAgentBindings({
+): { status: "valid" } | InvalidWorkflow {
+  const finalized = finalizeAgentBindings({
     declarations,
     injections: agents,
     ...(presetCatalog === undefined ? {} : { presetCatalog }),
   });
-  return finalized.match(
-    () => ({ status: "valid" }),
-    failure => ({
+  return Result.match(finalized, {
+    onSuccess: () => ({ status: "valid" as const }),
+    onFailure: failure => ({
       status: "invalid",
       phase: "agents",
       diagnostics: [{
@@ -127,10 +128,10 @@ export async function preflightAgentBindings(
           : {}),
       }],
     }),
-  );
+  });
 }
 
-export async function submitPreparedWorkflow(input: {
+export function submitPreparedWorkflow(input: {
   runtime: WorkspaceRuntime;
   prepared: PreparedWorkflow;
   normalizedInput: JsonValue;
@@ -138,86 +139,98 @@ export async function submitPreparedWorkflow(input: {
   admissionRequestId: string;
   link: RunLink;
   links: RunLinkStore;
-  signal?: AbortSignal;
-}): Promise<AcpusRunReceipt> {
-  const existing = await readAdmissionReceipt(input);
-  if (existing !== undefined) return existing;
+}): Effect.Effect<AcpusRunReceipt, AcpusOperationError> {
+  return Effect.gen(function* () {
+    const existing = yield* readAdmissionReceipt(input);
+    if (existing !== undefined) return existing;
 
-  input.signal?.throwIfAborted();
-  const submission = {
-    requestId: input.admissionRequestId,
-    prepared: input.prepared,
-    input: input.normalizedInput,
-    ...(input.agentInjections === undefined
-      ? {}
-      : { agentInjections: input.agentInjections }),
-  };
-  let submitted = await input.runtime.submit(submission);
-  if (submitted.isErr()) {
-    if (submitted.error.outcome === "not-admitted") {
-      throw new AcpusOperationError(submitted.error.message, `ACPUS_${submitted.error.code}`);
+    const submission = {
+      requestId: input.admissionRequestId,
+      prepared: input.prepared,
+      input: input.normalizedInput,
+      ...(input.agentInjections === undefined
+        ? {}
+        : { agentInjections: input.agentInjections }),
+    };
+    let submitted = yield* Effect.result(input.runtime.submit(submission));
+    if (Result.isFailure(submitted)) {
+      if (submitted.failure.outcome === "not-admitted") {
+        return yield* Effect.fail(new AcpusOperationError(
+          submitted.failure.message,
+          `ACPUS_${submitted.failure.code}`,
+        ));
+      }
+      let recovered = yield* Effect.result(
+        input.runtime.findAdmission(input.admissionRequestId),
+      );
+      if (Result.isSuccess(recovered)
+        && recovered.success === undefined
+        && submitted.failure.outcome === "unknown") {
+        submitted = yield* Effect.result(input.runtime.submit(submission));
+        if (Result.isSuccess(submitted)) return yield* persistReceipt(input, submitted.success);
+        recovered = yield* Effect.result(input.runtime.findAdmission(input.admissionRequestId));
+      }
+      if (Result.isSuccess(recovered) && recovered.success !== undefined) {
+        return yield* persistReceipt(input, recovered.success);
+      }
+      return yield* Effect.fail(new AcpusOperationError(
+        "Acpus could not confirm the durable admission outcome. Keep the original workspace and retry after Runtime recovery; do not submit a replacement task.",
+        "ACPUS_ADMISSION_OUTCOME_UNKNOWN",
+      ));
     }
-    let recovered = await input.runtime.findAdmission(input.admissionRequestId);
-    if (recovered.isOk()
-      && recovered.value === undefined
-      && submitted.error.outcome === "unknown") {
-      submitted = await input.runtime.submit(submission);
-      if (submitted.isOk()) return persistReceipt(input, submitted.value);
-      recovered = await input.runtime.findAdmission(input.admissionRequestId);
-    }
-    if (recovered.isOk() && recovered.value !== undefined) {
-      return persistReceipt(input, recovered.value);
-    }
-    throw new AcpusOperationError(
-      "Acpus could not confirm the durable admission outcome. Keep the original workspace and retry after Runtime recovery; do not submit a replacement task.",
-      "ACPUS_ADMISSION_OUTCOME_UNKNOWN",
-    );
-  }
-  return persistReceipt(input, submitted.value);
+    return yield* persistReceipt(input, submitted.success);
+  });
 }
 
-async function persistReceipt(
+function persistReceipt(
   input: { admissionRequestId: string; links: RunLinkStore },
   run: { id: string; name: string },
-): Promise<AcpusRunReceipt> {
-  const admitted = await input.links.admitted(input.admissionRequestId, run);
-  return {
+): Effect.Effect<AcpusRunReceipt, AcpusOperationError> {
+  return input.links.admitted(input.admissionRequestId, run).pipe(Effect.map(admitted => ({
     status: "admitted",
     runId: run.id,
     task: { name: admitted.workflowName, occurrence: admitted.occurrence },
-  };
+  })));
 }
 
-export async function readAdmissionReceipt(input: {
+export function readAdmissionReceipt(input: {
   runtime: WorkspaceRuntime;
   admissionRequestId: string;
   link: RunLink;
-}): Promise<AcpusRunReceipt | undefined> {
-  if (input.link.runId === undefined) return undefined;
+}): Effect.Effect<AcpusRunReceipt | undefined, AcpusOperationError> {
+  if (input.link.runId === undefined) return Effect.succeed(undefined);
   if (input.link.workflowName === undefined || input.link.occurrence === undefined) {
-    throw new AcpusOperationError(
+    return Effect.fail(new AcpusOperationError(
       `Admission '${input.admissionRequestId}' is missing workflow metadata.`,
       "ACPUS_ADMISSION_INCONSISTENT",
-    );
+    ));
   }
-  const admission = await input.runtime.findAdmission(input.admissionRequestId);
-  if (admission.isErr()) {
-    throw new AcpusOperationError(admission.error.message, "ACPUS_READ_FAILED");
-  }
-  if (admission.value?.id !== input.link.runId) {
-    throw new AcpusOperationError(
-      `Admission '${input.admissionRequestId}' did not resolve to a live run.`,
-      "ACPUS_ADMISSION_INCONSISTENT",
-    );
-  }
-  return {
-    status: "admitted",
-    runId: input.link.runId,
-    task: {
-      name: input.link.workflowName,
-      occurrence: input.link.occurrence,
-    },
+  const link = input.link as RunLink & {
+    runId: string;
+    workflowName: string;
+    occurrence: number;
   };
+  return Effect.result(input.runtime.findAdmission(input.admissionRequestId)).pipe(
+    Effect.flatMap(admission => {
+      if (Result.isFailure(admission)) {
+        return Effect.fail(new AcpusOperationError(
+          admission.failure.message,
+          "ACPUS_READ_FAILED",
+        ));
+      }
+      if (admission.success?.id !== link.runId) {
+        return Effect.fail(new AcpusOperationError(
+          `Admission '${input.admissionRequestId}' did not resolve to a live run.`,
+          "ACPUS_ADMISSION_INCONSISTENT",
+        ));
+      }
+      return Effect.succeed({
+        status: "admitted" as const,
+        runId: link.runId,
+        task: { name: link.workflowName, occurrence: link.occurrence },
+      });
+    }),
+  );
 }
 
 function invalidWorkflow(failure: WorkflowPreparationFailure): InvalidWorkflow {

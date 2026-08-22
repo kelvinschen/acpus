@@ -1,115 +1,112 @@
-import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import type {
+  ProcessIdentityLiveness,
+  ProcessLiveness,
+  ProcessHostShape,
+  ProcessTarget,
+} from "@acpus/owned-process";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
 
 export const PROCESS_TREE_CLEANUP_BUDGET_MS = 5_000;
 
 const TERM_GRACE_MS = 1_000;
+const nanosPerMillisecond = 1_000_000n;
 
-export type ProcessIdentityLiveness = "match" | "absent" | "mismatch" | "unverified";
-export type ProcessGroupLiveness = "live" | "dead" | "unverified";
+export type ProcessTreeDeadline = bigint;
+export type ProcessGroupLiveness = ProcessLiveness;
 
-export async function stopProcessTree(pid: number, deadline: number): Promise<boolean> {
-  return (await stopProcessTreeWithDisposition(pid, deadline)).alive;
+export function processTreeDeadline(budgetMs: number): Effect.Effect<ProcessTreeDeadline> {
+  return Clock.monotonicTimeNanos.pipe(
+    Effect.map(now => now + BigInt(Math.max(0, Math.ceil(budgetMs))) * nanosPerMillisecond),
+  );
 }
 
-export async function stopProcessTreeWithDisposition(
-  pid: number,
-  deadline: number,
-): Promise<Readonly<{
+export function stopProcessTree(
+  processes: ProcessHostShape,
+  target: ProcessTarget,
+  deadline: ProcessTreeDeadline,
+): Effect.Effect<boolean> {
+  return stopProcessTreeWithDisposition(processes, target, deadline).pipe(
+    Effect.map(stopped => stopped.alive),
+  );
+}
+
+export function stopProcessTreeWithDisposition(
+  processes: ProcessHostShape,
+  target: ProcessTarget,
+  deadline: ProcessTreeDeadline,
+): Effect.Effect<Readonly<{
   alive: boolean;
   disposition: "cooperative" | "term" | "kill" | "unverified";
 }>> {
-  const initial = await processGroupLiveness(pid);
-  if (initial === "dead") return { alive: false, disposition: "cooperative" };
-  if (initial === "unverified") return { alive: true, disposition: "unverified" };
-  terminateProcessTree(pid, "SIGTERM");
-  await waitForTreeDeath(pid, Math.min(TERM_GRACE_MS, remaining(deadline)));
-  if (await processGroupLiveness(pid) === "dead") return { alive: false, disposition: "term" };
-  terminateProcessTree(pid, "SIGKILL");
-  await waitForTreeDeath(pid, remaining(deadline));
-  const liveness = await processGroupLiveness(pid);
-  return { alive: liveness !== "dead", disposition: liveness === "dead" ? "kill" : "unverified" };
-}
+  return Effect.gen(function*() {
+    const initial = yield* processes.liveness(target);
+    if (initial === "dead") return { alive: false, disposition: "cooperative" as const };
+    if (initial === "unverified") return { alive: true, disposition: "unverified" as const };
 
-export async function matchesProcessStartToken(
-  pid: number,
-  expected: string | undefined,
-): Promise<boolean | undefined> {
-  const liveness = await processIdentityLiveness(pid, expected);
-  return liveness === "match" ? true : liveness === "absent" || liveness === "mismatch" ? false : undefined;
-}
-
-export async function processIdentityLiveness(
-  pid: number,
-  expected: string | undefined,
-): Promise<ProcessIdentityLiveness> {
-  const existence = probeProcess(pid);
-  if (existence === "dead") return "absent";
-  if (existence === "unverified") return "unverified";
-  if (expected === undefined) return "unverified";
-  const actual = await processStartToken(pid);
-  return actual === undefined ? "unverified" : actual === expected ? "match" : "mismatch";
-}
-
-export async function processGroupLiveness(pgid: number): Promise<ProcessGroupLiveness> {
-  if (process.platform === "win32") {
-    const process = probeProcess(pgid);
-    return process === "alive" ? "live" : process;
-  }
-  return probeSignalTarget(-pgid);
-}
-
-export async function processStartToken(pid: number): Promise<string | undefined> {
-  if (process.platform !== "linux") return undefined;
-  try {
-    const stat = await readFile(`/proc/${pid}/stat`, "utf8");
-    const close = stat.lastIndexOf(")");
-    const fields = stat.slice(close + 2).trim().split(/\s+/u);
-    const startTime = fields[19];
-    return startTime ? `linux:${startTime}` : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function terminateProcessTree(pid: number, signal: NodeJS.Signals): void {
-  try {
-    if (process.platform === "win32") {
-      spawn("taskkill", ["/pid", String(pid), "/T", ...(signal === "SIGKILL" ? ["/F"] : [])], { stdio: "ignore" }).unref();
-      return;
+    yield* processes.signal(target, "SIGTERM").pipe(Effect.ignore);
+    yield* waitForTreeDeath(processes, target, deadline, TERM_GRACE_MS);
+    if ((yield* processes.liveness(target)) === "dead") {
+      return { alive: false, disposition: "term" as const };
     }
-    process.kill(-pid, signal);
-  } catch {
-    try {
-      process.kill(pid, signal);
-    } catch {}
-  }
+
+    yield* processes.signal(target, "SIGKILL").pipe(Effect.ignore);
+    yield* waitForTreeDeath(processes, target, deadline);
+    const liveness = yield* processes.liveness(target);
+    return {
+      alive: liveness !== "dead",
+      disposition: liveness === "dead" ? "kill" as const : "unverified" as const,
+    };
+  });
 }
 
-function probeProcess(pid: number): "alive" | "dead" | "unverified" {
-  const process = probeSignalTarget(pid);
-  return process === "live" ? "alive" : process;
+export function matchesProcessStartToken(
+  processes: ProcessHostShape,
+  pid: number,
+  expected: string | undefined,
+): Effect.Effect<boolean | undefined> {
+  return processes.identityLiveness(pid, expected).pipe(Effect.map(liveness =>
+    liveness === "match" ? true : liveness === "absent" || liveness === "mismatch" ? false : undefined));
 }
 
-function probeSignalTarget(pid: number): ProcessGroupLiveness {
-  try {
-    process.kill(pid, 0);
-    return "live";
-  } catch (error) {
-    const code = typeof error === "object" && error !== null && "code" in error
-      ? (error as { code?: unknown }).code
-      : undefined;
-    return code === "EPERM" ? "live" : code === "ESRCH" ? "dead" : "unverified";
-  }
+export function processIdentityLiveness(
+  processes: ProcessHostShape,
+  pid: number,
+  expected: string | undefined,
+): Effect.Effect<ProcessIdentityLiveness> {
+  return processes.identityLiveness(pid, expected);
 }
 
-async function waitForTreeDeath(pid: number, timeoutMs: number): Promise<void> {
-  const deadline = performance.now() + timeoutMs;
-  while (performance.now() < deadline && await processGroupLiveness(pid) === "live") {
-    await new Promise(resolve => setTimeout(resolve, Math.min(50, Math.max(1, deadline - performance.now()))));
-  }
+export function processGroupLiveness(
+  processes: ProcessHostShape,
+  target: ProcessTarget,
+): Effect.Effect<ProcessGroupLiveness> {
+  return processes.liveness(target);
 }
 
-function remaining(deadline: number): number {
-  return Math.max(0, Math.floor(deadline - performance.now()));
+function waitForTreeDeath(
+  processes: ProcessHostShape,
+  target: ProcessTarget,
+  deadline: ProcessTreeDeadline,
+  maximumMs = Number.POSITIVE_INFINITY,
+): Effect.Effect<void> {
+  return Effect.gen(function*() {
+    const ownDeadline = maximumMs === Number.POSITIVE_INFINITY
+      ? deadline
+      : yield* processTreeDeadline(maximumMs).pipe(Effect.map(value => value < deadline ? value : deadline));
+    while (yield* beforeDeadline(ownDeadline)) {
+      if ((yield* processes.liveness(target)) !== "live") return;
+      const remainingMs = yield* remaining(ownDeadline);
+      yield* Effect.sleep(Math.min(50, Math.max(1, remainingMs)));
+    }
+  });
+}
+
+export function remaining(deadline: ProcessTreeDeadline): Effect.Effect<number> {
+  return Clock.monotonicTimeNanos.pipe(Effect.map(now =>
+    Math.max(0, Math.floor(Number(deadline - now) / 1_000_000))));
+}
+
+function beforeDeadline(deadline: ProcessTreeDeadline): Effect.Effect<boolean> {
+  return Clock.monotonicTimeNanos.pipe(Effect.map(now => now < deadline));
 }

@@ -7,6 +7,7 @@ import {
   type InspectionViewQuery,
   type ObservableInspectionViewQuery,
 } from "@acpus/runtime";
+import * as Stream from "effect/Stream";
 import {
   formatDurationMs,
   formatInspectionChanges,
@@ -52,11 +53,14 @@ export async function followRun(
   };
   process.once("SIGINT", onAbort);
 
-  const iterator = observeInspection(cwd, {
+  const iterator = Stream.toAsyncIterable(observeInspection(cwd, {
     view,
     until: options.until,
     signal: controller.signal,
-  })[Symbol.asyncIterator]();
+  }).pipe(
+    Stream.map(observation => ({ type: "observation" as const, observation })),
+    Stream.catch(error => Stream.succeed({ type: "failure" as const, error })),
+  ))[Symbol.asyncIterator]();
   const presenter = new RunInspectionTranscriptPresenter(options.stdout, view.runId);
   let closed: Extract<InspectionObservation, { kind: "closed" }> | undefined;
 
@@ -65,11 +69,11 @@ export async function followRun(
       const next = await iterator.next();
       if (controller.signal.aborted) break;
       if (next.done) break;
-      if (next.value.isErr()) {
+      if (next.value.type === "failure") {
         writeFollowError(next.value.error, view, options.stderr);
         return { kind: "error", error: next.value.error };
       }
-      const observation = next.value.value;
+      const observation = next.value.observation;
       presenter.observation(observation);
       if (observation.kind === "closed") {
         closed = observation;

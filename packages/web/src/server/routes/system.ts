@@ -5,6 +5,8 @@ import {
   repairRuntimeStore,
   type RuntimeStoreFailure,
 } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import type {
   HealthReport,
   RuntimeStoreStatus,
@@ -20,7 +22,7 @@ type SystemRouteOptions = {
 
 export function registerSystemRoutes(app: Hono, options: SystemRouteOptions): void {
   app.get("/api/health", async (context) => {
-    const health = await getRuntimeHealth(options.cwd);
+    const health = await Effect.runPromise(getRuntimeHealth(options.cwd));
     const report = {
       checks: health.checks.map(({ area, status, message }) => ({ area, status, message })),
     } satisfies HealthReport;
@@ -28,14 +30,16 @@ export function registerSystemRoutes(app: Hono, options: SystemRouteOptions): vo
   });
 
   app.get("/api/runtime-store", async (context) => {
-    const inspected = await inspectRuntimeStore(options.cwd);
-    if (inspected.isErr()) apiError(500, "runtime_store_unavailable", inspected.error.message);
-    return context.json({ ok: true, runtimeStore: publicRuntimeStoreStatus(inspected.value) });
+    const inspected = await Effect.runPromise(Effect.result(inspectRuntimeStore(options.cwd)));
+    if (Result.isFailure(inspected)) {
+      apiError(500, "runtime_store_unavailable", inspected.failure.message);
+    }
+    return context.json({ ok: true, runtimeStore: publicRuntimeStoreStatus(inspected.success) });
   });
 
   app.post("/api/runtime-store", async (context) => {
-    const repaired = await repairRuntimeStore(options.cwd);
-    if (repaired.isErr()) runtimeStoreRepairError(repaired.error);
+    const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(options.cwd)));
+    if (Result.isFailure(repaired)) runtimeStoreRepairError(repaired.failure);
     return context.json({ ok: true });
   });
 

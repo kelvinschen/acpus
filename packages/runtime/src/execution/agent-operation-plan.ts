@@ -1,5 +1,5 @@
 import type { Sha256Digest } from "@acpus/core/content-identity";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import type { AgentPromptOrigin } from "./agent-prompt.js";
 
 export type AgentSessionCheckpoint =
@@ -126,9 +126,9 @@ export type AgentAttemptAdmissionPlanningInput =
 
 export function planAgentAttemptAdmission(
   input: AgentAttemptAdmissionPlanningInput,
-): Result<AgentAttemptOperationPlan, AgentOperationPlanError> {
+): Result.Result<AgentAttemptOperationPlan, AgentOperationPlanError> {
   if (input.source === "first_materialization") {
-    return ok({
+    return Result.succeed({
       operation: "start",
       session: input.session,
       sessionOpenMode: "new_or_empty",
@@ -137,7 +137,7 @@ export function planAgentAttemptAdmission(
     });
   }
   if (input.source === "generation_start") {
-    return ok({
+    return Result.succeed({
       operation: "start",
       session: input.session,
       sessionOpenMode: "new_or_empty",
@@ -151,14 +151,14 @@ export function planAgentAttemptAdmission(
   if (input.checkpoint.checkpoint !== "not_dispatched"
     || input.checkpoint.promptOrigin !== input.rebuiltPrompt.promptOrigin
     || input.checkpoint.inputDigest !== input.rebuiltPrompt.inputDigest) {
-    return err({
+    return Result.fail({
       type: "safe_retry_input_mismatch",
       agentSessionId: input.session.agentSessionId,
       predecessorAttemptId: input.predecessorAttemptId,
       message: "Safe retry requires the predecessor's exact not-dispatched prompt identity.",
     });
   }
-  return ok({
+  return Result.succeed({
     operation: "safe_retry",
     session: input.session,
     sessionOpenMode: input.predecessorSessionOpenMode,
@@ -170,11 +170,11 @@ export function planAgentAttemptAdmission(
 
 function planContinue(
   input: Extract<AgentAttemptAdmissionPlanningInput, { source: "continue" }>,
-): Result<AgentAttemptOperationPlan, AgentOperationPlanError> {
-  if (input.active) return err(invalid(input.target, "active"));
-  if (unknown(input.checkpoint.checkpoint)) return err(unknownCheckpoint(input.session, input.checkpoint.checkpoint));
-  if (input.checkpoint.checkpoint !== "terminal_observed") return err(invalid(input.target, "not_terminal"));
-  return ok({
+): Result.Result<AgentAttemptOperationPlan, AgentOperationPlanError> {
+  if (input.active) return Result.fail(invalid(input.target, "active"));
+  if (unknown(input.checkpoint.checkpoint)) return Result.fail(unknownCheckpoint(input.session, input.checkpoint.checkpoint));
+  if (input.checkpoint.checkpoint !== "terminal_observed") return Result.fail(invalid(input.target, "not_terminal"));
+  return Result.succeed({
     operation: "continue",
     session: input.session,
     sessionOpenMode: "existing_required",

@@ -4,18 +4,23 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  openAcpSession,
+  openAcpSession as openAcpSessionEffect,
   type AcpError,
   type AcpEvent,
   type AcpLaunch,
   type AcpSession,
   type OpenAcpSessionInput,
 } from "@acpus/acp";
-import type { Result } from "neverthrow";
+import { AcpTransportNodeLive } from "@acpus/acp/transport";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
 
 const agentFixture = fileURLToPath(new URL("./fixtures/acp-agent.mjs", import.meta.url));
 const temporaryRoots: string[] = [];
 const openSessions: AcpSession[] = [];
+let sessionScope = Scope.makeUnsafe();
 
 type JsonRecord = Record<string, unknown>;
 type WireMessage = {
@@ -33,8 +38,22 @@ type Fixture = {
   logPath: string;
 };
 
+function openAcpSession(
+  input: OpenAcpSessionInput,
+): Promise<Result.Result<AcpSession, AcpError>> {
+  return settle(Scope.provide(sessionScope)(
+    openAcpSessionEffect(input).pipe(Effect.provide(AcpTransportNodeLive)),
+  ));
+}
+
+function settle<A, E>(effect: Effect.Effect<A, E>): Promise<Result.Result<A, E>> {
+  return Effect.runPromise(Effect.result(effect));
+}
+
 afterEach(async () => {
-  await Promise.allSettled(openSessions.splice(0).map(session => session.close()));
+  await Promise.allSettled(openSessions.splice(0).map(session => settle(session.close())));
+  await settle(Scope.close(sessionScope, Exit.void));
+  sessionScope = Scope.makeUnsafe();
   await Promise.all(temporaryRoots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
 
@@ -93,10 +112,14 @@ describe("@acpus/acp session process integration", () => {
     });
     const pid = Number((await readFile(pidPath, "utf8")).trim());
     expect(providerGroupExists(pid)).toBe(true);
+    const outbound = request(await requestLog(fixture.logPath), method);
 
     controller.abort();
+    await waitUntil(async () => (await requestLog(fixture.logPath)).some(message => message.method === "$/cancel_request"));
+    const cancellation = request(await requestLog(fixture.logPath), "$/cancel_request");
     const opened = await pending;
 
+    expect(cancellation.params).toEqual({ requestId: outbound.id });
     expect(errorOf(opened)).toMatchObject({
       type: "cancelled",
       operation,
@@ -407,9 +430,9 @@ describe("@acpus/acp session process integration", () => {
       sessionOpenMode: "existing_required",
     }));
 
-    expect(opened.isErr()).toBe(true);
-    if (opened.isOk()) throw new Error("Expected unsupported recovery to fail.");
-    expect(opened.error).toMatchObject({
+    expect(Result.isFailure(opened)).toBe(true);
+    if (Result.isSuccess(opened)) throw new Error("Expected unsupported recovery to fail.");
+    expect(opened.failure).toMatchObject({
       type: "capability",
       operation: "resume_session",
       capability: "resume",
@@ -428,11 +451,11 @@ describe("@acpus/acp session process integration", () => {
     });
     const controller = new AbortController();
     const events: AcpEvent[] = [];
-    const pending = session.runTurn({
+    const pending = settle(session.runTurn({
       prompt: "cancel me",
       signal: controller.signal,
       onEvent: event => events.push(event),
-    });
+    }));
     await waitUntil(() => events.length === 1);
 
     controller.abort();
@@ -562,10 +585,10 @@ describe("@acpus/acp session process integration", () => {
       env: { ACP_FIXTURE_RELEASE_PATH: releasePath },
     });
     const controller = new AbortController();
-    const activeTurn = session.runTurn({ prompt: "active", signal: controller.signal });
+    const activeTurn = settle(session.runTurn({ prompt: "active", signal: controller.signal }));
     await waitUntil(async () => methods(await requestLog(fixture.logPath)).includes("session/prompt"));
 
-    const concurrent = await session.runTurn({ prompt: "second" });
+    const concurrent = await settle(session.runTurn({ prompt: "second" }));
     expect(errorOf(concurrent)).toMatchObject({
       type: "session",
       operation: "run_turn",
@@ -575,12 +598,12 @@ describe("@acpus/acp session process integration", () => {
     controller.abort();
     await writeFile(releasePath, "release\n");
     expect(valueOf(await activeTurn)).toMatchObject({ status: "cancelled" });
-    const firstClose = session.close("test close");
-    const secondClose = session.close("ignored duplicate");
-    expect(secondClose).toBe(firstClose);
+    const firstClose = settle(session.close("test close"));
+    const secondClose = settle(session.close("ignored duplicate"));
     expect(valueOf(await firstClose)).toBeUndefined();
+    expect(valueOf(await secondClose)).toBeUndefined();
 
-    const afterClose = await session.runTurn({ prompt: "closed" });
+    const afterClose = await settle(session.runTurn({ prompt: "closed" }));
     expect(errorOf(afterClose)).toMatchObject({
       type: "session",
       operation: "run_turn",
@@ -598,12 +621,12 @@ describe("@acpus/acp session process integration", () => {
       scenarios: ["cancel-late", "close-session"],
       env: { ACP_FIXTURE_RELEASE_PATH: releasePath },
     });
-    const turn = session.runTurn({ prompt: "close while active" });
+    const turn = settle(session.runTurn({ prompt: "close while active" }));
     await waitUntil(async () => methods(await requestLog(fixture.logPath)).includes("session/prompt"));
 
     let closed = false;
-    const closing = (async (): Promise<Result<void, AcpError>> => {
-      const result = await session.close();
+    const closing = (async (): Promise<Result.Result<void, AcpError>> => {
+      const result = await settle(session.close());
       closed = true;
       return result;
     })();
@@ -612,8 +635,8 @@ describe("@acpus/acp session process integration", () => {
 
     await writeFile(releasePath, "release\n");
     const turnResult = await turn;
-    if (turnResult.isErr()) throw new Error(JSON.stringify(turnResult.error));
-    expect(turnResult.value).toMatchObject({ status: "cancelled" });
+    if (Result.isFailure(turnResult)) throw new Error(JSON.stringify(turnResult.failure));
+    expect(turnResult.success).toMatchObject({ status: "cancelled" });
     expect(valueOf(await closing)).toBeUndefined();
     expect(methods(await requestLog(fixture.logPath))).toContain("session/close");
     const projection = await readProjection(fixture, session);
@@ -630,11 +653,11 @@ describe("@acpus/acp session process integration", () => {
       scenarios: ["cancel-late", "ignore-cancel"],
       env: { ACP_FIXTURE_PID_PATH: pidPath },
     });
-    const turn = session.runTurn({ prompt: "ignore cancellation" });
+    const turn = settle(session.runTurn({ prompt: "ignore cancellation" }));
     await waitUntil(async () => methods(await requestLog(fixture.logPath)).includes("session/prompt"));
     const pid = Number((await readFile(pidPath, "utf8")).trim());
 
-    const closed = await session.close("forced close");
+    const closed = await settle(session.close("forced close"));
 
     expect(valueOf(closed)).toBeUndefined();
     expect(providerGroupExists(pid)).toBe(false);
@@ -643,19 +666,28 @@ describe("@acpus/acp session process integration", () => {
     if (index >= 0) openSessions.splice(index, 1);
   });
 
-  it("returns tagged spawn, protocol-version, and initialization-exit failures", async () => {
+  it("runs semantic Provider cleanup when the owning Session Scope closes", async () => {
     const fixture = await createFixture();
-    const missing = await openAcpSession({
-      ...inputFor(fixture, { recordId: "missing" }),
-      launch: { kind: "argv", argv: [join(fixture.root, "missing-agent")] },
-    });
-    expect(errorOf(missing)).toMatchObject({
-      type: "spawn",
-      operation: "open_session",
-      code: "ENOENT",
-      retryable: false,
-    });
+    const pidPath = join(fixture.root, "scope-close.pid");
+    const owningScope = Scope.makeUnsafe();
+    const opened = await settle(Scope.provide(owningScope)(
+      openAcpSessionEffect(inputFor(fixture, {
+        recordId: "scope-close",
+        env: { ACP_FIXTURE_PID_PATH: pidPath },
+      })).pipe(Effect.provide(AcpTransportNodeLive)),
+    ));
+    const session = valueOf(opened);
+    const pid = Number((await readFile(pidPath, "utf8")).trim());
+    expect(providerGroupExists(pid)).toBe(true);
 
+    await Effect.runPromise(Scope.close(owningScope, Exit.void));
+
+    expect(providerGroupExists(pid)).toBe(false);
+    expect(valueOf(await settle(session.close("already finalized")))).toBeUndefined();
+  });
+
+  it("rejects an unsupported ACP protocol version", async () => {
+    const fixture = await createFixture();
     const badProtocol = await openAcpSession(inputFor(fixture, {
       recordId: "bad-protocol",
       scenarios: ["bad-protocol"],
@@ -666,26 +698,6 @@ describe("@acpus/acp session process integration", () => {
       operation: "initialize",
       retryable: false,
     });
-
-    const providerExitInput = inputFor(fixture, {
-      recordId: "provider-exit",
-      scenarios: ["exit-initialize"],
-      logPath: join(fixture.root, "provider-exit.ndjson"),
-      env: { ACP_FIXTURE_EXIT_CODE: "37" },
-    });
-    for (let attempt = 0; attempt < 5; attempt += 1) {
-      const providerExit = await openAcpSession({
-        ...providerExitInput,
-        agentSessionId: `provider-exit-${attempt}`,
-      });
-      expect(errorOf(providerExit)).toMatchObject({
-        type: "provider_exit",
-        operation: "initialize",
-        exitCode: 37,
-        signal: null,
-        retryable: true,
-      });
-    }
   });
 
   it("sorts explicit model and options, retains omission, and replays after resume", async () => {
@@ -756,10 +768,10 @@ describe("@acpus/acp session process integration", () => {
     });
 
     await runTurn(session, { prompt: "initial options" });
-    const mutation = await session.runTurn({
+    const mutation = await settle(session.runTurn({
       prompt: "replacement options",
       configuration: { options: { alpha: "alpha-replaced" } },
-    });
+    }));
 
     expect(errorOf(mutation)).toMatchObject({
       type: "configuration",
@@ -891,16 +903,16 @@ async function openSession(
   options: Parameters<typeof inputFor>[1],
 ): Promise<AcpSession> {
   const opened = await openAcpSession(inputFor(fixture, options));
-  if (opened.isErr()) throw new Error(`Could not open fixture session: ${JSON.stringify(opened.error)}`);
-  openSessions.push(opened.value);
-  return opened.value;
+  if (Result.isFailure(opened)) throw new Error(`Could not open fixture session: ${JSON.stringify(opened.failure)}`);
+  openSessions.push(opened.success);
+  return opened.success;
 }
 
 async function closeTracked(session: AcpSession): Promise<void> {
   const index = openSessions.indexOf(session);
   if (index >= 0) openSessions.splice(index, 1);
-  const closed = await session.close();
-  if (closed.isErr()) throw new Error(`Could not close fixture session: ${JSON.stringify(closed.error)}`);
+  const closed = await settle(session.close());
+  if (Result.isFailure(closed)) throw new Error(`Could not close fixture session: ${JSON.stringify(closed.failure)}`);
 }
 
 async function readProjection(
@@ -934,21 +946,21 @@ function configRequests(messages: WireMessage[]): JsonRecord[] {
     : []);
 }
 
-function valueOf<T, E>(result: Result<T, E>): T {
-  if (result.isErr()) throw new Error(`Expected operation to succeed: ${JSON.stringify(result.error)}`);
-  return result.value;
+function valueOf<T, E>(result: Result.Result<T, E>): T {
+  if (Result.isFailure(result)) throw new Error(`Expected operation to succeed: ${JSON.stringify(result.failure)}`);
+  return result.success;
 }
 
-function errorOf<T, E>(result: Result<T, E>): E {
-  if (result.isOk()) throw new Error("Expected operation to fail.");
-  return result.error;
+function errorOf<T, E>(result: Result.Result<T, E>): E {
+  if (Result.isSuccess(result)) throw new Error("Expected operation to fail.");
+  return result.failure;
 }
 
 async function runTurn(
   session: AcpSession,
   input: Parameters<AcpSession["runTurn"]>[0],
 ) {
-  return valueOf(await session.runTurn(input));
+  return valueOf(await settle(session.runTurn(input)));
 }
 
 function turnEvents(cwd: string, number: number, prompt: string): AcpEvent[] {

@@ -1,4 +1,4 @@
-import { err, errAsync, ok, okAsync, ResultAsync, type Result } from "neverthrow";
+import * as Effect from "effect/Effect";
 import type {
   AcpAgentLaunch,
   AgentSelector,
@@ -59,63 +59,55 @@ export function resolveAcpAgentLaunch(input: {
   model?: string;
   namedAgentLaunches?: NamedAcpAgentLaunchRegistry;
   configuredAgentCommand?: ConfiguredAcpAgentCommandResolver;
-}): ResultAsync<AcpAgentLaunch, AcpAgentResolutionFailure> {
-  if (input.agent.kind === "command") {
-    return okAsync({ kind: "command", command: input.agent.command });
-  }
+}): Effect.Effect<AcpAgentLaunch, AcpAgentResolutionFailure> {
+  return Effect.suspend<AcpAgentLaunch, AcpAgentResolutionFailure, never>(() => {
+    if (input.agent.kind === "command") {
+      return Effect.succeed<AcpAgentLaunch>({ kind: "command", command: input.agent.command });
+    }
 
-  const name = normalizeAgentName(input.agent.name);
-  if (!name) return errAsync(configFailure("Named Agent name must contain a non-whitespace character."));
+    const name = normalizeAgentName(input.agent.name);
+    if (!name) return Effect.fail(configFailure("Named Agent name must contain a non-whitespace character."));
 
-  if (input.namedAgentLaunches !== undefined && Object.hasOwn(input.namedAgentLaunches, name)) {
-    return okAsync({
-      kind: "argv",
-      argv: resolveHostAgentLaunch(input.namedAgentLaunches[name], name, input.model),
+    if (input.namedAgentLaunches !== undefined && Object.hasOwn(input.namedAgentLaunches, name)) {
+      return Effect.succeed({
+        kind: "argv",
+        argv: resolveHostAgentLaunch(input.namedAgentLaunches[name], name, input.model),
+        name,
+      });
+    }
+
+    return resolveNamedAcpAgentLaunch({
       name,
+      ...(input.configuredAgentCommand === undefined
+        ? {}
+        : { configuredAgentCommand: input.configuredAgentCommand }),
     });
-  }
-
-  return resolveNamedAcpAgentLaunch({
-    name,
-    ...(input.configuredAgentCommand === undefined
-      ? {}
-      : { configuredAgentCommand: input.configuredAgentCommand }),
   });
 }
 
 export function resolveNamedAcpAgentLaunch(input: {
   name: string;
   configuredAgentCommand?: ConfiguredAcpAgentCommandResolver;
-}): ResultAsync<AcpAgentLaunch, AcpAgentResolutionFailure> {
-  return new ResultAsync(resolveNamedAcpAgentLaunchValue(input));
-}
+}): Effect.Effect<AcpAgentLaunch, AcpAgentResolutionFailure> {
+  return Effect.suspend<AcpAgentLaunch, AcpAgentResolutionFailure, never>(() => {
+    const name = normalizeAgentName(input.name);
+    if (!name) return Effect.fail(configFailure("Named Agent name must contain a non-whitespace character."));
+    const canonical = canonicalAgentName(name);
+    const configured: Effect.Effect<string | undefined, AcpAgentResolutionFailure> = input.configuredAgentCommand === undefined
+      ? Effect.succeed<string | undefined>(undefined)
+      : input.configuredAgentCommand(canonical === name ? [name] : [name, canonical]);
 
-async function resolveNamedAcpAgentLaunchValue(input: {
-  name: string;
-  configuredAgentCommand?: ConfiguredAcpAgentCommandResolver;
-}): Promise<Result<AcpAgentLaunch, AcpAgentResolutionFailure>> {
-  const name = normalizeAgentName(input.name);
-  if (!name) return err(configFailure("Named Agent name must contain a non-whitespace character."));
+    return configured.pipe(Effect.flatMap(command => {
+      if (command !== undefined) return Effect.succeed<AcpAgentLaunch>({ kind: "command", command, name });
 
-  const configured = await resolveConfiguredAgent(input.configuredAgentCommand, name);
-  if (configured.isErr()) return err(configured.error);
-  if (configured.value !== undefined) return ok({ kind: "command", command: configured.value, name });
+      const builtIn = resolveBuiltInAgent(name);
+      if (builtIn !== undefined) return Effect.succeed<AcpAgentLaunch>({ kind: "argv", argv: copyArgv(builtIn), name });
 
-  const builtIn = resolveBuiltInAgent(name);
-  if (builtIn !== undefined) return ok({ kind: "argv", argv: copyArgv(builtIn), name });
-
-  return err(configFailure(
-    `Named Agent '${name}' is not configured or built in. Configure it in Acpus config or use an explicit command selector.`,
-  ));
-}
-
-async function resolveConfiguredAgent(
-  resolver: ConfiguredAcpAgentCommandResolver | undefined,
-  name: string,
-): Promise<Result<string | undefined, AcpAgentResolutionFailure>> {
-  if (resolver === undefined) return ok(undefined);
-  const canonical = canonicalAgentName(name);
-  return resolver(canonical === name ? [name] : [name, canonical]);
+      return Effect.fail(configFailure(
+        `Named Agent '${name}' is not configured or built in. Configure it in Acpus config or use an explicit command selector.`,
+      ));
+    }));
+  });
 }
 
 function resolveBuiltInAgent(name: string): readonly [string, ...string[]] | undefined {

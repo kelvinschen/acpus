@@ -7,6 +7,8 @@ import {
   type RuntimeHealthCheck,
   type RuntimeHealthReport,
 } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { writeResult } from "../presentation/output.js";
 import { getAuthoringHealth, type AuthoringHealthCheck } from "./authoring-health.js";
 
@@ -66,29 +68,29 @@ async function runtimeHealth(
   cwd: string,
   fix: boolean,
 ): Promise<{ report: RuntimeHealthReport; repairChecks: RuntimeHealthCheck[] }> {
-  if (!fix) return { report: await getRuntimeHealth(cwd), repairChecks: [] };
+  if (!fix) return { report: await Effect.runPromise(getRuntimeHealth(cwd)), repairChecks: [] };
 
-  const inspected = await inspectRuntimeStore(cwd);
-  if (inspected.isErr() || inspected.value.state !== "repairable") {
-    return { report: await getRuntimeHealth(cwd), repairChecks: [] };
+  const inspected = await Effect.runPromise(Effect.result(inspectRuntimeStore(cwd)));
+  if (Result.isFailure(inspected) || inspected.success.state !== "repairable") {
+    return { report: await Effect.runPromise(getRuntimeHealth(cwd)), repairChecks: [] };
   }
 
-  const repaired = await repairRuntimeStore(cwd);
-  if (repaired.isErr()) {
+  const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(cwd)));
+  if (Result.isFailure(repaired)) {
     return {
       report: {
         ok: false,
         phase: "doctor",
         state: "unreadable",
-        checks: [{ area: "store", status: "fail", message: repaired.error.message }],
+        checks: [{ area: "store", status: "fail", message: repaired.failure.message }],
       },
       repairChecks: [],
     };
   }
 
   return {
-    report: await getRuntimeHealth(cwd),
-    repairChecks: repaired.value.changed
+    report: await Effect.runPromise(getRuntimeHealth(cwd)),
+    repairChecks: repaired.success.changed
       ? [{ area: "store", status: "ok", message: "Runtime store fixed; existing runs were preserved." }]
       : [],
   };

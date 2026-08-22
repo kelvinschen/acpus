@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Sha256Digest } from "@acpus/core/content-identity";
-import { err, ResultAsync, type Result } from "neverthrow";
+import * as Effect from "effect/Effect";
 import type { CompiledWorkflowModule, CompileWorkflowModuleError } from "./module.js";
 import { runProcess, type ProcessResult } from "./process.js";
 import {
@@ -31,53 +31,43 @@ export function compileWorkflow(
   sourceRoot: string,
   scratchDir: string,
   options: CompileWorkflowOptions,
-): ResultAsync<CompiledWorkflowModule, CompileWorkerFailure> {
-  return new ResultAsync(compileWorkflowResult(entry, sourceRoot, scratchDir, options));
-}
+): Effect.Effect<CompiledWorkflowModule, CompileWorkerFailure> {
+  return Effect.gen(function* () {
+    const out = join(scratchDir, "compile-result.json");
+    const isSourceWorker = import.meta.url.endsWith(".ts");
+    const worker = fileURLToPath(new URL(isSourceWorker ? "./compile-worker.ts" : "./compile-worker.js", import.meta.url));
+    const args = [
+      worker,
+      entry,
+      out,
+      sourceRoot,
+      options.dependencyRoot ?? sourceRoot,
+      options.expectedSourceDigest,
+    ];
+    if (isSourceWorker) {
+      args.unshift("--import", import.meta.resolve("tsx"));
+      // Workspace development should compile workflows against live core source.
+      // Published installs must omit this condition and resolve normal package dist.
+      args.unshift("--conditions=development");
+    }
 
-async function compileWorkflowResult(
-  entry: string,
-  sourceRoot: string,
-  scratchDir: string,
-  options: CompileWorkflowOptions,
-): Promise<Result<CompiledWorkflowModule, CompileWorkerFailure>> {
-  const out = join(scratchDir, "compile-result.json");
-  const isSourceWorker = import.meta.url.endsWith(".ts");
-  const worker = fileURLToPath(new URL(isSourceWorker ? "./compile-worker.ts" : "./compile-worker.js", import.meta.url));
-  const args = [
-    worker,
-    entry,
-    out,
-    sourceRoot,
-    options.dependencyRoot ?? sourceRoot,
-    options.expectedSourceDigest,
-  ];
-  if (isSourceWorker) {
-    args.unshift("--import", await import.meta.resolve("tsx"));
-    // Workspace development should compile workflows against live core source.
-    // Published installs must omit this condition and resolve normal package dist.
-    args.unshift("--conditions=development");
-  }
+    const processResult = yield* runProcess(process.execPath, args);
+    if (!processResult.ok) {
+      return yield* Effect.fail({
+        type: "worker-spawn-failed" as const,
+        message: `Workflow compile worker could not be started: ${processResult.error.message}`,
+        ...(processResult.error.code ? { code: processResult.error.code } : {}),
+        stdoutTail: processResult.stdoutTail,
+        stderrTail: processResult.stderrTail,
+      });
+    }
 
-  const processResult = await runProcess(process.execPath, args);
-  if (!processResult.ok) {
-    return err({
-      type: "worker-spawn-failed",
-      message: `Workflow compile worker could not be started: ${processResult.error.message}`,
-      ...(processResult.error.code ? { code: processResult.error.code } : {}),
-      stdoutTail: processResult.stdoutTail,
-      stderrTail: processResult.stderrTail,
+    const raw = yield* Effect.tryPromise({
+      try: () => readFile(out, "utf8"),
+      catch: error => classifyCompileWorkerResultReadFailure(processResult, out, error),
     });
-  }
-
-  let raw: string;
-  try {
-    raw = await readFile(out, "utf8");
-  } catch (error) {
-    return err(classifyCompileWorkerResultReadFailure(processResult, out, error));
-  }
-
-  return interpretCompileWorkerOutput(processResult, raw, options.expectedSourceDigest);
+    return yield* Effect.fromResult(interpretCompileWorkerOutput(processResult, raw, options.expectedSourceDigest));
+  });
 }
 
 export function classifyCompileWorkerResultReadFailure(

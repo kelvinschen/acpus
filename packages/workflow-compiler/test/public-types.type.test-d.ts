@@ -20,12 +20,16 @@ import {
   prepareWorkflow,
   tryPrepareWorkflow,
 } from "@acpus/workflow-compiler";
-import type { ResultAsync } from "neverthrow";
+import type * as Effect from "effect/Effect";
 
 test("@acpus/workflow-compiler public types describe the package boundary", () => {
   expectTypeOf(prepareWorkflow).toEqualTypeOf<(options: WorkflowPreparationOptions) => Promise<PreparedWorkflow>>();
-  expectTypeOf(tryPrepareWorkflow).toEqualTypeOf<(options: WorkflowPreparationOptions) => ResultAsync<PreparedWorkflow, WorkflowPreparationFailure>>();
-  expectTypeOf(extractWorkflowMetadata).toEqualTypeOf<(source: string, fileName: string) => ResultAsync<WorkflowMetadata, WorkflowMetadataError>>();
+  expectTypeOf(tryPrepareWorkflow).toEqualTypeOf<
+    (options: WorkflowPreparationOptions) => Effect.Effect<PreparedWorkflow, WorkflowPreparationFailure>
+  >();
+  expectTypeOf(extractWorkflowMetadata).toEqualTypeOf<
+    (source: string, fileName: string) => Effect.Effect<WorkflowMetadata, WorkflowMetadataError>
+  >();
 
   expectTypeOf<Sha256Digest>().toEqualTypeOf<`sha256:${string}`>();
   expectTypeOf<WorkflowSourceFile>().toEqualTypeOf<{ path: string; content: string }>();
@@ -60,47 +64,18 @@ test("@acpus/workflow-compiler public types describe the package boundary", () =
   const error = new WorkflowPreparationError({ type: "compile-failed", phase: "compile", message: "failed", failure });
   expectTypeOf(error.failure).toEqualTypeOf<WorkflowPreparationFailure>();
 
-  const files: WorkflowPreparationOptions = {
-    workspaceDir: "/workspace",
-    source: {
-      kind: "files",
-      entry: "workflow.ts",
-      files: [{ path: "workflow.ts", content: "export default workflow;" }],
-    },
+  const narrowPrepared = (prepared: PreparedWorkflow): void => {
+    if (prepared.sourceBundle === undefined) {
+      expectTypeOf(prepared.source).toEqualTypeOf<{ kind: "workspace"; entry: string }>();
+      expectTypeOf(prepared.sourceBundle).toEqualTypeOf<undefined>();
+    } else {
+      expectTypeOf(prepared.source).toEqualTypeOf<{
+        kind: "snapshot";
+        entry: string;
+        digest: Sha256Digest;
+      }>();
+      expectTypeOf(prepared.sourceBundle).toEqualTypeOf<WorkflowSourceBundle>();
+    }
   };
-  expectTypeOf(files).toEqualTypeOf<WorkflowPreparationOptions>();
-
-  const prepared = {} as PreparedWorkflow;
-  // @ts-expect-error prepared workflows no longer expose the original workflowPath field.
-  prepared.workflowPath;
-  // @ts-expect-error prepared workflows no longer expose a caller-owned sourceRoot.
-  prepared.sourceRoot;
-
-  const removedWorkflow = {
-    workspaceDir: "/workspace",
-    source: { kind: "path", entry: "workflow.ts" },
-    // @ts-expect-error the removed workflow preparation field is not accepted.
-    workflow: "workflow.ts",
-  } satisfies WorkflowPreparationOptions;
-  expectTypeOf(removedWorkflow).not.toEqualTypeOf<WorkflowPreparationOptions>();
-
-  const removedCwd = {
-    workspaceDir: "/workspace",
-    source: { kind: "path", entry: "workflow.ts" },
-    // @ts-expect-error the removed cwd preparation field is not accepted.
-    cwd: "/workspace",
-  } satisfies WorkflowPreparationOptions;
-  expectTypeOf(removedCwd).not.toEqualTypeOf<WorkflowPreparationOptions>();
-
-  const removedSourceRoot = {
-    workspaceDir: "/workspace",
-    source: { kind: "path", entry: "workflow.ts" },
-    // @ts-expect-error the removed sourceRoot preparation field is not accepted.
-    sourceRoot: "/snapshot",
-  } satisfies WorkflowPreparationOptions;
-  expectTypeOf(removedSourceRoot).not.toEqualTypeOf<WorkflowPreparationOptions>();
-
-  // @ts-expect-error catalog provenance is not a compiler source identity.
-  const removedCatalog: WorkflowSourceRef = { kind: "global_catalog", name: "catalog", digest: "sha256:test", entry: "workflow.ts" };
-  expectTypeOf(removedCatalog).toEqualTypeOf<WorkflowSourceRef>();
+  expectTypeOf(narrowPrepared).toEqualTypeOf<(prepared: PreparedWorkflow) => void>();
 });

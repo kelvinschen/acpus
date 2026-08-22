@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import {
   dshAgentPresetProvider,
   renderAgentPresetCatalog,
@@ -7,11 +9,11 @@ import {
 
 describe("DSH Agent Preset adapter", () => {
   it("provides the immutable dsh definition through the Runtime Host seam", async () => {
-    const provided = await dshAgentPresetProvider({});
+    const provided = await Effect.runPromise(Effect.result(dshAgentPresetProvider({})));
 
-    expect(provided.isOk()).toBe(true);
-    if (provided.isErr()) throw new Error(provided.error.message);
-    expect(provided.value).toEqual([{
+    expect(Result.isSuccess(provided)).toBe(true);
+    if (Result.isFailure(provided)) throw new Error(provided.failure.message);
+    expect(provided.success).toEqual([{
       id: "dsh",
       guidance: expect.any(String),
       agent: { use: "dsh" },

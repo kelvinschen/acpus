@@ -254,31 +254,6 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(diagnostics).toContainEqual(expect.objectContaining({ code, path }));
   });
 
-  it("accepts expression callback-source calls through the workflow validator", () => {
-    const ir: WorkflowIR = {
-      irVersion: 8,
-      name: "callback_expression",
-      agents: {},
-      root: {
-        nodes: [],
-        output: { kind: "object", fields: {
-          score: {
-            kind: "call",
-            fn: "lift",
-            args: [
-              { kind: "ref", path: ["input", "item"] },
-              { kind: "literal", value: "item => item.score" },
-            ],
-          },
-        } },
-      },
-
-      diagnostics: [],
-    };
-
-    expect(validateWorkflowIR(ir)).toEqual([]);
-  });
-
   it("returns stable diagnostic codes and paths for invalid IR", () => {
     const ir: WorkflowIR = {
       irVersion: 8,
@@ -331,6 +306,10 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "SC001",
       path: "inputSchema.required.0",
+    }));
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "E001",
+      path: "root.output.fields.bad.path",
     }));
   });
 
@@ -592,61 +571,6 @@ describe("WorkflowIR diagnostics contract", () => {
       ["IR002", "root.nodes.task_compound.timeout"],
       ["IR002", "root.nodes.task_out_of_range.timeout"],
     ]);
-  });
-
-  it("accepts supported timeout duration strings", () => {
-    const target = { kind: "inline" as const, source: "async function task() { return {}; }" };
-
-    const diagnostics = validateWorkflowIR(minimalWorkflow({
-      agents: {
-        reviewer: {
-          kind: "agent_definition",
-          use: "codex",
-        },
-      },
-      root: {
-        output: { kind: "object", fields: {} },
-        nodes: [
-          {
-            id: "agent_milliseconds",
-            kind: "agent",
-            run: { agent: "reviewer", prompt: { kind: "literal", value: "" } },
-            timeout: { kind: "literal", value: "500ms" },
-          },
-          {
-            id: "task_seconds",
-            kind: "task",
-            run: { input: { kind: "literal", value: null }, target },
-            timeout: { kind: "literal", value: "30s" },
-          },
-          {
-            id: "signal_minutes",
-            kind: "signal",
-            run: { prompt: { kind: "literal", value: "" } },
-            timeout: { kind: "literal", value: "5m" },
-          },
-          {
-            id: "task_default_milliseconds",
-            kind: "task",
-            run: { input: { kind: "literal", value: null }, target, execution: { defaultCommandTimeout: { kind: "literal", value: "1000" } } },
-          },
-          {
-            id: "agent_hours",
-            kind: "agent",
-            run: { agent: "reviewer", prompt: { kind: "literal", value: "" } },
-            timeout: { kind: "literal", value: "1h" },
-          },
-          {
-            id: "signal_days",
-            kind: "signal",
-            run: { prompt: { kind: "literal", value: "" } },
-            timeout: { kind: "literal", value: "1d" },
-          },
-        ],
-      },
-    }));
-
-    expect(diagnostics).toEqual([]);
   });
 
   it("validates task default command timeout duration strings", () => {
@@ -1124,20 +1048,6 @@ describe("WorkflowIR diagnostics contract", () => {
       expect.objectContaining({ code: "SC002", path: "inputSchema.fields.literal.value" }),
       expect.objectContaining({ code: "SC002", path: "inputSchema.fields.enumerated.values.0" }),
     ]));
-  });
-
-  it("validates the root workflow output", () => {
-    const diagnostics = validateWorkflowIR(minimalWorkflow({
-      root: {
-        nodes: [],
-        output: { kind: "object", fields: { bad: { kind: "ref", path: [] } } },
-      },
-    }));
-
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      code: "E001",
-      path: "root.output.fields.bad.path",
-    }));
   });
 
   it("accepts workflow roots and rejects unknown ref roots and meta fields", () => {

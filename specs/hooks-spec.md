@@ -33,11 +33,15 @@ Runtime hooks let users run configured shell commands when durable [Runtime](run
 - Hook execution MUST be non-interfering: hook failure, timeout, output, or journal write failure MUST NOT change workflow status, workflow output, IR, runtime scope, or public run event payloads.
 - Hook runner, observer, or journal failure after cursor advancement MUST NOT roll the cursor back or replay the observation.
 - Invalid Acpus configuration MUST fail daemon startup instead of silently disabling hooks.
-- The hook runner MUST execute command hooks asynchronously with shell spawning and a default timeout of 30 seconds.
+- The hook runner MUST be constructed as an Effect in an externally owned Scope, MUST receive the shared `@acpus/owned-process` capability, and MUST NOT own raw Node child-process mechanics or execute a private Effect Runtime.
+- The hook runner MUST admit matching command hooks synchronously, execute admitted hooks asynchronously without a concurrency limit, expose active count synchronously, and expose drain as an Effect operation.
+- Every admitted hook MUST run in the hook Scope with a nested invocation Scope that owns its process, stdin writer, output streams, deadline sleep, and termination escalation. Workspace shutdown MUST drain admitted hooks, close the hook Scope, and only then release Runtime authority and storage.
+- The hook runner MUST execute command hooks through shell spawning with a default timeout of 30 seconds.
 - Hook timeout strings MUST use the `@acpus/core/ir` duration grammar, MUST resolve to safe-integer milliseconds, and MUST interpret an omitted unit as milliseconds.
-- Hook timeout scheduling MUST preserve accepted durations above Node's single-timer limit by using cancellable chunks and MUST cancel the active timeout when the hook settles.
-- A hook timeout budget MUST begin before synchronous process startup. Process close and error settlement MUST recheck monotonic elapsed time so a delayed timer callback cannot accept an overdue hook result.
-- A synchronous hook process spawn failure MUST produce one terminal `failed` journal entry, or `timed_out` when startup already exhausted the timeout; it MUST NOT disappear through the runner's non-interference boundary.
+- Hook timeout scheduling MUST use the Effect Clock. It MUST preserve accepted durations above Node's single-timer limit, and normal process settlement or Scope closure MUST interrupt the outstanding sleep.
+- A hook timeout budget MUST begin before process acquisition. Process close and lifecycle-failure settlement MUST recheck Effect monotonic elapsed time so a delayed sleep callback cannot accept an overdue hook result.
+- Timeout policy MUST signal the process tree with `SIGTERM`, wait an Effect Clock grace period of 2 seconds, then signal `SIGKILL` and await process settlement. The owned-process Scope finalizer remains the orphan-prevention fallback.
+- A hook process acquisition failure MUST produce one terminal `failed` journal entry, or `timed_out` when acquisition already exhausted the timeout; it MUST NOT disappear through the runner's non-interference boundary.
 - The hook journal MUST be stored outside the scheduler event stream in a `hook_journal` SQLite table.
 - The hook journal MUST write only terminal hook records with status `completed`, `failed`, or `timed_out`.
 - Hook journal rows MUST include `eventSequence` and `triggerOrder`, and that pair MUST be unique within one run. Hook-history reads MUST order rows by `eventSequence`, then `triggerOrder`, then journal row id.

@@ -1,6 +1,8 @@
 import { Command } from "commander";
 import type { Writable } from "node:stream";
 import { formatHookLoadError, loadHooksConfigScope, loadHooksConfigScopes, type HookConfigScope } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { validationError, usageError } from "../presentation/errors.js";
 import { writeResult, type HookListResult } from "../presentation/output.js";
 
@@ -57,13 +59,16 @@ export function createHooksCommand(ctx: HooksCommandContext): Command {
 
 async function loadSelectedScopes(ctx: HooksCommandContext, options: ScopeOptions): Promise<HookConfigScope[]> {
   if (options.project && options.global) throw usageError("--project and --global are mutually exclusive.");
-  const result = options.project
-    ? await loadHooksConfigScope("project", { workspaceDir: ctx.cwd })
-    : options.global
-      ? await loadHooksConfigScope("global", {})
-      : await loadHooksConfigScopes(ctx.cwd);
-  if (result.isErr()) throw validationError(formatHookLoadError(result.error));
-  return Array.isArray(result.value) ? result.value : [result.value];
+  if (options.project || options.global) {
+    const result = await Effect.runPromise(Effect.result(options.project
+      ? loadHooksConfigScope("project", { workspaceDir: ctx.cwd })
+      : loadHooksConfigScope("global", {})));
+    if (Result.isFailure(result)) throw validationError(formatHookLoadError(result.failure));
+    return [result.success];
+  }
+  const result = await Effect.runPromise(Effect.result(loadHooksConfigScopes(ctx.cwd)));
+  if (Result.isFailure(result)) throw validationError(formatHookLoadError(result.failure));
+  return result.success;
 }
 
 function groupedHooks(scopes: readonly HookConfigScope[]): HookListResult {

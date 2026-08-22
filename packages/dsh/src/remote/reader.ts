@@ -11,22 +11,33 @@ import {
   type AwaitSessionActivityRevisionResult,
   type DelegatedTaskActivity,
   type DelegatedTaskSummary,
-  type ProjectionReaderDependencies,
   type RunCounts,
   type SessionActivityProjection,
 } from "./types.js";
+import * as Effect from "effect/Effect";
+import type { StoredSessionProjection } from "../host/run-links.js";
 import type { ResolvedTaskSelector } from "../task.js";
 
 const IDENTITY_BYTE_LIMIT = 256;
 
+type ProjectionReaderDependencies = {
+  sessions: {
+    readSession(sessionId: string): Effect.Effect<StoredSessionProjection, Error>;
+    waitForActivityRevision(
+      sessionId: string,
+      afterRevision: number,
+    ): Effect.Effect<void, Error>;
+  };
+};
+
 export class AcpusProjectionReader {
   constructor(private readonly dependencies: ProjectionReaderDependencies) {}
 
-  async readSessionActivity(
+  readSessionActivity(
     sessionId: string,
     task?: ResolvedTaskSelector,
-  ): Promise<SessionActivityProjection> {
-    const stored = await this.dependencies.sessions.readSession(sessionId);
+  ): Effect.Effect<SessionActivityProjection, Error> {
+    return this.dependencies.sessions.readSession(sessionId).pipe(Effect.map(stored => {
     const ordered = orderedRuns(stored.runs);
     const summaries = summarize(ordered, stored.runs);
     const current = task === undefined
@@ -39,58 +50,51 @@ export class AcpusProjectionReader {
       tasksTruncated: summaries.length > TASK_HISTORY_LIMIT,
       ...(current === undefined ? {} : { task: taskActivity(current) }),
     };
+    }));
   }
 
-  async readTasks(sessionId: string, name?: string): Promise<AcpusTasksResult> {
-    const stored = await this.dependencies.sessions.readSession(sessionId);
+  readTasks(sessionId: string, name?: string): Effect.Effect<AcpusTasksResult, Error> {
+    return this.dependencies.sessions.readSession(sessionId).pipe(Effect.map(stored => {
     const matching = orderedRuns(stored.runs).filter(run => name === undefined || run.name === name);
     const summaries = summarize(matching, stored.runs);
     return {
       tasks: summaries.slice(0, TASK_HISTORY_LIMIT),
       truncated: summaries.length > TASK_HISTORY_LIMIT,
     };
+    }));
   }
 
   awaitSessionActivityRevision(
     sessionId: string,
     afterRevision: number,
-    signal?: AbortSignal,
     timeoutMs = LONG_POLL_MS,
-  ): Promise<AwaitSessionActivityRevisionResult> {
+  ): Effect.Effect<AwaitSessionActivityRevisionResult, Error> {
     return this.awaitRevision(
       sessionId,
       afterRevision,
-      signal,
       timeoutMs,
-      (id, revision, waitSignal) =>
-        this.dependencies.sessions.waitForActivityRevision(id, revision, waitSignal),
+      (id, revision) => this.dependencies.sessions.waitForActivityRevision(id, revision),
     );
   }
 
-  private async awaitRevision(
+  private awaitRevision(
     sessionId: string,
     afterRevision: number,
-    signal: AbortSignal | undefined,
     timeoutMs: number,
-    wait: (sessionId: string, afterRevision: number, signal: AbortSignal) => Promise<void>,
-  ): Promise<AwaitSessionActivityRevisionResult> {
-    const current = await this.dependencies.sessions.readSession(sessionId);
-    if (current.revision !== afterRevision) return { revision: current.revision };
-    const timeout = AbortSignal.timeout(timeoutMs);
-    const combined = signal === undefined ? timeout : AbortSignal.any([signal, timeout]);
-    try {
-      await wait(sessionId, afterRevision, combined);
-    } catch (error) {
-      if (signal?.aborted) throw abortError(signal.reason);
-      if (!timeout.aborted) throw error;
-    }
-    if (signal?.aborted) throw abortError(signal.reason);
-    const latest = await this.dependencies.sessions.readSession(sessionId);
-    return { revision: latest.revision };
+    wait: (sessionId: string, afterRevision: number) => Effect.Effect<void, Error>,
+  ): Effect.Effect<AwaitSessionActivityRevisionResult, Error> {
+    const sessions = this.dependencies.sessions;
+    return Effect.gen(function* () {
+      const current = yield* sessions.readSession(sessionId);
+      if (current.revision !== afterRevision) return { revision: current.revision };
+      yield* wait(sessionId, afterRevision).pipe(Effect.timeoutOption(timeoutMs));
+      const latest = yield* sessions.readSession(sessionId);
+      return { revision: latest.revision };
+    });
   }
 }
 
-function abortError(reason: unknown): Error {
+export function abortError(reason: unknown): Error {
   if (reason instanceof Error) return reason;
   const message = typeof reason === "object"
     && reason !== null

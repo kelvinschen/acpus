@@ -1,15 +1,13 @@
 import type { NodeIR } from "@acpus/core/ir";
-import { resolveAgentSessionIdentity } from "../execution/agent-session.js";
+import * as Result from "effect/Result";
 import { indexNodes } from "./ir-walk.js";
 import { resolveOccurrenceRef } from "./occurrence-ref.js";
-import { scopeForNodeAttempt } from "./scope.js";
-import { frozenRunScope, type FrozenSchedulerRun } from "./settle.js";
+import type { FrozenSchedulerRun } from "./settle.js";
 import {
   SchedulerStoreException,
-  schedulerStoreResult,
+  schedulerStoreError,
   type SchedulerSnapshot,
   type SchedulerStoreError,
-  type SchedulerStoreResult,
 } from "./store-port.js";
 import type { SchedulerProjection } from "./types.js";
 
@@ -35,11 +33,22 @@ export function planSteerControl(
   frozen: FrozenSchedulerRun,
   snapshot: SchedulerSnapshot,
   target: string,
-): SchedulerStoreResult<SteerControlPlan> {
+): Result.Result<SteerControlPlan, SchedulerStoreError> {
   const nodes = indexNodes(frozen.ir.root);
-  return schedulerStoreResult(() => ({
-    target: resolveSteerTarget(target, snapshot, nodes, frozen),
+  return planningResult(() => ({
+    target: resolveSteerTarget(target, snapshot, nodes),
   }));
+}
+
+function planningResult<Success>(operation: () => Success): Result.Result<Success, SchedulerStoreError> {
+  return Result.try({
+    try: operation,
+    catch: error => {
+      const failure = schedulerStoreError(error);
+      if (failure) return failure;
+      throw error;
+    },
+  });
 }
 
 /**
@@ -52,30 +61,13 @@ export function steerControlTargets(
   snapshot: SchedulerSnapshot,
 ): SteerControlTarget[] {
   const nodes = indexNodes(frozen.ir.root);
-  const baseScope = frozenRunScope(frozen);
-  const candidates = Object.values(snapshot.projection.attempts)
+  return Object.values(snapshot.projection.attempts)
     .filter(attempt => attempt.status === "started")
     .flatMap(attempt => {
       const node = nodes.get(attempt.nodeId);
       if (!node || node.kind !== "agent") return [];
-      const identity = resolveAgentSessionIdentity(
-        node,
-        scopeForNodeAttempt(baseScope, snapshot.projection, attempt.nodeKey),
-        attempt.runId,
-        attempt.nodeKey,
-      );
-      return identity.isErr()
-        ? []
-        : [{ attempt: steerTarget(attempt), agentSessionId: identity.value.agentSessionId }];
-    });
-  const sessionUseCount = new Map<string, number>();
-  for (const candidate of candidates) {
-    sessionUseCount.set(candidate.agentSessionId, (sessionUseCount.get(candidate.agentSessionId) ?? 0) + 1);
-  }
-  return candidates
-    .filter(candidate => sessionUseCount.get(candidate.agentSessionId) === 1)
-    .filter(candidate => activeInstance(snapshot.projection, candidate.attempt.nodeKey))
-    .map(candidate => candidate.attempt)
+      return activeInstance(snapshot.projection, attempt.nodeKey) ? [steerTarget(attempt)] : [];
+    })
     .sort(compareSteerTargets);
 }
 
@@ -83,7 +75,6 @@ function resolveSteerTarget(
   target: string,
   snapshot: SchedulerSnapshot,
   nodes: ReadonlyMap<string, NodeIR>,
-  frozen: FrozenSchedulerRun,
 ): SteerControlTarget {
   const occurrence = resolveOccurrenceRef(
     snapshot.projection,
@@ -131,7 +122,7 @@ function resolveSteerTarget(
       });
     }
     assertSteerInstanceActive(snapshot, exactAttempt.nodeKey, target);
-    return assertAgentSteerSessionAvailable(frozen, snapshot.projection, steerTarget(exactAttempt), nodes);
+    return assertAgentSteerTarget(steerTarget(exactAttempt), nodes);
   }
 
   const exactInstance = snapshot.projection.instances[resolvedTarget];
@@ -141,7 +132,7 @@ function resolveSteerTarget(
     if (attempts.length > 1) throw new Error(`Node instance '${resolvedTarget}' has multiple started attempts.`);
     if (attempts.length === 1) {
       assertSteerInstanceActive(snapshot, resolvedTarget, target);
-      return assertAgentSteerSessionAvailable(frozen, snapshot.projection, steerTarget(attempts[0]!), nodes);
+      return assertAgentSteerTarget(steerTarget(attempts[0]!), nodes);
     }
     rejectSteer({
       type: "invalid-steer-target",
@@ -168,7 +159,7 @@ function resolveSteerTarget(
     .sort((left, right) => left.nodeKey.localeCompare(right.nodeKey));
   if (activeMatches.length === 1) {
     assertSteerInstanceActive(snapshot, activeMatches[0]!.nodeKey, target);
-    return assertAgentSteerSessionAvailable(frozen, snapshot.projection, steerTarget(activeMatches[0]!), nodes);
+    return assertAgentSteerTarget(steerTarget(activeMatches[0]!), nodes);
   }
   if (activeMatches.length > 1) {
     const candidateKeys = [...new Set(activeMatches.map(attempt => attempt.nodeKey))].sort();
@@ -218,9 +209,7 @@ function activeInstance(projection: SchedulerProjection, nodeKey: string): boole
   return status === "running" || status === "awaiting";
 }
 
-function assertAgentSteerSessionAvailable(
-  frozen: FrozenSchedulerRun,
-  projection: SchedulerProjection,
+function assertAgentSteerTarget(
   target: SteerControlTarget,
   nodes: ReadonlyMap<string, NodeIR>,
 ): SteerControlTarget {
@@ -232,47 +221,6 @@ function assertAgentSteerSessionAvailable(
       targetKey: target.attemptId,
       status: targetNode?.kind ?? "missing_node",
       message: `Steer target '${target.attemptId}' is not an Agent attempt.`,
-    });
-  }
-  const baseScope = frozenRunScope(frozen);
-  const targetIdentity = resolveAgentSessionIdentity(
-    targetNode,
-    scopeForNodeAttempt(baseScope, projection, target.nodeKey),
-    target.runId,
-    target.nodeKey,
-  );
-  if (targetIdentity.isErr()) {
-    rejectSteer({
-      type: "invalid-steer-target",
-      runId: target.runId,
-      targetKey: target.attemptId,
-      status: "session_resolution_failed",
-      message: `Steer target '${target.attemptId}' Agent session identity could not be resolved.`,
-    });
-  }
-
-  const candidateKeys = Object.values(projection.attempts)
-    .filter(attempt => attempt.attemptId !== target.attemptId && attempt.status === "started")
-    .flatMap(attempt => {
-      const node = nodes.get(attempt.nodeId);
-      if (!node || node.kind !== "agent") return [];
-      const identity = resolveAgentSessionIdentity(
-        node,
-        scopeForNodeAttempt(baseScope, projection, attempt.nodeKey),
-        attempt.runId,
-        attempt.nodeKey,
-      );
-      if (identity.isErr()) return [];
-      return identity.value.agentSessionId === targetIdentity.value.agentSessionId ? [attempt.nodeKey] : [];
-    })
-    .sort();
-  if (candidateKeys.length > 0) {
-    rejectSteer({
-      type: "steer-session-conflict",
-      runId: target.runId,
-      targetKey: target.nodeKey,
-      candidateKeys,
-      message: `Agent session for steer target '${target.nodeKey}' is also used by active nodeKeys: ${candidateKeys.join(", ")}.`,
     });
   }
   return target;

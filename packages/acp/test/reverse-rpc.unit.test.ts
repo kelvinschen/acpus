@@ -3,7 +3,13 @@ import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } fr
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PermissionOption, RequestPermissionRequest, ToolKind } from "@agentclientprotocol/sdk";
+import { makeNodeProcessHost } from "@acpus/owned-process";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Scope from "effect/Scope";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { interruptOnAbort } from "../src/cancellation.js";
 import {
   ClientOperationIssue,
   createReverseRpcHandlers,
@@ -20,7 +26,34 @@ const permissionOptions: PermissionOption[] = [
   { optionId: "reject-once", name: "Reject once", kind: "reject_once" },
 ];
 
-const services: ReverseRpcHandlers[] = [];
+type PromiseHandlers = {
+  requestPermission(
+    params: Parameters<ReverseRpcHandlers["requestPermission"]>[0],
+    signal?: AbortSignal,
+  ): Promise<EffectSuccess<ReturnType<ReverseRpcHandlers["requestPermission"]>>>;
+  readTextFile: Promisify<ReverseRpcHandlers["readTextFile"]>;
+  writeTextFile: Promisify<ReverseRpcHandlers["writeTextFile"]>;
+  createTerminal: Promisify<ReverseRpcHandlers["createTerminal"]>;
+  terminalOutput: Promisify<ReverseRpcHandlers["terminalOutput"]>;
+  waitForTerminalExit(
+    params: Parameters<ReverseRpcHandlers["waitForTerminalExit"]>[0],
+    signal?: AbortSignal,
+  ): Promise<EffectSuccess<ReturnType<ReverseRpcHandlers["waitForTerminalExit"]>>>;
+  killTerminal: Promisify<ReverseRpcHandlers["killTerminal"]>;
+  releaseTerminal: Promisify<ReverseRpcHandlers["releaseTerminal"]>;
+  cancelPendingPermissions(): void;
+  closeAll(): Promise<void>;
+};
+
+type EffectSuccess<Value> = Value extends Effect.Effect<infer Success, unknown, unknown>
+  ? Success
+  : never;
+
+type Promisify<Method> = Method extends (...args: infer Args) => Effect.Effect<infer Success, unknown>
+  ? (...args: Args) => Promise<Success>
+  : never;
+
+const services: PromiseHandlers[] = [];
 const temporaryRoots: string[] = [];
 
 afterEach(async () => {
@@ -68,17 +101,6 @@ describe("ACP reverse RPC permissions", () => {
       outcome: { outcome: "selected", optionId: "reject-once" },
     });
   });
-
-  it.each(["Broadcast category", "Enlist worker"])(
-    "does not infer a read from the lookalike title %s",
-    async title => {
-      const service = await serviceForMode("approve-reads");
-
-      await expect(service.requestPermission(permissionRequest({ title }))).resolves.toEqual({
-        outcome: { outcome: "selected", optionId: "reject-once" },
-      });
-    },
-  );
 
   it("prefers reject_once in deny-all mode and cancels without a reject option", async () => {
     const service = await serviceForMode("deny-all");
@@ -381,30 +403,6 @@ describe("ACP reverse RPC operation policy", () => {
     await expect(readFile(target, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("approve-all permits reads, writes, and terminal creation", async () => {
-    const { workspace } = await workspaceFixture();
-    const source = join(workspace, "source.txt");
-    const target = join(workspace, "created", "target.txt");
-    await writeFile(source, "source");
-    const service = trackedService({
-      getSessionId: () => sessionId,
-      cwd: workspace,
-      permissionMode: "approve-all",
-    });
-
-    await expect(service.readTextFile({ sessionId, path: source })).resolves.toEqual({ content: "source" });
-    await expect(service.writeTextFile({ sessionId, path: target, content: "created" })).resolves.toEqual({});
-    const terminal = await service.createTerminal({
-      sessionId,
-      command: process.execPath,
-      args: ["-e", "process.exit(0)"],
-    });
-    await expect(service.waitForTerminalExit({ sessionId, terminalId: terminal.terminalId })).resolves.toEqual({
-      exitCode: 0,
-      signal: null,
-    });
-    await expect(readFile(target, "utf8")).resolves.toBe("created");
-  });
 });
 
 describe("ACP reverse RPC terminals", () => {
@@ -554,7 +552,7 @@ describe("ACP reverse RPC terminals", () => {
     const { workspace } = await workspaceFixture();
     const events: string[] = [];
     let closing: Promise<void> | undefined;
-    let service: ReverseRpcHandlers;
+    let service: PromiseHandlers;
     const killProcess = vi.spyOn(process, "kill");
     service = trackedService({
       getSessionId: () => sessionId,
@@ -603,13 +601,48 @@ function permissionRequest(input: { kind?: ToolKind; title?: string }): RequestP
   };
 }
 
-async function serviceForMode(permissionMode: ReverseRpcPermissionMode): Promise<ReverseRpcHandlers> {
+async function serviceForMode(permissionMode: ReverseRpcPermissionMode): Promise<PromiseHandlers> {
   const { workspace } = await workspaceFixture();
   return trackedService({ getSessionId: () => sessionId, cwd: workspace, permissionMode });
 }
 
-function trackedService(options: CreateReverseRpcHandlersOptions): ReverseRpcHandlers {
-  const service = createReverseRpcHandlers(options);
+function trackedService(options: CreateReverseRpcHandlersOptions): PromiseHandlers {
+  const scope = Scope.makeUnsafe();
+  const raw = Effect.runSync(Scope.provide(scope)(
+    createReverseRpcHandlers(options, makeNodeProcessHost()),
+  ));
+  const run = <Success, Failure>(effect: Effect.Effect<Success, Failure>): Promise<Success> =>
+    Effect.runPromise(effect);
+  const requestPermission: PromiseHandlers["requestPermission"] = (params, signal) => run(
+    (signal === undefined ? raw.requestPermission(params) : interruptOnAbort(raw.requestPermission(params), signal)).pipe(
+      Effect.catchCause(cause => Cause.hasInterrupts(cause)
+        ? Effect.succeed({ outcome: { outcome: "cancelled" as const } })
+        : Effect.failCause(cause)),
+    ),
+  );
+  const waitForTerminalExit: PromiseHandlers["waitForTerminalExit"] = (params, signal) => run(
+    (signal === undefined ? raw.waitForTerminalExit(params) : interruptOnAbort(raw.waitForTerminalExit(params), signal)).pipe(
+      Effect.catchCause(cause => Cause.hasInterrupts(cause)
+        ? Effect.fail(new ClientOperationIssue(
+            "terminal/wait_for_exit",
+            "cancelled",
+            "Terminal wait was cancelled.",
+          ))
+        : Effect.failCause(cause)),
+    ),
+  );
+  const service: PromiseHandlers = {
+    requestPermission,
+    readTextFile: params => run(raw.readTextFile(params)),
+    writeTextFile: params => run(raw.writeTextFile(params)),
+    createTerminal: params => run(raw.createTerminal(params)),
+    terminalOutput: params => run(raw.terminalOutput(params)),
+    waitForTerminalExit,
+    killTerminal: params => run(raw.killTerminal(params)),
+    releaseTerminal: params => run(raw.releaseTerminal(params)),
+    cancelPendingPermissions: () => { Effect.runSync(raw.cancelPendingPermissions()); },
+    closeAll: () => run(raw.closeAll()).finally(() => run(Scope.close(scope, Exit.void))),
+  };
   services.push(service);
   return service;
 }

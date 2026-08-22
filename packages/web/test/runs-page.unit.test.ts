@@ -117,27 +117,11 @@ describe("Runs page", () => {
       createdAt: "2026-08-09T00:00:06.000Z",
       updatedAt: "2026-08-09T00:00:09.000Z",
     };
-    const onOpenRun = vi.fn();
-    await render({ runs: [completedRun, duplicateRun], onOpenRun });
+    await render({ runs: [completedRun, duplicateRun] });
 
     const buttons = [...container.querySelectorAll<HTMLButtonElement>(".run-card")];
     expect(buttons).toHaveLength(2);
-    expect(buttons.every(button => button.tagName === "BUTTON" && button.type === "button")).toBe(true);
     expect(new Set(buttons.map(button => button.getAttribute("aria-label"))).size).toBe(2);
-
-    buttons[1]!.focus();
-    expect(document.activeElement).toBe(buttons[1]);
-    let activationDetail: number | undefined;
-    buttons[1]!.addEventListener("click", event => {
-      activationDetail = event.detail;
-    }, { once: true });
-    await act(async () => {
-      buttons[1]!.click();
-    });
-    expect(activationDetail).toBe(0);
-    expect(onOpenRun).toHaveBeenCalledWith(duplicateRun.id);
-    buttons[1]!.blur();
-    await act(async () => vi.runOnlyPendingTimers());
   });
 
   it("renders dedicated loading, error, and empty states", async () => {

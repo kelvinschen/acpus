@@ -1,13 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { err, ok, type Result } from "neverthrow";
+import type { ProcessHostShape, ProcessTarget } from "@acpus/owned-process";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import {
   matchesProcessStartToken,
   processGroupLiveness,
   processIdentityLiveness,
   PROCESS_TREE_CLEANUP_BUDGET_MS,
+  processTreeDeadline,
   stopProcessTree,
+  type ProcessTreeDeadline,
 } from "./process-tree.js";
 import type {
   AcpOwnershipHealth,
@@ -36,42 +41,53 @@ export type QuarantinedOwnership = Readonly<{
 }>;
 
 /** Reads bounded residual ownership evidence without changing or signalling it. */
-export async function inspectAcpOwnership(input: AcpOwnershipInspectionInput): Promise<AcpOwnershipHealth> {
-  const decoded = await readOwnershipManifestFiles(input.workersRoot);
-  if (decoded.isErr()) return { degraded: 1, orphaned: 0, manifests: [] };
-  let degraded = 0;
-  let orphaned = 0;
-  const manifests: AcpOwnershipHealth["manifests"] = [];
-  for (const { manifest } of decoded.value) {
-    if (manifest.state.phase === "degraded") degraded += 1;
-    const belongsToCurrentOwner = input.owner !== undefined
-      && manifest.owner.pid === input.owner.pid
-      && manifest.owner.epoch === input.owner.epoch
-      && (input.owner.startToken === undefined || manifest.owner.startToken === input.owner.startToken);
-    const liveness = await matchesProcessStartToken(manifest.worker.pid, manifest.worker.startToken);
-    if (!belongsToCurrentOwner || liveness === false) orphaned += 1;
-    manifests.push(manifestReference(manifest, belongsToCurrentOwner, liveness));
-  }
-  return { degraded, orphaned, manifests };
+export function inspectAcpOwnership(
+  input: AcpOwnershipInspectionInput,
+  processes: ProcessHostShape,
+): Effect.Effect<AcpOwnershipHealth> {
+  return Effect.gen(function*() {
+    const decoded = yield* Effect.promise(() => readOwnershipManifestFiles(input.workersRoot));
+    if (Result.isFailure(decoded)) return { degraded: 1, orphaned: 0, manifests: [] };
+    let degraded = 0;
+    let orphaned = 0;
+    const manifests: AcpOwnershipHealth["manifests"] = [];
+    for (const { manifest } of decoded.success) {
+      if (manifest.state.phase === "degraded") degraded += 1;
+      const belongsToCurrentOwner = input.owner !== undefined
+        && manifest.owner.pid === input.owner.pid
+        && manifest.owner.epoch === input.owner.epoch
+        && (input.owner.startToken === undefined || manifest.owner.startToken === input.owner.startToken);
+      const liveness = yield* matchesProcessStartToken(
+        processes,
+        manifest.worker.pid,
+        manifest.worker.startToken,
+      );
+      if (!belongsToCurrentOwner || liveness === false) orphaned += 1;
+      manifests.push(manifestReference(manifest, belongsToCurrentOwner, liveness));
+    }
+    return { degraded, orphaned, manifests };
+  });
 }
 
 /** Performs the factory-owned bounded recovery sweep before the supervisor is returned. */
-export async function recoverProcessCapsules(
+export function recoverProcessCapsules(
   input: AgentSessionSupervisorOptions,
-): Promise<Result<ReadonlyMap<string, QuarantinedOwnership>, AgentSessionSupervisorStartError>> {
-  const decoded = await readOwnershipManifestFiles(input.workersRoot);
-  if (decoded.isErr()) return err(decoded.error);
-  const quarantined = new Map<string, QuarantinedOwnership>();
-  const deadline = performance.now() + PROCESS_TREE_CLEANUP_BUDGET_MS;
-  try {
-    for (const entry of decoded.value) {
-      const recovered = await recoverManifest(entry, deadline);
+  processes: ProcessHostShape,
+): Effect.Effect<ReadonlyMap<string, QuarantinedOwnership>, AgentSessionSupervisorStartError> {
+  return Effect.gen(function*() {
+    const entries = yield* Effect.promise(() => readOwnershipManifestFiles(input.workersRoot)).pipe(
+      Effect.flatMap(Effect.fromResult),
+    );
+    const quarantined = new Map<string, QuarantinedOwnership>();
+    const deadline = yield* processTreeDeadline(PROCESS_TREE_CLEANUP_BUDGET_MS);
+    for (const entry of entries) {
+      const recovered = yield* recoverManifest(entry, deadline, processes);
       if (recovered.state !== "dead") quarantined.set(entry.manifest.agentSessionId, { evidence: recovered, manifest: entry });
     }
-  } catch (error) {
-    return err({ type: "startup_recovery_failed", message: `Could not recover ACP capsule ownership: ${errorMessage(error)}` });
-  }
-  return ok(quarantined);
+    return quarantined as ReadonlyMap<string, QuarantinedOwnership>;
+  }).pipe(Effect.mapError(error => isSupervisorStartError(error)
+    ? error
+    : { type: "startup_recovery_failed" as const, message: `Could not recover ACP capsule ownership: ${errorMessage(error)}` }));
 }
 
 export async function writeAcpOwnershipManifest(
@@ -114,66 +130,90 @@ export async function finishAcpOwnership(
     : { state: "unverified", observedAt, reason: "Residual process tree liveness could not be verified." };
 }
 
-export async function revalidateOwnership(
+export function revalidateOwnership(
   entry: OwnershipManifestFile,
-): Promise<SessionOwnershipEvidence> {
-  const observedAt = new Date().toISOString();
-  const root = await processIdentityLiveness(entry.manifest.worker.pid, entry.manifest.worker.startToken);
-  const group = await processGroupLiveness(entry.manifest.worker.pgid ?? entry.manifest.worker.pid);
-  if ((root === "absent" || root === "mismatch") && group === "dead") {
-    await removeManifest(entry.path);
-    return { state: "dead", observedAt, reason: "Recorded root identity and process group are both absent." };
-  }
-  return root === "match" || group === "live"
-    ? { state: "live", observedAt, reason: "Recorded process ownership remains live." }
-    : { state: "unverified", observedAt, reason: "Recorded process ownership could not be verified." };
+  processes: ProcessHostShape,
+): Effect.Effect<SessionOwnershipEvidence, unknown> {
+  return Effect.gen(function*() {
+    const observedAt = new Date().toISOString();
+    const root = yield* processIdentityLiveness(
+      processes,
+      entry.manifest.worker.pid,
+      entry.manifest.worker.startToken,
+    );
+    const group = yield* processGroupLiveness(processes, manifestTarget(entry.manifest));
+    if ((root === "absent" || root === "mismatch") && group === "dead") {
+      yield* promiseOperation(() => removeManifest(entry.path));
+      return { state: "dead", observedAt, reason: "Recorded root identity and process group are both absent." };
+    }
+    return root === "match" || group === "live"
+      ? { state: "live", observedAt, reason: "Recorded process ownership remains live." }
+      : { state: "unverified", observedAt, reason: "Recorded process ownership could not be verified." };
+  });
 }
 
-export async function findOwnershipManifest(
+export function findOwnershipManifest(
   workersRoot: string,
   agentSessionId: string,
-): Promise<Result<OwnershipManifestFile | undefined, AgentSessionSupervisorStartError>> {
-  const decoded = await readOwnershipManifestFiles(workersRoot);
-  if (decoded.isErr()) return err(decoded.error);
-  return ok(decoded.value.find(entry => entry.manifest.agentSessionId === agentSessionId));
+): Effect.Effect<OwnershipManifestFile | undefined, AgentSessionSupervisorStartError> {
+  return Effect.promise(() => findOwnershipManifestResult(workersRoot, agentSessionId)).pipe(
+    Effect.flatMap(Effect.fromResult),
+  );
 }
 
-async function recoverManifest(
+async function findOwnershipManifestResult(
+  workersRoot: string,
+  agentSessionId: string,
+): Promise<Result.Result<OwnershipManifestFile | undefined, AgentSessionSupervisorStartError>> {
+  const decoded = await readOwnershipManifestFiles(workersRoot);
+  if (Result.isFailure(decoded)) return Result.fail(decoded.failure);
+  return Result.succeed(decoded.success.find(entry => entry.manifest.agentSessionId === agentSessionId));
+}
+
+function recoverManifest(
   entry: OwnershipManifestFile,
-  deadline: number,
-): Promise<SessionOwnershipEvidence> {
-  const root = await processIdentityLiveness(entry.manifest.worker.pid, entry.manifest.worker.startToken);
-  const group = await processGroupLiveness(entry.manifest.worker.pgid ?? entry.manifest.worker.pid);
-  if ((root === "absent" || root === "mismatch") && group === "dead") {
-    await removeManifest(entry.path);
-    return { state: "dead", observedAt: new Date().toISOString(), reason: "Recorded root identity and process group are both absent." };
-  }
-  if (root !== "match" || performance.now() >= deadline) {
-    return finishAcpOwnership(
+  deadline: ProcessTreeDeadline,
+  processes: ProcessHostShape,
+): Effect.Effect<SessionOwnershipEvidence, unknown> {
+  return Effect.gen(function*() {
+    const root = yield* processIdentityLiveness(
+      processes,
+      entry.manifest.worker.pid,
+      entry.manifest.worker.startToken,
+    );
+    const target = manifestTarget(entry.manifest);
+    const group = yield* processGroupLiveness(processes, target);
+    if ((root === "absent" || root === "mismatch") && group === "dead") {
+      yield* promiseOperation(() => removeManifest(entry.path));
+      return { state: "dead", observedAt: new Date().toISOString(), reason: "Recorded root identity and process group are both absent." };
+    }
+    if (root !== "match" || (yield* Clock.monotonicTimeNanos) >= deadline) {
+      return yield* promiseOperation(() => finishAcpOwnership(
+        entry.path,
+        entry.manifest,
+        root === "match" || group === "live" ? "live" : "unverified",
+        "startup_recovery_unverified",
+      ));
+    }
+    const alive = yield* stopProcessTree(processes, target, deadline);
+    return yield* promiseOperation(() => finishAcpOwnership(
       entry.path,
       entry.manifest,
-      root === "match" || group === "live" ? "live" : "unverified",
+      alive,
       "startup_recovery_unverified",
-    );
-  }
-  const alive = await stopProcessTree(entry.manifest.worker.pgid ?? entry.manifest.worker.pid, deadline);
-  return finishAcpOwnership(
-    entry.path,
-    entry.manifest,
-    alive,
-    "startup_recovery_unverified",
-  );
+    ));
+  });
 }
 
 async function readOwnershipManifestFiles(
   workersRoot: string,
-): Promise<Result<readonly OwnershipManifestFile[], AgentSessionSupervisorStartError>> {
+): Promise<Result.Result<readonly OwnershipManifestFile[], AgentSessionSupervisorStartError>> {
   let names: string[];
   try {
     names = await readdir(workersRoot);
   } catch (error) {
-    if (isMissing(error)) return ok([]);
-    return err({ type: "startup_recovery_failed", message: `Could not inspect ACP capsule ownership: ${errorMessage(error)}` });
+    if (isMissing(error)) return Result.succeed([]);
+    return Result.fail({ type: "startup_recovery_failed", message: `Could not inspect ACP capsule ownership: ${errorMessage(error)}` });
   }
   const files = names.filter(name => MANIFEST_NAME.test(name)).sort();
   const entries: OwnershipManifestFile[] = [];
@@ -183,12 +223,12 @@ async function readOwnershipManifestFiles(
     try {
       value = JSON.parse(await readFile(path, "utf8")) as unknown;
     } catch {
-      return err(unsupported(path));
+      return Result.fail(unsupported(path));
     }
-    if (!validManifest(value)) return err(unsupported(path));
+    if (!validManifest(value)) return Result.fail(unsupported(path));
     entries.push({ path, manifest: value });
   }
-  return ok(entries);
+  return Result.succeed(entries);
 }
 
 async function removeManifest(path: string): Promise<void> {
@@ -285,4 +325,23 @@ function isMissing(error: unknown): boolean {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function manifestTarget(manifest: AcpOwnershipManifest): ProcessTarget {
+  return {
+    pid: manifest.worker.pid,
+    ...(manifest.worker.pgid === undefined ? {} : { processGroupId: manifest.worker.pgid }),
+  };
+}
+
+function promiseOperation<A>(evaluate: () => Promise<A>): Effect.Effect<A, unknown> {
+  return Effect.tryPromise({ try: evaluate, catch: cause => cause });
+}
+
+function isSupervisorStartError(error: unknown): error is AgentSessionSupervisorStartError {
+  return record(error)
+    && typeof error.type === "string"
+    && typeof error.message === "string"
+    && (error.type === "startup_recovery_failed"
+      || (error.type === "ownership_state_unsupported" && typeof error.manifestName === "string"));
 }

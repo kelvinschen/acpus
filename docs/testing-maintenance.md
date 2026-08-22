@@ -3,10 +3,15 @@
 This is the authority for tests, test configuration, and test scripts. Tests
 provide focused evidence for production contracts.
 
+For Effect-specific Scope, Layer, Clock, and runner examples, consult the
+optional [Effect Testing pattern](effect/patterns/testing.md). It is subordinate
+to this guide and does not make Effect syntax a testing goal.
+
 ## Scope
 
-- Every test MUST protect a concrete regression risk at the lowest stable
-  production boundary.
+- Every test MUST protect a realistic observable regression risk, non-trivial
+  invariant or boundary, or concrete defect at the lowest stable production
+  boundary. A code change or coverage increase alone does not justify a test.
 - Informative assets are not product-test subjects or oracles. Follow
   [Skill Maintenance](skill-maintenance.md) for their scope.
 - Product code that handles an informative asset remains testable; use the
@@ -36,8 +41,12 @@ the same assertion at every layer.
   test directly.
 - Keep tests deterministic and hermetic: no network, external services, shared
   state, user configuration, ambient repository state, or uncontrolled time.
+- For concurrency, prefer deterministic coordination or controlled scheduling over sleeps when practical.
 - Test public behavior through public entry points. Test an internal helper only
   when it owns a stable rule.
+- Prefer existing coverage at the behavior boundary. Do not add tests that
+  merely mirror literals, mappings, obvious control flow, implementation
+  details, or removed features unless absence is itself a product contract.
 - Use fakes at owned boundaries; use subprocesses only for process or wire risk.
 - Assert exact stable values. Partially match only deliberately dynamic fields;
   never snapshot a large whole object.

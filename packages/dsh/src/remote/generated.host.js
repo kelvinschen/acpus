@@ -486,7 +486,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#AwaitSessionActivityRevisionResult',
         schema: _acpus_dsh_acpus_awaitSessionActivityRevision_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":446,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":498,"column":3},
     },
     {
       id: '@acpus/dsh#acpus/cancelSessionTask',
@@ -511,7 +511,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#CancelSessionTaskResult',
         schema: _acpus_dsh_acpus_cancelSessionTask_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":458,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":509,"column":3},
     },
     {
       id: '@acpus/dsh#acpus/readActivityDetail',
@@ -536,7 +536,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#ReadActivityDetailResult',
         schema: _acpus_dsh_acpus_readActivityDetail_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":394,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":450,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readAgentPresets',
@@ -561,7 +561,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#ReadAgentPresetsResult',
         schema: _acpus_dsh_acpus_readAgentPresets_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":380,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":436,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readSessionActivity',
@@ -586,7 +586,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#SessionActivityProjection',
         schema: _acpus_dsh_acpus_readSessionActivity_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":387,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":443,"column":3},
     },
   ],
   model: {
@@ -599,12 +599,12 @@ export const TYPERT = {
           {
             "kind": "method",
             "name": "run",
-            "signature": "async run(request: AcpusRunRequest): Promise<AcpusRunReceipt | InvalidWorkflow>"
+            "signature": "run(request: AcpusRunRequest): Promise<AcpusRunReceipt | InvalidWorkflow>"
           },
           {
             "kind": "method",
             "name": "runtime",
-            "signature": "async runtime(workspace: string): Promise<WorkspaceRuntime>"
+            "signature": "runtime(workspace: string): Promise<WorkspaceRuntime>"
           },
           {
             "kind": "method",
@@ -629,17 +629,17 @@ export const TYPERT = {
           {
             "kind": "method",
             "name": "resolveTask",
-            "signature": "async resolveTask( sessionId: string, selector?: DelegatedTaskSelector, ): Promise<{ runId: string; workspace: string; runtime: WorkspaceRuntime; generation: number; selector: ResolvedTaskSelector; link: AdmittedRunLink; }>"
+            "signature": "resolveTask( sessionId: string, selector?: DelegatedTaskSelector, ): Promise<{ runId: string; workspace: string; runtime: WorkspaceRuntime; generation: number; selector: ResolvedTaskSelector; link: AdmittedRunLink; }>"
           },
           {
             "kind": "method",
             "name": "reconcileTask",
-            "signature": "async reconcileTask(link: AdmittedRunLink): Promise<void>"
+            "signature": "reconcileTask(link: AdmittedRunLink): Promise<void>"
           },
           {
             "kind": "method",
             "name": "linkFork",
-            "signature": "async linkFork( sessionId: string, toolCallId: string, sourceGeneration: number, workspace: string, run: { id: string; name: string }, ): Promise<ResolvedTaskSelector>"
+            "signature": "linkFork( sessionId: string, toolCallId: string, sourceGeneration: number, workspace: string, run: { id: string; name: string }, ): Promise<ResolvedTaskSelector>"
           },
           {
             "kind": "method",
@@ -664,17 +664,17 @@ export const TYPERT = {
           {
             "kind": "method",
             "name": "cancelSessionTask",
-            "signature": "@Remote async cancelSessionTask( input: CancelSessionTaskRequest, ): Promise<CancelSessionTaskResult>"
+            "signature": "@Remote cancelSessionTask( input: CancelSessionTaskRequest, ): Promise<CancelSessionTaskResult>"
           },
           {
             "kind": "method",
             "name": "prepareModelCancel",
-            "signature": "async prepareModelCancel( sessionId: string, generation: number, requestId: string, ): Promise<Awaited<ReturnType<RunLinkStore[\"prepareCancel\"]>>>"
+            "signature": "prepareModelCancel( sessionId: string, generation: number, requestId: string, ): Promise< | { status: \"ready\"; control: StoredControl; link: AdmittedRunLink } | { status: \"rejected\"; reason: \"task-unavailable\" | \"already-terminal\" } >"
           },
           {
             "kind": "method",
             "name": "settleModelCancel",
-            "signature": "async settleModelCancel( controlId: string, outcome: \"applied\" | \"rejected\", reason?: \"not-controllable\" | \"temporarily-unavailable\", ): Promise<void>"
+            "signature": "settleModelCancel( controlId: string, outcome: \"applied\" | \"rejected\", reason?: \"not-controllable\" | \"temporarily-unavailable\", ): Promise<void>"
           }
         ],
         "types": [
@@ -731,10 +731,6 @@ export const TYPERT = {
             "declaration": "export type ApplyAgentPresetsResult = { status: \"applied\"; } | { status: \"rejected\"; reason: string; };"
           },
           {
-            "name": "AvailabilityCommitResult",
-            "declaration": "export type AvailabilityCommitResult = { revision: number; changed: boolean; };"
-          },
-          {
             "name": "AwaitSessionActivityRevisionRequest",
             "declaration": "export type AwaitSessionActivityRevisionRequest = { sessionId: string; afterRevision: number; };"
           },
@@ -755,10 +751,6 @@ export const TYPERT = {
             "declaration": "export type CancelSessionTaskResult = { status: \"applied\"; projection: SessionActivityProjection; } | { status: \"rejected\"; reason: \"task-unavailable\" | \"already-terminal\" | \"not-controllable\" | \"temporarily-unavailable\"; projection: SessionActivityProjection; };"
           },
           {
-            "name": "CommitResult",
-            "declaration": "export type CommitResult = { revision: number; projectionChanged: boolean; noticeInserted: boolean; wakeWaiters: boolean; };"
-          },
-          {
             "name": "ControlRejectionReason",
             "declaration": "export type ControlRejectionReason = \"already-terminal\" | \"not-controllable\" | \"temporarily-unavailable\";"
           },
@@ -775,10 +767,6 @@ export const TYPERT = {
             "declaration": "export type DelegatedTaskSummary = { task: ResolvedTaskSelector; status: AcpusRunStatus; availability: AcpusTaskAvailability; counts: RunCounts; startedAt: string; finishedAt?: string; forkedFrom?: ResolvedTaskSelector; };"
           },
           {
-            "name": "DurableSupervisorStateStore",
-            "declaration": "export class DurableSupervisorStateStore implements SupervisorStateStore {\n    listLinks(): Promise<RunLink[]>;\n    listReconciliationLinks(): Promise<RunLink[]>;\n    readLink(input: Omit<RunLink, \"runId\" | \"workflowName\" | \"occurrence\" | \"generation\">): Promise<RunLink | undefined>;\n    readSession(sessionId: string): Promise<StoredSessionProjection>;\n    commitObservation(input: ObservationCommit): Promise<CommitResult>;\n    setRunUnavailable(input: { link: RunLink; unavailable?: NonNullable<StoredRunProjection[\"unavailable\"]>; }): Promise<AvailabilityCommitResult>;\n    pendingNotices(): Promise<StoredNotice[]>;\n    markNoticeDelivered(noticeId: string): Promise<void>;\n    prepareCancel(input: { sessionId: string; generation: number; actor: \"user\" | \"model\"; requestId?: string; }): Promise<{ status: \"ready\"; control: StoredControl; link: AdmittedRunLink; } | { status: \"rejected\"; reason: \"task-unavailable\" | \"already-terminal\"; }>;\n    settleCancel(input: { controlId: string; outcome: \"applied\" | \"rejected\"; taskStatus: StoredRunProjection[\"status\"]; reason?: ControlRejectionReason; }): Promise<void>;\n    pendingControls(): Promise<StoredControl[]>;\n    provisional(input: Omit<RunLink, \"runId\" | \"workflowName\" | \"occurrence\" | \"generation\">): Promise<RunLink>;\n    admitted(admissionRequestId: string, run: { id: string; name: string; }): Promise<AdmittedRunLink>;\n}"
-          },
-          {
             "name": "HoverResult",
             "declaration": "export type HoverResult = { kind: \"output\"; format: \"text\" | \"json\"; text: string; truncated: boolean; } | { kind: \"completed-without-output\"; } | { kind: \"failed\" | \"timed-out\"; code?: string; message: string; } | { kind: \"canceled\"; };"
           },
@@ -793,10 +781,6 @@ export const TYPERT = {
           {
             "name": "InvalidWorkflow",
             "declaration": "export type InvalidWorkflow = { status: \"invalid\"; phase: string; diagnostics: WorkflowDiagnostic[]; };"
-          },
-          {
-            "name": "ObservationCommit",
-            "declaration": "export type ObservationCommit = { link: AdmittedRunLink; projection: StoredRunProjection; notice?: StoredNotice; };"
           },
           {
             "name": "ReadActivityDetailRequest",
@@ -847,24 +831,12 @@ export const TYPERT = {
             "declaration": "export type StoredControl = { id: string; requestId: string; actor: \"user\" | \"model\"; parentSessionId: string; generation: number; workspace: string; runId: string; status: \"pending\" | \"applied\" | \"rejected\"; taskStatus?: StoredRunProjection[\"status\"]; reason?: ControlRejectionReason; };"
           },
           {
-            "name": "StoredNotice",
-            "declaration": "export type StoredNotice = { id: string; parentSessionId: string; workspace: string; runId: string; task: ResolvedTaskSelector; kind: \"signal\" | \"completed\" | \"failed\" | \"canceled\" | \"user-control\"; projectionUpdatedAt: string; signal?: { selector: string; prompt?: string; expected?: string; }; terminalSummary?: string; control?: { actor: \"user\"; operation: \"cancel\"; outcome: \"applied\" | \"rejected\"; taskStatus: StoredRunProjection[\"status\"]; reason?: ControlRejectionReason; }; deliveredAt?: string; };"
-          },
-          {
             "name": "StoredRunProjection",
             "declaration": "export type StoredRunProjection = { runId: string; workspace: string; admissionRequestId: string; generation: number; occurrence: number; forkedFromGeneration?: number; name: string; status: Extract<InspectionView, { kind: \"run\"; }>[\"run\"][\"status\"]; counts: InspectionCounts; createdAt: string; updatedAt: string; activity: StoredActivityNode[]; unavailable?: { reason: RuntimePoolOpenFailure[\"type\"]; detail: string; detectedAt: string; }; failure?: { origin: string; code?: string; message: string; }; actionRequirement?: StoredSignalRequirement; terminal?: { output?: { text: string; truncated: boolean; }; }; };"
           },
           {
-            "name": "StoredSessionProjection",
-            "declaration": "export type StoredSessionProjection = { sessionId: string; revision: number; runs: readonly StoredRunProjection[]; };"
-          },
-          {
             "name": "StoredSignalRequirement",
             "declaration": "export type StoredSignalRequirement = { selector: string; prompt?: string; expected?: string; };"
-          },
-          {
-            "name": "SupervisorStateStore",
-            "declaration": "export interface SupervisorStateStore {\n    listLinks(): Promise<RunLink[]>;\n    listReconciliationLinks(): Promise<RunLink[]>;\n    readSession(sessionId: string): Promise<StoredSessionProjection>;\n    commitObservation(input: ObservationCommit): Promise<CommitResult>;\n    setRunUnavailable(input: { link: RunLink; unavailable?: NonNullable<StoredRunProjection[\"unavailable\"]>; }): Promise<AvailabilityCommitResult>;\n    pendingNotices(): Promise<StoredNotice[]>;\n    markNoticeDelivered(noticeId: string): Promise<void>;\n    prepareCancel(input: { sessionId: string; generation: number; actor: \"user\" | \"model\"; requestId?: string; }): Promise<{ status: \"ready\"; control: StoredControl; link: AdmittedRunLink; } | { status: \"rejected\"; reason: \"task-unavailable\" | \"already-terminal\"; }>;\n    settleCancel(input: { controlId: string; outcome: \"applied\" | \"rejected\"; taskStatus: StoredRunProjection[\"status\"]; reason?: ControlRejectionReason; }): Promise<void>;\n    pendingControls(): Promise<StoredControl[]>;\n}"
           },
           {
             "name": "WorkflowDiagnostic",

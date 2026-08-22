@@ -2,7 +2,7 @@ import { lstat, readFile, readdir, realpath } from "node:fs/promises";
 import { isAbsolute, join, posix, relative, sep, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
-import { ResultAsync } from "neverthrow";
+import * as Effect from "effect/Effect";
 
 const ACPUS_SKILL = "acpus";
 const SKILL_ENTRY = "SKILL.md";
@@ -59,48 +59,54 @@ function bundledAcpusSkillLocation(): string {
   return fileURLToPath(new URL("../../skills/acpus", import.meta.url));
 }
 
-export function bundledAcpusSkillPath(expectedVersion: string): ResultAsync<string, BundledSkillFailure> {
-  return ResultAsync.fromPromise((async () => {
-    const rootPath = await canonicalSkillRoot(bundledAcpusSkillLocation());
-    const entry = await resolveSkillResource(rootPath, SKILL_ENTRY);
-    requireFile(entry, SKILL_ENTRY);
-    const content = await readUtf8File(entry.absolutePath, SKILL_ENTRY);
-    const metadata = parseAcpusSkillMetadata(content.toString("utf8"));
-    if (metadata.name !== ACPUS_SKILL || metadata.version !== expectedVersion) {
-      throw new Error("bundled skill identity mismatch");
-    }
-    return rootPath;
-  })(), () => ({
-    type: "bundled-skill-invalid" as const,
-    message: "Bundled Acpus skill is missing or does not match this acpus package version.",
-  }));
+export function bundledAcpusSkillPath(expectedVersion: string): Effect.Effect<string, BundledSkillFailure> {
+  return Effect.tryPromise({
+    try: async () => {
+      const rootPath = await canonicalSkillRoot(bundledAcpusSkillLocation());
+      const entry = await resolveSkillResource(rootPath, SKILL_ENTRY);
+      requireFile(entry, SKILL_ENTRY);
+      const content = await readUtf8File(entry.absolutePath, SKILL_ENTRY);
+      const metadata = parseAcpusSkillMetadata(content.toString("utf8"));
+      if (metadata.name !== ACPUS_SKILL || metadata.version !== expectedVersion) {
+        throw new Error("bundled skill identity mismatch");
+      }
+      return rootPath;
+    },
+    catch: () => ({
+      type: "bundled-skill-invalid" as const,
+      message: "Bundled Acpus skill is missing or does not match this acpus package version.",
+    }),
+  });
 }
 
 export function readAcpusSkillResource(
   rootPath: string,
   resourcePath?: string,
-): ResultAsync<SkillResourceRead, SkillResourceFailure> {
-  return ResultAsync.fromPromise((async () => {
-    const canonicalRoot = await canonicalSkillRoot(rootPath);
-    const path = resourcePath ?? SKILL_ENTRY;
-    validateSkillResourcePath(path);
-    const resource = await resolveSkillResource(canonicalRoot, path);
-    if (resource.kind === "directory" && resourcePath !== undefined) {
+): Effect.Effect<SkillResourceRead, SkillResourceFailure> {
+  return Effect.tryPromise({
+    try: async () => {
+      const canonicalRoot = await canonicalSkillRoot(rootPath);
+      const path = resourcePath ?? SKILL_ENTRY;
+      validateSkillResourcePath(path);
+      const resource = await resolveSkillResource(canonicalRoot, path);
+      if (resource.kind === "directory" && resourcePath !== undefined) {
+        return {
+          kind: "directory" as const,
+          absolutePath: resource.absolutePath,
+          entries: await readDirectoryEntries(canonicalRoot, path),
+        };
+      }
+      requireFile(resource, path);
+      const content = await readUtf8File(resource.absolutePath, path);
       return {
-        kind: "directory" as const,
+        kind: "file" as const,
         absolutePath: resource.absolutePath,
-        entries: await readDirectoryEntries(canonicalRoot, path),
+        content,
+        ...(resourcePath === undefined ? { tree: await readSkillResourceTree(canonicalRoot) } : {}),
       };
-    }
-    requireFile(resource, path);
-    const content = await readUtf8File(resource.absolutePath, path);
-    return {
-      kind: "file" as const,
-      absolutePath: resource.absolutePath,
-      content,
-      ...(resourcePath === undefined ? { tree: await readSkillResourceTree(canonicalRoot) } : {}),
-    };
-  })(), skillResourceFailure);
+    },
+    catch: skillResourceFailure,
+  });
 }
 
 export async function readAcpusSkillMetadata(path: string): Promise<AcpusSkillMetadata> {

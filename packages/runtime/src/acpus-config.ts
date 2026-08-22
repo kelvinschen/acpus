@@ -5,7 +5,8 @@ import { dirname, join, resolve } from "node:path";
 import { z } from "@acpus/core/schema";
 import type { AgentCommandSpec, AgentUseSpec } from "@acpus/core";
 import type { AgentDefinitionIR } from "@acpus/core/ir";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { PreservingStringRecordSchema } from "./agents/string-record-schema.js";
 import { validateHooksFile, type HooksFile } from "./hooks/config.js";
 import { captureProcessIdentity, probeProcessIdentity } from "./process-liveness.js";
@@ -28,7 +29,7 @@ export type AgentPresetProviderFailure = {
 
 export type AgentPresetProvider = (input: {
   workspaceDir?: string;
-}) => ResultAsync<readonly HostAgentPreset[], AgentPresetProviderFailure>;
+}) => Effect.Effect<readonly HostAgentPreset[], AgentPresetProviderFailure>;
 
 export type AgentPresetChoice = {
   id: string;
@@ -50,7 +51,7 @@ export type AgentPresetResolutionFailure = {
 
 export type AgentPresetCatalog = {
   readonly choices: readonly AgentPresetChoice[];
-  resolve(ids: readonly string[]): Result<Record<string, ResolvedAgentPreset>, AgentPresetResolutionFailure>;
+  resolve(ids: readonly string[]): Result.Result<Record<string, ResolvedAgentPreset>, AgentPresetResolutionFailure>;
 };
 
 export type AcpusConfig = {
@@ -154,61 +155,57 @@ export function loadAgentPresetCatalog(input: {
   homeDir?: string;
   hostProvider?: AgentPresetProvider;
   scopes?: readonly AgentPresetScope[];
-}): ResultAsync<AgentPresetCatalog, AgentPresetCatalogFailure> {
-  return new ResultAsync(loadCatalog(input));
-}
-
-async function loadCatalog(input: {
-  workspaceDir?: string;
-  homeDir?: string;
-  hostProvider?: AgentPresetProvider;
-  scopes?: readonly AgentPresetScope[];
-}): Promise<Result<AgentPresetCatalog, AgentPresetCatalogFailure>> {
-  const requestedScopes = input.scopes ?? (input.workspaceDir === undefined
-    ? ["host", "global"] as const
-    : ["host", "project", "global"] as const);
-  if (requestedScopes.some(scope => scope !== "host" && scope !== "project" && scope !== "global")) {
-    return err({ type: "agent-preset-catalog-scope-invalid", message: "Agent Preset catalog scopes must be host, project, or global." });
-  }
-  if (new Set(requestedScopes).size !== requestedScopes.length) {
-    return err({ type: "agent-preset-catalog-scope-invalid", message: "Agent Preset catalog scopes must not contain duplicates." });
-  }
-  if (requestedScopes.includes("project") && input.workspaceDir === undefined) {
-    return err({ type: "agent-preset-catalog-scope-invalid", message: "Project Agent Presets require a workspace directory." });
-  }
-  const scopes = (["host", "project", "global"] as const).filter(scope => requestedScopes.includes(scope));
-  if (scopes.includes("host") && input.hostProvider === undefined) {
-    // An absent Host provider contributes an empty scope.
-  }
-
-  const entries: CatalogEntry[] = [];
-  for (const scope of scopes) {
-    if (scope === "host") {
-      if (input.hostProvider === undefined) continue;
-      const provided = await input.hostProvider({
-        ...(input.workspaceDir === undefined ? {} : { workspaceDir: resolve(input.workspaceDir) }),
+}): Effect.Effect<AgentPresetCatalog, AgentPresetCatalogFailure> {
+  return Effect.gen(function*() {
+    const requestedScopes = input.scopes ?? (input.workspaceDir === undefined
+      ? ["host", "global"] as const
+      : ["host", "project", "global"] as const);
+    if (requestedScopes.some(scope => scope !== "host" && scope !== "project" && scope !== "global")) {
+      return yield* Effect.fail({
+        type: "agent-preset-catalog-scope-invalid" as const,
+        message: "Agent Preset catalog scopes must be host, project, or global.",
       });
-      if (provided.isErr()) return err(provided.error);
-      const validated = validateHostPresets(provided.value);
-      if (validated.isErr()) return err(validated.error);
-      entries.push(...validated.value);
-      continue;
     }
-    const rootPath = scope === "project" ? resolve(input.workspaceDir!) : resolve(input.homeDir ?? homedir());
-    const path = scope === "project"
-      ? projectAcpusConfigPath(input.workspaceDir!)
-      : globalAcpusConfigPath(input.homeDir);
-    const loaded = await loadPresetFile(scope, rootPath, path);
-    if (loaded.isErr()) return err(loaded.error);
-    entries.push(...loaded.value);
-  }
+    if (new Set(requestedScopes).size !== requestedScopes.length) {
+      return yield* Effect.fail({
+        type: "agent-preset-catalog-scope-invalid" as const,
+        message: "Agent Preset catalog scopes must not contain duplicates.",
+      });
+    }
+    if (requestedScopes.includes("project") && input.workspaceDir === undefined) {
+      return yield* Effect.fail({
+        type: "agent-preset-catalog-scope-invalid" as const,
+        message: "Project Agent Presets require a workspace directory.",
+      });
+    }
+    const scopes = (["host", "project", "global"] as const).filter(scope => requestedScopes.includes(scope));
+    const entries: CatalogEntry[] = [];
+    for (const scope of scopes) {
+      if (scope === "host") {
+        if (input.hostProvider === undefined) continue;
+        const provided = yield* input.hostProvider({
+          ...(input.workspaceDir === undefined ? {} : { workspaceDir: resolve(input.workspaceDir) }),
+        });
+        entries.push(...(yield* Effect.fromResult(validateHostPresets(provided))));
+        continue;
+      }
+      const rootPath = scope === "project" ? resolve(input.workspaceDir!) : resolve(input.homeDir ?? homedir());
+      const path = scope === "project"
+        ? projectAcpusConfigPath(input.workspaceDir!)
+        : globalAcpusConfigPath(input.homeDir);
+      const loaded = yield* Effect.promise(() => loadPresetFile(scope, rootPath, path)).pipe(
+        Effect.flatMap(Effect.fromResult),
+      );
+      entries.push(...loaded);
+    }
 
-  const effective = new Map<string, CatalogEntry>();
-  for (const entry of entries) {
-    if (!effective.has(entry.id)) effective.set(entry.id, entry);
-  }
-  const ordered = [...effective.values()].sort((left, right) => codeUnitCompare(left.id, right.id));
-  return ok(catalogFromEntries(ordered));
+    const effective = new Map<string, CatalogEntry>();
+    for (const entry of entries) {
+      if (!effective.has(entry.id)) effective.set(entry.id, entry);
+    }
+    const ordered = [...effective.values()].sort((left, right) => codeUnitCompare(left.id, right.id));
+    return catalogFromEntries(ordered);
+  });
 }
 
 export function applyAgentPresetChanges(input: {
@@ -216,8 +213,8 @@ export function applyAgentPresetChanges(input: {
   homeDir?: string;
   scope: WritableAgentPresetScope;
   changes: readonly AgentPresetChange[];
-}): ResultAsync<{ path: string; presets: Record<string, AgentPresetSpec> }, AgentPresetWriteFailure> {
-  return new ResultAsync(applyChanges(input));
+}): Effect.Effect<{ path: string; presets: Record<string, AgentPresetSpec> }, AgentPresetWriteFailure> {
+  return Effect.promise(() => applyChanges(input)).pipe(Effect.flatMap(Effect.fromResult), Effect.uninterruptible);
 }
 
 export function addAgentPreset(input: {
@@ -226,8 +223,8 @@ export function addAgentPreset(input: {
   scope: WritableAgentPresetScope;
   id: string;
   preset: AgentPresetSpec;
-}): ResultAsync<{ path: string; preset: AgentPresetSpec }, AgentPresetWriteFailure> {
-  return new ResultAsync(addPreset(input));
+}): Effect.Effect<{ path: string; preset: AgentPresetSpec }, AgentPresetWriteFailure> {
+  return Effect.promise(() => addPreset(input)).pipe(Effect.flatMap(Effect.fromResult), Effect.uninterruptible);
 }
 
 export function removeAgentPreset(input: {
@@ -235,8 +232,8 @@ export function removeAgentPreset(input: {
   homeDir?: string;
   scope: WritableAgentPresetScope;
   id: string;
-}): ResultAsync<{ path: string }, AgentPresetWriteFailure> {
-  return new ResultAsync(removePreset(input));
+}): Effect.Effect<{ path: string }, AgentPresetWriteFailure> {
+  return Effect.promise(() => removePreset(input)).pipe(Effect.flatMap(Effect.fromResult), Effect.uninterruptible);
 }
 
 async function addPreset(input: {
@@ -245,12 +242,12 @@ async function addPreset(input: {
   scope: WritableAgentPresetScope;
   id: string;
   preset: AgentPresetSpec;
-}): Promise<Result<{ path: string; preset: AgentPresetSpec }, AgentPresetWriteFailure>> {
+}): Promise<Result.Result<{ path: string; preset: AgentPresetSpec }, AgentPresetWriteFailure>> {
   const applied = await mutatePresetFile(
     { ...input, changes: [{ type: "set", id: input.id, preset: input.preset }] },
     { state: "absent", id: input.id },
   );
-  return applied.map(result => ({ path: result.path, preset: result.presets[input.id]! }));
+  return Result.map(applied, result => ({ path: result.path, preset: result.presets[input.id]! }));
 }
 
 async function removePreset(input: {
@@ -258,12 +255,12 @@ async function removePreset(input: {
   homeDir?: string;
   scope: WritableAgentPresetScope;
   id: string;
-}): Promise<Result<{ path: string }, AgentPresetWriteFailure>> {
+}): Promise<Result.Result<{ path: string }, AgentPresetWriteFailure>> {
   const applied = await mutatePresetFile(
     { ...input, changes: [{ type: "remove", id: input.id }] },
     { state: "present", id: input.id },
   );
-  return applied.map(result => ({ path: result.path }));
+  return Result.map(applied, result => ({ path: result.path }));
 }
 
 async function applyChanges(input: {
@@ -271,7 +268,7 @@ async function applyChanges(input: {
   homeDir?: string;
   scope: WritableAgentPresetScope;
   changes: readonly AgentPresetChange[];
-}): Promise<Result<{ path: string; presets: Record<string, AgentPresetSpec> }, AgentPresetWriteFailure>> {
+}): Promise<Result.Result<{ path: string; presets: Record<string, AgentPresetSpec> }, AgentPresetWriteFailure>> {
   return mutatePresetFile(input);
 }
 
@@ -280,27 +277,27 @@ async function mutatePresetFile(input: {
   homeDir?: string;
   scope: WritableAgentPresetScope;
   changes: readonly AgentPresetChange[];
-}, requirement?: { state: "absent" | "present"; id: string }): Promise<Result<{ path: string; presets: Record<string, AgentPresetSpec> }, AgentPresetWriteFailure>> {
+}, requirement?: { state: "absent" | "present"; id: string }): Promise<Result.Result<{ path: string; presets: Record<string, AgentPresetSpec> }, AgentPresetWriteFailure>> {
   if (input.scope !== "project" && input.scope !== "global") {
-    return err({ type: "agent-preset-catalog-scope-invalid", message: "Writable Agent Preset scope must be project or global." });
+    return Result.fail({ type: "agent-preset-catalog-scope-invalid", message: "Writable Agent Preset scope must be project or global." });
   }
   if (input.changes.length === 0) {
-    return err({ type: "agent-preset-changes-invalid", message: "Agent Preset changes must not be empty." });
+    return Result.fail({ type: "agent-preset-changes-invalid", message: "Agent Preset changes must not be empty." });
   }
   const duplicate = firstDuplicate(input.changes.map(change => change.id));
   if (duplicate !== undefined) {
-    return err({ type: "agent-preset-changes-invalid", message: `Agent Preset changes contain duplicate id '${duplicate}'.` });
+    return Result.fail({ type: "agent-preset-changes-invalid", message: `Agent Preset changes contain duplicate id '${duplicate}'.` });
   }
   const pathResult = writablePresetPath(input);
-  if (pathResult.isErr()) return err(pathResult.error);
-  let path = pathResult.value;
+  if (Result.isFailure(pathResult)) return Result.fail(pathResult.failure);
+  let path = pathResult.success;
   for (const change of input.changes) {
     const idFailure = validateWritablePresetId(change.id);
-    if (idFailure !== undefined) return err(idFailure);
+    if (idFailure !== undefined) return Result.fail(idFailure);
     if (change.type === "set") {
       const preset = AgentPresetSpecSchema.safeParse(change.preset);
       if (!preset.success) {
-        return err({
+        return Result.fail({
           type: "agent-preset-changes-invalid",
           message: `Agent Preset '${change.id}' is invalid: ${preset.error.issues.map(formatIssue).join("; ")}`,
         });
@@ -318,7 +315,7 @@ async function mutatePresetFile(input: {
       await verifyPresetFileBoundary(boundary);
     }
   } catch (error) {
-    return err({
+    return Result.fail({
       type: "agent-preset-write-failed",
       scope: input.scope,
       path,
@@ -330,7 +327,7 @@ async function mutatePresetFile(input: {
   try {
     lock = await acquirePresetFileLock(lockPath);
   } catch (error) {
-    return err({
+    return Result.fail({
       type: "agent-preset-write-failed",
       scope: input.scope,
       path,
@@ -338,7 +335,7 @@ async function mutatePresetFile(input: {
     });
   }
   if (lock === undefined) {
-    return err({
+    return Result.fail({
       type: "agent-preset-busy",
       scope: input.scope,
       path,
@@ -349,14 +346,14 @@ async function mutatePresetFile(input: {
   try {
     await verifyPresetFileBoundary(boundary);
     const current = await readAcpusConfigFile(input.scope, presetRootPath(input), path, boundary);
-    if (current.isErr()) return err(current.error);
-    if (requirement?.state === "absent" && Object.hasOwn(current.value.presets, requirement.id)) {
-      return err({ type: "agent-preset-exists", id: requirement.id, message: `Agent Preset '${requirement.id}' already exists in ${input.scope} scope.` });
+    if (Result.isFailure(current)) return Result.fail(current.failure);
+    if (requirement?.state === "absent" && Object.hasOwn(current.success.presets, requirement.id)) {
+      return Result.fail({ type: "agent-preset-exists", id: requirement.id, message: `Agent Preset '${requirement.id}' already exists in ${input.scope} scope.` });
     }
-    if (requirement?.state === "present" && !Object.hasOwn(current.value.presets, requirement.id)) {
-      return err({ type: "agent-preset-missing", id: requirement.id, message: `Agent Preset '${requirement.id}' does not exist in ${input.scope} scope.` });
+    if (requirement?.state === "present" && !Object.hasOwn(current.success.presets, requirement.id)) {
+      return Result.fail({ type: "agent-preset-missing", id: requirement.id, message: `Agent Preset '${requirement.id}' does not exist in ${input.scope} scope.` });
     }
-    const next = { ...current.value.presets };
+    const next = { ...current.success.presets };
     for (const change of input.changes) {
       if (change.type === "remove") {
         delete next[change.id];
@@ -365,7 +362,7 @@ async function mutatePresetFile(input: {
       }
     }
     if (Object.keys(next).length > MAX_PRESETS_PER_SCOPE) {
-      return err({
+      return Result.fail({
         type: "agent-preset-changes-invalid",
         message: `Agent Preset scope '${input.scope}' may contain at most ${MAX_PRESETS_PER_SCOPE} presets.`,
       });
@@ -373,17 +370,17 @@ async function mutatePresetFile(input: {
     const ordered = Object.fromEntries(Object.entries(next).sort(([left], [right]) => codeUnitCompare(left, right))) as Record<string, AgentPresetSpec>;
     try {
       await verifyPresetFileBoundary(boundary);
-      await writePrivateJsonAtomically(path, serializeAcpusConfig({ ...current.value, presets: ordered }));
+      await writePrivateJsonAtomically(path, serializeAcpusConfig({ ...current.success, presets: ordered }));
       await verifyPresetFileBoundary(boundary);
     } catch (error) {
-      return err({
+      return Result.fail({
         type: "agent-preset-write-failed",
         scope: input.scope,
         path,
         message: `Failed to write Acpus config at '${path}': ${causeMessage(error)}`,
       });
     }
-    return ok({ path, presets: ordered });
+    return Result.succeed({ path, presets: ordered });
   } finally {
     await lock.release().catch(() => undefined);
   }
@@ -393,14 +390,14 @@ function writablePresetPath(input: {
   workspaceDir?: string;
   homeDir?: string;
   scope: WritableAgentPresetScope;
-}): Result<string, AgentPresetWriteFailure> {
+}): Result.Result<string, AgentPresetWriteFailure> {
   if (input.scope === "project") {
     if (input.workspaceDir === undefined) {
-      return err({ type: "agent-preset-catalog-scope-invalid", message: "Project Agent Presets require a workspace directory." });
+      return Result.fail({ type: "agent-preset-catalog-scope-invalid", message: "Project Agent Presets require a workspace directory." });
     }
-    return ok(projectAcpusConfigPath(input.workspaceDir));
+    return Result.succeed(projectAcpusConfigPath(input.workspaceDir));
   }
-  return ok(globalAcpusConfigPath(input.homeDir));
+  return Result.succeed(globalAcpusConfigPath(input.homeDir));
 }
 
 function presetRootPath(input: {
@@ -415,14 +412,22 @@ export function loadAcpusConfigScope(input: {
   workspaceDir?: string;
   homeDir?: string;
   scope: WritableAgentPresetScope;
-}): ResultAsync<AcpusConfig, AcpusConfigReadFailure> {
+}): Effect.Effect<AcpusConfig, AcpusConfigReadFailure> {
+  return Effect.promise(() => loadAcpusConfigScopeResult(input)).pipe(Effect.flatMap(Effect.fromResult));
+}
+
+export function loadAcpusConfigScopeResult(input: {
+  workspaceDir?: string;
+  homeDir?: string;
+  scope: WritableAgentPresetScope;
+}): Promise<Result.Result<AcpusConfig, AcpusConfigReadFailure>> {
   if (input.scope === "project" && input.workspaceDir === undefined) {
-    return new ResultAsync(Promise.resolve(err({
+    return Promise.resolve(Result.fail({
       type: "acpus-config-read-failed" as const,
       source: "project" as const,
       path: "",
       message: "Project Acpus config requires a workspace directory.",
-    })));
+    }));
   }
   const rootPath = input.scope === "project"
     ? resolve(input.workspaceDir!)
@@ -430,41 +435,41 @@ export function loadAcpusConfigScope(input: {
   const path = input.scope === "project"
     ? projectAcpusConfigPath(input.workspaceDir!)
     : globalAcpusConfigPath(input.homeDir);
-  return new ResultAsync(readAcpusConfigFile(input.scope, rootPath, path));
+  return readAcpusConfigFile(input.scope, rootPath, path);
 }
 
 export function resolveConfiguredAgentCommand(input: {
   workspaceDir: string;
   homeDir?: string;
   names: readonly string[];
-}): ResultAsync<string | undefined, AcpusConfigReadFailure> {
-  return new ResultAsync(resolveConfiguredAgentCommandValue(input));
+}): Effect.Effect<string | undefined, AcpusConfigReadFailure> {
+  return Effect.promise(() => resolveConfiguredAgentCommandResult(input)).pipe(Effect.flatMap(Effect.fromResult));
 }
 
-async function resolveConfiguredAgentCommandValue(input: {
+async function resolveConfiguredAgentCommandResult(input: {
   workspaceDir: string;
   homeDir?: string;
   names: readonly string[];
-}): Promise<Result<string | undefined, AcpusConfigReadFailure>> {
-  const project = await loadAcpusConfigScope({
-    workspaceDir: input.workspaceDir,
-    scope: "project",
-  });
-  if (project.isErr()) return err(project.error);
-  const global = await loadAcpusConfigScope({
-    ...(input.homeDir === undefined ? {} : { homeDir: input.homeDir }),
-    scope: "global",
-  });
-  if (global.isErr()) return err(global.error);
-  for (const name of input.names) {
-    const command = project.value.agents[name];
-    if (command !== undefined) return ok(command);
-  }
-  for (const name of input.names) {
-    const command = global.value.agents[name];
-    if (command !== undefined) return ok(command);
-  }
-  return ok(undefined);
+}): Promise<Result.Result<string | undefined, AcpusConfigReadFailure>> {
+    const project = await loadAcpusConfigScopeResult({
+      workspaceDir: input.workspaceDir,
+      scope: "project",
+    });
+    if (Result.isFailure(project)) return Result.fail(project.failure);
+    const global = await loadAcpusConfigScopeResult({
+      ...(input.homeDir === undefined ? {} : { homeDir: input.homeDir }),
+      scope: "global",
+    });
+    if (Result.isFailure(global)) return Result.fail(global.failure);
+    for (const name of input.names) {
+      const command = project.success.agents[name];
+      if (command !== undefined) return Result.succeed(command);
+    }
+    for (const name of input.names) {
+      const command = global.success.agents[name];
+      if (command !== undefined) return Result.succeed(command);
+    }
+    return Result.succeed(undefined);
 }
 
 async function readAcpusConfigFile(
@@ -472,36 +477,36 @@ async function readAcpusConfigFile(
   rootPath: string,
   path: string,
   openedBoundary?: ConfigFileBoundary,
-): Promise<Result<AcpusConfig, AcpusConfigReadFailure>> {
+): Promise<Result.Result<AcpusConfig, AcpusConfigReadFailure>> {
   let boundary: ConfigFileBoundary | undefined;
   let openedFileIdentity: string | undefined;
   try {
     boundary = openedBoundary ?? await preparePresetFileBoundary(rootPath, false);
-    if (boundary === undefined) return ok(emptyAcpusConfig());
+    if (boundary === undefined) return Result.succeed(emptyAcpusConfig());
     path = boundary.path;
     openedFileIdentity = await verifyPresetFileBoundary(boundary);
   } catch (error) {
-    return err({ type: "acpus-config-read-failed", source: scope, path, message: causeMessage(error) });
+    return Result.fail({ type: "acpus-config-read-failed", source: scope, path, message: causeMessage(error) });
   }
   let content: string;
   try {
     content = await readFile(path, "utf8");
   } catch (error) {
-    if (isNotFound(error)) return ok(emptyAcpusConfig());
-    return err({ type: "acpus-config-read-failed", source: scope, path, message: causeMessage(error) });
+    if (isNotFound(error)) return Result.succeed(emptyAcpusConfig());
+    return Result.fail({ type: "acpus-config-read-failed", source: scope, path, message: causeMessage(error) });
   }
   try {
     if (await verifyPresetFileBoundary(boundary) !== openedFileIdentity) {
       throw new Error(`Acpus config file '${path}' changed while it was being read.`);
     }
   } catch (error) {
-    return err({ type: "acpus-config-read-failed", source: scope, path, message: causeMessage(error) });
+    return Result.fail({ type: "acpus-config-read-failed", source: scope, path, message: causeMessage(error) });
   }
   let value: unknown;
   try {
     value = JSON.parse(content) as unknown;
   } catch (error) {
-    return err({ type: "acpus-config-invalid", source: scope, path, message: `Invalid JSON: ${causeMessage(error)}` });
+    return Result.fail({ type: "acpus-config-invalid", source: scope, path, message: `Invalid JSON: ${causeMessage(error)}` });
   }
   return parseAcpusConfig(value, scope, path);
 }
@@ -510,10 +515,10 @@ function parseAcpusConfig(
   value: unknown,
   scope: WritableAgentPresetScope,
   path: string,
-): Result<AcpusConfig, AcpusConfigReadFailure> {
+): Result.Result<AcpusConfig, AcpusConfigReadFailure> {
   const parsed = AcpusConfigFileSchema.safeParse(value);
   if (!parsed.success) {
-    return err({
+    return Result.fail({
       type: "acpus-config-invalid",
       source: scope,
       path,
@@ -521,22 +526,22 @@ function parseAcpusConfig(
     });
   }
   const agents = parseConfiguredAgents(parsed.data.agents, scope, path);
-  if (agents.isErr()) return err(agents.error);
+  if (Result.isFailure(agents)) return Result.fail(agents.failure);
   const presetValue = parsed.data.presets ?? {};
   if (!isPlainRecord(presetValue)) {
-    return err({ type: "acpus-config-invalid", source: scope, path, message: "$.presets must be an object." });
+    return Result.fail({ type: "acpus-config-invalid", source: scope, path, message: "$.presets must be an object." });
   }
   const presetEntries: Array<[string, AgentPresetSpec]> = [];
   for (const id of Object.keys(presetValue).sort(codeUnitCompare)) {
     if (!validPresetId(id)) {
-      return err({ type: "acpus-config-invalid", source: scope, path, message: `Agent Preset id '${id}' must match ${AGENT_PRESET_ID}.` });
+      return Result.fail({ type: "acpus-config-invalid", source: scope, path, message: `Agent Preset id '${id}' must match ${AGENT_PRESET_ID}.` });
     }
     if (RESERVED_PRESET_IDS.has(id)) {
-      return err({ type: "acpus-config-invalid", source: scope, path, message: `Agent Preset id '${id}' is reserved for the Host scope.` });
+      return Result.fail({ type: "acpus-config-invalid", source: scope, path, message: `Agent Preset id '${id}' is reserved for the Host scope.` });
     }
     const preset = AgentPresetSpecSchema.safeParse(presetValue[id]);
     if (!preset.success) {
-      return err({
+      return Result.fail({
         type: "acpus-config-invalid",
         source: scope,
         path,
@@ -546,21 +551,21 @@ function parseAcpusConfig(
     presetEntries.push([id, preset.data as AgentPresetSpec]);
   }
   if (presetEntries.length > MAX_PRESETS_PER_SCOPE) {
-    return err({ type: "acpus-config-invalid", source: scope, path, message: `Agent Preset scope '${scope}' may contain at most ${MAX_PRESETS_PER_SCOPE} presets.` });
+    return Result.fail({ type: "acpus-config-invalid", source: scope, path, message: `Agent Preset scope '${scope}' may contain at most ${MAX_PRESETS_PER_SCOPE} presets.` });
   }
   const hooks = validateHooksFile(parsed.data.hooks ?? {});
-  if (hooks.isErr()) {
-    return err({
+  if (Result.isFailure(hooks)) {
+    return Result.fail({
       type: "acpus-config-invalid",
       source: scope,
       path,
-      message: hooks.error.map(error => `${prefixConfigPath("hooks", error.path)}: ${error.message}`).join("; "),
+      message: hooks.failure.map(error => `${prefixConfigPath("hooks", error.path)}: ${error.message}`).join("; "),
     });
   }
-  return ok({
-    agents: agents.value,
+  return Result.succeed({
+    agents: agents.success,
     presets: Object.fromEntries(presetEntries) as Record<string, AgentPresetSpec>,
-    hooks: hooks.value,
+    hooks: hooks.success,
   });
 }
 
@@ -568,21 +573,21 @@ function parseConfiguredAgents(
   value: unknown,
   scope: WritableAgentPresetScope,
   path: string,
-): Result<Record<string, string>, AcpusConfigReadFailure> {
-  if (value === undefined) return ok({});
+): Result.Result<Record<string, string>, AcpusConfigReadFailure> {
+  if (value === undefined) return Result.succeed({});
   if (!isPlainRecord(value)) {
-    return err({ type: "acpus-config-invalid", source: scope, path, message: "$.agents must be an object." });
+    return Result.fail({ type: "acpus-config-invalid", source: scope, path, message: "$.agents must be an object." });
   }
   const entries: Array<[string, string]> = [];
   const sourceNames = new Map<string, string>();
   for (const [sourceName, command] of Object.entries(value)) {
     const name = sourceName.trim().toLowerCase();
     if (name.length === 0) {
-      return err({ type: "acpus-config-invalid", source: scope, path, message: "$.agents Agent names must contain a non-whitespace character." });
+      return Result.fail({ type: "acpus-config-invalid", source: scope, path, message: "$.agents Agent names must contain a non-whitespace character." });
     }
     const colliding = sourceNames.get(name);
     if (colliding !== undefined) {
-      return err({
+      return Result.fail({
         type: "acpus-config-invalid",
         source: scope,
         path,
@@ -590,7 +595,7 @@ function parseConfiguredAgents(
       });
     }
     if (typeof command !== "string" || command.trim().length === 0) {
-      return err({
+      return Result.fail({
         type: "acpus-config-invalid",
         source: scope,
         path,
@@ -601,7 +606,7 @@ function parseConfiguredAgents(
     entries.push([name, command]);
   }
   entries.sort(([left], [right]) => codeUnitCompare(left, right));
-  return ok(Object.fromEntries(entries));
+  return Result.succeed(Object.fromEntries(entries));
 }
 
 function emptyAcpusConfig(): AcpusConfig {
@@ -624,33 +629,33 @@ async function loadPresetFile(
   scope: WritableAgentPresetScope,
   rootPath: string,
   path: string,
-): Promise<Result<CatalogEntry[], AgentPresetCatalogFailure>> {
+): Promise<Result.Result<CatalogEntry[], AgentPresetCatalogFailure>> {
   const config = await readAcpusConfigFile(scope, rootPath, path);
-  if (config.isErr()) return err(config.error);
-  return ok(Object.entries(config.value.presets).map(([id, preset]) => entryFromPreset(id, scope, preset)));
+  if (Result.isFailure(config)) return Result.fail(config.failure);
+  return Result.succeed(Object.entries(config.success.presets).map(([id, preset]) => entryFromPreset(id, scope, preset)));
 }
 
-function validateHostPresets(value: readonly HostAgentPreset[]): Result<CatalogEntry[], AgentPresetCatalogFailure> {
+function validateHostPresets(value: readonly HostAgentPreset[]): Result.Result<CatalogEntry[], AgentPresetCatalogFailure> {
   if (value.length > MAX_PRESETS_PER_SCOPE) {
-    return err({ type: "agent-preset-catalog-invalid", source: "host", message: `Host Agent Presets may contain at most ${MAX_PRESETS_PER_SCOPE} presets.` });
+    return Result.fail({ type: "agent-preset-catalog-invalid", source: "host", message: `Host Agent Presets may contain at most ${MAX_PRESETS_PER_SCOPE} presets.` });
   }
   const entries: CatalogEntry[] = [];
   const ids = new Set<string>();
   for (const candidate of value) {
     if (!candidate || typeof candidate !== "object" || !validPresetId(candidate.id)) {
-      return err({ type: "agent-preset-catalog-invalid", source: "host", message: `Host Agent Preset ids must match ${AGENT_PRESET_ID}.` });
+      return Result.fail({ type: "agent-preset-catalog-invalid", source: "host", message: `Host Agent Preset ids must match ${AGENT_PRESET_ID}.` });
     }
     if (ids.has(candidate.id)) {
-      return err({ type: "agent-preset-catalog-invalid", source: "host", message: `Host Agent Preset id '${candidate.id}' is duplicated.` });
+      return Result.fail({ type: "agent-preset-catalog-invalid", source: "host", message: `Host Agent Preset id '${candidate.id}' is duplicated.` });
     }
     const parsed = AgentPresetSpecSchema.safeParse({ guidance: candidate.guidance, agent: candidate.agent });
     if (!parsed.success) {
-      return err({ type: "agent-preset-catalog-invalid", source: "host", message: `Host Agent Preset '${candidate.id}' is invalid: ${parsed.error.issues.map(formatIssue).join("; ")}` });
+      return Result.fail({ type: "agent-preset-catalog-invalid", source: "host", message: `Host Agent Preset '${candidate.id}' is invalid: ${parsed.error.issues.map(formatIssue).join("; ")}` });
     }
     ids.add(candidate.id);
     entries.push(entryFromPreset(candidate.id, "host", parsed.data as AgentPresetSpec));
   }
-  return ok(entries);
+  return Result.succeed(entries);
 }
 
 function entryFromPreset(id: string, scope: AgentPresetScope, preset: AgentPresetSpec): CatalogEntry {
@@ -688,7 +693,7 @@ function catalogFromEntries(entries: readonly CatalogEntry[]): AgentPresetCatalo
       for (const id of [...new Set(ids)].sort(codeUnitCompare)) {
         const entry = byId.get(id);
         if (entry === undefined) {
-          return err({ type: "agent-preset-not-found", id, message: `Agent Preset '${id}' was not found.` });
+          return Result.fail({ type: "agent-preset-not-found", id, message: `Agent Preset '${id}' was not found.` });
         }
         const definition = structuredClone(entry.definition);
         resolved[id] = {
@@ -697,7 +702,7 @@ function catalogFromEntries(entries: readonly CatalogEntry[]): AgentPresetCatalo
           definition,
         };
       }
-      return ok(resolved);
+      return Result.succeed(resolved);
     },
   };
 }

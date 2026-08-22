@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { access, lstat, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
-import { pruneRuns, type PreparedRunWorkflow } from "@acpus/runtime";
+import type { PreparedRunWorkflow } from "../src/admission/prepared-workflow.js";
+import { pruneRuns as pruneRunsEffect } from "../src/runs/prune.js";
 import { resolveRuntimeLayout, runtimeLayoutForGeneration, type RuntimeLayout } from "../src/runtime-layout.js";
 import { writeGenerationMetadata } from "../src/storage/generation-metadata.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
 import {
   RUNTIME_APPLICATION_ID,
   RUNTIME_STORAGE_VERSION,
@@ -21,6 +23,10 @@ import {
 } from "./support/runtime-fixtures.js";
 import { withSharedStorageHome, withStorageWorkspace } from "./support/storage-workspace.js";
 import { treeFingerprint } from "./support/tree-fingerprint.js";
+
+function pruneRuns(...args: Parameters<typeof pruneRunsEffect>) {
+  return Effect.runPromise(pruneRunsEffect(...args));
+}
 
 describe("runtime run pruning", () => {
   it("previews and deletes one fenced selection while retaining active data and referenced sources", async () => {
@@ -110,7 +116,7 @@ describe("runtime run pruning", () => {
       const secondLayout = resolveRuntimeLayout(second);
       const secondRunDir = join(secondLayout.runsRoot, secondRun!);
 
-      const firstStore = await openRuntimeStore(first);
+      const firstStore = await openRuntimeStoreAdapter(first);
       try {
         expect(firstStore.getRun(firstRun!)).toBeDefined();
         expect(firstStore.getRun(secondRun!)).toBeUndefined();
@@ -139,7 +145,7 @@ describe("runtime run pruning", () => {
 
   it("collects orphan sources and removes an empty shard without run candidates", async () => {
     await withStorageWorkspace("runs-prune-empty", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       store.close();
       const layout = resolveRuntimeLayout(workspace);
       const orphan = join(layout.sourcesRoot, "snapshots", "a".repeat(64));
@@ -163,7 +169,7 @@ describe("runtime run pruning", () => {
 
   it("does not recursively remove a daemon socket impostor from an otherwise empty shard", async () => {
     await withStorageWorkspace("runs-prune-daemon-impostor", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       store.close();
       const layout = resolveRuntimeLayout(workspace);
       await writeFile(layout.daemonSocketPath, "preserve");
@@ -183,7 +189,7 @@ describe("runtime run pruning", () => {
 
   it("does not remove an empty shard with unknown ACP-owned state", async () => {
     await withStorageWorkspace("runs-prune-acp-state", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       store.close();
       const layout = resolveRuntimeLayout(workspace);
       await writeFile(join(layout.acpRoot, "preserve.json"), "{}");
@@ -227,7 +233,7 @@ describe("runtime run pruning", () => {
 
   it("removes an empty converted shard that retains an empty legacy archives root", async () => {
     await withStorageWorkspace("runs-prune-empty-legacy-archives", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       store.close();
       const layout = resolveRuntimeLayout(workspace);
       await mkdir(layout.legacyArchivesRoot);
@@ -248,7 +254,7 @@ describe("runtime run pruning", () => {
 
   it("reports an outdated active store as update-required without mutation", async () => {
     await withStorageWorkspace("runs-prune-outdated", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       store.close();
       const layout = resolveRuntimeLayout(workspace);
       setDatabaseVersion(layout.databasePath, 8);
@@ -275,7 +281,7 @@ describe("runtime run pruning", () => {
 
   it("reports a newer active store as unsupported without suggesting an impossible update", async () => {
     await withStorageWorkspace("runs-prune-unsupported", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       store.close();
       const layout = resolveRuntimeLayout(workspace);
       setDatabaseVersion(layout.databasePath, RUNTIME_STORAGE_VERSION + 1);
@@ -297,7 +303,7 @@ describe("runtime run pruning", () => {
 
   it("rejects a WAL symlink instead of following an empty target", async () => {
     await withStorageWorkspace("runs-prune-wal-symlink", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       store.close();
       const layout = resolveRuntimeLayout(workspace);
       const wal = `${layout.databasePath}-wal`;
@@ -362,7 +368,7 @@ async function admitRuns(
   prepared?: PreparedRunWorkflow,
 ): Promise<string[]> {
   const workflow = prepared ?? await prepareSyntheticWorkflow(workspace, validWorkflow());
-  const store = await openRuntimeStore(workspace);
+  const store = await openRuntimeStoreAdapter(workspace);
   try {
     const ids: string[] = [];
     for (let index = 0; index < count; index += 1) {

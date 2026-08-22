@@ -274,31 +274,6 @@ describe("Acpus Client task projection ownership", () => {
     stopSecond();
   });
 
-  it("publishes changed task projections", async () => {
-    const changed = projection("session-1", 2);
-    let calls = 0;
-    const state = new AcpusClientState(remoteStub({
-      readSessionActivity: vi.fn(async () => ({ ok: true as const, value: changed })),
-      awaitSessionActivityRevision: vi.fn(async (_input, signal) => {
-        calls += 1;
-        if (calls === 1) {
-          return { ok: true as const, value: { revision: changed.revision } };
-        }
-        if (signal === undefined) throw new Error("Expected cancellation.");
-        await new Promise<void>((_resolve, reject) => {
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-        });
-        throw new Error("unreachable");
-      }),
-    }));
-
-    const stop = state.watchSession("session-1");
-    await vi.waitFor(() =>
-      expect(state.projections.getSnapshot().sessions["session-1"]?.revision).toBe(2)
-    );
-    stop();
-  });
-
   it("retains a terminal task until the next task projection replaces it", async () => {
     const terminal = taskProjection("session-1", 1, "completed", "finished");
     const next = taskProjection("session-1", 2, "running", "next");

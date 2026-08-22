@@ -1,8 +1,9 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { access, chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ok, ResultAsync } from "neverthrow";
 import {
   addAgentPreset,
   applyAgentPresetChanges,
@@ -20,7 +21,7 @@ afterEach(async () => {
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
 });
 
-describe("Agent Preset catalog", () => {
+describe("Agent Preset catalog integration", () => {
   it("loads one strict config with normalized Agents, Presets, and Hooks", async () => {
     const root = await temporaryRoot();
     const path = projectAcpusConfigPath(root);
@@ -31,9 +32,9 @@ describe("Agent Preset catalog", () => {
       hooks: { "run.completed": [{ command: "echo done" }] },
     }));
 
-    const loaded = await loadAcpusConfigScope({ workspaceDir: root, scope: "project" });
+    const loaded = await Effect.runPromise(Effect.result(loadAcpusConfigScope({ workspaceDir: root, scope: "project" })));
 
-    expect(loaded._unsafeUnwrap()).toEqual({
+    expect(Result.getOrThrow(loaded)).toEqual({
       agents: { "custom-agent": "  custom-acp --stdio  " },
       presets: { reviewer: { guidance: "Review", agent: { use: "custom-agent" } } },
       hooks: { "run.completed": [{ command: "echo done" }] },
@@ -52,7 +53,7 @@ describe("Agent Preset catalog", () => {
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, JSON.stringify(config));
 
-    expect((await loadAcpusConfigScope({ workspaceDir: root, scope: "project" }))._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(loadAcpusConfigScope({ workspaceDir: root, scope: "project" }))))))).toMatchObject({
       type: "acpus-config-invalid",
       source: "project",
       path,
@@ -72,39 +73,39 @@ describe("Agent Preset catalog", () => {
     }));
     await writeFile(globalPath, JSON.stringify({ agents: { factorydroid: "global-alias --stdio", worker: "global-worker --stdio", reviewer: "global-reviewer --stdio" } }));
 
-    expect((await resolveConfiguredAgentCommand({ workspaceDir: workspace, homeDir, names: ["worker"] }))._unsafeUnwrap()).toBe("project-worker --stdio");
-    expect((await resolveConfiguredAgentCommand({ workspaceDir: workspace, homeDir, names: ["reviewer"] }))._unsafeUnwrap()).toBe("global-reviewer --stdio");
-    expect((await resolveConfiguredAgentCommand({ workspaceDir: workspace, homeDir, names: ["factorydroid", "droid"] }))._unsafeUnwrap()).toBe("project-droid --stdio");
+    expect(Result.getOrThrow((await Effect.runPromise(Effect.result(resolveConfiguredAgentCommand({ workspaceDir: workspace, homeDir, names: ["worker"] })))))).toBe("project-worker --stdio");
+    expect(Result.getOrThrow((await Effect.runPromise(Effect.result(resolveConfiguredAgentCommand({ workspaceDir: workspace, homeDir, names: ["reviewer"] })))))).toBe("global-reviewer --stdio");
+    expect(Result.getOrThrow((await Effect.runPromise(Effect.result(resolveConfiguredAgentCommand({ workspaceDir: workspace, homeDir, names: ["factorydroid", "droid"] })))))).toBe("project-droid --stdio");
     await writeFile(projectPath, JSON.stringify({
       agents: { droid: "project-droid --stdio", worker: "updated-project-worker --stdio" },
       hooks: { "run.completed": [{ command: "echo preserved" }] },
     }));
-    expect((await resolveConfiguredAgentCommand({ workspaceDir: workspace, homeDir, names: ["worker"] }))._unsafeUnwrap()).toBe("updated-project-worker --stdio");
-    await addAgentPreset({
+    expect(Result.getOrThrow((await Effect.runPromise(Effect.result(resolveConfiguredAgentCommand({ workspaceDir: workspace, homeDir, names: ["worker"] })))))).toBe("updated-project-worker --stdio");
+    await Effect.runPromise(Effect.result(addAgentPreset({
       workspaceDir: workspace,
       scope: "project",
       id: "coder",
       preset: { guidance: "Code", agent: { use: "worker" } },
-    });
+    })));
     expect(JSON.parse(await readFile(projectPath, "utf8"))).toEqual({
       agents: { droid: "project-droid --stdio", worker: "updated-project-worker --stdio" },
       presets: { coder: { guidance: "Code", agent: { use: "worker" } } },
       hooks: { "run.completed": [{ command: "echo preserved" }] },
     });
-    expect((await removeAgentPreset({
+    expect(Result.isSuccess((await Effect.runPromise(Effect.result(removeAgentPreset({
       workspaceDir: workspace,
       scope: "project",
       id: "coder",
-    })).isOk()).toBe(true);
+    })))))).toBe(true);
     expect(JSON.parse(await readFile(projectPath, "utf8"))).toEqual({
       agents: { droid: "project-droid --stdio", worker: "updated-project-worker --stdio" },
       hooks: { "run.completed": [{ command: "echo preserved" }] },
     });
-    expect((await removeAgentPreset({
+    expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(removeAgentPreset({
       workspaceDir: workspace,
       scope: "project",
       id: "coder",
-    }))._unsafeUnwrapErr()).toMatchObject({ type: "agent-preset-missing", id: "coder" });
+    }))))))).toMatchObject({ type: "agent-preset-missing", id: "coder" });
   });
 
   it("writes canonical section/key order while retaining Hook declaration order", async () => {
@@ -117,12 +118,12 @@ describe("Agent Preset catalog", () => {
       agents: { zed: "zed --stdio", alpha: "alpha --stdio" },
     }));
 
-    expect((await addAgentPreset({
+    expect(Result.isSuccess((await Effect.runPromise(Effect.result(addAgentPreset({
       workspaceDir: workspace,
       scope: "project",
       id: "alpha",
       preset: { guidance: "Alpha", agent: { use: "pi" } },
-    })).isOk()).toBe(true);
+    })))))).toBe(true);
 
     const serialized = await readFile(path, "utf8");
     const config = JSON.parse(serialized) as Record<string, unknown>;
@@ -146,70 +147,51 @@ describe("Agent Preset catalog", () => {
       writer: { guidance: "write", agent: { command: "secret command" } },
     });
 
-    const catalog = await loadAgentPresetCatalog({
+    const catalog = await Effect.runPromise(Effect.result(loadAgentPresetCatalog({
       workspaceDir: workspace,
       homeDir,
-      hostProvider: () => new ResultAsync(Promise.resolve(ok([
+      scopes: ["global", "project", "host"],
+      hostProvider: () => Effect.succeed([
           { id: "reviewer", guidance: "host", agent: { use: "host-agent" } },
-        ]))),
-    });
+        ]),
+    })));
 
-    expect(catalog._unsafeUnwrap().choices).toEqual([
+    expect(Result.getOrThrow(catalog).choices).toEqual([
       { id: "reviewer", guidance: "host", scope: "host" },
       { id: "writer", guidance: "write", scope: "global" },
     ]);
-    expect(catalog._unsafeUnwrap().resolve(["reviewer"])._unsafeUnwrap().reviewer?.definition).toMatchObject({
+    expect(Result.getOrThrow(Result.getOrThrow(catalog).resolve(["reviewer"])).reviewer?.definition).toMatchObject({
       kind: "agent_definition",
-      use: "host-agent",
-    });
-  });
-
-  it("uses canonical scope precedence regardless of requested scope order", async () => {
-    const root = await temporaryRoot();
-    await writeCatalog(join(root, ".acpus", "config.json"), {
-      reviewer: { guidance: "global", agent: { use: "global-agent" } },
-    });
-
-    const catalog = await loadAgentPresetCatalog({
-      homeDir: root,
-      scopes: ["global", "host"],
-      hostProvider: () => new ResultAsync(Promise.resolve(ok([
-        { id: "reviewer", guidance: "host", agent: { use: "host-agent" } },
-      ]))),
-    });
-
-    expect(catalog._unsafeUnwrap().choices).toEqual([{ id: "reviewer", guidance: "host", scope: "host" }]);
-    expect(catalog._unsafeUnwrap().resolve(["reviewer"])._unsafeUnwrap().reviewer?.definition).toMatchObject({
       use: "host-agent",
     });
   });
 
   it("rejects unknown catalog and writable scopes", async () => {
     const root = await temporaryRoot();
-    expect((await loadAgentPresetCatalog({
+    expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(loadAgentPresetCatalog({
       homeDir: root,
       scopes: ["bogus" as any],
-    }))._unsafeUnwrapErr()).toMatchObject({ type: "agent-preset-catalog-scope-invalid" });
+    }))))))).toMatchObject({ type: "agent-preset-catalog-scope-invalid" });
 
-    expect((await applyAgentPresetChanges({
+    expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(applyAgentPresetChanges({
       homeDir: root,
       scope: "bogus" as any,
       changes: [{ type: "set", id: "reviewer", preset: { guidance: "Review", agent: { use: "codex" } } }],
-    }))._unsafeUnwrapErr()).toMatchObject({ type: "agent-preset-catalog-scope-invalid" });
+    }))))))).toMatchObject({ type: "agent-preset-catalog-scope-invalid" });
     await expect(access(join(root, ".acpus", "config.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("rejects reserved ids and more than fifty entries", async () => {
     const root = await temporaryRoot();
-    const reserved = await addAgentPreset({
+    const reserved = await Effect.runPromise(Effect.result(addAgentPreset({
       workspaceDir: root,
       scope: "project",
       id: "dsh",
       preset: { guidance: "reserved", agent: { use: "dsh" } },
-    });
-    expect(reserved._unsafeUnwrapErr()).toMatchObject({ type: "agent-preset-changes-invalid" });
+    })));
+    expect(Result.getOrThrow(Result.flip(reserved))).toMatchObject({ type: "agent-preset-changes-invalid" });
 
-    const tooMany = await applyAgentPresetChanges({
+    const tooMany = await Effect.runPromise(Effect.result(applyAgentPresetChanges({
       workspaceDir: root,
       scope: "project",
       changes: Array.from({ length: 51 }, (_, index) => ({
@@ -217,8 +199,8 @@ describe("Agent Preset catalog", () => {
         id: `agent-${index}`,
         preset: { guidance: `Agent ${index}`, agent: { use: "codex" } },
       })),
-    });
-    expect(tooMany._unsafeUnwrapErr()).toMatchObject({ type: "agent-preset-changes-invalid" });
+    })));
+    expect(Result.getOrThrow(Result.flip(tooMany))).toMatchObject({ type: "agent-preset-changes-invalid" });
   });
 
   it("serializes add races and returns a tagged busy lock failure", async () => {
@@ -229,20 +211,20 @@ describe("Agent Preset catalog", () => {
       id: "reviewer",
       preset: { guidance: "Review", agent: { use: "codex" } },
     };
-    const raced = await Promise.all([addAgentPreset(input), addAgentPreset(input)]);
-    expect(raced.filter(result => result.isOk())).toHaveLength(1);
-    expect(raced.filter(result => result.isErr()).map(result => result._unsafeUnwrapErr().type)).toEqual([
+    const raced = await Promise.all([Effect.runPromise(Effect.result(addAgentPreset(input))), Effect.runPromise(Effect.result(addAgentPreset(input)))]);
+    expect(raced.filter(result => Result.isSuccess(result))).toHaveLength(1);
+    expect(raced.filter(result => Result.isFailure(result)).map(result => Result.getOrThrow(Result.flip(result)).type)).toEqual([
       expect.stringMatching(/^agent-preset-(busy|exists)$/),
     ]);
 
     const path = projectAcpusConfigPath(root);
     await writeFile(`${path}.lock`, "busy\n", { mode: 0o600 });
-    const busy = await applyAgentPresetChanges({
+    const busy = await Effect.runPromise(Effect.result(applyAgentPresetChanges({
       workspaceDir: root,
       scope: "project",
       changes: [{ type: "remove", id: "reviewer" }],
-    });
-    expect(busy._unsafeUnwrapErr()).toMatchObject({ type: "agent-preset-busy", path });
+    })));
+    expect(Result.getOrThrow(Result.flip(busy))).toMatchObject({ type: "agent-preset-busy", path });
     expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ presets: { reviewer: input.preset } });
   });
 
@@ -258,14 +240,14 @@ describe("Agent Preset catalog", () => {
       token: "dead-owner",
     })}\n`, { mode: 0o600 });
 
-    const added = await addAgentPreset({
+    const added = await Effect.runPromise(Effect.result(addAgentPreset({
       workspaceDir: root,
       scope: "project",
       id: "reviewer",
       preset: { guidance: "Review", agent: { use: "codex" } },
-    });
+    })));
 
-    expect(added.isOk()).toBe(true);
+    expect(Result.isSuccess(added)).toBe(true);
     await expect(access(`${path}.lock`)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -278,14 +260,14 @@ describe("Agent Preset catalog", () => {
       token: "live-owner",
     })}\n`, { mode: 0o600 });
 
-    const added = await addAgentPreset({
+    const added = await Effect.runPromise(Effect.result(addAgentPreset({
       workspaceDir: root,
       scope: "project",
       id: "reviewer",
       preset: { guidance: "Review", agent: { use: "codex" } },
-    });
+    })));
 
-    expect(added._unsafeUnwrapErr()).toMatchObject({ type: "agent-preset-busy" });
+    expect(Result.getOrThrow(Result.flip(added))).toMatchObject({ type: "agent-preset-busy" });
     expect(JSON.parse(await readFile(`${path}.lock`, "utf8"))).toMatchObject({ token: "live-owner" });
   });
 
@@ -296,14 +278,14 @@ describe("Agent Preset catalog", () => {
     await mkdir(directory, { recursive: true });
     await chmod(directory, 0o777);
 
-    const added = await addAgentPreset({
+    const added = await Effect.runPromise(Effect.result(addAgentPreset({
       homeDir: root,
       scope: "global",
       id: "reviewer",
       preset: { guidance: "Review", agent: { use: "codex" } },
-    });
+    })));
 
-    expect(added.isOk()).toBe(true);
+    expect(Result.isSuccess(added)).toBe(true);
     expect((await stat(directory)).mode & 0o777).toBe(0o700);
   });
 
@@ -316,8 +298,8 @@ describe("Agent Preset catalog", () => {
       },
     });
 
-    const catalog = await loadAgentPresetCatalog({ workspaceDir: root, scopes: ["project"] });
-    const config = catalog._unsafeUnwrap().resolve(["reviewer"])._unsafeUnwrap().reviewer?.definition.config;
+    const catalog = await Effect.runPromise(Effect.result(loadAgentPresetCatalog({ workspaceDir: root, scopes: ["project"] })));
+    const config = Result.getOrThrow(Result.getOrThrow(catalog).resolve(["reviewer"])).reviewer?.definition.config;
     expect(config && Object.hasOwn(config, "__proto__")).toBe(true);
     expect(config?.__proto__).toBe("kept");
   });
@@ -328,8 +310,8 @@ describe("Agent Preset catalog", () => {
       ["__proto__", { guidance: "Invalid", agent: { use: "codex" } }],
     ]));
 
-    const catalog = await loadAgentPresetCatalog({ workspaceDir: root, scopes: ["project"] });
-    expect(catalog._unsafeUnwrapErr()).toMatchObject({
+    const catalog = await Effect.runPromise(Effect.result(loadAgentPresetCatalog({ workspaceDir: root, scopes: ["project"] })));
+    expect(Result.getOrThrow(Result.flip(catalog))).toMatchObject({
       type: "acpus-config-invalid",
       source: "project",
     });
@@ -343,14 +325,14 @@ describe("Agent Preset catalog", () => {
     await Promise.all([mkdir(workspace), mkdir(outside)]);
     await symlink(outside, join(workspace, ".acpus"), "dir");
 
-    const added = await addAgentPreset({
+    const added = await Effect.runPromise(Effect.result(addAgentPreset({
       workspaceDir: workspace,
       scope: "project",
       id: "reviewer",
       preset: { guidance: "Review", agent: { use: "codex" } },
-    });
+    })));
 
-    expect(added._unsafeUnwrapErr()).toMatchObject({ type: "agent-preset-write-failed", scope: "project" });
+    expect(Result.getOrThrow(Result.flip(added))).toMatchObject({ type: "agent-preset-write-failed", scope: "project" });
     await expect(access(join(outside, "config.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -363,14 +345,14 @@ describe("Agent Preset catalog", () => {
     await chmod(outside, 0o777);
     await symlink(outside, join(homeDir, ".acpus"), "dir");
 
-    const added = await addAgentPreset({
+    const added = await Effect.runPromise(Effect.result(addAgentPreset({
       homeDir,
       scope: "global",
       id: "reviewer",
       preset: { guidance: "Review", agent: { use: "codex" } },
-    });
+    })));
 
-    expect(added._unsafeUnwrapErr()).toMatchObject({ type: "agent-preset-write-failed", scope: "global" });
+    expect(Result.getOrThrow(Result.flip(added))).toMatchObject({ type: "agent-preset-write-failed", scope: "global" });
     expect((await stat(outside)).mode & 0o777).toBe(0o777);
     await expect(access(join(outside, "config.json"))).rejects.toMatchObject({ code: "ENOENT" });
   });

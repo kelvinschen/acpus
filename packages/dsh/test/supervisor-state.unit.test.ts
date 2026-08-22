@@ -1,7 +1,10 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Semaphore from "effect/Semaphore";
 import {
   DurableSupervisorStateStore,
   type AdmittedRunLink,
@@ -9,6 +12,7 @@ import {
 } from "../src/host/run-links.js";
 import type { StoredRunProjection } from "../src/host/run-projection.js";
 import { deriveNotice } from "../src/host/notices.js";
+import { run } from "./effect.js";
 
 let root: string | undefined;
 
@@ -21,16 +25,16 @@ describe("durable supervisor state", () => {
   it("allocates stable session-local occurrences and preserves fork ancestry", async () => {
     root = await mkdtemp(join(tmpdir(), "acpus-dsh-state-"));
     const store = new DurableSupervisorStateStore(join(root, "state.json"));
-    const first = await store.provisional(linkInput({ admissionRequestId: "first" }));
-    const admittedFirst = await store.admitted(first.admissionRequestId, { id: "run-1", name: "review" });
-    const replay = await store.admitted(first.admissionRequestId, { id: "run-1", name: "review" });
-    const second = await store.provisional(linkInput({
+    const first = await run(store.provisional(linkInput({ admissionRequestId: "first" })));
+    const admittedFirst = await run(store.admitted(first.admissionRequestId, { id: "run-1", name: "review" }));
+    const replay = await run(store.admitted(first.admissionRequestId, { id: "run-1", name: "review" }));
+    const second = await run(store.provisional(linkInput({
       admissionRequestId: "second",
       forkedFromGeneration: admittedFirst.generation,
-    }));
-    const admittedSecond = await store.admitted(second.admissionRequestId, { id: "run-2", name: "review" });
-    const other = await store.provisional(linkInput({ admissionRequestId: "other" }));
-    const admittedOther = await store.admitted(other.admissionRequestId, { id: "run-3", name: "audit" });
+    })));
+    const admittedSecond = await run(store.admitted(second.admissionRequestId, { id: "run-2", name: "review" }));
+    const other = await run(store.provisional(linkInput({ admissionRequestId: "other" })));
+    const admittedOther = await run(store.admitted(other.admissionRequestId, { id: "run-3", name: "audit" }));
 
     expect(replay.occurrence).toBe(1);
     expect(admittedSecond).toMatchObject({ occurrence: 2, forkedFromGeneration: 1 });
@@ -41,20 +45,20 @@ describe("durable supervisor state", () => {
     root = await mkdtemp(join(tmpdir(), "acpus-dsh-state-"));
     const path = join(root, "state.json");
     const store = new DurableSupervisorStateStore(path);
-    const link = await store.provisional(linkInput());
-    const admitted = await store.admitted(link.admissionRequestId, { id: "run-1", name: "Example run" });
+    const link = await run(store.provisional(linkInput()));
+    const admitted = await run(store.admitted(link.admissionRequestId, { id: "run-1", name: "Example run" }));
     const projection = storedProjection({ generation: admitted.generation, occurrence: admitted.occurrence });
 
-    await expect(store.commitObservation({ link: admitted, projection })).resolves.toEqual({
+    await expect(run(store.commitObservation({ link: admitted, projection }))).resolves.toEqual({
       revision: 1,
       projectionChanged: true,
       noticeInserted: false,
       wakeWaiters: true,
     });
-    await expect(store.commitObservation({
+    await expect(run(store.commitObservation({
       link: admitted,
       projection: structuredClone(projection),
-    })).resolves.toEqual({
+    }))).resolves.toEqual({
       revision: 1,
       projectionChanged: false,
       noticeInserted: false,
@@ -94,30 +98,30 @@ describe("durable supervisor state", () => {
       updatedAt: notice.projectionUpdatedAt,
       actionRequirement: notice.signal,
     };
-    await expect(store.commitObservation({
+    await expect(run(store.commitObservation({
       link: admitted,
       projection: awaiting,
       notice,
-    })).resolves.toEqual({
+    }))).resolves.toEqual({
       revision: 2,
       projectionChanged: true,
       noticeInserted: true,
       wakeWaiters: true,
     });
-    await expect(store.commitObservation({
+    await expect(run(store.commitObservation({
       link: admitted,
       projection: awaiting,
       notice,
-    })).resolves.toEqual({
+    }))).resolves.toEqual({
       revision: 2,
       projectionChanged: false,
       noticeInserted: false,
       wakeWaiters: false,
     });
 
-    expect(await store.pendingNotices()).toEqual([notice]);
-    await store.markNoticeDelivered(notice.id);
-    expect(await store.pendingNotices()).toEqual([]);
+    expect(await run(store.pendingNotices())).toEqual([notice]);
+    await run(store.markNoticeDelivered(notice.id));
+    expect(await run(store.pendingNotices())).toEqual([]);
     expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
       kind: "acpus_dsh_supervisor_state",
       version: 1,
@@ -130,43 +134,43 @@ describe("durable supervisor state", () => {
     root = await mkdtemp(join(tmpdir(), "acpus-dsh-state-"));
     const store = new DurableSupervisorStateStore(join(root, "state.json"));
     const admitted = await admittedLink(store, "session-1", "run-1");
-    await store.commitObservation({ link: admitted, projection: storedProjection() });
+    await run(store.commitObservation({ link: admitted, projection: storedProjection() }));
 
-    await expect(store.setRunUnavailable({
+    await expect(run(store.setRunUnavailable({
       link: admitted,
       unavailable: {
         reason: "workspace-unavailable",
         detail: "Restore the original path.",
         detectedAt: "2026-08-17T00:00:00.000Z",
       },
-    })).resolves.toEqual({ revision: 2, changed: true });
-    await expect(store.setRunUnavailable({
+    }))).resolves.toEqual({ revision: 2, changed: true });
+    await expect(run(store.setRunUnavailable({
       link: admitted,
       unavailable: {
         reason: "workspace-unavailable",
         detail: "A later probe returned the same reason.",
         detectedAt: "2026-08-17T00:01:00.000Z",
       },
-    })).resolves.toEqual({ revision: 2, changed: false });
-    expect((await store.readSession("session-1")).runs[0]?.unavailable).toEqual({
+    }))).resolves.toEqual({ revision: 2, changed: false });
+    expect((await run(store.readSession("session-1"))).runs[0]?.unavailable).toEqual({
       reason: "workspace-unavailable",
       detail: "Restore the original path.",
       detectedAt: "2026-08-17T00:00:00.000Z",
     });
 
-    await expect(store.setRunUnavailable({ link: admitted })).resolves.toEqual({
+    await expect(run(store.setRunUnavailable({ link: admitted }))).resolves.toEqual({
       revision: 3,
       changed: true,
     });
-    await store.commitObservation({
+    await run(store.commitObservation({
       link: admitted,
       projection: storedProjection({
         status: "completed",
         updatedAt: "2026-08-17T00:02:00.000Z",
       }),
-    });
+    }));
 
-    expect(await store.listReconciliationLinks()).toEqual([]);
+    expect(await run(store.listReconciliationLinks())).toEqual([]);
   });
 
   it("keeps independent monotonic revisions per parent session", async () => {
@@ -175,46 +179,46 @@ describe("durable supervisor state", () => {
     const first = await admittedLink(store, "session-1", "run-1");
     const second = await admittedLink(store, "session-2", "run-2");
 
-    await store.commitObservation({
+    await run(store.commitObservation({
       link: first,
       projection: storedProjection({ runId: "run-1" }),
-    });
-    await store.commitObservation({
+    }));
+    await run(store.commitObservation({
       link: second,
       projection: storedProjection({ runId: "run-2" }),
-    });
-    await store.commitObservation({
+    }));
+    await run(store.commitObservation({
       link: first,
       projection: storedProjection({
         runId: "run-1",
         updatedAt: "2026-08-14T00:00:02.000Z",
       }),
-    });
+    }));
 
-    expect((await store.readSession("session-1")).revision).toBe(2);
-    expect((await store.readSession("session-2")).revision).toBe(1);
+    expect((await run(store.readSession("session-1"))).revision).toBe(2);
+    expect((await run(store.readSession("session-2"))).revision).toBe(1);
   });
 
   it("authorizes session reads through current links and rebinds link identity", async () => {
     root = await mkdtemp(join(tmpdir(), "acpus-dsh-state-"));
     const store = new DurableSupervisorStateStore(join(root, "state.json"));
     const admitted = await admittedLink(store, "session-1", "run-1");
-    await store.commitObservation({
+    await run(store.commitObservation({
       link: admitted,
       projection: storedProjection({
         workspace: "/stale",
         admissionRequestId: "stale-admission",
       }),
-    });
+    }));
 
-    await expect(store.readSession("session-1")).resolves.toMatchObject({
+    await expect(run(store.readSession("session-1"))).resolves.toMatchObject({
       runs: [{
         runId: "run-1",
         workspace: "/workspace",
         admissionRequestId: "admission-run-1",
       }],
     });
-    await expect(store.readSession("other-session")).resolves.toEqual({
+    await expect(run(store.readSession("other-session"))).resolves.toEqual({
       sessionId: "other-session",
       revision: 0,
       runs: [],
@@ -228,17 +232,17 @@ describe("durable supervisor state", () => {
     const first = storedProjection({
       activity: [activityNode("2026-08-14T00:00:01.000Z", "read")],
     });
-    await store.commitObservation({ link: admitted, projection: first });
-    await store.commitObservation({
+    await run(store.commitObservation({ link: admitted, projection: first }));
+    await run(store.commitObservation({
       link: admitted,
       projection: {
         ...first,
         updatedAt: "2026-08-14T00:00:05.000Z",
         activity: [activityNode("2026-08-14T00:00:05.000Z", "bash")],
       },
-    });
+    }));
 
-    expect((await store.readSession("session-1")).runs[0]?.activity[0]).toMatchObject({
+    expect((await run(store.readSession("session-1"))).runs[0]?.activity[0]).toMatchObject({
       startedAt: "2026-08-14T00:00:01.000Z",
       agent: { tool: { name: "bash", state: "running" } },
     });
@@ -248,24 +252,24 @@ describe("durable supervisor state", () => {
     root = await mkdtemp(join(tmpdir(), "acpus-dsh-state-"));
     const store = new DurableSupervisorStateStore(join(root, "state.json"));
     const admitted = await admittedLink(store, "session-1", "run-1");
-    await store.commitObservation({ link: admitted, projection: storedProjection() });
+    await run(store.commitObservation({ link: admitted, projection: storedProjection() }));
     const first = terminalNotice("notice-first", "2026-08-14T00:00:01.000Z");
     const settled = terminalNotice("notice-settled", "2026-08-14T00:00:02.000Z");
 
-    await expect(store.commitObservation({
+    await expect(run(store.commitObservation({
       link: admitted,
       projection: storedProjection({ status: "completed", updatedAt: first.projectionUpdatedAt }),
       notice: first,
-    })).resolves.toMatchObject({ noticeInserted: true });
-    await expect(store.commitObservation({
+    }))).resolves.toMatchObject({ noticeInserted: true });
+    await expect(run(store.commitObservation({
       link: admitted,
       projection: storedProjection({ status: "completed", updatedAt: settled.projectionUpdatedAt }),
       notice: settled,
-    })).resolves.toMatchObject({
+    }))).resolves.toMatchObject({
       projectionChanged: true,
       noticeInserted: false,
     });
-    expect(await store.pendingNotices()).toEqual([first]);
+    expect(await run(store.pendingNotices())).toEqual([first]);
   });
 
   it("persists exact-generation cancel intent before settlement and emits one user attention", async () => {
@@ -273,20 +277,20 @@ describe("durable supervisor state", () => {
     const path = join(root, "state.json");
     const store = new DurableSupervisorStateStore(path);
     const admitted = await admittedLink(store, "session-1", "run-1");
-    await store.commitObservation({ link: admitted, projection: storedProjection() });
+    await run(store.commitObservation({ link: admitted, projection: storedProjection() }));
 
-    const stale = await store.prepareCancel({
+    const stale = await run(store.prepareCancel({
       sessionId: "session-1",
       generation: admitted.generation + 1,
       actor: "user",
-    });
+    }));
     expect(stale).toEqual({ status: "rejected", reason: "task-unavailable" });
 
-    const prepared = await store.prepareCancel({
+    const prepared = await run(store.prepareCancel({
       sessionId: "session-1",
       generation: admitted.generation,
       actor: "user",
-    });
+    }));
     expect(prepared).toMatchObject({ status: "ready", control: { status: "pending" } });
     expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
       version: 1,
@@ -294,19 +298,19 @@ describe("durable supervisor state", () => {
     });
     if (prepared.status !== "ready") throw new Error("Expected prepared cancel.");
 
-    await store.settleCancel({
+    await run(store.settleCancel({
       controlId: prepared.control.id,
       outcome: "applied",
       taskStatus: "canceled",
-    });
-    await store.settleCancel({
+    }));
+    await run(store.settleCancel({
       controlId: prepared.control.id,
       outcome: "applied",
       taskStatus: "canceled",
-    });
+    }));
 
-    expect(await store.pendingControls()).toEqual([]);
-    expect(await store.pendingNotices()).toEqual([
+    expect(await run(store.pendingControls())).toEqual([]);
+    expect(await run(store.pendingNotices())).toEqual([
       expect.objectContaining({
         kind: "user-control",
         control: {
@@ -323,15 +327,15 @@ describe("durable supervisor state", () => {
     root = await mkdtemp(join(tmpdir(), "acpus-dsh-state-"));
     const store = new DurableSupervisorStateStore(join(root, "state.json"));
     const admitted = await admittedLink(store, "session-1", "run-1");
-    await store.commitObservation({ link: admitted, projection: storedProjection() });
-    await store.prepareCancel({
+    await run(store.commitObservation({ link: admitted, projection: storedProjection() }));
+    await run(store.prepareCancel({
       sessionId: "session-1",
       generation: admitted.generation,
       actor: "model",
       requestId: "tool-call-1",
-    });
+    }));
 
-    await store.commitObservation({
+    await run(store.commitObservation({
       link: admitted,
       projection: storedProjection({ status: "canceled", updatedAt: "2026-08-14T00:00:02.000Z" }),
       notice: {
@@ -343,9 +347,65 @@ describe("durable supervisor state", () => {
         kind: "canceled",
         projectionUpdatedAt: "2026-08-14T00:00:02.000Z",
       },
-    });
+    }));
 
-    expect(await store.pendingNotices()).toEqual([]);
+    expect(await run(store.pendingNotices())).toEqual([]);
+  });
+
+  it("serializes concurrent mutations without losing session generations", async () => {
+    root = await mkdtemp(join(tmpdir(), "acpus-dsh-state-"));
+    const store = new DurableSupervisorStateStore(join(root, "state.json"));
+    const links = await run(Effect.forEach(
+      Array.from({ length: 12 }, (_, index) => index + 1),
+      index => store.provisional(linkInput({ admissionRequestId: `admission-${index}` })),
+      { concurrency: "unbounded" },
+    ));
+
+    expect(links.map(link => link.generation).sort((left, right) => left - right)).toEqual(
+      Array.from({ length: 12 }, (_, index) => index + 1),
+    );
+    expect((await run(store.listLinks())).map(link => link.admissionRequestId).sort()).toEqual(
+      Array.from({ length: 12 }, (_, index) => `admission-${index + 1}`).sort(),
+    );
+  });
+
+  it("rolls back a failed persistence mutation and accepts the next mutation", async () => {
+    root = await mkdtemp(join(tmpdir(), "acpus-dsh-state-"));
+    const stateDirectory = join(root, "state");
+    const store = new DurableSupervisorStateStore(join(stateDirectory, "state.json"));
+    await run(store.readSession("session-1"));
+    await writeFile(stateDirectory, "blocks the state directory");
+
+    await expect(run(store.provisional(linkInput()))).rejects.toMatchObject({
+      code: "ACPUS_RUN_LINK_WRITE_FAILED",
+    });
+    await rm(stateDirectory);
+
+    await expect(run(store.provisional(linkInput()))).resolves.toMatchObject({ generation: 1 });
+    await expect(run(store.listLinks())).resolves.toHaveLength(1);
+  });
+
+  it("finishes an accepted persistence mutation after its fiber is interrupted", async () => {
+    root = await mkdtemp(join(tmpdir(), "acpus-dsh-state-"));
+    const path = join(root, "state.json");
+    const store = new DurableSupervisorStateStore(path);
+    await run(store.readSession("session-1"));
+    const mutation = (store as unknown as { mutation: Semaphore.Semaphore }).mutation;
+
+    await run(Effect.gen(function* () {
+      yield* mutation.take(1);
+      const fiber = yield* Effect.forkChild(store.provisional(linkInput()));
+      yield* Effect.yieldNow;
+      const interrupter = yield* Effect.forkChild(Fiber.interrupt(fiber));
+      yield* Effect.yieldNow;
+      yield* mutation.release(1);
+      yield* Fiber.join(interrupter);
+      yield* Fiber.await(fiber);
+    }));
+
+    expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+      links: [{ admissionRequestId: "admission-1", generation: 1 }],
+    });
   });
 });
 
@@ -380,11 +440,11 @@ async function admittedLink(
   sessionId: string,
   runId: string,
 ): Promise<AdmittedRunLink> {
-  const provisional = await store.provisional(linkInput({
+  const provisional = await run(store.provisional(linkInput({
     admissionRequestId: `admission-${runId}`,
     parentSessionId: sessionId,
-  }));
-  return store.admitted(provisional.admissionRequestId, { id: runId, name: "Example run" });
+  })));
+  return run(store.admitted(provisional.admissionRequestId, { id: runId, name: "Example run" }));
 }
 
 function linkInput(

@@ -1,30 +1,38 @@
 #!/usr/bin/env node
+import { NodeRuntime } from "@effect/platform-node";
 import { startDaemonLoop } from "@acpus/runtime";
+import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Runtime from "effect/Runtime";
 import { getCliPackageInfo } from "./platform/package-info.js";
 
 const [cwdArg, heartbeatMsArg] = process.argv.slice(2);
 const cwd = cwdArg ?? process.cwd();
 const heartbeatMs = Number(heartbeatMsArg ?? 1_000);
-const loop = await startDaemonLoop(cwd, {
-  heartbeatMs,
-  packageVersion: getCliPackageInfo().version,
-  onShutdown: () => {
-    process.exit(0);
-  },
-});
 
-async function shutdown(): Promise<void> {
-  await loop.shutdown();
-}
+const main = Effect.scoped(Effect.gen(function*() {
+  const stopped = yield* Deferred.make<void>();
+  yield* Effect.acquireRelease(
+    startDaemonLoop(cwd, {
+      heartbeatMs,
+      packageVersion: getCliPackageInfo().version,
+      onShutdown: () => {
+        Deferred.doneUnsafe(stopped, Effect.void);
+      },
+    }),
+    loop => loop.shutdown().pipe(Effect.orDie),
+  );
+  yield* Deferred.await(stopped);
+}));
 
-process.once("SIGTERM", () => {
-  void shutdown().finally(() => {
-    process.exit(0);
-  });
-});
+const gracefulDaemonTeardown: Runtime.Teardown = (exit, onExit) => {
+  if (Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)) {
+    onExit(0);
+  } else {
+    Runtime.defaultTeardown(exit, onExit);
+  }
+};
 
-process.once("SIGINT", () => {
-  void shutdown().finally(() => {
-    process.exit(0);
-  });
-});
+NodeRuntime.runMain(main, { teardown: gracefulDaemonTeardown });

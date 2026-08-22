@@ -1,7 +1,7 @@
 import { closeSync, constants as fsConstants, fstatSync, openSync, readFileSync, type BigIntStats } from "node:fs";
 import { isAbsolute } from "node:path";
 import { sha256Digest } from "@acpus/core/content-identity";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import {
   assertRunFileIdentity,
   tryCaptureRunFile,
@@ -27,7 +27,7 @@ export type ArtifactAccessContext = {
   };
 };
 
-type BoundRegisteredArtifact = {
+export type BoundRegisteredArtifact = {
   artifact: ArtifactRecord;
   run: RunDirectoryToken;
   file: RunFileToken;
@@ -52,39 +52,39 @@ export function isArtifactRefCandidate(value: unknown): value is { kind: "artifa
 export function tryBindArtifactRef(
   value: unknown,
   context: ArtifactAccessContext,
-): Result<RunFileToken, ArtifactPathError> {
+): Result.Result<RunFileToken, ArtifactPathError> {
   const resolved = tryResolveArtifactRef(value, context);
-  return resolved.isErr() ? err(resolved.error) : ok(resolved.value.file);
+  return Result.isFailure(resolved) ? Result.fail(resolved.failure) : Result.succeed(resolved.success.file);
 }
 
 export function tryResolveArtifactRef(
   value: unknown,
   context: ArtifactAccessContext,
-): Result<BoundRegisteredArtifact, ArtifactPathError> {
+): Result.Result<BoundRegisteredArtifact, ArtifactPathError> {
   if (!isArtifactRefCandidate(value) || typeof value.uri !== "string") {
-    return err({ type: "invalid-artifact-ref", message: "ArtifactRef must contain a string uri." });
+    return Result.fail({ type: "invalid-artifact-ref", message: "ArtifactRef must contain a string uri." });
   }
   const parsed = parseArtifactUri(value.uri);
-  if (parsed.isErr()) return err(parsed.error);
-  if (parsed.value.runId !== context.runId) {
-    return err({
+  if (Result.isFailure(parsed)) return Result.fail(parsed.failure);
+  if (parsed.success.runId !== context.runId) {
+    return Result.fail({
       type: "artifact-run-mismatch",
       expectedRunId: context.runId,
-      actualRunId: parsed.value.runId,
-      message: `Artifact '${value.uri}' belongs to run '${parsed.value.runId}', not current run '${context.runId}'.`,
+      actualRunId: parsed.success.runId,
+      message: `Artifact '${value.uri}' belongs to run '${parsed.success.runId}', not current run '${context.runId}'.`,
     });
   }
-  const artifact = context.store.getArtifact(context.runId, parsed.value.artifactId);
+  const artifact = context.store.getArtifact(context.runId, parsed.success.artifactId);
   if (!artifact) {
-    return err({
+    return Result.fail({
       type: "artifact-not-found",
       runId: context.runId,
-      artifactId: parsed.value.artifactId,
+      artifactId: parsed.success.artifactId,
       message: `Artifact '${value.uri}' is not registered in current run '${context.runId}'.`,
     });
   }
   const bound = tryBindRegisteredArtifact(value.uri, context, artifact);
-  return bound.isErr() ? err(bound.error) : ok(bound.value);
+  return Result.isFailure(bound) ? Result.fail(bound.failure) : Result.succeed(bound.success);
 }
 
 export function readVerifiedArtifact(
@@ -95,14 +95,14 @@ export function readVerifiedArtifact(
   if (!artifact) return undefined;
   const uri = `artifact://${context.runId}/${artifactId}`;
   const bound = tryBindRegisteredArtifact(uri, context, artifact);
-  if (bound.isErr()) throw new ArtifactReadUnavailableError(bound.error.message);
+  if (Result.isFailure(bound)) throw new ArtifactReadUnavailableError(bound.failure.message);
   const label = `Artifact '${artifactId}'`;
-  const descriptor = openSync(bound.value.file.path, verifiedReadFlags);
+  const descriptor = openSync(bound.success.file.path, verifiedReadFlags);
   try {
     const beforeRead = fstatSync(descriptor, { bigint: true });
     assertRegularDescriptor(beforeRead, label);
-    assertRunFileIdentity(bound.value.file, beforeRead, label);
-    verifyRunFile(bound.value.run, bound.value.file, label);
+    assertRunFileIdentity(bound.success.file, beforeRead, label);
+    verifyRunFile(bound.success.run, bound.success.file, label);
     const bytes = readFileSync(descriptor);
     const actualDigest = sha256Digest(bytes);
     if (bytes.byteLength !== artifact.size || actualDigest !== artifact.digest) {
@@ -112,8 +112,8 @@ export function readVerifiedArtifact(
     }
     const afterRead = fstatSync(descriptor, { bigint: true });
     assertRegularDescriptor(afterRead, label);
-    assertRunFileIdentity(bound.value.file, afterRead, label);
-    verifyRunFile(bound.value.run, bound.value.file, label);
+    assertRunFileIdentity(bound.success.file, afterRead, label);
+    verifyRunFile(bound.success.run, bound.success.file, label);
     return { artifact, bytes };
   } finally {
     closeSync(descriptor);
@@ -124,7 +124,7 @@ function tryBindRegisteredArtifact(
   uri: string,
   context: ArtifactAccessContext,
   artifact: ArtifactRecord,
-): Result<BoundRegisteredArtifact, ArtifactPathError> {
+): Result.Result<BoundRegisteredArtifact, ArtifactPathError> {
   if (artifact.runId !== context.runId) {
     throw new Error(`Registered artifact '${artifact.id}' belongs to run '${artifact.runId}', not '${context.runId}'.`);
   }
@@ -142,15 +142,15 @@ function tryBindRegisteredArtifact(
     throw new Error(`Registered artifact '${artifact.id}' run directory escapes the runtime runs root.`);
   }
   const file = tryCaptureRunFile(run, artifact.path, `Registered artifact '${artifact.id}'`);
-  if (file.isErr()) {
-    const reason = file.error.reason === "missing"
+  if (Result.isFailure(file)) {
+    const reason = file.failure.reason === "missing"
       ? "file is missing"
-      : file.error.reason === "symbolic-link"
+      : file.failure.reason === "symbolic-link"
         ? "file is a symbolic link"
         : "path is not a regular file";
-    return err(unavailablePath(uri, context.runId, artifact.id, reason));
+    return Result.fail(unavailablePath(uri, context.runId, artifact.id, reason));
   }
-  return ok({ artifact, run, file: file.value });
+  return Result.succeed({ artifact, run, file: file.success });
 }
 
 function assertRegularDescriptor(

@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import type { NodeIR, AdmittedWorkflowIR } from "@acpus/core/ir";
 import { describe, expect, it } from "vitest";
 import { planRetrySessionImpact } from "../src/scheduler/retry-session-impact.js";
@@ -15,7 +16,7 @@ describe("Retry Session impact planning", () => {
       ["other~1", "other"],
     ]);
 
-    expect(planRetrySessionImpact({
+    expect(Result.getOrThrow(planRetrySessionImpact({
       frozen,
       snapshot,
       reexecutedNodeKeys: ["second~1", "first~1", "other~1"],
@@ -25,7 +26,7 @@ describe("Retry Session impact planning", () => {
         { agentSessionId: "session-z", nodeKey: "second~1" },
         { agentSessionId: "unaffected", nodeKey: "not-reexecuted" },
       ],
-    })._unsafeUnwrap()).toEqual({
+    }))).toEqual({
       agentSessionIds: ["session-a", "session-z"],
     });
   });
@@ -34,11 +35,11 @@ describe("Retry Session impact planning", () => {
     const frozen = frozenWorkflow([agent("shared", "conversation")]);
     const snapshot = snapshotWithInstances([["shared~1", "shared"]]);
 
-    expect(planRetrySessionImpact({
+    expect(Result.getOrThrow(Result.flip(planRetrySessionImpact({
       frozen,
       snapshot,
       reexecutedNodeKeys: ["shared~1"],
-    })._unsafeUnwrapErr()).toEqual({
+    })))).toEqual({
       type: "shared_session_retry_requires_fork",
       nodeKey: "shared~1",
     });

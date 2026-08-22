@@ -1,15 +1,18 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import { makeNodeProcessHost } from "@acpus/owned-process";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow, z } from "@acpus/core";
 import type { JsonValue } from "@acpus/expression/ir";
-import { errAsync } from "neverthrow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { loadAgentHostPolicy } from "../src/configuration.js";
 import { appendBranch, appendFanoutItem, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
-import { advanceFrozenRun, createRuntimeRunScheduler } from "../src/scheduler/runtime-runner.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { createRuntimeRunScheduler } from "../src/scheduler/runtime-runner.js";
+import { advanceFrozenRun } from "./support/effect-scheduler.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
 import { applySchedulerControlIntent } from "./support/scheduler.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
-import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-harness.js";
 import { createInlineTaskAttemptHarness, type TaskAttemptRunner } from "./support/task-attempt-harness.js";
 
 const taskMocks = vi.hoisted(() => ({ runTaskAttempt: vi.fn<TaskAttemptRunner>() }));
@@ -26,7 +29,7 @@ beforeEach(() => {
   taskMocks.runTaskAttempt.mockReset().mockImplementation(input => {
     if (input.nodeId === "item_task" && taskInputItem(input.request.input) === "fail" && !failedOnce) {
       failedOnce = true;
-      return errAsync({ type: "failed" as const, message: "fail once" });
+      return Effect.succeed(Result.fail({ type: "failed" as const, message: "fail once" }));
     }
     return taskAttemptHarness.runAttempt(input);
   });
@@ -36,7 +39,7 @@ describe("runtime targeted retry completion closure", () => {
   it("restores parent-failed all dependencies and completes without rerunning finished work", async () => {
     await withRuntimeWorkspace("scheduler-targeted-retry-completion-closure", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, nestedAllRetryWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, {
           prepared,
@@ -88,12 +91,13 @@ describe("runtime targeted retry completion closure", () => {
         expect(retry.snapshot.projection.groupMembers[siblingBranchKey]).toMatchObject({ status: "ready" });
 
         const execution = createRuntimeRunScheduler({
+          processes: makeNodeProcessHost(),
           cwd: workspace,
           store,
           maxLeafConcurrency: 4,
           agentHostPolicy: loadAgentHostPolicy(process.env),
         }).start({ runId: run.id, ownerId: "retry-owner" });
-        const exit = (await execution.result)._unsafeUnwrap();
+        const exit = Result.getOrThrow((await Effect.runPromise(execution.result)));
 
         expect(exit).toMatchObject({ status: "completed" });
         const completed = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;

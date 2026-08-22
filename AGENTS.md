@@ -10,7 +10,9 @@
   [Testing Maintenance](docs/testing-maintenance.md) completely.
 - Before changing `packages/cli/skills/**` or Skill-facing guidance, MUST read
   [Skill Maintenance](docs/skill-maintenance.md) completely.
-- A change spanning multiple domains MUST follow every applicable guide.
+- Before changing Effect-based runtime/application code, service Layers,
+  concurrency, cancellation, time, or scoped resources, MUST read
+  [Effect Maintenance](docs/effect-maintenance.md) completely.
 
 ## Development Practice
 
@@ -18,10 +20,12 @@
   legacy diagnostics, or removed-behavior tests.
 - Choose the simplest complete implementation. Avoid speculative abstractions,
   configuration, and indirection.
-- Model recoverable boundary failures with typed Result/ResultAsync and tagged
-  errors. Keep local absence as `undefined`, invariant/system failures as
-  throws, and never serialize Result objects into IR, events, SQLite rows, or
-  CLI JSON.
+- Model effectful recoverable boundary failures with Effect's typed error
+  channel. Keep pure domain branching as direct values, discriminated unions,
+  native v4 `Result`, or `Option` where useful; keep invariant/system failures
+  as defects. Never serialize Effect/Result/Option wrapper objects into IR,
+  events, SQLite rows, or CLI JSON unless the wrapper is itself an explicit
+  product contract.
 - Grow the system in layers: keep the smallest version working end to end
   before adding capability.
 - Keep components modular and concerns clearly separated.

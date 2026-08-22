@@ -2,7 +2,7 @@ import type { JsonValue } from "@acpus/expression/ir";
 import type { DatabaseSync } from "node:sqlite";
 import { requirePersistedDeadline } from "../deadline.js";
 import type { HookJournalEntry } from "../hooks/journal.js";
-import { throwSchedulerStoreResult, type SchedulerStorePort } from "../scheduler/store-port.js";
+import type { SchedulerStorePort } from "../scheduler/store-port.js";
 import type { GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame } from "../scheduler/types.js";
 
 export type RunDynamicDetails = {
@@ -204,7 +204,7 @@ export class SqliteRuntimeInspectionReadModel {
     const frames = readRunDynamicFrames(this.db, runId);
     const nodeInstances = readRunDynamicNodeInstances(this.db, runId);
     const attempts = readRunDynamicAttempts(this.db, runId);
-    const groups = Object.values(throwSchedulerStoreResult(this.scheduler.tryLoadRunSnapshot(runId)).projection.groups).map(runDynamicGroup);
+    const groups = Object.values(this.scheduler.tryLoadRunSnapshot(runId).projection.groups).map(runDynamicGroup);
     const groupMembers = readRunDynamicGroupMembers(this.db, runId);
     const signalWaits = readRunDynamicSignalWaits(this.db, runId);
     const executionMetadata = this.getExecutionMetadata(runId);

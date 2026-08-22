@@ -3,7 +3,8 @@ import { lstat, mkdir, readdir, readFile, rename, stat } from "node:fs/promises"
 import { homedir } from "node:os";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { extractWorkflowMetadata, type WorkflowMetadataError } from "@acpus/workflow-compiler";
-import { ResultAsync, type Result } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { CliError, usageError } from "../presentation/errors.js";
 import { ensurePrivateAcpusDirectory, ensurePrivateDirectory } from "../platform/private-directory.js";
 
@@ -58,7 +59,7 @@ type WorkflowCatalogCommitFailure = {
 };
 
 type PreparedWorkflowCatalogCommit = {
-  commit(stagedPackage: string): ResultAsync<AvailableWorkflowCatalogEntry, WorkflowCatalogCommitFailure>;
+  commit(stagedPackage: string): Effect.Effect<AvailableWorkflowCatalogEntry, WorkflowCatalogCommitFailure>;
 };
 
 class CatalogCommitAbort extends Error {
@@ -71,7 +72,7 @@ const catalogNamePattern = /^[a-z0-9][a-z0-9-]*$/;
 const catalogWorkflowEntry = "workflow.ts";
 const metadataCache = new Map<string, {
   source: string;
-  result: Result<{ name: string }, WorkflowMetadataError>;
+  result: Result.Result<{ name: string }, WorkflowMetadataError>;
 }>();
 
 export async function discoverWorkflowCatalog(cwd: string, options: WorkflowCatalogScopeOptions = {}): Promise<WorkflowCatalogEntry[]> {
@@ -120,8 +121,11 @@ export function prepareWorkflowCatalogCommit(
   cwd: string,
   scope: WorkflowCatalogScope,
   name: string,
-): ResultAsync<PreparedWorkflowCatalogCommit, WorkflowCatalogCommitFailure> {
-  return ResultAsync.fromPromise(prepareCatalogCommit(cwd, scope, name), catalogCommitFailure);
+): Effect.Effect<PreparedWorkflowCatalogCommit, WorkflowCatalogCommitFailure> {
+  return Effect.tryPromise({
+    try: () => prepareCatalogCommit(cwd, scope, name),
+    catch: catalogCommitFailure,
+  });
 }
 
 async function prepareCatalogCommit(cwd: string, scope: WorkflowCatalogScope, name: string): Promise<PreparedWorkflowCatalogCommit> {
@@ -136,21 +140,24 @@ async function prepareCatalogCommit(cwd: string, scope: WorkflowCatalogScope, na
   const requiresScope = (await discoverWorkflowCatalog(cwd, { [otherScope]: true }))
     .some(entry => entry.status === "available" && entry.name === name);
   return {
-    commit: stagedPackage => ResultAsync.fromPromise((async () => {
-      if (scope === "global") {
-        await ensurePrivateAcpusDirectory(root);
-        await ensurePrivateDirectory(stagedPackage);
-      }
-      else await mkdir(root, { recursive: true });
-      if (await pathExists(packagePath)) abortCatalogCommit("collision", `Workflow '${name}' already exists in the ${scope} catalog.`);
-      try {
-        await rename(stagedPackage, packagePath);
-      } catch (error) {
+    commit: stagedPackage => Effect.tryPromise({
+      try: async () => {
+        if (scope === "global") {
+          await ensurePrivateAcpusDirectory(root);
+          await ensurePrivateDirectory(stagedPackage);
+        }
+        else await mkdir(root, { recursive: true });
         if (await pathExists(packagePath)) abortCatalogCommit("collision", `Workflow '${name}' already exists in the ${scope} catalog.`);
-        abortCatalogCommit("commit-failed", `Workflow import could not be committed: ${causeMessage(error)}`);
-      }
-      return { scope, name, packagePath, entryPath, status: "available", requiresScope };
-    })(), catalogCommitFailure),
+        try {
+          await rename(stagedPackage, packagePath);
+        } catch (error) {
+          if (await pathExists(packagePath)) abortCatalogCommit("collision", `Workflow '${name}' already exists in the ${scope} catalog.`);
+          abortCatalogCommit("commit-failed", `Workflow import could not be committed: ${causeMessage(error)}`);
+        }
+        return { scope, name, packagePath, entryPath, status: "available" as const, requiresScope };
+      },
+      catch: catalogCommitFailure,
+    }),
   };
 }
 
@@ -215,13 +222,15 @@ async function inspectCatalogPackage(root: string, directoryName: string, scope:
     return invalidEntry(scope, packagePath, entryPath, "CATALOG_ENTRY_READ_FAILED", `Catalog entry could not be read: ${causeMessage(error)}`);
   }
   const cached = metadataCache.get(entryPath);
-  const metadata = cached?.source === source ? cached.result : await extractWorkflowMetadata(source, entryPath);
+  const metadata = cached?.source === source
+    ? cached.result
+    : await Effect.runPromise(Effect.result(extractWorkflowMetadata(source, entryPath)));
   metadataCache.set(entryPath, { source, result: metadata });
-  if (metadata.isErr()) {
-    const mapped = metadataCatalogError(metadata.error);
-    return invalidEntry(scope, packagePath, entryPath, mapped.errorCode, metadata.error.message);
+  if (Result.isFailure(metadata)) {
+    const mapped = metadataCatalogError(metadata.failure);
+    return invalidEntry(scope, packagePath, entryPath, mapped.errorCode, metadata.failure.message);
   }
-  const name = metadata.value.name;
+  const name = metadata.success.name;
   if (!catalogNamePattern.test(name)) {
     return invalidEntry(scope, packagePath, entryPath, "CATALOG_NAME_INVALID", `Authored workflow name '${name}' must match ${catalogNamePattern.source}.`, name);
   }

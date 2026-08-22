@@ -1,100 +1,37 @@
+import * as Result from "effect/Result";
 import { admitRunForTest } from "./runtime-store.js";
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
-import { join, relative, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-import { DatabaseSync } from "node:sqlite";
 import { defineWorkflow, z } from "@acpus/core";
 import { lift } from "@acpus/expression";
-import { type WorkflowDefinition, compileWorkflowDefinition } from "@acpus/core/workflow";
-import type { WorkflowIR } from "@acpus/core/ir";
+import type { WorkflowDefinition } from "@acpus/core/workflow";
 import type { JsonValue } from "@acpus/expression/ir";
-import {
-  tryNormalizeWorkflowInput,
-  type PreparedRunWorkflow,
-  type RunWorkflowLockArtifact,
-  type Sha256Digest,
-  type WorkflowSourceFile,
-} from "@acpus/runtime";
-import { openRuntimeStore, type RuntimeStore } from "../../src/store/store.js";
-import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../../src/runtime-layout.js";
-import { stableJson } from "../../src/stable-json.js";
+import { tryNormalizeWorkflowInput } from "../../src/admission/input.js";
+import type { PreparedRunWorkflow } from "../../src/admission/prepared-workflow.js";
+import { openRuntimeStoreAdapter, type RuntimeStoreAdapter } from "../../src/store/store.js";
 import { advanceRuntimeRun } from "./scheduler.js";
 import { throwingSchedulerStore } from "./scheduler-store.js";
+import { prepareSyntheticWorkflow } from "./runtime-harness.js";
 
-const repoRoot = resolve(fileURLToPath(new URL("../../../..", import.meta.url)));
-type SnapshotPreparedWorkflow = Extract<PreparedRunWorkflow, { source: { kind: "snapshot" } }>;
-
-export async function withRuntimeWorkspace<T>(
-  name: string,
-  fn: (workspace: string) => Promise<T>,
-  options: { authoringEnvironment?: boolean } = {},
-): Promise<T> {
-  const root = join(repoRoot, ".tmp-tests");
-  await mkdir(root, { recursive: true });
-  const workspace = await mkdtemp(join(root, `${name}-`));
-  const home = await mkdtemp(join(root, `${name}-home-`));
-  const restoreHome = setRuntimeHomeForTest(workspace, home);
-  try {
-    if (options.authoringEnvironment) {
-      await symlink(join(repoRoot, "node_modules"), join(workspace, "node_modules"), "dir");
-      await linkWorkspaceCore(workspace);
-      await writeWorkspaceTsconfig(workspace);
-    }
-    return await fn(workspace);
-  } finally {
-    restoreHome();
-    await Promise.all([
-      rm(workspace, { recursive: true, force: true }),
-      rm(home, { recursive: true, force: true }),
-    ]);
-  }
-}
-
-export async function initializeRuntimeStoreForTest(workspace: string): Promise<void> {
-  const store = await openRuntimeStore(workspace);
-  store.close();
-}
-
-async function writeWorkspaceTsconfig(workspace: string): Promise<void> {
-  await writeFile(join(workspace, "tsconfig.json"), `${JSON.stringify({
-    compilerOptions: {
-      target: "ES2022",
-      lib: ["ES2022"],
-      module: "NodeNext",
-      moduleResolution: "NodeNext",
-      strict: true,
-      esModuleInterop: true,
-      forceConsistentCasingInFileNames: true,
-      skipLibCheck: true,
-      noEmit: true,
-      types: ["node"],
-      customConditions: ["development"],
-    },
-    include: ["*.ts"],
-  }, null, 2)}\n`);
-}
-
-async function linkWorkspaceCore(workspace: string): Promise<void> {
-  await mkdir(join(workspace, "packages"), { recursive: true });
-  await symlink(join(repoRoot, "packages", "core"), join(workspace, "packages", "core"), "dir");
-}
-
-export async function prepareSyntheticWorkflow(workspace: string, definition: WorkflowDefinition<any, any>, filename = `${definition.config.name}.workflow.ts`): Promise<PreparedRunWorkflow> {
-  const workflowPath = join(workspace, filename);
-  await writeFile(workflowPath, "");
-  const ir = compileWorkflowDefinition(definition);
-  return preparedWorkflow(ir, workflowPath, workspace);
-}
+export {
+  initializeRuntimeStoreForTest,
+  preparedWorkflow,
+  prepareSyntheticWorkflow,
+  runtimeDatabasePath,
+  runtimeRow,
+  runtimeRows,
+  runtimeRunDir,
+  runtimeRunsRoot,
+  scopedRuntimeWorkspace,
+  snapshotPreparedWorkflow,
+  withRuntimeWorkspace,
+} from "./runtime-harness.js";
 
 export async function admitSyntheticWorkflow(workspace: string, definition: WorkflowDefinition<any, any>, input: JsonValue = {}) {
   const prepared = await prepareSyntheticWorkflow(workspace, definition);
-  return admitPreparedWorkflowForTest(workspace, prepared, tryNormalizeWorkflowInput(prepared.ir, input)._unsafeUnwrap());
+  return admitPreparedWorkflowForTest(workspace, prepared, Result.getOrThrow(tryNormalizeWorkflowInput(prepared.ir, input)));
 }
 
 export async function admitPreparedWorkflowForTest(workspace: string, prepared: PreparedRunWorkflow, input: JsonValue) {
-  const store = await openRuntimeStore(workspace);
+  const store = await openRuntimeStoreAdapter(workspace);
   try {
     const admitted = await admitRunForTest(store, { prepared, cwd: workspace, input });
     const summary = await advanceRuntimeRun(workspace, store, admitted.id, `test:${admitted.id}`);
@@ -108,14 +45,14 @@ export async function admitPreparedWorkflowForTest(workspace: string, prepared: 
   }
 }
 
-function firstAwaitingNodeKey(store: RuntimeStore, runId: string): string {
+function firstAwaitingNodeKey(store: RuntimeStoreAdapter, runId: string): string {
   const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).projection;
   return Object.values(projection.instances).find(instance => instance.status === "awaiting")?.nodeKey
     ?? Object.values(projection.signalWaits).find(wait => wait.status === "awaiting")?.nodeKey
     ?? "";
 }
 
-function rootFailureMessage(store: RuntimeStore, runId: string): string {
+function rootFailureMessage(store: RuntimeStoreAdapter, runId: string): string {
   const root = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).projection.frames.root;
   const error = root?.error;
   if (error && typeof error.message === "string") return error.message;
@@ -233,23 +170,6 @@ export function failingTaskWorkflow() {
       },
     });
     return {};
-  });
-}
-
-export function failOnceTaskWorkflow() {
-  return defineWorkflow({
-    name: "cli-fail-once-task",
-    inputSchema: z.object({ workDir: z.string() }),
-  }).build(({ input, step }) => {
-    const result = step("eventual").task({
-      input: null,
-      cwd: input.workDir,
-      exec: async ({ $ }) => {
-        await $`sh -c "if [ -f .retry-marker ]; then exit 0; fi; touch .retry-marker; exit 1"`;
-        return { ok: true };
-      },
-    });
-    return { ok: result.output.ok };
   });
 }
 
@@ -381,105 +301,4 @@ export function parallelSignalRaceWorkflow() {
     });
     return { approval: approval.output };
   });
-}
-
-export function preparedWorkflow(ir: WorkflowIR, workflowPath: string, cwd: string): PreparedRunWorkflow {
-  const irJson = `${JSON.stringify(ir, null, 2)}\n`;
-  const irFileDigest = digest(irJson);
-  const entry = relative(cwd, workflowPath).split(/[\\/]/).join("/");
-  const entryDigest = digest(readFileSync(workflowPath));
-  const sourceGraphDigest = digest(`${stableJson({
-    kind: "acpus_workflow_source_graph",
-    version: 1,
-    entry,
-    files: [{ path: entry, digest: entryDigest }],
-  })}\n`);
-  const source = { kind: "workspace" as const, entry };
-  const lock: RunWorkflowLockArtifact = {
-    kind: "acpus_workflow_preparation_lock",
-    version: 2,
-    workflow: {
-      source,
-      entryDigest,
-    },
-    ir: {
-      path: "workflow.ir.json",
-      digest: irFileDigest,
-    },
-    sourceGraphDigest,
-  };
-  return {
-    source,
-    ir,
-    irJson,
-    sourceGraphDigest,
-    lock,
-  };
-}
-
-export function snapshotPreparedWorkflow(
-  prepared: PreparedRunWorkflow,
-  files: WorkflowSourceFile[],
-  entry = "workflow.ts",
-): SnapshotPreparedWorkflow {
-  const sortedFiles = [...files].sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
-  const sourceGraphDigest = digest(`${stableJson({
-    kind: "acpus_workflow_source_graph",
-    version: 1,
-    entry,
-    files: sortedFiles.map(file => ({ path: file.path, digest: digest(file.content) })),
-  })}\n`);
-  const source = { kind: "snapshot" as const, entry, digest: sourceGraphDigest };
-  return {
-    ...prepared,
-    source,
-    sourceBundle: {
-      kind: "acpus_workflow_source_bundle",
-      version: 1,
-      files: sortedFiles,
-    },
-    sourceGraphDigest,
-    lock: {
-      ...prepared.lock,
-      sourceGraphDigest,
-      workflow: {
-        source,
-        entryDigest: digest(sortedFiles.find(file => file.path === entry)!.content),
-      },
-    },
-  };
-}
-
-function digest(value: string | Uint8Array): Sha256Digest {
-  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
-}
-
-export function runtimeRow(workspace: string, sql: string, ...params: string[]): Record<string, unknown> | undefined {
-  const db = new DatabaseSync(runtimeDatabasePath(workspace), { readOnly: true });
-  try {
-    return db.prepare(sql).get(...params);
-  } finally {
-    db.close();
-  }
-}
-
-export function runtimeRows(workspace: string, sql: string, ...params: string[]): Array<Record<string, unknown>> {
-  const db = new DatabaseSync(runtimeDatabasePath(workspace), { readOnly: true });
-  try {
-    return db.prepare(sql).all(...params);
-  } finally {
-    db.close();
-  }
-}
-
-export function runtimeDatabasePath(workspace: string): string {
-  return resolveRuntimeLayout(workspace).databasePath;
-}
-
-export function runtimeRunsRoot(workspace: string): string {
-  return resolveRuntimeLayout(workspace).runsRoot;
-}
-
-export function runtimeRunDir(workspace: string, runId: string): string {
-  return join(runtimeRunsRoot(workspace), runId);
 }

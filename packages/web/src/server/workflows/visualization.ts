@@ -1,7 +1,7 @@
 import { walkNodes, type WorkflowIR } from "@acpus/core/ir";
 import { staticExprShape } from "@acpus/expression/ir";
 import { tryPrepareWorkflow, type WorkflowPreparationFailure } from "@acpus/workflow-compiler";
-import type { ResultAsync } from "neverthrow";
+import * as Effect from "effect/Effect";
 import type {
   WorkflowVisualizationResult,
   WorkflowVisualizationSource,
@@ -19,13 +19,12 @@ type ReadyWorkflowVisualization = Extract<WorkflowVisualizationResult, { status:
 export function tryVisualizeWorkflowSource(
   cwd: string,
   source: WorkflowVisualizationSource,
-): ResultAsync<ReadyWorkflowVisualization, WorkflowVisualizationFailure> {
+): Effect.Effect<ReadyWorkflowVisualization, WorkflowVisualizationFailure> {
   return resolveWorkflowSource(cwd, source)
-    .andThen(workflow => tryPrepareWorkflow({
+    .pipe(Effect.flatMap(workflow => tryPrepareWorkflow({
       workspaceDir: cwd,
       source: { kind: "path", entry: workflow },
-    }))
-    .map(prepared => staticWorkflowVisualization(prepared.ir, prepared.sourceGraphDigest));
+    })), Effect.map(prepared => staticWorkflowVisualization(prepared.ir, prepared.sourceGraphDigest)));
 }
 export function staticWorkflowVisualization(ir: WorkflowIR, sourceGraphDigest: string): ReadyWorkflowVisualization {
   return {

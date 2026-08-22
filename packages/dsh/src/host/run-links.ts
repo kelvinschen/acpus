@@ -1,6 +1,10 @@
 import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Semaphore from "effect/Semaphore";
 import { AcpusOperationError } from "./errors.js";
 import {
   isTerminalProjection,
@@ -93,32 +97,33 @@ export type AvailabilityCommitResult = {
 };
 
 export interface SupervisorStateStore {
-  listLinks(): Promise<RunLink[]>;
-  listReconciliationLinks(): Promise<RunLink[]>;
-  readSession(sessionId: string): Promise<StoredSessionProjection>;
-  commitObservation(input: ObservationCommit): Promise<CommitResult>;
+  listLinks(): Effect.Effect<RunLink[], AcpusOperationError>;
+  listReconciliationLinks(): Effect.Effect<RunLink[], AcpusOperationError>;
+  readSession(sessionId: string): Effect.Effect<StoredSessionProjection, AcpusOperationError>;
+  commitObservation(input: ObservationCommit): Effect.Effect<CommitResult, AcpusOperationError>;
   setRunUnavailable(input: {
     link: RunLink;
     unavailable?: NonNullable<StoredRunProjection["unavailable"]>;
-  }): Promise<AvailabilityCommitResult>;
-  pendingNotices(): Promise<StoredNotice[]>;
-  markNoticeDelivered(noticeId: string): Promise<void>;
+  }): Effect.Effect<AvailabilityCommitResult, AcpusOperationError>;
+  pendingNotices(): Effect.Effect<StoredNotice[], AcpusOperationError>;
+  markNoticeDelivered(noticeId: string): Effect.Effect<void, AcpusOperationError>;
   prepareCancel(input: {
     sessionId: string;
     generation: number;
     actor: "user" | "model";
     requestId?: string;
-  }): Promise<
+  }): Effect.Effect<
     | { status: "ready"; control: StoredControl; link: AdmittedRunLink }
-    | { status: "rejected"; reason: "task-unavailable" | "already-terminal" }
+    | { status: "rejected"; reason: "task-unavailable" | "already-terminal" },
+    AcpusOperationError
   >;
   settleCancel(input: {
     controlId: string;
     outcome: "applied" | "rejected";
     taskStatus: StoredRunProjection["status"];
     reason?: ControlRejectionReason;
-  }): Promise<void>;
-  pendingControls(): Promise<StoredControl[]>;
+  }): Effect.Effect<void, AcpusOperationError>;
+  pendingControls(): Effect.Effect<StoredControl[], AcpusOperationError>;
 }
 
 type SupervisorStateFile = {
@@ -142,15 +147,15 @@ const EMPTY_STATE: SupervisorStateFile = {
 export class DurableSupervisorStateStore implements SupervisorStateStore {
   private state = EMPTY_STATE;
   private loaded = false;
-  private pending = Promise.resolve();
+  private readonly mutation = Semaphore.makeUnsafe(1);
 
   constructor(private readonly path: string) {}
 
-  async listLinks(): Promise<RunLink[]> {
+  listLinks(): Effect.Effect<RunLink[], AcpusOperationError> {
     return this.read(() => structuredClone([...this.state.links]));
   }
 
-  async listReconciliationLinks(): Promise<RunLink[]> {
+  listReconciliationLinks(): Effect.Effect<RunLink[], AcpusOperationError> {
     return this.read(() => structuredClone(this.state.links.filter(link => {
       if (link.runId === undefined) return true;
       const projection = this.state.sessions
@@ -160,9 +165,9 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
     })));
   }
 
-  async readLink(
+  readLink(
     input: Omit<RunLink, "runId" | "workflowName" | "occurrence" | "generation">,
-  ): Promise<RunLink | undefined> {
+  ): Effect.Effect<RunLink | undefined, AcpusOperationError> {
     return this.read(() => {
       const existing = this.state.links.find(
         link => link.admissionRequestId === input.admissionRequestId,
@@ -172,7 +177,7 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
     });
   }
 
-  async readSession(sessionId: string): Promise<StoredSessionProjection> {
+  readSession(sessionId: string): Effect.Effect<StoredSessionProjection, AcpusOperationError> {
     return this.read(() => {
       const session = this.state.sessions.find(
         candidate => candidate.sessionId === sessionId,
@@ -195,8 +200,10 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
     });
   }
 
-  async commitObservation(input: ObservationCommit): Promise<CommitResult> {
-    return this.mutate(async () => {
+  commitObservation(
+    input: ObservationCommit,
+  ): Effect.Effect<CommitResult, AcpusOperationError> {
+    return this.mutate<CommitResult>(() => {
       const session = this.state.sessions.find(
         candidate => candidate.sessionId === input.link.parentSessionId,
       ) ?? {
@@ -216,12 +223,12 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
         && !(input.notice.kind !== "signal" && current?.status === input.notice.kind)
         && !this.state.notices.some(notice => notice.id === input.notice?.id);
       if (!projectionChanged && !noticeInserted) {
-        return {
+        return Effect.succeed({
           revision: session.revision,
           projectionChanged: false,
           noticeInserted: false,
           wakeWaiters: false,
-        };
+        });
       }
 
       const previous = this.state;
@@ -239,38 +246,37 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
           ? [...this.state.notices, input.notice as StoredNotice]
           : this.state.notices,
       };
-      try {
-        await this.flush();
-      } catch (error) {
-        this.state = previous;
-        throw error;
-      }
-      return {
+      const result = {
         revision: projectionChanged ? session.revision + 1 : session.revision,
         projectionChanged,
         noticeInserted,
         wakeWaiters: projectionChanged,
       };
+      return this.flushState(previous).pipe(Effect.as(result));
     });
   }
 
-  async setRunUnavailable(input: {
+  setRunUnavailable(input: {
     link: RunLink;
     unavailable?: NonNullable<StoredRunProjection["unavailable"]>;
-  }): Promise<AvailabilityCommitResult> {
-    return this.mutate(async () => {
-      if (input.link.runId === undefined) return { revision: 0, changed: false };
+  }): Effect.Effect<AvailabilityCommitResult, AcpusOperationError> {
+    return this.mutate<AvailabilityCommitResult>(() => {
+      if (input.link.runId === undefined) {
+        return Effect.succeed({ revision: 0, changed: false });
+      }
       const session = this.state.sessions.find(
         candidate => candidate.sessionId === input.link.parentSessionId,
       );
       const projection = session?.runs.find(run => run.runId === input.link.runId);
       if (session === undefined || projection === undefined || isTerminalProjection(projection)) {
-        return { revision: session?.revision ?? 0, changed: false };
+        return Effect.succeed({ revision: session?.revision ?? 0, changed: false });
       }
       const sameUnavailable = input.unavailable === undefined
         ? projection.unavailable === undefined
         : projection.unavailable?.reason === input.unavailable.reason;
-      if (sameUnavailable) return { revision: session.revision, changed: false };
+      if (sameUnavailable) {
+        return Effect.succeed({ revision: session.revision, changed: false });
+      }
 
       const next = input.unavailable === undefined
         ? withoutUnavailable(projection)
@@ -285,60 +291,60 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
           runs: replaceProjection(session.runs, next),
         }),
       };
-      await this.flushState(previous);
-      return { revision, changed: true };
+      return this.flushState(previous).pipe(Effect.as({ revision, changed: true }));
     });
   }
 
-  async pendingNotices(): Promise<StoredNotice[]> {
+  pendingNotices(): Effect.Effect<StoredNotice[], AcpusOperationError> {
     return this.read(() => structuredClone(
       this.state.notices.filter(notice => notice.deliveredAt === undefined),
     ));
   }
 
-  async markNoticeDelivered(noticeId: string): Promise<void> {
-    await this.mutate(async () => {
+  markNoticeDelivered(noticeId: string): Effect.Effect<void, AcpusOperationError> {
+    return this.mutate(() => {
       const notice = this.state.notices.find(candidate => candidate.id === noticeId);
-      if (notice === undefined || notice.deliveredAt !== undefined) return;
+      if (notice === undefined || notice.deliveredAt !== undefined) return Effect.void;
       const previous = this.state;
-      this.state = {
-        ...this.state,
-        notices: this.state.notices.map(candidate => candidate.id === noticeId
-          ? { ...candidate, deliveredAt: new Date().toISOString() }
-          : candidate),
-      };
-      try {
-        await this.flush();
-      } catch (error) {
-        this.state = previous;
-        throw error;
-      }
+      return Clock.currentTimeMillis.pipe(
+        Effect.tap(milliseconds => Effect.sync(() => {
+          this.state = {
+            ...this.state,
+            notices: this.state.notices.map(candidate => candidate.id === noticeId
+              ? { ...candidate, deliveredAt: new Date(milliseconds).toISOString() }
+              : candidate),
+          };
+        })),
+        Effect.andThen(Effect.suspend(() => this.flushState(previous))),
+      );
     });
   }
 
-  async prepareCancel(input: {
+  prepareCancel(input: {
     sessionId: string;
     generation: number;
     actor: "user" | "model";
     requestId?: string;
-  }): Promise<
+  }): Effect.Effect<
     | { status: "ready"; control: StoredControl; link: AdmittedRunLink }
-    | { status: "rejected"; reason: "task-unavailable" | "already-terminal" }
+    | { status: "rejected"; reason: "task-unavailable" | "already-terminal" },
+    AcpusOperationError
   > {
-    return this.mutate(async () => {
-      const current = this.state.links.find(link =>
+    const store = this;
+    return this.mutate(() => Effect.gen(function* () {
+      const current = store.state.links.find(link =>
         link.parentSessionId === input.sessionId
         && link.generation === input.generation);
       if (!isAdmittedRunLink(current)) {
         return { status: "rejected", reason: "task-unavailable" };
       }
-      const projection = this.state.sessions
+      const projection = store.state.sessions
         .find(session => session.sessionId === input.sessionId)
         ?.runs.find(run => run.runId === current.runId);
       if (projection === undefined) return { status: "rejected", reason: "task-unavailable" };
       if (["completed", "failed", "canceled"].includes(projection.status)) {
         if (input.actor === "user") {
-          await this.insertControlAttention(current, {
+          yield* store.insertControlAttention(current, {
             outcome: "rejected",
             taskStatus: projection.status,
             reason: "already-terminal",
@@ -347,7 +353,7 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
         return { status: "rejected", reason: "already-terminal" };
       }
       const id = controlId(input.sessionId, input.generation, input.actor);
-      const existing = this.state.controls.find(control => control.id === id);
+      const existing = store.state.controls.find(control => control.id === id);
       if (existing !== undefined) {
         return {
           status: "ready",
@@ -365,31 +371,26 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
         runId: current.runId,
         status: "pending",
       };
-      const previous = this.state;
-      this.state = { ...this.state, controls: [...this.state.controls, control] };
-      try {
-        await this.flush();
-      } catch (error) {
-        this.state = previous;
-        throw error;
-      }
+      const previous = store.state;
+      store.state = { ...store.state, controls: [...store.state.controls, control] };
+      yield* store.flushState(previous);
       return {
         status: "ready",
         control: structuredClone(control),
         link: structuredClone(current),
       };
-    });
+    }));
   }
 
-  async settleCancel(input: {
+  settleCancel(input: {
     controlId: string;
     outcome: "applied" | "rejected";
     taskStatus: StoredRunProjection["status"];
     reason?: ControlRejectionReason;
-  }): Promise<void> {
-    await this.mutate(async () => {
+  }): Effect.Effect<void, AcpusOperationError> {
+    return this.mutate(() => {
       const current = this.state.controls.find(control => control.id === input.controlId);
-      if (current === undefined || current.status !== "pending") return;
+      if (current === undefined || current.status !== "pending") return Effect.void;
       const settled: StoredControl = {
         ...current,
         status: input.outcome,
@@ -404,56 +405,60 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
         ...this.state,
         controls: this.state.controls.map(control => control.id === current.id ? settled : control),
       };
-      if (current.actor === "user" && isAdmittedRunLink(link)) {
-        const id = `${controlId(link.parentSessionId, link.generation, "user")}:attention`;
-        const notice: StoredNotice = {
-          id,
-          parentSessionId: link.parentSessionId,
-          workspace: link.workspace,
-          runId: link.runId,
-          task: { name: link.workflowName, occurrence: link.occurrence },
-          kind: "user-control",
-          projectionUpdatedAt: new Date().toISOString(),
-          control: {
-            actor: "user",
-            operation: "cancel",
-            outcome: input.outcome,
-            taskStatus: input.taskStatus,
-            ...(input.reason === undefined ? {} : { reason: input.reason }),
-          },
-        };
-        this.state = {
-          ...this.state,
-          notices: [
-            ...this.state.notices.filter(candidate =>
-              candidate.id !== id
-              && !(candidate.runId === link.runId
-                && candidate.kind !== "signal"
-                && candidate.deliveredAt === undefined)),
-            notice,
-          ],
-        };
-      }
-      await this.flushState(previous);
+      const updateAttention = current.actor === "user" && isAdmittedRunLink(link)
+        ? Clock.currentTimeMillis.pipe(Effect.tap(milliseconds => Effect.sync(() => {
+            const id = `${controlId(link.parentSessionId, link.generation, "user")}:attention`;
+            const notice: StoredNotice = {
+              id,
+              parentSessionId: link.parentSessionId,
+              workspace: link.workspace,
+              runId: link.runId,
+              task: { name: link.workflowName, occurrence: link.occurrence },
+              kind: "user-control",
+              projectionUpdatedAt: new Date(milliseconds).toISOString(),
+              control: {
+                actor: "user",
+                operation: "cancel",
+                outcome: input.outcome,
+                taskStatus: input.taskStatus,
+                ...(input.reason === undefined ? {} : { reason: input.reason }),
+              },
+            };
+            this.state = {
+              ...this.state,
+              notices: [
+                ...this.state.notices.filter(candidate =>
+                  candidate.id !== id
+                  && !(candidate.runId === link.runId
+                    && candidate.kind !== "signal"
+                    && candidate.deliveredAt === undefined)),
+                notice,
+              ],
+            };
+          })))
+        : Effect.void;
+      return updateAttention.pipe(
+        Effect.andThen(Effect.suspend(() => this.flushState(previous))),
+      );
     });
   }
 
-  async pendingControls(): Promise<StoredControl[]> {
+  pendingControls(): Effect.Effect<StoredControl[], AcpusOperationError> {
     return this.read(() => structuredClone(
       this.state.controls.filter(control => control.status === "pending"),
     ));
   }
 
-  async provisional(
+  provisional(
     input: Omit<RunLink, "runId" | "workflowName" | "occurrence" | "generation">,
-  ): Promise<RunLink> {
-    return this.mutate(async () => {
+  ): Effect.Effect<RunLink, AcpusOperationError> {
+    return this.mutate(() => {
       const existing = this.state.links.find(
         link => link.admissionRequestId === input.admissionRequestId,
       );
       assertLinkIdentity(existing, input);
       if (existing !== undefined) {
-        return existing;
+        return Effect.succeed(existing);
       }
       const generation = Math.max(0, ...this.state.links
         .filter(link => link.parentSessionId === input.parentSessionId)
@@ -461,21 +466,15 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
       const link = { ...input, generation };
       const previous = this.state;
       this.state = { ...this.state, links: [...this.state.links, link] };
-      try {
-        await this.flush();
-        return link;
-      } catch (error) {
-        this.state = previous;
-        throw error;
-      }
+      return this.flushState(previous).pipe(Effect.as(link));
     });
   }
 
-  async admitted(
+  admitted(
     admissionRequestId: string,
     run: { id: string; name: string },
-  ): Promise<AdmittedRunLink> {
-    return this.mutate(async () => {
+  ): Effect.Effect<AdmittedRunLink, AcpusOperationError> {
+    return this.mutate(() => {
       const current = this.state.links.find(
         link => link.admissionRequestId === admissionRequestId,
       );
@@ -489,7 +488,7 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
         if (!isAdmittedRunLink(current) || current.workflowName !== run.name) {
           throw new Error(`Acpus run link '${admissionRequestId}' has inconsistent workflow metadata.`);
         }
-        return current;
+        return Effect.succeed(current);
       }
       const occurrence = Math.max(0, ...this.state.links
         .filter(link =>
@@ -508,46 +507,49 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
         links: this.state.links.map(candidate =>
           candidate.admissionRequestId === admissionRequestId ? link : candidate),
       };
-      try {
-        await this.flush();
-        return link;
-      } catch (error) {
-        this.state = previous;
-        throw error;
-      }
+      return this.flushState(previous).pipe(Effect.as(link));
     });
   }
 
-  private async load(): Promise<void> {
-    if (this.loaded) return;
-    let document: unknown;
-    try {
-      document = JSON.parse(await readFile(this.path, "utf8"));
-    } catch (error) {
-      if (isCode(error, "ENOENT")) {
-        this.loaded = true;
-        return;
-      }
-      throw new AcpusOperationError(
+  private load(): Effect.Effect<void, AcpusOperationError> {
+    if (this.loaded) return Effect.void;
+    const store = this;
+    return Effect.tryPromise({
+      try: async () => {
+        try {
+          return { found: true as const, document: JSON.parse(await readFile(store.path, "utf8")) };
+        } catch (error) {
+          if (isCode(error, "ENOENT")) return { found: false as const };
+          throw error;
+        }
+      },
+      catch: error => new AcpusOperationError(
         error instanceof SyntaxError
-          ? `Acpus DSH supervisor state '${this.path}' has an unsupported format.`
+          ? `Acpus DSH supervisor state '${store.path}' has an unsupported format.`
           : "Acpus could not read the private DSH supervisor state.",
         error instanceof SyntaxError ? "ACPUS_RUN_LINKS_INVALID" : "ACPUS_RUN_LINK_READ_FAILED",
         { cause: error },
-      );
-    }
-    if (!isSupervisorStateFile(document)) {
-      throw new AcpusOperationError(
-        `Acpus DSH supervisor state '${this.path}' has an unsupported format.`,
-        "ACPUS_RUN_LINKS_INVALID",
-      );
-    }
-    this.state = document;
-    this.loaded = true;
+      ),
+    }).pipe(Effect.flatMap(result => {
+      if (!result.found) {
+        return Effect.sync(() => {
+          store.loaded = true;
+        });
+      }
+      if (!isSupervisorStateFile(result.document)) {
+        return Effect.fail(new AcpusOperationError(
+          `Acpus DSH supervisor state '${store.path}' has an unsupported format.`,
+          "ACPUS_RUN_LINKS_INVALID",
+        ));
+      }
+      return Effect.sync(() => {
+        store.state = result.document;
+        store.loaded = true;
+      });
+    }));
   }
 
-  private async flush(): Promise<void> {
-    await mkdir(dirname(this.path), { recursive: true });
+  private flush(): Effect.Effect<void, AcpusOperationError> {
     const temporary = `${this.path}.${randomUUID()}.tmp`;
     const document: SupervisorStateFile = {
       ...this.state,
@@ -558,88 +560,90 @@ export class DurableSupervisorStateStore implements SupervisorStateStore {
       notices: [...this.state.notices].sort((left, right) => left.id.localeCompare(right.id)),
       controls: [...this.state.controls].sort((left, right) => left.id.localeCompare(right.id)),
     };
-    try {
-      await writeFile(temporary, `${JSON.stringify(document)}\n`, {
-        encoding: "utf8",
-        flag: "wx",
-        mode: 0o600,
-      });
-      if (process.platform !== "win32") await chmod(temporary, 0o600);
-      await rename(temporary, this.path);
-    } catch (error) {
-      throw new AcpusOperationError(
+    const path = this.path;
+    return Effect.tryPromise({
+      try: async () => {
+        await mkdir(dirname(path), { recursive: true });
+        try {
+          await writeFile(temporary, `${JSON.stringify(document)}\n`, {
+            encoding: "utf8",
+            flag: "wx",
+            mode: 0o600,
+          });
+          if (process.platform !== "win32") await chmod(temporary, 0o600);
+          await rename(temporary, path);
+        } finally {
+          await rm(temporary, { force: true });
+        }
+      },
+      catch: error => new AcpusOperationError(
         "Acpus could not persist the private DSH supervisor state.",
         "ACPUS_RUN_LINK_WRITE_FAILED",
         { cause: error },
-      );
-    } finally {
-      await rm(temporary, { force: true });
-    }
-  }
-
-  private mutate<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.pending.then(async () => {
-      await this.load();
-      return operation();
+      ),
     });
-    this.pending = result.then(() => undefined, () => undefined);
-    return result;
   }
 
-  private read<T>(operation: () => T): Promise<T> {
-    return this.mutate(async () => operation());
+  private mutate<T>(
+    operation: () => Effect.Effect<T, AcpusOperationError>,
+  ): Effect.Effect<T, AcpusOperationError> {
+    return Effect.uninterruptible(this.mutation.withPermit(
+      this.load().pipe(Effect.andThen(Effect.suspend(operation))),
+    ));
   }
 
-  private async insertControlAttention(
+  private read<T>(operation: () => T): Effect.Effect<T, AcpusOperationError> {
+    return this.mutate(() => Effect.sync(operation));
+  }
+
+  private insertControlAttention(
     link: AdmittedRunLink,
     result: {
       outcome: "applied" | "rejected";
       taskStatus: StoredRunProjection["status"];
       reason?: ControlRejectionReason;
     },
-  ): Promise<void> {
+  ): Effect.Effect<void, AcpusOperationError> {
     const id = `${controlId(link.parentSessionId, link.generation, "user")}:attention`;
-    const notice: StoredNotice = {
-      id,
-      parentSessionId: link.parentSessionId,
-      workspace: link.workspace,
-      runId: link.runId,
-      task: { name: link.workflowName, occurrence: link.occurrence },
-      kind: "user-control",
-      projectionUpdatedAt: new Date().toISOString(),
-      control: {
-        actor: "user",
-        operation: "cancel",
-        ...result,
-      },
-    };
     const previous = this.state;
-    this.state = {
-      ...this.state,
-      notices: [
-        ...this.state.notices.filter(candidate =>
-          candidate.id !== id
-          && !(candidate.runId === link.runId
-            && candidate.kind !== "signal"
-            && candidate.deliveredAt === undefined)),
-        notice,
-      ],
-    };
-    try {
-      await this.flush();
-    } catch (error) {
-      this.state = previous;
-      throw error;
-    }
+    return Clock.currentTimeMillis.pipe(
+      Effect.tap(milliseconds => Effect.sync(() => {
+        const notice: StoredNotice = {
+          id,
+          parentSessionId: link.parentSessionId,
+          workspace: link.workspace,
+          runId: link.runId,
+          task: { name: link.workflowName, occurrence: link.occurrence },
+          kind: "user-control",
+          projectionUpdatedAt: new Date(milliseconds).toISOString(),
+          control: {
+            actor: "user",
+            operation: "cancel",
+            ...result,
+          },
+        };
+        this.state = {
+          ...this.state,
+          notices: [
+            ...this.state.notices.filter(candidate =>
+              candidate.id !== id
+              && !(candidate.runId === link.runId
+                && candidate.kind !== "signal"
+                && candidate.deliveredAt === undefined)),
+            notice,
+          ],
+        };
+      })),
+      Effect.andThen(Effect.suspend(() => this.flushState(previous))),
+    );
   }
 
-  private async flushState(previous: SupervisorStateFile): Promise<void> {
-    try {
-      await this.flush();
-    } catch (error) {
-      this.state = previous;
-      throw error;
-    }
+  private flushState(previous: SupervisorStateFile): Effect.Effect<void, AcpusOperationError> {
+    return this.flush().pipe(Effect.onExit(exit => Exit.isFailure(exit)
+      ? Effect.sync(() => {
+          this.state = previous;
+        })
+      : Effect.void));
   }
 }
 

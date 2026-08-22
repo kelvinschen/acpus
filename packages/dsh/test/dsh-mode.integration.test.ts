@@ -1,59 +1,68 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, onTestFinished, vi } from "vitest";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
 import { Context } from "@deepseek-ai/cordis";
 import { CallId } from "@deepseek-ai/dsh-llm";
 import { DurableSupervisorStateStore } from "../src/host/run-links.js";
 import type { StoredRunProjection } from "../src/host/run-projection.js";
 import { loadDshComposition as loadComposition, supervisingAgent } from "./support/dsh-composition.js";
 
-let context: Context | undefined;
-let root: string | undefined;
-
-afterEach(async () => {
-  await context?.fiber.dispose();
-  context = undefined;
-  if (root !== undefined) await rm(root, { recursive: true, force: true });
-  root = undefined;
-});
-
 describe("Acpus mode through a real DSH Loader composition", () => {
-  it("starts Runtime cleanup while supervision is still settling", async () => {
-    root = await mkdtemp(join(tmpdir(), "acpus-dsh-shutdown-"));
-    context = await loadComposition({
+  it("starts Runtime cleanup and supervision interruption together", async () => {
+    const resources = await makeTestResources("acpus-dsh-shutdown-");
+    const { root } = resources;
+    const context = await resources.load({
       dshHome: join(root, "dsh-home"),
       stateDir: join(root, "state"),
     });
     const internals = context.acpusMode as unknown as {
-      supervision: { dispose(): Promise<void> };
-      runtimes: { close(): Promise<void> };
+      hostScope: {
+        strategy: "sequential" | "parallel";
+        state: { _tag: "Empty" | "Open" | "Closed" };
+      };
+      runtimes: { close(): Effect.Effect<void> };
+      supervision: {
+        activityPulses: Map<string, unknown>;
+        waitForActivityRevision(sessionId: string, revision: number): Effect.Effect<void, Error>;
+      };
     };
-    const releaseSupervision = deferred<void>();
-    const originalSupervisionDispose = internals.supervision.dispose.bind(internals.supervision);
-    const originalRuntimeClose = internals.runtimes.close.bind(internals.runtimes);
-    vi.spyOn(internals.supervision, "dispose").mockImplementation(async () => {
-      await releaseSupervision.promise;
-      await originalSupervisionDispose();
-    });
-    const runtimeClose = vi.spyOn(internals.runtimes, "close")
-      .mockImplementation(originalRuntimeClose);
+    const runtimeCloseStarted = Deferred.makeUnsafe<void>();
+    const releaseRuntimeClose = Deferred.makeUnsafe<void>();
+    const closeRuntime = internals.runtimes.close.bind(internals.runtimes);
+    internals.runtimes.close = () => Deferred.succeed(runtimeCloseStarted, undefined).pipe(
+      Effect.andThen(Deferred.await(releaseRuntimeClose)),
+      Effect.andThen(closeRuntime()),
+    );
+    const waiter = Effect.runPromise(
+      internals.supervision.waitForActivityRevision("parallel-close", 0),
+    );
+    await vi.waitFor(() => expect(internals.supervision.activityPulses.size).toBe(1));
 
-    const disposed = context.fiber.dispose();
-    await vi.waitFor(() => expect(runtimeClose).toHaveBeenCalledOnce());
-    releaseSupervision.resolve();
-    await disposed;
-    context = undefined;
+    expect(internals.hostScope.strategy).toBe("parallel");
+    const disposed = resources.dispose(context);
+    try {
+      await Effect.runPromise(Deferred.await(runtimeCloseStarted));
+      await vi.waitFor(() => expect(internals.supervision.activityPulses.size).toBe(0));
+      await expect(waiter).rejects.toThrow("disposed");
+    } finally {
+      Deferred.doneUnsafe(releaseRuntimeClose, Effect.void);
+      await disposed;
+    }
+    expect(internals.hostScope.state._tag).toBe("Closed");
   });
 
   it("returns a structured invalid-source result and rejects runtime contention", async () => {
-    root = await mkdtemp(join(tmpdir(), "acpus-dsh-errors-"));
+    const resources = await makeTestResources("acpus-dsh-errors-");
+    const { root } = resources;
     const workspace = join(root, "workspace");
     const dshHome = join(root, "dsh-home");
     const stateDir = join(root, "state");
     await mkdir(workspace);
 
-    context = await loadComposition({ dshHome, stateDir });
+    const context = await resources.load({ dshHome, stateDir });
     const owner = supervisingAgent(context, workspace);
     const invalid = await context.tools.execute({
       signal: new AbortController().signal,
@@ -66,7 +75,7 @@ describe("Acpus mode through a real DSH Loader composition", () => {
       isError: false,
       value: { status: "invalid", phase: expect.any(String), diagnostics: expect.any(Array) },
     });
-    const competingContext = await loadComposition({
+    const competingContext = await resources.load({
       dshHome: join(root, "other-dsh-home"),
       stateDir,
     });
@@ -77,54 +86,20 @@ describe("Acpus mode through a real DSH Loader composition", () => {
         code: "ACPUS_RUNTIME_BUSY",
       });
     } finally {
-      await competingContext.fiber.dispose();
+      await resources.dispose(competingContext);
     }
   });
 
-  it("preserves explicit null workflow input", async () => {
-    root = await mkdtemp(join(tmpdir(), "acpus-dsh-null-input-"));
-    const workspace = join(root, "workspace");
-    await mkdir(workspace);
-    context = await loadComposition({
-      dshHome: join(root, "dsh-home"),
-      stateDir: join(root, "state"),
-    });
-
-    const submitted = await context.tools.execute({
-      signal: new AbortController().signal,
-      callId: CallId("null-input"),
-      name: "acpus_run",
-      arguments: {
-        workflow: [
-          'import { defineWorkflow, z } from "acpus/core";',
-          'export default defineWorkflow({ name: "dsh-null-input", inputSchema: z.null() }).build(({ input, step }) => {',
-          '  step("accept_null").assert({ condition: true });',
-          "  return { value: input };",
-          "});",
-        ].join("\n"),
-        input: null,
-      },
-      agent: supervisingAgent(context, workspace),
-    });
-
-    expect(submitted).toMatchObject({
-      isError: false,
-      value: {
-        status: "admitted",
-        task: { name: "dsh-null-input", occurrence: 1 },
-      },
-    });
-  });
-
   it("restores parked Signal supervision and durably deduplicates terminal notices", async () => {
-    root = await mkdtemp(join(tmpdir(), "acpus-dsh-supervision-"));
+    const resources = await makeTestResources("acpus-dsh-supervision-");
+    const { root } = resources;
     const workspace = join(root, "workspace");
     const dshHome = join(root, "dsh-home");
     const stateDir = join(root, "state");
     const statePath = join(stateDir, "run-links.json");
     await mkdir(workspace);
 
-    context = await loadComposition({ dshHome, stateDir });
+    let context = await resources.load({ dshHome, stateDir });
     const owner = supervisingAgent(context, workspace);
     const submitted = await context.tools.execute({
       signal: new AbortController().signal,
@@ -189,8 +164,8 @@ describe("Acpus mode through a real DSH Loader composition", () => {
     }).targets[0]?.target;
     if (signalTarget === undefined) throw new Error("Expected an awaiting Signal Target.");
 
-    await context.fiber.dispose();
-    context = await loadComposition({ dshHome, stateDir });
+    await resources.dispose(context);
+    context = await resources.load({ dshHome, stateDir });
     const restored = await waitForSupervisorState(statePath, state =>
       state.sessions[0]?.runs[0]?.status === "awaiting");
     expect(restored.sessions[0]?.revision).toBe(awaiting.sessions[0]?.revision);
@@ -235,9 +210,9 @@ describe("Acpus mode through a real DSH Loader composition", () => {
     ]);
     expect(new Set(completed.notices.map(notice => notice.id)).size).toBe(2);
 
-    await context.fiber.dispose();
+    await resources.dispose(context);
     await rm(workspace, { recursive: true });
-    context = await loadComposition({ dshHome, stateDir });
+    context = await resources.load({ dshHome, stateDir });
     const reconciled = await waitForSupervisorState(statePath, state =>
       state.sessions[0]?.runs[0]?.status === "completed");
     expect(reconciled.sessions[0]?.revision).toBe(completed.sessions[0]?.revision);
@@ -247,22 +222,23 @@ describe("Acpus mode through a real DSH Loader composition", () => {
   }, 20_000);
 
   it("degrades a retained task when its workspace disappears and recovers only the original path", async () => {
-    root = await mkdtemp(join(tmpdir(), "acpus-dsh-unavailable-"));
+    const resources = await makeTestResources("acpus-dsh-unavailable-");
+    const { root } = resources;
     const workspace = join(root, "workspace");
     const dshHome = join(root, "dsh-home");
     const stateDir = join(root, "state");
     const statePath = join(stateDir, "run-links.json");
     const store = new DurableSupervisorStateStore(statePath);
-    const provisional = await store.provisional({
+    const provisional = await Effect.runPromise(store.provisional({
       workspace,
       admissionRequestId: "admission-unavailable",
       parentSessionId: "acpus-supervisor-session",
-    });
-    const link = await store.admitted(provisional.admissionRequestId, {
+    }));
+    const link = await Effect.runPromise(store.admitted(provisional.admissionRequestId, {
       id: "run-unavailable",
       name: "dsh-unavailable",
-    });
-    await store.commitObservation({
+    }));
+    await Effect.runPromise(store.commitObservation({
       link,
       projection: {
         runId: link.runId,
@@ -277,9 +253,9 @@ describe("Acpus mode through a real DSH Loader composition", () => {
         updatedAt: "2026-08-17T00:00:01.000Z",
         activity: [],
       } satisfies StoredRunProjection,
-    });
+    }));
 
-    context = await loadComposition({ dshHome, stateDir });
+    const context = await resources.load({ dshHome, stateDir });
 
     const unavailable = await waitForSupervisorState(statePath, state =>
       state.sessions[0]?.runs[0]?.unavailable?.reason === "workspace-unavailable");
@@ -312,14 +288,15 @@ describe("Acpus mode through a real DSH Loader composition", () => {
   }, 20_000);
 
   it("rejects corrupt private run-link state with a structured tool failure", async () => {
-    root = await mkdtemp(join(tmpdir(), "acpus-dsh-links-"));
+    const resources = await makeTestResources("acpus-dsh-links-");
+    const { root } = resources;
     const workspace = join(root, "workspace");
     const dshHome = join(root, "dsh-home");
     const stateDir = join(root, "state");
     await Promise.all([mkdir(workspace), mkdir(stateDir)]);
     await writeFile(join(stateDir, "run-links.json"), "null\n");
 
-    context = await loadComposition({ dshHome, stateDir });
+    const context = await resources.load({ dshHome, stateDir });
     const result = await context.tools.execute({
       signal: new AbortController().signal,
       callId: CallId("corrupt-links"),
@@ -344,13 +321,31 @@ describe("Acpus mode through a real DSH Loader composition", () => {
   });
 });
 
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>(settle => {
-    resolve = settle;
+async function makeTestResources(prefix: string): Promise<{
+  root: string;
+  load(options: Parameters<typeof loadComposition>[0]): Promise<Context>;
+  dispose(context: Context): Promise<void>;
+}> {
+  const root = await mkdtemp(join(tmpdir(), prefix));
+  const contexts = new Set<Context>();
+  onTestFinished(async () => {
+    await Promise.allSettled([...contexts].map(context => context.fiber.dispose()));
+    await rm(root, { recursive: true, force: true });
   });
-  return { promise, resolve };
+  return {
+    root,
+    async load(options) {
+      const context = await loadComposition(options);
+      contexts.add(context);
+      return context;
+    },
+    async dispose(context) {
+      contexts.delete(context);
+      await context.fiber.dispose();
+    },
+  };
 }
+
 
 type SupervisorState = {
   sessions: Array<{

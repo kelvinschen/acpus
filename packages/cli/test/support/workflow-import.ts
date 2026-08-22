@@ -4,18 +4,19 @@ import { importWorkflowPackage } from "../../src/workflow/import/index.js";
 import { runCli } from "../../src/program.js";
 import { CaptureStream } from "./capture-stream.js";
 import { repoRoot } from "./cli-runner.js";
+import { settle } from "../effect.js";
 
 export async function importDirect(
   workspace: string,
   source: string,
   options: { scope?: "project" | "global"; check?: boolean } = {},
 ) {
-  return importWorkflowPackage({
+  return settle(importWorkflowPackage({
     cwd: workspace,
     source,
     scope: options.scope ?? "project",
     check: options.check ?? false,
-  });
+  }));
 }
 
 export async function runImportText(

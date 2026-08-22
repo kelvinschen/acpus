@@ -145,7 +145,7 @@ describe("@acpus/dsh public contract", () => {
       "@acpus/runtime": "workspace:*",
       "@acpus/workflow-compiler": "workspace:*",
       "@deepseek-ai/dsh-acp": "0.1.0-rc.6",
-      neverthrow: "^8.2.0",
+      effect: "4.0.0-rc.111",
       zod: "^4.4.3",
     });
     expect(manifest.peerDependencies).toMatchObject({

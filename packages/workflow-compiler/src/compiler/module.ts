@@ -11,7 +11,8 @@ import {
 } from "@acpus/core/workflow";
 import type { WorkflowIR } from "@acpus/core/ir";
 import { analyzeWorkflowTasks, resolveTaskReferenceMetadata } from "../task-analysis/index.js";
-import { err, ok, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 
 export type CompiledWorkflowModule = {
   ir: WorkflowIR;
@@ -36,80 +37,95 @@ export function tryCompileWorkflowModule(
   entry: string,
   sourceRoot: string,
   options: CompileWorkflowModuleOptions,
-): ResultAsync<CompiledWorkflowModule, CompileWorkflowModuleError> {
+): Effect.Effect<CompiledWorkflowModule, CompileWorkflowModuleError> {
+  return Effect.promise(() => compileWorkflowModuleResult(entry, sourceRoot, options)).pipe(
+    Effect.flatMap(Effect.fromResult),
+  );
+}
+
+async function compileWorkflowModuleResult(
+  entry: string,
+  sourceRoot: string,
+  options: CompileWorkflowModuleOptions,
+): Promise<Result.Result<CompiledWorkflowModule, CompileWorkflowModuleError>> {
   const absolute = resolve(entry);
   const dependencyRoot = options.dependencyRoot ?? sourceRoot;
-  return readWorkflowSource(absolute, entry).andThen(source => {
-    const sourceDigest = sha256Digest(source);
-    if (sourceDigest !== options.expectedSourceDigest) return err(sourceChanged(entry));
-    const referrerPath = toContainedSourcePath(sourceRoot, absolute);
-    if (referrerPath.isErr()) return err(referrerPath.error);
-    return ResultAsync.fromPromise(
-      importWorkflowModule(absolute, sourceRoot, dependencyRoot),
-      cause => ({
+  const source = await readWorkflowSourceResult(absolute, entry);
+  if (Result.isFailure(source)) return Result.fail(source.failure);
+  if (sha256Digest(source.success) !== options.expectedSourceDigest) return Result.fail(sourceChanged(entry));
+  const referrerPath = toContainedSourcePath(sourceRoot, absolute);
+  if (Result.isFailure(referrerPath)) return Result.fail(referrerPath.failure);
+
+  let mod: Record<string, unknown>;
+  try {
+    mod = await importWorkflowModule(absolute, sourceRoot, dependencyRoot);
+  } catch (cause) {
+    return Result.fail({
         type: "module-import-failed",
         entry,
         message: `Workflow module '${entry}' could not be imported: ${causeMessage(cause)}`,
-      } satisfies CompileWorkflowModuleError),
-    ).andThen(mod => {
-      const def = mod.default;
-      if (!isWorkflowDefinition(def)) {
-        return err({
-          type: "invalid-default-export",
-          entry,
-          message: `Default export of ${entry} is not an Acpus workflow definition.`,
-        } satisfies CompileWorkflowModuleError);
-      }
-      return ResultAsync.fromPromise(
-        analyzeWorkflowTasks(absolute, source),
-        cause => ({
-          type: "task-analysis-failed",
-          entry,
-          message: `Workflow task analysis failed for '${entry}': ${causeMessage(cause)}`,
-        } satisfies CompileWorkflowModuleError),
-      ).andThen(result => result.mapErr(failure => ({
-        type: "task-analysis-failed",
-        entry,
-        message: `Workflow task analysis failed for '${entry}': ${failure.message}`,
-      } satisfies CompileWorkflowModuleError))).andThen(analysis => {
-        const reusableTasks: ReusableTaskLinkPlan = {
-          referrerPath: referrerPath.value,
-          targets: resolveTaskReferenceMetadata(analysis),
-        };
-        const built = tryCompileWorkflowDefinition(def, { reusableTasks });
-        if (built.isErr()) {
-          return err({
-            type: "workflow-build-failed",
-            entry,
-            message: `Workflow '${entry}' could not be lowered: ${built.error.message}`,
-          } satisfies CompileWorkflowModuleError);
-        }
-        return readWorkflowSource(absolute, entry).andThen(currentSource => {
-          if (sha256Digest(currentSource) !== options.expectedSourceDigest) {
-            return err(sourceChanged(entry));
-          }
-          return ok({
-            ir: built.value,
-            sourceDigest: options.expectedSourceDigest,
-          });
-        });
       });
+  }
+  const def = mod.default;
+  if (!isWorkflowDefinition(def)) {
+    return Result.fail({
+      type: "invalid-default-export",
+      entry,
+      message: `Default export of ${entry} is not an Acpus workflow definition.`,
     });
+  }
+
+  let analysis: Awaited<ReturnType<typeof analyzeWorkflowTasks>>;
+  try {
+    analysis = await analyzeWorkflowTasks(absolute, source.success);
+  } catch (cause) {
+    return Result.fail({
+      type: "task-analysis-failed",
+      entry,
+      message: `Workflow task analysis failed for '${entry}': ${causeMessage(cause)}`,
+    });
+  }
+  if (Result.isFailure(analysis)) {
+    return Result.fail({
+      type: "task-analysis-failed",
+      entry,
+      message: `Workflow task analysis failed for '${entry}': ${analysis.failure.message}`,
+    });
+  }
+  const reusableTasks: ReusableTaskLinkPlan = {
+    referrerPath: referrerPath.success,
+    targets: resolveTaskReferenceMetadata(analysis.success),
+  };
+  const built = tryCompileWorkflowDefinition(def, { reusableTasks });
+  if (built._tag === "Failure") {
+    return Result.fail({
+      type: "workflow-build-failed",
+      entry,
+      message: `Workflow '${entry}' could not be lowered: ${built.failure.message}`,
+    });
+  }
+  const currentSource = await readWorkflowSourceResult(absolute, entry);
+  if (Result.isFailure(currentSource)) return Result.fail(currentSource.failure);
+  if (sha256Digest(currentSource.success) !== options.expectedSourceDigest) return Result.fail(sourceChanged(entry));
+  return Result.succeed({
+    ir: built.success,
+    sourceDigest: options.expectedSourceDigest,
   });
 }
 
-function readWorkflowSource(
+async function readWorkflowSourceResult(
   absolute: string,
   entry: string,
-): ResultAsync<string, CompileWorkflowModuleError> {
-  return ResultAsync.fromPromise(
-    readFile(absolute, "utf8"),
-    cause => ({
+): Promise<Result.Result<string, CompileWorkflowModuleError>> {
+  try {
+    return Result.succeed(await readFile(absolute, "utf8"));
+  } catch (cause) {
+    return Result.fail({
       type: "workflow-source-read-failed",
       entry,
       message: `Workflow source '${entry}' could not be read: ${causeMessage(cause)}`,
-    }),
-  );
+    });
+  }
 }
 
 function sourceChanged(entry: string): CompileWorkflowModuleError {
@@ -129,17 +145,17 @@ function importWorkflowModule(
   return importAuthoringModule(url, { parentURL: url, sourceRoot, dependencyRoot });
 }
 
-function toContainedSourcePath(sourceRoot: string, workflowFile: string): NeverthrowResult<string, CompileWorkflowModuleError> {
+function toContainedSourcePath(sourceRoot: string, workflowFile: string): Result.Result<string, CompileWorkflowModuleError> {
   let path: string;
   try {
     path = relative(realpathSync(sourceRoot), realpathSync(workflowFile));
   } catch {
-    return err(outsideSourceRoot(workflowFile, sourceRoot));
+    return Result.fail(outsideSourceRoot(workflowFile, sourceRoot));
   }
   if (path === "" || isAbsolute(path) || path.split(/[\\/]/).includes("..")) {
-    return err(outsideSourceRoot(workflowFile, sourceRoot));
+    return Result.fail(outsideSourceRoot(workflowFile, sourceRoot));
   }
-  return ok(toWorkspacePath(path));
+  return Result.succeed(toWorkspacePath(path));
 }
 
 function outsideSourceRoot(workflowFile: string, sourceRoot: string): CompileWorkflowModuleError {

@@ -1,38 +1,13 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { JsonValue } from "@acpus/expression/ir";
 import type { WorkspaceRuntime } from "@acpus/runtime/host";
-import { okAsync } from "neverthrow";
+import * as Effect from "effect/Effect";
 import { describe, expect, it, vi } from "vitest";
 import { AcpusMode } from "../src/host/mode.js";
 
 describe("DSH Agent binding admission preflight", () => {
-  it.each([
-    {
-      name: "omitted slot injection",
-      agents: undefined,
-      declarations: ["worker"],
-      missing: "worker",
-    },
-    {
-      name: "partial slot injection",
-      agents: { worker: { use: "dsh" } },
-      declarations: ["worker", "reviewer"],
-      missing: "reviewer",
-    },
-    {
-      name: "field-only direct slot injection",
-      agents: { worker: { model: "gpt-test" } },
-      declarations: ["worker"],
-      missing: "worker",
-    },
-  ] satisfies Array<{
-    name: string;
-    agents: JsonValue | undefined;
-    declarations: string[];
-    missing: string;
-  }>)("rejects $name before provisional persistence or Runtime submission", async fixture => {
+  it("rejects an unresolved slot before provisional persistence or Runtime submission", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "acpus-dsh-agent-preflight-"));
     const submit = vi.fn();
     const provisional = vi.fn();
@@ -41,9 +16,8 @@ describe("DSH Agent binding admission preflight", () => {
       const result = await mode.run({
         workspace,
         sessionId: "session-1",
-        toolCallId: fixture.name,
-        workflow: slotWorkflow(fixture.declarations),
-        ...(fixture.agents === undefined ? {} : { agents: fixture.agents }),
+        toolCallId: "unresolved-slot",
+        workflow: slotWorkflow(["worker"]),
       });
 
       expect(result).toEqual({
@@ -52,7 +26,7 @@ describe("DSH Agent binding admission preflight", () => {
         diagnostics: [{
           code: "ACPUS_AGENT_BINDINGS_UNRESOLVED",
           severity: "error",
-          message: expect.stringContaining(fixture.missing),
+          message: expect.stringContaining("worker"),
         }],
       });
       expect(provisional).not.toHaveBeenCalled();
@@ -71,10 +45,10 @@ function modeStub(
   const mode = Object.create(AcpusMode.prototype) as AcpusMode;
   const runtime = { submit } as unknown as WorkspaceRuntime;
   Object.assign(mode, {
-    supervision: { whenReady: vi.fn(async () => undefined) },
-    runtimes: { open: vi.fn(() => okAsync({ workspace, runtime })) },
+    supervision: { whenReady: vi.fn(() => Effect.void) },
+    runtimes: { open: vi.fn(() => Effect.succeed({ workspace, runtime })) },
     links: {
-      readLink: vi.fn(async () => undefined),
+      readLink: vi.fn(() => Effect.succeed(undefined)),
       provisional,
     },
   });

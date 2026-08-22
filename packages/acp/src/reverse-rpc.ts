@@ -1,9 +1,7 @@
-import { spawn, type ChildProcessByStdio } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { lstat, mkdir, open, realpath, stat, unlink, type FileHandle } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import type { Readable } from "node:stream";
 import type {
   CreateTerminalRequest,
   CreateTerminalResponse,
@@ -24,6 +22,17 @@ import type {
   WriteTextFileRequest,
   WriteTextFileResponse,
 } from "@agentclientprotocol/sdk";
+import type { OwnedProcess, ProcessHostShape } from "@acpus/owned-process";
+import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as FiberSet from "effect/FiberSet";
+import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 
 const MAX_TERMINAL_OUTPUT_BYTES = 1024 * 1024;
 const TERMINAL_KILL_GRACE_MS = 250;
@@ -74,33 +83,29 @@ export type CreateReverseRpcHandlersOptions = {
 };
 
 export type ReverseRpcHandlers = {
-  requestPermission(params: RequestPermissionRequest, signal?: AbortSignal): Promise<RequestPermissionResponse>;
-  readTextFile(params: ReadTextFileRequest): Promise<ReadTextFileResponse>;
-  writeTextFile(params: WriteTextFileRequest): Promise<WriteTextFileResponse>;
-  createTerminal(params: CreateTerminalRequest): Promise<CreateTerminalResponse>;
-  terminalOutput(params: TerminalOutputRequest): Promise<TerminalOutputResponse>;
-  waitForTerminalExit(params: WaitForTerminalExitRequest, signal?: AbortSignal): Promise<WaitForTerminalExitResponse>;
-  killTerminal(params: KillTerminalRequest): Promise<KillTerminalResponse>;
-  releaseTerminal(params: ReleaseTerminalRequest): Promise<ReleaseTerminalResponse>;
-  cancelPendingPermissions(): void;
-  closeAll(): Promise<void>;
+  requestPermission(params: RequestPermissionRequest): Effect.Effect<RequestPermissionResponse, ClientOperationIssue>;
+  readTextFile(params: ReadTextFileRequest): Effect.Effect<ReadTextFileResponse, ClientOperationIssue>;
+  writeTextFile(params: WriteTextFileRequest): Effect.Effect<WriteTextFileResponse, ClientOperationIssue>;
+  createTerminal(params: CreateTerminalRequest): Effect.Effect<CreateTerminalResponse, ClientOperationIssue>;
+  terminalOutput(params: TerminalOutputRequest): Effect.Effect<TerminalOutputResponse, ClientOperationIssue>;
+  waitForTerminalExit(params: WaitForTerminalExitRequest): Effect.Effect<WaitForTerminalExitResponse, ClientOperationIssue>;
+  killTerminal(params: KillTerminalRequest): Effect.Effect<KillTerminalResponse, ClientOperationIssue>;
+  releaseTerminal(params: ReleaseTerminalRequest): Effect.Effect<ReleaseTerminalResponse, ClientOperationIssue>;
+  cancelPendingPermissions(): Effect.Effect<void>;
+  closeAll(): Effect.Effect<void, ClientOperationIssue>;
 };
 
 type ManagedTerminal = {
-  child: ChildProcessByStdio<null, Readable, Readable>;
-  ownsProcessGroup: boolean;
+  readonly scope: Scope.Closeable;
+  readonly child: OwnedProcess;
+  readonly exited: Deferred.Deferred<WaitForTerminalExitResponse, ClientOperationIssue>;
+  readonly outputByteLimit: number;
   output: Buffer;
-  outputByteLimit: number;
   truncated: boolean;
   status?: WaitForTerminalExitResponse;
-  exited: Promise<WaitForTerminalExitResponse>;
-  settleExit: (status: WaitForTerminalExitResponse) => void;
-  killPromise: Promise<void> | undefined;
+  terminate: Effect.Effect<void, ClientOperationIssue>;
+  cleanupObserved: boolean;
   released: boolean;
-};
-
-type PendingPermission = {
-  cancel(): void;
 };
 
 const cancelledPermission = (): RequestPermissionResponse => ({
@@ -109,225 +114,457 @@ const cancelledPermission = (): RequestPermissionResponse => ({
 
 export function createReverseRpcHandlers(
   options: CreateReverseRpcHandlersOptions,
-): ReverseRpcHandlers {
-  const rootLexical = resolve(options.cwd);
-  let rootRealPromise: Promise<string> | undefined;
-  const rootReal = (): Promise<string> => rootRealPromise ??= realpath(rootLexical);
-  const terminals = new Map<string, ManagedTerminal>();
-  const terminalCreates = new Set<Promise<void>>();
-  const pendingPermissions = new Set<PendingPermission>();
-  let closing = false;
+  processes: ProcessHostShape,
+): Effect.Effect<ReverseRpcHandlers, never, Scope.Scope> {
+  return Effect.gen(function*() {
+    const scope = yield* Scope.Scope;
+    const rootLexical = resolve(options.cwd);
+    const rootReal = yield* Effect.cached(fileOperation(
+      "fs/read_text_file",
+      "filesystem",
+      () => realpath(rootLexical),
+    ));
+    const permissionFibers = yield* FiberSet.make<RequestPermissionResponse>();
+    const terminalCreates = yield* FiberSet.make<CreateTerminalResponse, ClientOperationIssue>();
+    const terminalCreateGate = Semaphore.makeUnsafe(1);
+    const terminals = new Map<string, ManagedTerminal>();
+    let permissionGeneration = 0;
+    let closing = false;
 
-  const begin = (operation: ClientOperation, sessionId: string): void => {
-    if (closing) {
-      throw issue(operation, "cancelled", `Client operation rejected while closing: ${operation}.`);
-    }
-    let expectedSessionId: string | undefined;
-    try {
-      expectedSessionId = options.getSessionId();
-    } catch (cause) {
-      throw issue(operation, "session", "Failed to resolve the active ACP session.", cause);
-    }
-    if (expectedSessionId === undefined || sessionId !== expectedSessionId) {
-      throw issue(operation, "session", `Request targets an inactive ACP session: ${sessionId}.`);
-    }
-    assertOperationAllowed(operation, options.permissionMode);
-    try {
-      options.onActivity?.(operation);
-    } catch {
-      // Activity reporting must not change protocol behavior.
-    }
-  };
-
-  const requestPermission: ReverseRpcHandlers["requestPermission"] = async (params, signal) => {
-    const operation = "session/request_permission" as const;
-    begin(operation, params.sessionId);
-    if (signal?.aborted) return cancelledPermission();
-
-    return new Promise<RequestPermissionResponse>((resolvePermission) => {
-      let settled = false;
-      const settle = (response: RequestPermissionResponse): void => {
-        if (settled) return;
-        settled = true;
-        signal?.removeEventListener("abort", onAbort);
-        pendingPermissions.delete(pending);
-        resolvePermission(response);
-      };
-      const onAbort = (): void => settle(cancelledPermission());
-      const pending: PendingPermission = { cancel: onAbort };
-      pendingPermissions.add(pending);
-      signal?.addEventListener("abort", onAbort, { once: true });
-      queueMicrotask(() => {
-        settle(signal?.aborted
-          ? cancelledPermission()
-          : permissionResponse(params, options.permissionMode));
-      });
-    });
-  };
-
-  const readTextFile: ReverseRpcHandlers["readTextFile"] = async (params) => {
-    const operation = "fs/read_text_file" as const;
-    begin(operation, params.sessionId);
-    try {
-      const filePath = await canonicalReadPath(operation, rootLexical, await rootReal(), params.path);
-      return await withPinnedParent(operation, await rootReal(), filePath, async target => {
-        const file = await openNoFollow(target, fsConstants.O_RDONLY);
-        try {
-          await assertOpenFileWithin(operation, await rootReal(), file, filePath);
-          return { content: sliceLines(await file.readFile("utf8"), params.line, params.limit) };
-        } finally {
-          await file.close();
+    const begin = (operation: ClientOperation, sessionId: string): Effect.Effect<void, ClientOperationIssue> =>
+      Effect.suspend(() => {
+        if (closing) {
+          return Effect.fail(issue(
+            operation,
+            "cancelled",
+            `Client operation rejected while closing: ${operation}.`,
+          ));
         }
-      });
-    } catch (cause) {
-      throw wrapIssue(operation, "filesystem", cause);
-    }
-  };
-
-  const writeTextFile: ReverseRpcHandlers["writeTextFile"] = async (params) => {
-    const operation = "fs/write_text_file" as const;
-    begin(operation, params.sessionId);
-    try {
-      const filePath = await canonicalWritePath(operation, rootLexical, await rootReal(), params.path);
-      await withPinnedParent(operation, await rootReal(), filePath, async target => {
-        const opened = await openWriteTarget(target);
+        let expectedSessionId: string | undefined;
         try {
-          await assertOpenFileWithin(operation, await rootReal(), opened.file, filePath);
-          await opened.file.truncate(0);
-          await opened.file.writeFile(params.content, "utf8");
-        } catch (error) {
-          if (opened.created) await unlink(target).catch(() => undefined);
-          throw error;
-        } finally {
-          await opened.file.close();
+          expectedSessionId = options.getSessionId();
+        } catch (cause) {
+          return Effect.fail(issue(
+            operation,
+            "session",
+            "Failed to resolve the active ACP session.",
+            cause,
+          ));
         }
+        if (expectedSessionId === undefined || sessionId !== expectedSessionId) {
+          return Effect.fail(issue(
+            operation,
+            "session",
+            `Request targets an inactive ACP session: ${sessionId}.`,
+          ));
+        }
+        const denied = operationDenied(operation, options.permissionMode);
+        if (denied !== undefined) return Effect.fail(denied);
+        try {
+          options.onActivity?.(operation);
+        } catch {
+          // Activity observers never participate in protocol settlement.
+        }
+        return Effect.void;
       });
-      return {};
-    } catch (cause) {
-      throw wrapIssue(operation, "filesystem", cause);
-    }
-  };
 
-  const createTerminal: ReverseRpcHandlers["createTerminal"] = async (params) => {
-    const operation = "terminal/create" as const;
-    let finishCreate = (): void => {};
-    const pendingCreate = new Promise<void>((resolveCreate) => {
-      finishCreate = resolveCreate;
-    });
-    terminalCreates.add(pendingCreate);
-    try {
-      begin(operation, params.sessionId);
-      const cwd = await canonicalDirectory(
-        operation,
-        rootLexical,
-        await rootReal(),
-        params.cwd ?? rootLexical,
-      );
-      const env = terminalEnvironment(options.env, params.env);
-      const inheritProcessGroup = process.env[INHERIT_PROCESS_GROUP_ENV] !== undefined
-        && options.env?.[INHERIT_PROCESS_GROUP_ENV] === process.env[INHERIT_PROCESS_GROUP_ENV];
-      const detached = process.platform !== "win32" && !inheritProcessGroup;
-      delete env[INHERIT_PROCESS_GROUP_ENV];
-      const child = spawn(params.command, params.args ?? [], {
-        cwd,
-        env,
-        detached,
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
+    const requestPermission: ReverseRpcHandlers["requestPermission"] = params =>
+      Effect.gen(function*() {
+        const operation = "session/request_permission" as const;
+        yield* begin(operation, params.sessionId);
+        const generation = permissionGeneration;
+        const fiber = yield* FiberSet.run(
+          permissionFibers,
+          Effect.yieldNow.pipe(Effect.andThen(Effect.sync(() =>
+            closing || generation !== permissionGeneration
+              ? cancelledPermission()
+              : permissionResponse(params, options.permissionMode)
+          ))),
+        );
+        const settled = yield* Effect.exit(Fiber.join(fiber));
+        if (Exit.isSuccess(settled)) return settled.value;
+        if (Cause.hasInterrupts(settled.cause)) return cancelledPermission();
+        return yield* Effect.failCause(settled.cause);
       });
-      const terminal = managedTerminal(
-        child,
-        terminalOutputLimit(params.outputByteLimit),
-        detached,
-      );
-      await waitForSpawn(child);
-      const terminalId = randomUUID();
-      terminals.set(terminalId, terminal);
-      return { terminalId };
-    } catch (cause) {
-      throw wrapIssue(operation, "terminal", cause);
-    } finally {
-      terminalCreates.delete(pendingCreate);
-      finishCreate();
-    }
-  };
 
-  const terminalOutput: ReverseRpcHandlers["terminalOutput"] = async (params) => {
-    const operation = "terminal/output" as const;
-    begin(operation, params.sessionId);
-    const terminal = requireTerminal(terminals, operation, params.terminalId);
-    return {
-      output: terminal.output.toString("utf8"),
-      truncated: terminal.truncated,
-      ...(terminal.status === undefined ? {} : { exitStatus: terminal.status }),
+    const readTextFile: ReverseRpcHandlers["readTextFile"] = params => {
+      const operation = "fs/read_text_file" as const;
+      return Effect.gen(function*() {
+        yield* begin(operation, params.sessionId);
+        const canonicalRoot = yield* rootReal;
+        const filePath = yield* fileOperation(
+          operation,
+          "filesystem",
+          () => canonicalReadPath(operation, rootLexical, canonicalRoot, params.path),
+        );
+        return yield* withPinnedParent(operation, canonicalRoot, filePath, target =>
+          withFileHandle(
+            operation,
+            fileOperation(operation, "filesystem", () => openNoFollow(target, fsConstants.O_RDONLY)),
+            file => Effect.gen(function*() {
+              yield* fileOperation(
+                operation,
+                "filesystem",
+                () => assertOpenFileWithin(operation, canonicalRoot, file, filePath),
+              );
+              const content = yield* fileOperation(
+                operation,
+                "filesystem",
+                () => file.readFile("utf8"),
+              );
+              return { content: sliceLines(content, params.line, params.limit) };
+            }),
+          ));
+      });
     };
-  };
 
-  const waitForTerminalExit: ReverseRpcHandlers["waitForTerminalExit"] = async (params, signal) => {
-    const operation = "terminal/wait_for_exit" as const;
-    begin(operation, params.sessionId);
-    const terminal = requireTerminal(terminals, operation, params.terminalId);
-    return signal === undefined ? await terminal.exited : await waitForExit(terminal, signal, operation);
-  };
+    const writeTextFile: ReverseRpcHandlers["writeTextFile"] = params => {
+      const operation = "fs/write_text_file" as const;
+      return Effect.gen(function*() {
+        yield* begin(operation, params.sessionId);
+        const canonicalRoot = yield* rootReal;
+        const filePath = yield* fileOperation(
+          operation,
+          "filesystem",
+          () => canonicalWritePath(operation, rootLexical, canonicalRoot, params.path),
+        );
+        yield* withPinnedParent(operation, canonicalRoot, filePath, target =>
+          withFileHandle(
+            operation,
+            fileOperation(operation, "filesystem", () => openWriteTarget(target)),
+            opened => Effect.gen(function*() {
+              yield* fileOperation(
+                operation,
+                "filesystem",
+                () => assertOpenFileWithin(operation, canonicalRoot, opened.file, filePath),
+              );
+              yield* fileOperation(operation, "filesystem", () => opened.file.truncate(0));
+              yield* fileOperation(operation, "filesystem", () => opened.file.writeFile(params.content, "utf8"));
+            }).pipe(Effect.tapError(() => opened.created
+              ? fileOperation(operation, "filesystem", () => unlink(target)).pipe(Effect.ignore)
+              : Effect.void)),
+            opened => opened.file,
+          ));
+        return {};
+      });
+    };
 
-  const killTerminal: ReverseRpcHandlers["killTerminal"] = async (params) => {
-    const operation = "terminal/kill" as const;
-    begin(operation, params.sessionId);
-    const terminal = requireTerminal(terminals, operation, params.terminalId);
-    try {
-      await terminate(terminal);
-      return {};
-    } catch (cause) {
-      throw wrapIssue(operation, "terminal", cause);
+    const createTerminalValue = (
+      params: CreateTerminalRequest,
+    ): Effect.Effect<CreateTerminalResponse, ClientOperationIssue> => {
+      const operation = "terminal/create" as const;
+      return Effect.gen(function*() {
+        yield* begin(operation, params.sessionId);
+        const canonicalRoot = yield* rootReal;
+        const cwd = yield* fileOperation(
+          operation,
+          "terminal",
+          () => canonicalDirectory(
+            operation,
+            rootLexical,
+            canonicalRoot,
+            params.cwd ?? rootLexical,
+          ),
+        );
+        const env = terminalEnvironment(options.env, params.env);
+        const inheritProcessGroup = globalThis.process.env[INHERIT_PROCESS_GROUP_ENV] !== undefined
+          && options.env?.[INHERIT_PROCESS_GROUP_ENV] === globalThis.process.env[INHERIT_PROCESS_GROUP_ENV];
+        const detached = globalThis.process.platform !== "win32" && !inheritProcessGroup;
+        delete env[INHERIT_PROCESS_GROUP_ENV];
+        const terminalScope = yield* Scope.fork(scope);
+        const opened = yield* Scope.provide(terminalScope)(openManagedTerminal(
+          processes,
+          {
+            command: params.command,
+            args: params.args ?? [],
+            cwd,
+            env,
+            detached,
+            windowsHide: true,
+            stdin: "ignore",
+            stdout: "pipe",
+            stderr: "pipe",
+          },
+          terminalOutputLimit(params.outputByteLimit),
+        )).pipe(Effect.onError(cause => Scope.close(terminalScope, Exit.failCause(cause))));
+        const terminalId = randomUUID();
+        terminals.set(terminalId, opened);
+        return { terminalId };
+      });
+    };
+
+    const createTerminal: ReverseRpcHandlers["createTerminal"] = params => Effect.suspend(() => {
+      if (closing) {
+        return Effect.fail(issue(
+          "terminal/create",
+          "cancelled",
+          "Client operation rejected while closing: terminal/create.",
+        ));
+      }
+      return terminalCreateGate.withPermit(Effect.gen(function*() {
+        const fiber = yield* FiberSet.run(terminalCreates, createTerminalValue(params));
+        return yield* Fiber.join(fiber);
+      }));
+    });
+
+    const terminalOutput: ReverseRpcHandlers["terminalOutput"] = params => {
+      const operation = "terminal/output" as const;
+      return Effect.gen(function*() {
+        yield* begin(operation, params.sessionId);
+        const terminal = yield* requireTerminal(terminals, operation, params.terminalId);
+        return {
+          output: terminal.output.toString("utf8"),
+          truncated: terminal.truncated,
+          ...(terminal.status === undefined ? {} : { exitStatus: terminal.status }),
+        };
+      });
+    };
+
+    const waitForTerminalExit: ReverseRpcHandlers["waitForTerminalExit"] = params => {
+      const operation = "terminal/wait_for_exit" as const;
+      return Effect.gen(function*() {
+        yield* begin(operation, params.sessionId);
+        const terminal = yield* requireTerminal(terminals, operation, params.terminalId);
+        return yield* Deferred.await(terminal.exited);
+      });
+    };
+
+    const killTerminal: ReverseRpcHandlers["killTerminal"] = params => {
+      const operation = "terminal/kill" as const;
+      return Effect.gen(function*() {
+        yield* begin(operation, params.sessionId);
+        const terminal = yield* requireTerminal(terminals, operation, params.terminalId);
+        terminal.cleanupObserved = true;
+        yield* terminal.terminate;
+        return {};
+      });
+    };
+
+    const releaseTerminal: ReverseRpcHandlers["releaseTerminal"] = params => {
+      const operation = "terminal/release" as const;
+      return Effect.gen(function*() {
+        yield* begin(operation, params.sessionId);
+        const terminal = yield* requireTerminal(terminals, operation, params.terminalId);
+        terminal.released = true;
+        yield* closeTerminal(terminal);
+        terminals.delete(params.terminalId);
+        terminal.output = Buffer.alloc(0);
+        return {};
+      });
+    };
+
+    const cancelPendingPermissions = (): Effect.Effect<void> => Effect.sync(() => {
+      permissionGeneration += 1;
+    }).pipe(Effect.andThen(FiberSet.clear(permissionFibers)));
+
+    const closeAll = yield* Effect.cached(Effect.uninterruptible(Effect.gen(function*() {
+      closing = true;
+      yield* cancelPendingPermissions();
+      yield* terminalCreateGate.withPermit(Effect.void);
+      yield* FiberSet.awaitEmpty(terminalCreates);
+      const active = [...terminals.entries()];
+      for (const [, terminal] of active) terminal.released = true;
+      const results = yield* Effect.all(active.map(([terminalId, terminal]) =>
+        Effect.result(closeTerminal(terminal)).pipe(Effect.tap(() => Effect.sync(() => {
+          terminals.delete(terminalId);
+          terminal.output = Buffer.alloc(0);
+        })))), { concurrency: "unbounded" });
+      const failed = results.find(Result.isFailure);
+      if (failed !== undefined) return yield* Effect.fail(failed.failure);
+    })));
+
+    return {
+      requestPermission,
+      readTextFile,
+      writeTextFile,
+      createTerminal,
+      terminalOutput,
+      waitForTerminalExit,
+      killTerminal,
+      releaseTerminal,
+      cancelPendingPermissions,
+      closeAll: () => closeAll,
+    };
+  });
+}
+
+function openManagedTerminal(
+  processes: ProcessHostShape,
+  input: Parameters<ProcessHostShape["spawn"]>[0],
+  outputByteLimit: number,
+): Effect.Effect<ManagedTerminal, ClientOperationIssue, Scope.Scope> {
+  return Effect.gen(function*() {
+    const scope = yield* Scope.Scope;
+    const child = yield* processes.spawn(input).pipe(Effect.mapError(error =>
+      issue("terminal/create", "terminal", error.message, error)));
+    const terminal: ManagedTerminal = {
+      scope: scope as Scope.Closeable,
+      child,
+      exited: Deferred.makeUnsafe<WaitForTerminalExitResponse, ClientOperationIssue>(),
+      output: Buffer.alloc(0),
+      outputByteLimit,
+      truncated: false,
+      terminate: Effect.die("Terminal cleanup was used before initialization."),
+      cleanupObserved: false,
+      released: false,
+    };
+    terminal.terminate = yield* Effect.cached(Effect.uninterruptible(
+      terminateTerminal(terminal, processes),
+    ));
+    yield* Effect.forkScoped(Stream.runForEach(child.stdout, chunk =>
+      Effect.sync(() => appendTerminalOutput(terminal, chunk))).pipe(Effect.ignore));
+    yield* Effect.forkScoped(Stream.runForEach(child.stderr, chunk =>
+      Effect.sync(() => appendTerminalOutput(terminal, chunk))).pipe(Effect.ignore));
+    yield* Effect.forkScoped(observeTerminalExit(terminal));
+    yield* Scope.addFinalizer(scope, terminalFinalizer(terminal));
+    return terminal;
+  });
+}
+
+function observeTerminalExit(terminal: ManagedTerminal): Effect.Effect<void> {
+  return terminal.child.closed.pipe(Effect.matchEffect({
+    onFailure: error => Effect.sync(() => {
+      Deferred.doneUnsafe(
+        terminal.exited,
+        Effect.fail(issue("terminal/wait_for_exit", "terminal", error.message, error)),
+      );
+    }),
+    onSuccess: exit => Effect.sync(() => {
+      const status = { exitCode: exit.exitCode, signal: exit.signal };
+      terminal.status = status;
+      Deferred.doneUnsafe(terminal.exited, Effect.succeed(status));
+    }),
+  }));
+}
+
+function terminateTerminal(
+  terminal: ManagedTerminal,
+  processes: ProcessHostShape,
+): Effect.Effect<void, ClientOperationIssue> {
+  return Effect.gen(function*() {
+    if (terminal.status !== undefined) return;
+    const initial = yield* processes.liveness(terminal.child.target);
+    if (initial === "dead") return;
+    yield* terminal.child.signal("SIGTERM").pipe(Effect.mapError(error =>
+      issue("terminal/kill", "terminal", error.message, error)));
+    yield* settleTerminalExit(terminal, TERMINAL_KILL_GRACE_MS);
+    if (terminal.status !== undefined) return;
+    if ((yield* processes.liveness(terminal.child.target)) !== "dead") {
+      yield* terminal.child.signal("SIGKILL").pipe(Effect.mapError(error =>
+        issue("terminal/kill", "terminal", error.message, error)));
+      yield* settleTerminalExit(terminal, TERMINAL_KILL_GRACE_MS);
     }
-  };
-
-  const releaseTerminal: ReverseRpcHandlers["releaseTerminal"] = async (params) => {
-    const operation = "terminal/release" as const;
-    begin(operation, params.sessionId);
-    const terminal = requireTerminal(terminals, operation, params.terminalId);
-    terminal.released = true;
-    try {
-      await terminate(terminal);
-      terminals.delete(params.terminalId);
-      terminal.output = Buffer.alloc(0);
-      return {};
-    } catch (cause) {
-      throw wrapIssue(operation, "terminal", cause);
+    if (terminal.status === undefined
+      && (yield* processes.liveness(terminal.child.target)) !== "dead") {
+      return yield* Effect.fail(issue(
+        "terminal/kill",
+        "terminal",
+        "Terminal process did not exit after SIGKILL.",
+      ));
     }
-  };
+  });
+}
 
-  const cancelPendingPermissions = (): void => {
-    for (const pending of [...pendingPermissions]) pending.cancel();
-  };
+function settleTerminalExit(
+  terminal: ManagedTerminal,
+  milliseconds: number,
+): Effect.Effect<void, ClientOperationIssue> {
+  return Effect.timeoutOption(Deferred.await(terminal.exited), milliseconds).pipe(Effect.asVoid);
+}
 
-  const closeAll = async (): Promise<void> => {
-    closing = true;
-    cancelPendingPermissions();
-    await Promise.allSettled([...terminalCreates]);
-    const active = [...terminals.entries()];
-    for (const [, terminal] of active) terminal.released = true;
-    const settled = await Promise.allSettled(active.map(async ([terminalId, terminal]) => {
-      await terminate(terminal);
-      terminals.delete(terminalId);
-      terminal.output = Buffer.alloc(0);
-    }));
-    const failure = settled.find((result): result is PromiseRejectedResult => result.status === "rejected");
-    if (failure !== undefined) throw failure.reason;
-  };
+function closeTerminal(terminal: ManagedTerminal): Effect.Effect<void, ClientOperationIssue> {
+  return Effect.uninterruptible(Effect.gen(function*() {
+    terminal.cleanupObserved = true;
+    const result = yield* Effect.result(terminal.terminate);
+    yield* Scope.close(terminal.scope, Exit.void);
+    return yield* Effect.fromResult(result);
+  }));
+}
 
-  return {
-    requestPermission,
-    readTextFile,
-    writeTextFile,
-    createTerminal,
-    terminalOutput,
-    waitForTerminalExit,
-    killTerminal,
-    releaseTerminal,
-    cancelPendingPermissions,
-    closeAll,
-  };
+function terminalFinalizer(terminal: ManagedTerminal): Effect.Effect<void> {
+  return Effect.suspend(() => terminal.cleanupObserved
+    ? terminal.terminate.pipe(Effect.ignore)
+    : terminal.terminate.pipe(Effect.orDie, Effect.asVoid));
+}
+
+function appendTerminalOutput(terminal: ManagedTerminal, chunk: Uint8Array): void {
+  if (terminal.released) return;
+  const merged = Buffer.concat([terminal.output, Buffer.from(chunk)]);
+  if (merged.length > terminal.outputByteLimit) terminal.truncated = true;
+  terminal.output = trimOutput(merged, terminal.outputByteLimit);
+}
+
+function withFileHandle<Resource, Success>(
+  operation: ClientOperation,
+  acquire: Effect.Effect<Resource, ClientOperationIssue>,
+  use: (resource: Resource) => Effect.Effect<Success, ClientOperationIssue>,
+  fileOf: (resource: Resource) => FileHandle = resource => resource as FileHandle,
+): Effect.Effect<Success, ClientOperationIssue> {
+  return Effect.acquireUseRelease(
+    acquire,
+    use,
+    resource => fileOperation(operation, "filesystem", () => fileOf(resource).close()),
+  );
+}
+
+function withPinnedParent<Success>(
+  operation: ClientOperation,
+  rootReal: string,
+  filePath: string,
+  use: (target: string) => Effect.Effect<Success, ClientOperationIssue>,
+): Effect.Effect<Success, ClientOperationIssue> {
+  const parentPath = dirname(filePath);
+  return withFileHandle(
+    operation,
+    fileOperation(
+      operation,
+      "filesystem",
+      () => open(parentPath, fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0)),
+    ),
+    parent => Effect.gen(function*() {
+      const descriptor = descriptorPath(parent.fd);
+      if (descriptor !== undefined) {
+        const canonical = yield* fileOperation(operation, "filesystem", () => realpath(descriptor));
+        yield* validatePath(operation, () =>
+          assertWithin(operation, rootReal, canonical, "Opened parent moved outside the allowed cwd subtree"));
+        return yield* use(join(descriptor, basename(filePath)));
+      }
+
+      const [opened, currentPath, current] = yield* fileOperation(
+        operation,
+        "filesystem",
+        () => Promise.all([parent.stat(), realpath(parentPath), stat(parentPath)]),
+      );
+      yield* validatePath(operation, () => {
+        assertWithin(operation, rootReal, currentPath, "Opened parent is outside the allowed cwd subtree");
+        if (opened.dev !== current.dev || opened.ino !== current.ino) {
+          throw issue(operation, "path", `Opened parent changed during validation: ${parentPath}.`);
+        }
+      });
+      return yield* use(filePath);
+    }),
+  );
+}
+
+function fileOperation<Success>(
+  operation: ClientOperation,
+  reason: ClientOperationIssueReason,
+  evaluate: () => PromiseLike<Success>,
+): Effect.Effect<Success, ClientOperationIssue> {
+  return Effect.tryPromise({
+    try: evaluate,
+    catch: cause => wrapIssue(operation, reason, cause),
+  });
+}
+
+function validatePath(
+  operation: ClientOperation,
+  evaluate: () => void,
+): Effect.Effect<void, ClientOperationIssue> {
+  return Effect.try({
+    try: evaluate,
+    catch: cause => wrapIssue(operation, "path", cause),
+  });
 }
 
 function openNoFollow(path: string, flags: number) {
@@ -348,40 +585,6 @@ async function openWriteTarget(
       ),
       created: true,
     };
-  }
-}
-
-async function withPinnedParent<T>(
-  operation: ClientOperation,
-  rootReal: string,
-  filePath: string,
-  use: (target: string) => Promise<T>,
-): Promise<T> {
-  const parentPath = dirname(filePath);
-  const parent = await open(
-    parentPath,
-    fsConstants.O_RDONLY | (fsConstants.O_DIRECTORY ?? 0),
-  );
-  try {
-    const descriptor = descriptorPath(parent.fd);
-    if (descriptor !== undefined) {
-      const canonical = await realpath(descriptor);
-      assertWithin(operation, rootReal, canonical, "Opened parent moved outside the allowed cwd subtree");
-      return await use(join(descriptor, basename(filePath)));
-    }
-
-    const [opened, currentPath, current] = await Promise.all([
-      parent.stat(),
-      realpath(parentPath),
-      stat(parentPath),
-    ]);
-    assertWithin(operation, rootReal, currentPath, "Opened parent is outside the allowed cwd subtree");
-    if (opened.dev !== current.dev || opened.ino !== current.ino) {
-      throw issue(operation, "path", `Opened parent changed during validation: ${parentPath}.`);
-    }
-    return await use(filePath);
-  } finally {
-    await parent.close();
   }
 }
 
@@ -410,8 +613,8 @@ async function assertOpenFileWithin(
 }
 
 function descriptorPath(fileDescriptor: number): string | undefined {
-  if (process.platform === "linux") return `/proc/self/fd/${fileDescriptor}`;
-  if (process.platform !== "win32") return `/dev/fd/${fileDescriptor}`;
+  if (globalThis.process.platform === "linux") return `/proc/self/fd/${fileDescriptor}`;
+  if (globalThis.process.platform !== "win32") return `/dev/fd/${fileDescriptor}`;
   return undefined;
 }
 
@@ -440,26 +643,26 @@ function optionOfKind(
   kinds: readonly PermissionOption["kind"][],
 ): PermissionOption | undefined {
   for (const kind of kinds) {
-    const option = options.find((candidate) => candidate.kind === kind);
+    const option = options.find(candidate => candidate.kind === kind);
     if (option !== undefined) return option;
   }
   return undefined;
 }
 
-function assertOperationAllowed(
+function operationDenied(
   operation: ClientOperation,
   mode: ReverseRpcPermissionMode,
-): void {
+): ClientOperationIssue | undefined {
   if (
     operation !== "fs/read_text_file"
     && operation !== "fs/write_text_file"
     && operation !== "terminal/create"
-  ) return;
+  ) return undefined;
   const allowed = mode === "approve-all"
     || (mode === "approve-reads" && operation === "fs/read_text_file");
-  if (!allowed) {
-    throw issue(operation, "permission", `${operation} is denied by permission mode ${mode}.`);
-  }
+  return allowed
+    ? undefined
+    : issue(operation, "permission", `${operation} is denied by permission mode ${mode}.`);
 }
 
 function lexicalPath(operation: ClientOperation, root: string, value: string): string {
@@ -569,7 +772,7 @@ function terminalEnvironment(
   inherited: Readonly<NodeJS.ProcessEnv> | undefined,
   entries: CreateTerminalRequest["env"],
 ): NodeJS.ProcessEnv {
-  const environment = Object.assign(Object.create(null) as NodeJS.ProcessEnv, process.env);
+  const environment = Object.assign(Object.create(null) as NodeJS.ProcessEnv, globalThis.process.env);
   for (const [name, value] of Object.entries(inherited ?? {})) {
     if (value === undefined) delete environment[name];
     else environment[name] = value;
@@ -579,47 +782,10 @@ function terminalEnvironment(
 }
 
 function terminalOutputLimit(requested: number | null | undefined): number {
-  return Math.min(MAX_TERMINAL_OUTPUT_BYTES, Math.max(0, Math.trunc(requested ?? MAX_TERMINAL_OUTPUT_BYTES)));
-}
-
-function managedTerminal(
-  child: ChildProcessByStdio<null, Readable, Readable>,
-  outputByteLimit: number,
-  ownsProcessGroup: boolean,
-): ManagedTerminal {
-  let settleExit = (_status: WaitForTerminalExitResponse): void => {};
-  const exited = new Promise<WaitForTerminalExitResponse>((resolveExit) => {
-    settleExit = resolveExit;
-  });
-  const terminal: ManagedTerminal = {
-    child,
-    ownsProcessGroup,
-    output: Buffer.alloc(0),
-    outputByteLimit,
-    truncated: false,
-    exited,
-    settleExit,
-    killPromise: undefined,
-    released: false,
-  };
-  const append = (chunk: Buffer | string): void => {
-    if (terminal.released) return;
-    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    const merged = Buffer.concat([terminal.output, bytes]);
-    if (merged.length > terminal.outputByteLimit) terminal.truncated = true;
-    terminal.output = trimOutput(merged, terminal.outputByteLimit);
-  };
-  child.stdout.on("data", append);
-  child.stderr.on("data", append);
-  child.on("error", () => {
-    // Spawn failures are returned by waitForSpawn; later process errors settle on close.
-  });
-  child.once("close", (exitCode, signal) => {
-    const status = { exitCode, signal };
-    terminal.status = status;
-    terminal.settleExit(status);
-  });
-  return terminal;
+  return Math.min(
+    MAX_TERMINAL_OUTPUT_BYTES,
+    Math.max(0, Math.trunc(requested ?? MAX_TERMINAL_OUTPUT_BYTES)),
+  );
 }
 
 function trimOutput(output: Buffer, limit: number): Buffer {
@@ -630,99 +796,15 @@ function trimOutput(output: Buffer, limit: number): Buffer {
   return output.subarray(start);
 }
 
-function waitForSpawn(child: ChildProcessByStdio<null, Readable, Readable>): Promise<void> {
-  return new Promise((resolveSpawn, rejectSpawn) => {
-    const onSpawn = (): void => {
-      child.off("error", onError);
-      resolveSpawn();
-    };
-    const onError = (error: Error): void => {
-      child.off("spawn", onSpawn);
-      rejectSpawn(error);
-    };
-    child.once("spawn", onSpawn);
-    child.once("error", onError);
-  });
-}
-
 function requireTerminal(
   terminals: Map<string, ManagedTerminal>,
   operation: ClientOperation,
   terminalId: string,
-): ManagedTerminal {
+): Effect.Effect<ManagedTerminal, ClientOperationIssue> {
   const terminal = terminals.get(terminalId);
-  if (terminal === undefined) throw issue(operation, "terminal", `Unknown terminal: ${terminalId}.`);
-  return terminal;
-}
-
-async function waitForExit(
-  terminal: ManagedTerminal,
-  signal: AbortSignal,
-  operation: ClientOperation,
-): Promise<WaitForTerminalExitResponse> {
-  if (signal.aborted) throw issue(operation, "cancelled", "Terminal wait was cancelled.");
-  return await new Promise<WaitForTerminalExitResponse>((resolveExit, rejectExit) => {
-    const onAbort = (): void => {
-      rejectExit(issue(operation, "cancelled", "Terminal wait was cancelled."));
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    void terminal.exited.then((status) => {
-      signal.removeEventListener("abort", onAbort);
-      resolveExit(status);
-    });
-  });
-}
-
-async function terminate(terminal: ManagedTerminal): Promise<void> {
-  if (terminal.killPromise !== undefined) return await terminal.killPromise;
-  terminal.killPromise = (async () => {
-    const pid = terminal.child.pid;
-    if (pid === undefined) return;
-    if (process.platform !== "win32" && terminal.ownsProcessGroup) {
-      signalProcess(-pid, "SIGTERM");
-      await Promise.race([terminal.exited, delay(TERMINAL_KILL_GRACE_MS)]);
-      if (processExists(-pid)) {
-        signalProcess(-pid, "SIGKILL");
-        await Promise.race([terminal.exited, delay(TERMINAL_KILL_GRACE_MS)]);
-      }
-      if (processExists(-pid)) throw new Error("Terminal process group did not exit after SIGKILL.");
-    } else if (terminal.status === undefined) {
-      terminal.child.kill("SIGTERM");
-      await Promise.race([terminal.exited, delay(TERMINAL_KILL_GRACE_MS)]);
-      if (terminal.status === undefined) terminal.child.kill("SIGKILL");
-    }
-    if (terminal.status === undefined) {
-      await Promise.race([terminal.exited, delay(TERMINAL_KILL_GRACE_MS)]);
-    }
-    if (terminal.status === undefined) throw new Error("Terminal process did not report exit.");
-  })();
-  try {
-    return await terminal.killPromise;
-  } catch (error) {
-    terminal.killPromise = undefined;
-    throw error;
-  }
-}
-
-function signalProcess(pid: number, signal: NodeJS.Signals): void {
-  try {
-    process.kill(pid, signal);
-  } catch (cause) {
-    if (!isMissingProcess(cause)) throw cause;
-  }
-}
-
-function processExists(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
+  return terminal === undefined
+    ? Effect.fail(issue(operation, "terminal", `Unknown terminal: ${terminalId}.`))
+    : Effect.succeed(terminal);
 }
 
 function issue(
@@ -765,8 +847,4 @@ async function pathEntryExists(path: string): Promise<boolean> {
     if (isMissingPath(cause)) return false;
     throw cause;
   }
-}
-
-function isMissingProcess(cause: unknown): boolean {
-  return cause instanceof Error && (cause as NodeJS.ErrnoException).code === "ESRCH";
 }

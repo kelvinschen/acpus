@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { startDaemonLoop } from "../src/index.js";
+import { startDaemonLoop } from "./support/daemon-loop.js";
 import {
   admitSyntheticWorkflow,
   prepareSyntheticWorkflow,

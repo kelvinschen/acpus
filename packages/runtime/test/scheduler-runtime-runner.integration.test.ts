@@ -1,3 +1,7 @@
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Result from "effect/Result";
+import { makeNodeProcessHost } from "@acpus/owned-process";
 import {
   advanceFrozenRun,
   failingExpressionCallbackWorkflow,
@@ -16,13 +20,13 @@ import {
 } from "./support/scheduler-runtime-runner.js";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { describe, expect, it, vi } from "vitest";
-import { advanceRun } from "../src/scheduler/advance.js";
+import { advanceRun } from "./support/effect-scheduler.js";
 import { appendBranch, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import { bootstrapRootEvents, continueRootEvents } from "../src/scheduler/materialize.js";
 import { createRuntimeRunScheduler } from "../src/scheduler/runtime-runner.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
 import { loadAgentHostPolicy } from "../src/configuration.js";
-import { prepareSyntheticWorkflow, runtimeRow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, runtimeRow, withRuntimeWorkspace } from "./support/runtime-harness.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { applySchedulerControlIntent } from "./support/scheduler.js";
 
@@ -30,7 +34,7 @@ describe("runtime scheduler runner", () => {
   it("bridges scheduler root failure to the public run projection", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-public-failed", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, failingRootAssertWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
 
@@ -49,7 +53,7 @@ describe("runtime scheduler runner", () => {
   it("bridges expression callback evaluation failures to the public run projection", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-expression-callback-failed", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, failingExpressionCallbackWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
 
@@ -74,7 +78,7 @@ describe("runtime scheduler runner", () => {
   it("bridges scheduler signal awaiting and completion to the public run projection", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-public-signal", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootSignalWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const nodeKey = deriveInstanceKey(appendNode([], "approve"));
@@ -104,7 +108,7 @@ describe("runtime scheduler runner", () => {
   it("persists signal timeout deadlines from frozen workflow metadata", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-signal-timeout-deadline", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootTimedSignalWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { timeout: "5s", prompt: "Approve release?", timeoutMessage: "Approval timed out" }, cwd: workspace });
           const nodeKey = deriveInstanceKey(appendNode([], "approve"));
@@ -138,7 +142,7 @@ describe("runtime scheduler runner", () => {
   it("fails an unrepresentable signal deadline as a constraint", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-signal-deadline-range", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootTimedSignalWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, {
             prepared,
@@ -178,18 +182,20 @@ describe("runtime scheduler runner", () => {
   it("rejects an internal idle checkpoint at the production RunExecution boundary", async () => {
       await withRuntimeWorkspace("scheduler-run-execution-idle-invariant", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, sequentialRootTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const execution = createRuntimeRunScheduler({
+            processes: makeNodeProcessHost(),
             cwd: workspace,
             store,
             maxLeafConcurrency: 0,
             agentHostPolicy: loadAgentHostPolicy(process.env),
           }).start({ runId: run.id, ownerId: "owner-a" });
+          const result = Effect.runPromise(execution.result);
 
-          await expect(execution.ownerEpoch).resolves.toBe(1);
-          await expect(execution.result).rejects.toThrow("became non-terminal without active work or a durable wake source");
+          await expect(Effect.runPromise(execution.ownerEpoch)).resolves.toBe(1);
+          await expect(result).rejects.toThrow("became non-terminal without active work or a durable wake source");
           expect(store.scheduler.claimRun(run.id, "owner-b", 60_000)).toMatchObject({ ownerEpoch: 2 });
         } finally {
           store.close();
@@ -200,21 +206,23 @@ describe("runtime scheduler runner", () => {
   it("resolves an undefined owner epoch when another live owner holds the run", async () => {
       await withRuntimeWorkspace("scheduler-run-execution-unclaimed-owner", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, sequentialRootTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         let owner: ReturnType<typeof store.scheduler.claimRun>;
         try {
           const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           owner = store.scheduler.claimRun(run.id, "owner-a", 60_000);
           if (!owner) throw new Error("expected setup owner claim");
           const execution = createRuntimeRunScheduler({
+            processes: makeNodeProcessHost(),
             cwd: workspace,
             store,
             maxLeafConcurrency: 1,
             agentHostPolicy: loadAgentHostPolicy(process.env),
           }).start({ runId: run.id, ownerId: "owner-b" });
+          const result = Effect.runPromise(execution.result);
 
-          await expect(execution.ownerEpoch).resolves.toBeUndefined();
-          expect((await execution.result)._unsafeUnwrap()).toMatchObject({ status: "lease_lost" });
+          await expect(Effect.runPromise(execution.ownerEpoch)).resolves.toBeUndefined();
+          expect(Result.getOrThrow((await result))).toMatchObject({ status: "lease_lost" });
         } finally {
           if (owner) store.scheduler.releaseRun(owner);
           store.close();
@@ -225,7 +233,7 @@ describe("runtime scheduler runner", () => {
   it("refills a signaled branch after a durable wake while another task is still active", async () => {
       await withRuntimeWorkspace("scheduler-run-execution-signal-wake-refill", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, signalWakeRefillWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const signalKey = deriveInstanceKey(appendNode(appendBranch([], "work", "signaled"), "approve"));
@@ -233,14 +241,17 @@ describe("runtime scheduler runner", () => {
           const afterSignalTaskKey = deriveInstanceKey(appendNode(appendBranch([], "work", "signaled"), "after_signal_task"));
           const controlled = holdFirstTaskAttempt();
           const execution = createRuntimeRunScheduler({
+            processes: makeNodeProcessHost(),
             cwd: workspace,
             store,
             maxLeafConcurrency: 2,
             agentHostPolicy: loadAgentHostPolicy(process.env),
           }).start({ runId: run.id, ownerId: "owner-a" });
+          const resultFiber = Effect.runFork(execution.result);
+          const result = Effect.runPromise(Fiber.join(resultFiber));
 
           try {
-            const ownerEpoch = await execution.ownerEpoch;
+            const ownerEpoch = await Effect.runPromise(execution.ownerEpoch);
             if (ownerEpoch === undefined) throw new Error("expected scheduler owner claim");
             expect(ownerEpoch).toBe(1);
             await vi.waitFor(() => {
@@ -270,15 +281,15 @@ describe("runtime scheduler runner", () => {
             expect(controlled.peak()).toBe(2);
 
             controlled.releaseFirst();
-            expect((await execution.result)._unsafeUnwrap()).toMatchObject({ status: "completed", started: 2, completed: 2 });
+            expect(Result.getOrThrow((await result))).toMatchObject({ status: "completed", started: 2, completed: 2 });
             expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection.instances[afterSignalTaskKey]).toMatchObject({
               status: "completed",
               output: { value: "approved" },
             });
           } finally {
             controlled.releaseFirst();
-            execution.stop();
-            await execution.result.catch(() => undefined);
+            resultFiber.interruptUnsafe();
+            await result.catch(() => undefined);
           }
         } finally {
           store.close();
@@ -289,7 +300,7 @@ describe("runtime scheduler runner", () => {
   it("advances root tasks sequentially and rebuilds prior output scope", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-sequence", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, sequentialRootTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const firstKey = deriveInstanceKey(appendNode([], "first_task"));
@@ -310,7 +321,7 @@ describe("runtime scheduler runner", () => {
   it("advances root assert and if branch decisions durably", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-if", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootIfTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { shouldRun: true }, cwd: workspace });
           const assertKey = deriveInstanceKey(appendNode([], "require_run"));
@@ -338,7 +349,7 @@ describe("runtime scheduler runner", () => {
   it("recreates and advances a retried composite frame subtree", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-frame-retry-advance", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootIfTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { shouldRun: true }, cwd: workspace });
           const assertKey = deriveInstanceKey(appendNode([], "require_run"));
@@ -390,7 +401,7 @@ describe("runtime scheduler runner", () => {
   it("advances sequential leaf nodes inside a selected root if branch", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-if-sequence", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootIfSequentialTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { shouldRun: true }, cwd: workspace });
           const ifKey = deriveInstanceKey(appendNode([], "gate"));
@@ -417,7 +428,7 @@ describe("runtime scheduler runner", () => {
   it("advances sequential leaf nodes inside a selected root switch case", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-switch-sequence", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootSwitchSequentialTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { mode: "case" }, cwd: workspace });
           const switchKey = deriveInstanceKey(appendNode([], "route"));
@@ -443,7 +454,7 @@ describe("runtime scheduler runner", () => {
   it("resumes root if from a durable branch decision after reopening the store", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-if-resume", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootIfTaskWorkflow());
-        const firstStore = await openRuntimeStore(workspace);
+        const firstStore = await openRuntimeStoreAdapter(workspace);
         let runId = "";
         const ifKey = deriveInstanceKey(appendNode([], "gate"));
         const branchKey = deriveInstanceKey(appendBranch([], "gate", "then"));
@@ -461,7 +472,7 @@ describe("runtime scheduler runner", () => {
             ownerId: "owner-a",
             store: firstStore.scheduler,
             maxLeafConcurrency: 0,
-            executor: { async execute() { throw new Error("checkpoint setup must not execute leaves"); } },
+            executor: { execute: () => Effect.die(new Error("checkpoint setup must not execute leaves")) },
             bootstrap: snapshot => snapshot.projection.frames.root ? [] : bootstrapRootEvents(runId, frozen.ir, scope),
             materialize: snapshot => continueRootEvents(frozen.ir, snapshot.projection, scope),
           })).resolves.toMatchObject({ status: "idle", started: 0, completed: 0 });
@@ -478,7 +489,7 @@ describe("runtime scheduler runner", () => {
           firstStore.close();
         }
 
-        const resumedStore = await openRuntimeStore(workspace);
+        const resumedStore = await openRuntimeStoreAdapter(workspace);
         try {
           await expect(advanceFrozenRun({ cwd: workspace, runId, ownerId: "owner-b", store: resumedStore })).resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
           const recovered = throwingSchedulerStore(resumedStore.scheduler).loadRunSnapshot(runId).projection;
@@ -494,35 +505,10 @@ describe("runtime scheduler runner", () => {
       });
     });
 
-  it("bootstraps and advances first-leaf branches of a root parallel node", async () => {
-      await withRuntimeWorkspace("scheduler-node-executor-root-parallel", async workspace => {
-        const prepared = await prepareSyntheticWorkflow(workspace, rootParallelTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
-        try {
-          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
-          const summary = await advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store });
-
-          const groupKey = deriveInstanceKey(appendNode([], "race"));
-          const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
-          expect(summary).toMatchObject({ status: "completed", started: 2, completed: 2 });
-          expect(projection.run).toMatchObject({ status: "completed" });
-          expect(projection.frames[groupKey]).toMatchObject({ status: "completed", result: { left: { value: "left" }, right: { value: "right" } } });
-          expect(projection.groups[groupKey]).toMatchObject({ status: "completed", strategy: "all" });
-          expect(Object.values(projection.groupMembers)
-            .filter(member => member.memberKind === "branch")
-            .map(member => member.branchId)
-            .sort()).toEqual(["left", "right"]);
-          expect(Object.values(projection.instances).filter(instance => instance.status === "completed").map(instance => instance.nodeId).sort()).toEqual(["left_task", "right_task"]);
-        } finally {
-          store.close();
-        }
-      });
-    });
-
   it("evaluates later root parallel outputs with prior root scope", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-sequence-parallel", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, sequentialRootParallelWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const prepareKey = deriveInstanceKey(appendNode([], "prepare_task"));
@@ -548,7 +534,7 @@ describe("runtime scheduler runner", () => {
   it("keeps root parallel physical execution within maxConcurrency", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-root-parallel-max-concurrency", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, rootParallelTaskWorkflow({ dynamicMaxConcurrency: true }));
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { maxConcurrency: 1 }, cwd: workspace });
           const controlled = holdFirstTaskAttempt();

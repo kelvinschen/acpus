@@ -1,36 +1,40 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
 import { describe, expect, it, vi } from "vitest";
 import * as occurrenceRefs from "../src/scheduler/occurrence-ref.js";
-import { openRuntimeStore, withRunInspectionSnapshot } from "../src/store/store.js";
+import { makeRuntimeStoreService } from "../src/store/service.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
-import { throwingSchedulerStore, tryRetryStore } from "./support/scheduler-store.js";
+import { captureSchedulerCall, throwingSchedulerStore, tryRetryStore } from "./support/scheduler-store.js";
 import { awaitingSignal, dbRow, dbRun, dbScalar, readyNode } from "./support/store-port-fixtures.js";
 
 describe("scheduler store inspection, progress, and validation", () => {
   it("serializes concurrent async inspection snapshots on one store connection", async () => {
     await withRuntimeWorkspace("scheduler-store-concurrent-snapshots", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
+        const service = makeRuntimeStoreService(store);
         const events: string[] = [];
         let releaseFirst!: () => void;
         const firstBlocked = new Promise<void>(resolve => {
           releaseFirst = resolve;
         });
-        const first = withRunInspectionSnapshot(store, async () => {
+        const first = Effect.runPromise(service.withRunInspectionSnapshot(Effect.promise(async () => {
           events.push("first:start");
           await firstBlocked;
           events.push("first:end");
           return 1;
-        });
+        })));
         await vi.waitFor(() => expect(events).toEqual(["first:start"]));
-        const second = withRunInspectionSnapshot(store, async () => {
+        const second = Effect.runPromise(service.withRunInspectionSnapshot(Effect.promise(async () => {
           events.push("second:start");
           await Promise.resolve();
           events.push("second:end");
           return 2;
-        });
+        })));
 
         await Promise.resolve();
         expect(events).toEqual(["first:start"]);
@@ -52,7 +56,7 @@ describe("scheduler store inspection, progress, and validation", () => {
   it("reads inspection events, projection, and cursors from one store snapshot", async () => {
     await withRuntimeWorkspace("scheduler-store-inspection-read", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const admitted = store.readRunInspection(run.id, 0);
@@ -113,56 +117,50 @@ describe("scheduler store inspection, progress, and validation", () => {
   it("keeps inspection event counts and cursor aligned during concurrent commits", async () => {
     await withRuntimeWorkspace("scheduler-store-inspection-concurrent-read", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
+      let worker: Worker | undefined;
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const databasePath = runtimeDatabasePath(workspace);
-        const worker = new Worker(`
+        worker = new Worker(`
           const { parentPort, workerData } = require("node:worker_threads");
           const { DatabaseSync } = require("node:sqlite");
           parentPort.once("message", () => {
             const db = new DatabaseSync(workerData.databasePath);
             db.exec("PRAGMA busy_timeout = 5000");
             const insert = db.prepare("INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key) VALUES (?, ?, 'run.paused', NULL, '{}', ?, ?)");
-            const wait = new Int32Array(new SharedArrayBuffer(4));
-            for (let sequence = 2; sequence <= 101; sequence += 1) {
+            for (let sequence = 2; sequence <= 51; sequence += 1) {
               insert.run(workerData.runId, sequence, new Date().toISOString(), "inspection-concurrent:" + sequence);
-              Atomics.wait(wait, 0, 0, 1);
             }
-            db.close();
-            parentPort.postMessage("done");
+            parentPort.postMessage("checkpoint");
+            parentPort.once("message", () => {
+              for (let sequence = 52; sequence <= 101; sequence += 1) {
+                insert.run(workerData.runId, sequence, new Date().toISOString(), "inspection-concurrent:" + sequence);
+              }
+              db.close();
+              parentPort.postMessage("done");
+            });
           });
           parentPort.postMessage("ready");
         `, { eval: true, workerData: { databasePath, runId: run.id } });
-        const ready = await new Promise<string>((resolve, reject) => {
-          worker.once("message", resolve);
-          worker.once("error", reject);
-        });
+        const ready = await nextWorkerMessage(worker);
         expect(ready).toBe("ready");
-        let done = false;
-        const completed = new Promise<void>((resolve, reject) => {
-          worker.on("message", message => {
-            if (message === "done") {
-              done = true;
-              resolve();
-            }
-          });
-          worker.once("error", reject);
-        });
         worker.postMessage("start");
-        const observed = new Set<number>();
-        while (!done) {
-          const read = store.readRunInspection(run.id, 0);
-          observed.add(read.cursor.eventSequence);
-          expect(read.run?.eventCount).toBe(read.cursor.eventSequence);
-          expect(read.events).toHaveLength(read.cursor.eventSequence);
-          expect(read.events.at(-1)?.sequence).toBe(read.cursor.eventSequence);
-          await new Promise<void>(resolve => setImmediate(resolve));
-        }
-        await completed;
-        expect(observed.size).toBeGreaterThan(1);
-        expect(store.readRunInspection(run.id, 0).cursor.eventSequence).toBe(101);
+        expect(await nextWorkerMessage(worker)).toBe("checkpoint");
+        const intermediate = store.readRunInspection(run.id, 0);
+        expect(intermediate.cursor.eventSequence).toBe(51);
+        expect(intermediate.run?.eventCount).toBe(51);
+        expect(intermediate.events).toHaveLength(51);
+        expect(intermediate.events.at(-1)?.sequence).toBe(51);
+
+        worker.postMessage("continue");
+        expect(await nextWorkerMessage(worker)).toBe("done");
+        const completed = store.readRunInspection(run.id, 0);
+        expect(completed.cursor.eventSequence).toBe(101);
+        expect(completed.run?.eventCount).toBe(101);
+        expect(completed.events).toHaveLength(101);
       } finally {
+        await worker?.terminate();
         store.close();
       }
     });
@@ -171,7 +169,7 @@ describe("scheduler store inspection, progress, and validation", () => {
   it("claims run ownership, appends scheduler events, and rebuilds snapshots", async () => {
     await withRuntimeWorkspace("scheduler-store-port", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000);
@@ -255,7 +253,7 @@ describe("scheduler store inspection, progress, and validation", () => {
   it("stores latest node progress without changing scheduler event version", async () => {
     await withRuntimeWorkspace("scheduler-store-node-progress", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -335,7 +333,7 @@ describe("scheduler store inspection, progress, and validation", () => {
   it("ignores progress from attempts that are not running", async () => {
     await withRuntimeWorkspace("scheduler-store-node-progress-stale-attempt", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         store.writeNodeProgress({
@@ -362,7 +360,7 @@ describe("scheduler store inspection, progress, and validation", () => {
   it("ignores late progress from a terminal attempt after retry starts a newer attempt", async () => {
     await withRuntimeWorkspace("scheduler-store-node-progress-late-attempt", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -450,7 +448,7 @@ describe("scheduler store inspection, progress, and validation", () => {
   it("does not let running progress overwrite terminal progress for the same attempt", async () => {
     await withRuntimeWorkspace("scheduler-store-node-progress-terminal-precedence", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -503,26 +501,26 @@ describe("scheduler store inspection, progress, and validation", () => {
   it("returns typed results for recoverable store-port failures", async () => {
     await withRuntimeWorkspace("scheduler-store-port-typed-errors", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
-        const missing = store.scheduler.tryLoadRunSnapshot("run_missing");
-        expect(missing.isErr()).toBe(true);
-        if (missing.isOk()) throw new Error("expected run-not-found");
-        expect(missing.error).toMatchObject({ type: "run-not-found", runId: "run_missing" });
+        const missing = captureSchedulerCall(() => store.scheduler.tryLoadRunSnapshot("run_missing"));
+        expect(Result.isFailure(missing)).toBe(true);
+        if (Result.isSuccess(missing)) throw new Error("expected run-not-found");
+        expect(missing.failure).toMatchObject({ type: "run-not-found", runId: "run_missing" });
 
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
-        const mismatch = store.scheduler.tryAppendSchedulerEvents({
+        const mismatch = captureSchedulerCall(() => store.scheduler.tryAppendSchedulerEvents({
           runId: run.id,
           expectedVersion: 99,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "scheduler:mismatch",
           events: [{ type: "control.paused", payload: {} }],
-        });
+        }));
 
-        expect(mismatch.isErr()).toBe(true);
-        if (mismatch.isOk()) throw new Error("expected version mismatch");
-        expect(mismatch.error).toMatchObject({
+        expect(Result.isFailure(mismatch)).toBe(true);
+        if (Result.isSuccess(mismatch)) throw new Error("expected version mismatch");
+        expect(mismatch.failure).toMatchObject({
           type: "version-mismatch",
           runId: run.id,
           expectedVersion: 99,
@@ -530,43 +528,41 @@ describe("scheduler store inspection, progress, and validation", () => {
         });
 
         const alreadyResumed = store.scheduler.tryResumeRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:resume" });
-        expect(alreadyResumed.isOk()).toBe(true);
-        if (alreadyResumed.isErr()) throw new Error("expected already-resumed success");
-        expect(alreadyResumed.value.projection.run.status).toBe("pending");
+        expect(alreadyResumed.projection.run.status).toBe("pending");
 
         readyNode(store, run.id, claim, "typed:ready");
-        const appendConflict = store.scheduler.tryAppendSchedulerEvents({
+        const appendConflict = captureSchedulerCall(() => store.scheduler.tryAppendSchedulerEvents({
           runId: run.id,
           expectedVersion: throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "typed:ready",
           events: [{ type: "control.paused", payload: {} }],
-        });
-        expect(appendConflict.isErr()).toBe(true);
-        if (appendConflict.isOk()) throw new Error("expected append idempotency conflict");
-        expect(appendConflict.error).toMatchObject({ type: "idempotency-conflict", idempotencyKey: "typed:ready", runId: run.id });
+        }));
+        expect(Result.isFailure(appendConflict)).toBe(true);
+        if (Result.isSuccess(appendConflict)) throw new Error("expected append idempotency conflict");
+        expect(appendConflict.failure).toMatchObject({ type: "idempotency-conflict", idempotencyKey: "typed:ready", runId: run.id });
 
         const invalidNodeRetry = tryRetryStore(store.scheduler, { runId: run.id, target: "require_ready~1", ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:node-retry" });
-        expect(invalidNodeRetry.isErr()).toBe(true);
-        if (invalidNodeRetry.isOk()) throw new Error("expected invalid node retry target");
-        expect(invalidNodeRetry.error).toMatchObject({ type: "invalid-retry-target", runId: run.id, targetKey: "require_ready~1", status: "ready" });
+        expect(Result.isFailure(invalidNodeRetry)).toBe(true);
+        if (Result.isSuccess(invalidNodeRetry)) throw new Error("expected invalid node retry target");
+        expect(invalidNodeRetry.failure).toMatchObject({ type: "invalid-retry-target", runId: run.id, targetKey: "require_ready~1", status: "ready" });
 
         const missingRetry = tryRetryStore(store.scheduler, { runId: run.id, target: "missing~1", ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:missing-retry" });
-        expect(missingRetry.isErr()).toBe(true);
-        if (missingRetry.isOk()) throw new Error("expected missing retry target");
-        expect(missingRetry.error).toMatchObject({ type: "missing-retry-target", runId: run.id, targetKey: "missing~1" });
+        expect(Result.isFailure(missingRetry)).toBe(true);
+        if (Result.isSuccess(missingRetry)) throw new Error("expected missing retry target");
+        expect(missingRetry.failure).toMatchObject({ type: "missing-retry-target", runId: run.id, targetKey: "missing~1" });
 
-        const signalMissing = store.scheduler.tryConsumeSignal({
+        const signalMissing = captureSchedulerCall(() => store.scheduler.tryConsumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
           payload: { ok: true },
           commandIdempotencyKey: "typed:signal-command",
           idempotencyKey: "typed:signal",
-        });
-        expect(signalMissing.isErr()).toBe(true);
-        if (signalMissing.isOk()) throw new Error("expected missing signal wait");
-        expect(signalMissing.error).toMatchObject({ type: "signal-wait-not-found", runId: run.id, nodeKey: "approve~1" });
+        }));
+        expect(Result.isFailure(signalMissing)).toBe(true);
+        if (Result.isSuccess(signalMissing)) throw new Error("expected missing signal wait");
+        expect(signalMissing.failure).toMatchObject({ type: "signal-wait-not-found", runId: run.id, nodeKey: "approve~1" });
 
         const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
@@ -575,41 +571,41 @@ describe("scheduler store inspection, progress, and validation", () => {
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "typed:attempt:start",
         });
-        const startConflict = store.scheduler.tryStartAttempt({
+        const startConflict = captureSchedulerCall(() => store.scheduler.tryStartAttempt({
           runId: run.id,
           nodeKey: "other~1",
           nodeId: "other",
           ownerEpoch: claim.ownerEpoch,
           expectedVersion: attempt.snapshot.version,
           idempotencyKey: "typed:attempt:start",
-        });
-        expect(startConflict.isErr()).toBe(true);
-        if (startConflict.isOk()) throw new Error("expected attempt start idempotency conflict");
-        expect(startConflict.error).toMatchObject({ type: "idempotency-conflict", idempotencyKey: "typed:attempt:start", runId: run.id });
+        }));
+        expect(Result.isFailure(startConflict)).toBe(true);
+        if (Result.isSuccess(startConflict)) throw new Error("expected attempt start idempotency conflict");
+        expect(startConflict.failure).toMatchObject({ type: "idempotency-conflict", idempotencyKey: "typed:attempt:start", runId: run.id });
 
         const paused = throwingSchedulerStore(store.scheduler).pauseRun({ runId: run.id, ownerEpoch: claim.ownerEpoch, idempotencyKey: "typed:pause" });
-        const pausedStart = store.scheduler.tryStartAttempt({
+        const pausedStart = captureSchedulerCall(() => store.scheduler.tryStartAttempt({
           runId: run.id,
           nodeKey: "require_ready~1",
           nodeId: "require_ready",
           ownerEpoch: claim.ownerEpoch,
           expectedVersion: paused.version,
           idempotencyKey: "typed:attempt:paused",
-        });
-        expect(pausedStart.isErr()).toBe(true);
-        if (pausedStart.isOk()) throw new Error("expected paused start failure");
-        expect(pausedStart.error).toMatchObject({ type: "run-paused", runId: run.id });
+        }));
+        expect(Result.isFailure(pausedStart)).toBe(true);
+        if (Result.isSuccess(pausedStart)) throw new Error("expected paused start failure");
+        expect(pausedStart.failure).toMatchObject({ type: "run-paused", runId: run.id });
 
-        const terminal = store.scheduler.tryCommitAttemptResult({
+        const terminal = captureSchedulerCall(() => store.scheduler.tryCommitAttemptResult({
           runId: run.id,
           attemptId: attempt.attemptId,
           ownerEpoch: claim.ownerEpoch,
           result: { status: "completed", output: { ok: true } },
           idempotencyKey: "typed:attempt:late-commit",
-        });
-        expect(terminal.isErr()).toBe(true);
-        if (terminal.isOk()) throw new Error("expected terminal attempt failure");
-        expect(terminal.error).toMatchObject({ type: "terminal-attempt", attemptId: attempt.attemptId, status: "cancelled" });
+        }));
+        expect(Result.isFailure(terminal)).toBe(true);
+        if (Result.isSuccess(terminal)) throw new Error("expected terminal attempt failure");
+        expect(terminal.failure).toMatchObject({ type: "terminal-attempt", attemptId: attempt.attemptId, status: "cancelled" });
       } finally {
         store.close();
       }
@@ -619,7 +615,7 @@ describe("scheduler store inspection, progress, and validation", () => {
   it("revalidates a Signal occurrence ref inside the store mutation", async () => {
     await withRuntimeWorkspace("scheduler-store-signal-occurrence-ref", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -641,11 +637,11 @@ describe("scheduler store inspection, progress, and validation", () => {
           return resolveOccurrenceRef(...args);
         });
         try {
-          expect(store.scheduler.tryConsumeSignal({
+          expect(Result.getOrThrow(Result.flip(captureSchedulerCall(() => store.scheduler.tryConsumeSignal({
             ...input,
             requestedTarget: `${ref}#1`,
             idempotencyKey: "signal-ref:attempt",
-          })._unsafeUnwrapErr()).toMatchObject({
+          }))))).toMatchObject({
             type: "signal-wait-not-found",
             nodeKey: "approve~1",
           });
@@ -656,7 +652,7 @@ describe("scheduler store inspection, progress, and validation", () => {
             ...input,
             requestedTarget: ref,
             idempotencyKey: "signal-ref:consume",
-          })._unsafeUnwrap();
+          });
           expect(consumed.projection.signalWaits["approve~1"]).toMatchObject({
             status: "consumed",
             payload: { ok: true },
@@ -674,7 +670,7 @@ describe("scheduler store inspection, progress, and validation", () => {
   it("keeps a consumed wait without a persisted payload on the typed terminal path", async () => {
     await withRuntimeWorkspace("scheduler-store-consumed-payload-absence", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -688,18 +684,18 @@ describe("scheduler store inspection, progress, and validation", () => {
           payload: { nodeKey: "approve~1", commandIdempotencyKey: "typed:signal-command" },
         }), new Date().toISOString(), "typed:signal-consumed-without-payload");
 
-        const result = store.scheduler.tryConsumeSignal({
+        const result = captureSchedulerCall(() => store.scheduler.tryConsumeSignal({
           runId: run.id,
           nodeKey: "approve~1",
           ownerEpoch: claim.ownerEpoch,
           payload: { ok: true },
           commandIdempotencyKey: "typed:signal-command",
           idempotencyKey: "typed:signal-duplicate",
-        });
+        }));
 
-        expect(result.isErr()).toBe(true);
-        if (result.isOk()) throw new Error("expected terminal signal wait");
-        expect(result.error).toEqual({
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isSuccess(result)) throw new Error("expected terminal signal wait");
+        expect(result.failure).toEqual({
           type: "signal-wait-terminal",
           runId: run.id,
           nodeKey: "approve~1",
@@ -715,7 +711,7 @@ describe("scheduler store inspection, progress, and validation", () => {
   it("does not release a run lease for the wrong owner or stale owner epoch", async () => {
     await withRuntimeWorkspace("scheduler-store-release-safety", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const first = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -739,7 +735,7 @@ describe("scheduler store inspection, progress, and validation", () => {
   it("rejects malformed scheduler event envelopes on the normal load path", async () => {
     await withRuntimeWorkspace("scheduler-store-malformed-event-envelope", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const fresh = store.getRun(run.id);
@@ -761,7 +757,7 @@ describe("scheduler store inspection, progress, and validation", () => {
   it.each(["attempt.started", "signal.awaiting"])("rejects malformed persisted deadlines in %s events", async eventType => {
     await withRuntimeWorkspace(`scheduler-store-malformed-${eventType.replace(".", "-")}-deadline`, async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         writeSchedulerEventPayload(workspace, run.id, eventType, "require_ready~1", { deadlineAt: "not-a-deadline" });
@@ -777,7 +773,7 @@ describe("scheduler store inspection, progress, and validation", () => {
   it("surfaces corrupted attempt and signal deadline projection rows", async () => {
     await withRuntimeWorkspace("scheduler-store-corrupted-deadline-rows", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -803,6 +799,13 @@ describe("scheduler store inspection, progress, and validation", () => {
     });
   });
 });
+
+function nextWorkerMessage(worker: Worker): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    worker.once("message", resolve);
+    worker.once("error", reject);
+  });
+}
 
 function writeMalformedSchedulerEvent(workspace: string, runId: string, type: string, nodeKey: string): void {
   const db = new DatabaseSync(runtimeDatabasePath(workspace));

@@ -7,6 +7,8 @@ import {
   type ArtifactResolutionFailure,
   type RuntimeReadFailure,
 } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { notFoundError, usageError } from "../presentation/errors.js";
 import type { RunsCommandContext } from "./context.js";
 import { runtimeReadFailureCode, runtimeReadFailureMessage } from "./runtime-read.js";
@@ -44,14 +46,16 @@ async function artifactsRunCommand(
   if (options.target === "") throw usageError("--target must be a non-empty string.");
   let artifacts: ArtifactRecord[];
   if (options.target === undefined) {
-    const listed = await listArtifacts(ctx.cwd, runId);
-    if (listed.isErr()) throw runtimeReadError(listed.error);
-    if (listed.value === undefined) throw notFoundError(`Run '${runId}' was not found.`, { errorCode: "RUN_NOT_FOUND" });
-    artifacts = listed.value;
+    const listed = await Effect.runPromise(Effect.result(listArtifacts(ctx.cwd, runId)));
+    if (Result.isFailure(listed)) throw runtimeReadError(listed.failure);
+    if (listed.success === undefined) throw notFoundError(`Run '${runId}' was not found.`, { errorCode: "RUN_NOT_FOUND" });
+    artifacts = listed.success;
   } else {
-    const inspected = await inspectTargetArtifacts(ctx.cwd, { runId, target: options.target });
-    if (inspected.isErr()) throw artifactInspectionError(inspected.error);
-    artifacts = inspected.value.artifacts;
+    const inspected = await Effect.runPromise(Effect.result(
+      inspectTargetArtifacts(ctx.cwd, { runId, target: options.target }),
+    ));
+    if (Result.isFailure(inspected)) throw artifactInspectionError(inspected.failure);
+    artifacts = inspected.success.artifacts;
   }
 
   if (artifacts.length === 0) {
@@ -66,9 +70,9 @@ async function artifactRunCommand(
   ctx: RunsCommandContext,
   artifactRef: string,
 ): Promise<void> {
-  const resolved = await resolveArtifact(ctx.cwd, artifactRef);
-  if (resolved.isErr()) throw artifactResolutionError(resolved.error);
-  const artifact = resolved.value;
+  const resolved = await Effect.runPromise(Effect.result(resolveArtifact(ctx.cwd, artifactRef)));
+  if (Result.isFailure(resolved)) throw artifactResolutionError(resolved.failure);
+  const artifact = resolved.success;
   ctx.stdout.write([
     `Path: ${artifact.path}`,
     `Media-Type: ${artifact.mediaType ?? "-"}`,

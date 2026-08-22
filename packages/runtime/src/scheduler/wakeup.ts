@@ -1,28 +1,24 @@
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+
 export type VersionedWakeup = {
   current(): number;
-  waitForChange(after: number): Promise<number>;
+  waitForChange(after: number): Effect.Effect<number>;
   wake(): void;
 };
 
 export function createVersionedWakeup(): VersionedWakeup {
   let version = 0;
-  let pulse = deferred<number>();
+  let pulse = Deferred.makeUnsafe<number>();
   return {
     current: () => version,
-    waitForChange: after => after === version ? pulse.promise : Promise.resolve(version),
+    waitForChange: after => Effect.suspend(() =>
+      after === version ? Deferred.await(pulse) : Effect.succeed(version)),
     wake: () => {
       version += 1;
       const current = pulse;
-      pulse = deferred<number>();
-      current.resolve(version);
+      pulse = Deferred.makeUnsafe<number>();
+      Deferred.doneUnsafe(current, Effect.succeed(version));
     },
   };
-}
-
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>(settle => {
-    resolve = settle;
-  });
-  return { promise, resolve };
 }

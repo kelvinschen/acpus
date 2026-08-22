@@ -5,7 +5,7 @@ import {
   type Sha256Digest,
 } from "@acpus/core/content-identity";
 import type { DiagnosticIR } from "@acpus/core/ir";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 
 export type WorkflowSourceFile = {
   path: string;
@@ -32,40 +32,40 @@ export type SourcePreparationFailure =
 
 export function canonicalizeFilesSource(
   input: Extract<WorkflowSourceInput, { kind: "files" }>,
-): Result<{ entry: string; files: WorkflowSourceFile[] }, SourcePreparationFailure> {
-  if (!Array.isArray(input.files)) return err(sourceInvalid("Workflow source files must be an array."));
-  if (typeof input.entry !== "string") return err(sourceInvalid("Workflow source entry must be a string."));
+): Result.Result<{ entry: string; files: WorkflowSourceFile[] }, SourcePreparationFailure> {
+  if (!Array.isArray(input.files)) return Result.fail(sourceInvalid("Workflow source files must be an array."));
+  if (typeof input.entry !== "string") return Result.fail(sourceInvalid("Workflow source entry must be a string."));
   const entry = canonicalizeSourcePath(input.entry);
-  if (entry.isErr()) return err(entry.error);
+  if (Result.isFailure(entry)) return Result.fail(entry.failure);
 
   const files: WorkflowSourceFile[] = [];
   for (const file of input.files) {
     if (!file || typeof file !== "object" || typeof file.path !== "string" || typeof file.content !== "string") {
-      return err(sourceInvalid("Every workflow source file must contain string path and content fields."));
+      return Result.fail(sourceInvalid("Every workflow source file must contain string path and content fields."));
     }
     const path = canonicalizeSourcePath(file.path);
-    if (path.isErr()) return err(path.error);
-    files.push({ path: path.value, content: file.content });
+    if (Result.isFailure(path)) return Result.fail(path.failure);
+    files.push({ path: path.success, content: file.content });
   }
   files.sort(compareSourceFiles);
   const collision = sourcePathCollision(files.map(file => file.path));
-  if (collision) return err(sourceInvalid(collision));
-  if (!files.some(file => file.path === entry.value)) {
-    return err(sourceInvalid(`Workflow source entry '${entry.value}' is not present in files.`));
+  if (collision) return Result.fail(sourceInvalid(collision));
+  if (!files.some(file => file.path === entry.success)) {
+    return Result.fail(sourceInvalid(`Workflow source entry '${entry.success}' is not present in files.`));
   }
-  return ok({ entry: entry.value, files });
+  return Result.succeed({ entry: entry.success, files });
 }
 
-export function canonicalizeSourcePath(path: string): Result<string, SourcePreparationFailure> {
+export function canonicalizeSourcePath(path: string): Result.Result<string, SourcePreparationFailure> {
   if (path.length === 0
     || path.includes("\0")
     || path.includes("\\")
     || path.startsWith("/")
     || /^[A-Za-z]:/.test(path)
     || path.split("/").some(segment => segment === "" || segment === "." || segment === "..")) {
-    return err(sourceInvalid(`Workflow source path '${path}' must be a portable POSIX relative path.`));
+    return Result.fail(sourceInvalid(`Workflow source path '${path}' must be a portable POSIX relative path.`));
   }
-  return ok(path);
+  return Result.succeed(path);
 }
 
 export function portableSourcePath(root: string, path: string): string | undefined {

@@ -43,7 +43,7 @@
 
 - The core MUST directly re-export Zod 4's native `z` object without Acpus extensions, preserving standard type members such as `z.infer` and `z.output`.
 - Graph-boundary schemas MUST be canonicalized to serializable `SchemaIR` via `toSchemaIR(schema)`.
-- `tryToSchemaIR(schema)` MUST return a neverthrow `Result<SchemaIR, SchemaLoweringError>` for recoverable schema lowering failures.
+- `tryToSchemaIR(schema)` MUST return a native Effect v4 `Result.Result<SchemaIR, SchemaLoweringError>` for recoverable schema lowering failures.
 - `SchemaLoweringError` MUST be a serializable tagged union that includes unsupported schema, invalid literal, and invalid default failures with stable path fields.
 - `toSchemaIR(schema)` MUST return the lowered `SchemaIR` from `tryToSchemaIR(schema)` or throw an `Error` carrying the lowering failure message.
 - A schema default MUST be JSON-compatible and copied with native structured-clone semantics; cyclic or uncloneable defaults MUST return `invalid-default` instead of throwing an untyped exception.

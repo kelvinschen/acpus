@@ -1,15 +1,24 @@
 import { randomUUID } from "node:crypto";
-import { spawn, type ChildProcess } from "node:child_process";
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AcpError } from "@acpus/acp";
-import { err, ok, type Result } from "neverthrow";
+import type { OwnedProcessError, ProcessExit, OwnedProcess, ProcessHostShape } from "@acpus/owned-process";
+import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import { finishAcpOwnership, writeAcpOwnershipManifest } from "./ownership.js";
 import type { NormalizedRuntimeOwnerIdentity } from "./owner.js";
 import {
-  processStartToken,
   PROCESS_TREE_CLEANUP_BUDGET_MS,
+  processTreeDeadline,
+  remaining,
   stopProcessTreeWithDisposition,
 } from "./process-tree.js";
 import type {
@@ -40,6 +49,8 @@ const COOPERATIVE_CLOSE_GRACE_MS = 4_000;
 const WORKERS_DIRECTORY_MODE = 0o700;
 const INHERIT_PROCESS_GROUP_ENV = "ACPUS_INTERNAL_ACP_INHERIT_PROCESS_GROUP";
 
+type CapsuleCloseReason = "lease_settled" | "open_failed" | "neutralize" | "shutdown";
+
 export type ProcessCapsuleOpenInput = Readonly<{
   options: AgentSessionSupervisorOptions;
   owner: NormalizedRuntimeOwnerIdentity;
@@ -60,7 +71,7 @@ type ProcessCapsuleTurnInput<E> = Readonly<{
   signal: AbortSignal;
   deadlineAt?: string;
   inactivityFailAfterMs?: number;
-  onEvent: (event: AgentTurnEvent) => Result<void, E>;
+  onEvent: (event: AgentTurnEvent) => Result.Result<void, E>;
 }>;
 
 export type ProcessCapsuleTurnSettlement<E> = Readonly<{
@@ -79,276 +90,341 @@ export type ProcessCapsule = Readonly<{
   sessionLeaseId: string;
   projectionRef: string;
   reportedVersion?: string;
-  runTurn<E>(input: ProcessCapsuleTurnInput<E>): Promise<ProcessCapsuleTurnSettlement<E>>;
-  close(
-    reason: "lease_settled" | "open_failed" | "neutralize" | "shutdown",
-  ): Promise<Result<SessionNeutralizationEvidence, AgentSessionCleanupError>>;
+  runTurn<E>(input: ProcessCapsuleTurnInput<E>): Effect.Effect<ProcessCapsuleTurnSettlement<E>>;
+  close(reason: CapsuleCloseReason): Effect.Effect<SessionNeutralizationEvidence, AgentSessionCleanupError>;
 }>;
 
 type CapsulePhase = "opening" | "ready" | "running" | "cancelling" | "cleaning" | "closed";
 
+type Silence = {
+  readonly startedAt: string;
+  readonly startedAtMonotonic: bigint;
+  fiber?: Fiber.Fiber<void>;
+};
+
 type ActiveTurn = {
-  turnId: string;
-  startedAt: string;
-  startedAtMonotonic: number;
-  signal: AbortSignal;
-  abort: () => void;
-  onEvent: (event: AgentTurnEvent) => Result<void, unknown>;
-  resolve: (settlement: ProcessCapsuleTurnSettlement<unknown>) => void;
-  reducer: AgentTurnReducer;
+  readonly turnId: string;
+  readonly startedAt: string;
+  readonly startedAtMonotonic: bigint;
+  readonly scope: Scope.Scope;
+  readonly onEvent: (event: AgentTurnEvent) => Result.Result<void, unknown>;
+  readonly settlement: Deferred.Deferred<ProcessCapsuleTurnSettlement<unknown>>;
+  readonly reducer: AgentTurnReducer;
   sequence: number;
   sinkError?: unknown;
   policy?: AgentTurnPolicyEvidence;
-  silence?: {
-    startedAt: string;
-    startedAtMonotonic: number;
-    timer?: ReturnType<typeof setTimeout>;
-  };
-  deadlineTimer?: ReturnType<typeof setTimeout>;
-  cleanupTimer?: ReturnType<typeof setTimeout>;
+  silence?: Silence;
   terminal: boolean;
 };
 
 type CapsuleState = {
   readonly input: ProcessCapsuleOpenInput;
+  readonly processes: ProcessHostShape;
+  readonly clock: Clock.Clock;
+  readonly scope: Scope.Scope;
   readonly hostId: string;
-  readonly child: ChildProcess;
+  readonly child: OwnedProcess;
   readonly manifestPath: string;
+  readonly manifestLock: Semaphore.Semaphore;
+  readonly ready: Deferred.Deferred<void, ProcessCapsuleOpenFailure>;
+  readonly closed: Deferred.Deferred<void>;
   manifest: AcpOwnershipManifest;
-  manifestWrites: Promise<void>;
   manifestError?: ProcessCapsuleError;
   phase: CapsulePhase;
   projectionRef?: string;
   reportedVersion?: string;
   openFailure?: ProcessCapsuleOpenFailure;
-  ready: Promise<void>;
-  settleReady(error?: Error): void;
-  closed: Promise<void>;
-  settleClosed(): void;
   active?: ActiveTurn;
   capsuleError?: ProcessCapsuleError;
-  cleanup?: Promise<Result<SessionNeutralizationEvidence, AgentSessionCleanupError>>;
+  cleanup: Effect.Effect<SessionNeutralizationEvidence, AgentSessionCleanupError>;
+  cleanupObserved: boolean;
+  cleanupReason?: CapsuleCloseReason;
   hardCleanup?: HardCleanupEvidence;
 };
 
 /** Opens one cold process capsule after the caller already owns the Session guard. */
-export async function openProcessCapsule(
+export function openProcessCapsule(
   input: ProcessCapsuleOpenInput,
-): Promise<Result<ProcessCapsule, ProcessCapsuleOpenFailure>> {
-  if (input.attempt.signal.aborted) return err({ type: "cancelled", message: "Agent Session acquire was cancelled." });
-  const deadlineFailure = openingDeadline(input.attempt.deadlineAt);
-  if (deadlineFailure !== undefined) return err(deadlineFailure);
-  await Promise.all([
-    mkdir(input.options.workersRoot, { recursive: true, mode: WORKERS_DIRECTORY_MODE }),
-    mkdir(input.options.sessionStateDirectoryForRun(input.attempt.runId), { recursive: true, mode: WORKERS_DIRECTORY_MODE }),
-  ]);
-  if (input.attempt.signal.aborted) return err({ type: "cancelled", message: "Agent Session acquire was cancelled." });
-
-  const hostId = `host_${randomUUID()}`;
-  const child = spawn(process.execPath, workerEntryArgs(), {
-    detached: process.platform !== "win32",
-    stdio: ["ignore", "ignore", "ignore", "ipc"],
-    env: safeWorkerEnvironment(),
-  });
-  if (child.pid === undefined) {
-    return err({ type: "capsule_open_failed", error: capsuleError("bootstrap", "worker_spawn_failed", "ACP capsule did not provide a process id.") });
-  }
-
-  const workerStartToken = await processStartToken(child.pid);
-  const manifest: AcpOwnershipManifest = {
-    schemaVersion: 3,
-    hostId,
-    agentSessionId: input.session.agentSessionId,
-    sessionLeaseId: input.sessionLeaseId,
-    runId: input.attempt.runId,
-    attemptId: input.attempt.attemptId,
-    owner: input.owner,
-    worker: {
-      pid: child.pid,
-      ...(workerStartToken === undefined ? {} : { startToken: workerStartToken }),
-      ...(process.platform === "win32" ? {} : { pgid: child.pid }),
-    },
-    state: { phase: "opening" },
-    createdAt: new Date().toISOString(),
-  };
-  const manifestPath = join(input.options.workersRoot, `acp_capsule_${hostId.slice("host_".length)}.json`);
+  processes: ProcessHostShape,
+): Effect.Effect<ProcessCapsule, ProcessCapsuleOpenFailure, Scope.Scope> {
   let state: CapsuleState | undefined;
-  try {
-    await writeAcpOwnershipManifest(manifestPath, manifest);
-    state = createState(input, hostId, child, manifest, manifestPath);
-    bindChild(state);
-    const onAbort = (): void => {
-      state!.openFailure ??= { type: "cancelled", message: "Agent Session acquire was cancelled." };
-      void closeCapsule(state!, "open_failed");
+  const open = Effect.gen(function*() {
+    const scope = yield* Scope.Scope;
+    const clock = yield* Clock.Clock;
+    yield* ensureOpeningAvailable(input, clock);
+    yield* prepareDirectories(input);
+    yield* ensureOpeningAvailable(input, clock);
+
+    const child = yield* processes.spawn({
+      command: globalThis.process.execPath,
+      args: workerEntryArgs(),
+      detached: globalThis.process.platform !== "win32",
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+      ipc: true,
+      env: safeWorkerEnvironment(),
+    }).pipe(Effect.mapError(error => openCapsuleFailure("bootstrap", "worker_spawn_failed", error.message)));
+
+    const hostId = `host_${randomUUID()}`;
+    const workerStartToken = yield* processes.startToken(child.pid);
+    const manifest: AcpOwnershipManifest = {
+      schemaVersion: 3,
+      hostId,
+      agentSessionId: input.session.agentSessionId,
+      sessionLeaseId: input.sessionLeaseId,
+      runId: input.attempt.runId,
+      attemptId: input.attempt.attemptId,
+      owner: input.owner,
+      worker: {
+        pid: child.pid,
+        ...(workerStartToken === undefined ? {} : { startToken: workerStartToken }),
+        ...(child.target.processGroupId === undefined ? {} : { pgid: child.target.processGroupId }),
+      },
+      state: { phase: "opening" },
+      createdAt: nowIso(clock),
     };
-    input.attempt.signal.addEventListener("abort", onAbort, { once: true });
-    try {
-      send(state, {
-        type: "open",
-        protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
-        input: {
-          hostId,
-          sessionLeaseId: input.sessionLeaseId,
-          runId: input.attempt.runId,
-          attemptId: input.attempt.attemptId,
-          agentSessionId: input.session.agentSessionId,
-          sessionOpenMode: input.session.sessionOpenMode,
-          sessionStateDirectory: input.options.sessionStateDirectoryForRun(input.attempt.runId),
-          resolvedLaunch: input.resolvedLaunch,
-          cwd: input.session.cwd,
-          env: definedEnvironment(input.session.env),
-          permissionMode: input.session.permissionMode,
-          configuration: input.session.configuration,
-        },
-      });
-      await withTimeout(state.ready, openTimeout(input.attempt.deadlineAt), "ACP capsule did not become ready in time.");
-    } finally {
-      input.attempt.signal.removeEventListener("abort", onAbort);
-    }
-    if (state.openFailure !== undefined) {
-      await closeCapsule(state, "open_failed");
-      return err(state.openFailure);
-    }
-    if (!state.projectionRef) {
-      const failure = { type: "capsule_open_failed" as const, error: capsuleError("opening", "ipc_protocol", "ACP capsule became ready without a projection reference.") };
-      await closeCapsule(state, "open_failed");
-      return err(failure);
-    }
-    return ok(publicCapsule(state));
-  } catch (error) {
-    const failure = state?.openFailure ?? {
-      type: "capsule_open_failed" as const,
-      error: capsuleError("opening", "worker_exception", errorMessage(error)),
+    const manifestPath = join(input.options.workersRoot, `acp_capsule_${hostId.slice("host_".length)}.json`);
+
+    state = yield* Effect.uninterruptibleMask(restore => Effect.gen(function*() {
+      const created = createState(input, processes, clock, scope, hostId, child, manifest, manifestPath);
+      created.cleanup = yield* Effect.cached(Effect.uninterruptible(
+        Effect.suspend(() => closeCapsuleValue(
+          created,
+          created.cleanupReason ?? (created.projectionRef === undefined ? "open_failed" : "lease_settled"),
+        )),
+      ));
+      yield* Effect.forkScoped(restore(observeMessages(created)));
+      yield* Effect.forkScoped(restore(observeProcessExit(created)));
+      yield* Scope.addFinalizer(scope, capsuleFinalizer(created));
+      return created;
+    }));
+
+    yield* persistManifest(manifestPath, manifest).pipe(
+      Effect.mapError(error => {
+        const failure = manifestError(state!, error);
+        return { type: "capsule_open_failed" as const, error: failure };
+      }),
+    );
+
+    const openMessage: AcpWorkerParentMessage = {
+      type: "open",
+      protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
+      input: {
+        hostId,
+        sessionLeaseId: input.sessionLeaseId,
+        runId: input.attempt.runId,
+        attemptId: input.attempt.attemptId,
+        agentSessionId: input.session.agentSessionId,
+        sessionOpenMode: input.session.sessionOpenMode,
+        sessionStateDirectory: input.options.sessionStateDirectoryForRun(input.attempt.runId),
+        resolvedLaunch: input.resolvedLaunch,
+        cwd: input.session.cwd,
+        env: definedEnvironment(input.session.env),
+        permissionMode: input.session.permissionMode,
+        configuration: input.session.configuration,
+      },
     };
-    if (state) await closeCapsule(state, "open_failed");
-    else await stopProcessTreeWithDisposition(child.pid, performance.now() + PROCESS_TREE_CLEANUP_BUDGET_MS);
-    return err(failure);
-  }
+    yield* sendMessage(state, openMessage).pipe(Effect.mapError(error => {
+      state!.capsuleError ??= error;
+      return { type: "capsule_open_failed" as const, error };
+    }));
+
+    const timeoutFailure = openCapsuleFailure(
+      "opening",
+      "worker_exception",
+      "ACP capsule did not become ready in time.",
+    );
+    const readyOrAbort = Effect.raceFirst(
+      Deferred.await(state.ready),
+      awaitAbort(input.attempt.signal).pipe(
+        Effect.andThen(Effect.fail(cancelledOpen("Agent Session acquire was cancelled."))),
+      ),
+    );
+    yield* Effect.raceFirst(
+      readyOrAbort,
+      Effect.sleep(openTimeout(input.attempt.deadlineAt, clock)).pipe(Effect.andThen(Effect.fail(timeoutFailure))),
+    );
+
+    if (state.projectionRef === undefined) {
+      return yield* Effect.fail(openCapsuleFailure(
+        "opening",
+        "ipc_protocol",
+        "ACP capsule became ready without a projection reference.",
+      ));
+    }
+    return publicCapsule(state);
+  });
+
+  return open.pipe(Effect.onExit(exit => {
+    const current = state;
+    if (Exit.isSuccess(exit) || current === undefined) return Effect.void;
+    return Effect.sync(() => {
+      current.cleanupObserved = true;
+      current.cleanupReason ??= "open_failed";
+    }).pipe(Effect.andThen(current.cleanup), Effect.ignore);
+  }));
 }
 
 function createState(
   input: ProcessCapsuleOpenInput,
+  processes: ProcessHostShape,
+  clock: Clock.Clock,
+  scope: Scope.Scope,
   hostId: string,
-  child: ChildProcess,
+  child: OwnedProcess,
   manifest: AcpOwnershipManifest,
   manifestPath: string,
 ): CapsuleState {
-  let readyResolve!: () => void;
-  let readyReject!: (error: Error) => void;
-  const ready = new Promise<void>((resolve, reject) => {
-    readyResolve = resolve;
-    readyReject = reject;
-  });
-  void ready.catch(() => undefined);
-  let closedResolve!: () => void;
-  const closed = new Promise<void>(resolve => { closedResolve = resolve; });
-  let readySettled = false;
   return {
     input,
+    processes,
+    clock,
+    scope,
     hostId,
     child,
     manifest,
-    manifestWrites: Promise.resolve(),
     manifestPath,
+    manifestLock: Semaphore.makeUnsafe(1),
+    ready: Deferred.makeUnsafe<void, ProcessCapsuleOpenFailure>(),
+    closed: Deferred.makeUnsafe<void>(),
     phase: "opening",
-    ready,
-    settleReady: error => {
-      if (readySettled) return;
-      readySettled = true;
-      if (error) readyReject(error);
-      else readyResolve();
-    },
-    closed,
-    settleClosed: closedResolve,
+    cleanup: Effect.die("Process Capsule cleanup was used before initialization."),
+    cleanupObserved: false,
   };
 }
 
-function bindChild(state: CapsuleState): void {
-  state.child.on("message", value => onChildMessage(state, value));
-  state.child.on("error", error => faultCapsule(state, capsuleError(phaseForError(state), "worker_exception", error.message)));
-  state.child.on("close", () => {
+function observeMessages(state: CapsuleState): Effect.Effect<void> {
+  return Stream.runForEach(state.child.messages, value => onChildMessage(state, value)).pipe(
+    Effect.catch(error => faultCapsule(state, processFailure(state, error))),
+  );
+}
+
+function observeProcessExit(state: CapsuleState): Effect.Effect<void> {
+  return state.child.closed.pipe(Effect.matchEffect({
+    onFailure: error => faultCapsule(state, processFailure(state, error)),
+    onSuccess: exit => processExited(state, exit),
+  }));
+}
+
+function processExited(state: CapsuleState, exit: ProcessExit): Effect.Effect<void> {
+  return Effect.suspend(() => {
+    Deferred.doneUnsafe(state.closed, Effect.void);
+    const expected = state.phase === "cleaning" || state.phase === "closed";
+    if (!expected) {
+      state.capsuleError ??= capsuleError(
+        phaseForError(state),
+        "worker_exit",
+        `ACP capsule exited with code '${exit.exitCode ?? "null"}' and signal '${exit.signal ?? "none"}'.`,
+      );
+    }
     state.phase = "closed";
-    state.settleClosed();
-    if (!state.projectionRef) state.settleReady(new Error("ACP capsule exited before readiness."));
-    if (state.active) settleActive(state, failedSettlement(state));
+    if (state.projectionRef === undefined) {
+      const failure = state.openFailure ?? openCapsuleFailure(
+        "opening",
+        "worker_exit",
+        "ACP capsule exited before readiness.",
+      );
+      state.openFailure = failure;
+      Deferred.doneUnsafe(state.ready, Effect.fail(failure));
+    }
+    return state.active === undefined
+      ? Effect.void
+      : settleActive(state, failedSettlement(state));
   });
 }
 
-function onChildMessage(state: CapsuleState, value: unknown): void {
+function onChildMessage(state: CapsuleState, value: unknown): Effect.Effect<void> {
   if (!isAcpWorkerChildMessage(value)
     || value.hostId !== state.hostId
     || value.sessionLeaseId !== state.input.sessionLeaseId) {
-    faultCapsule(state, capsuleError(phaseForError(state), "ipc_protocol", "ACP capsule sent an invalid IPC message."));
-    return;
+    return faultCapsule(state, capsuleError(
+      phaseForError(state),
+      "ipc_protocol",
+      "ACP capsule sent an invalid IPC message.",
+    ));
   }
   const message = value as AcpWorkerChildMessage;
   if (message.type === "ready") {
     if (state.phase !== "opening") {
-      faultCapsule(state, capsuleError(phaseForError(state), "ipc_protocol", "ACP capsule reported readiness out of order."));
-      return;
+      return faultCapsule(state, capsuleError(
+        phaseForError(state),
+        "ipc_protocol",
+        "ACP capsule reported readiness out of order.",
+      ));
     }
     state.phase = "ready";
     state.projectionRef = message.projectionRef;
     if (message.reportedVersion !== undefined) state.reportedVersion = message.reportedVersion;
-    void updateManifestPhase(state, { phase: "ready" })
-      .then(() => state.settleReady())
-      .catch(error => faultCapsule(state, manifestError(state, error)));
-    return;
+    return updateManifestPhase(state, { phase: "ready" }).pipe(
+      Effect.andThen(Effect.sync(() => {
+        Deferred.doneUnsafe(state.ready, Effect.void);
+      })),
+      Effect.catch(error => faultCapsule(state, error)),
+    );
   }
   if (message.type === "open_failed") {
-    state.openFailure = { type: "session_open_failed", error: message.error };
-    state.settleReady(new Error(message.error.message));
-    return;
+    const failure = { type: "session_open_failed" as const, error: message.error };
+    state.openFailure = failure;
+    Deferred.doneUnsafe(state.ready, Effect.fail(failure));
+    return Effect.void;
   }
   if (message.type === "closed") {
     state.phase = "closed";
-    state.settleClosed();
-    return;
+    Deferred.doneUnsafe(state.closed, Effect.void);
+    return Effect.void;
   }
   if (message.type === "failed") {
-    state.capsuleError = message.error;
-    if (!state.projectionRef) {
-      state.openFailure = { type: "capsule_open_failed", error: message.error };
-      state.settleReady(new Error(message.error.message));
+    state.capsuleError ??= message.error;
+    if (state.projectionRef === undefined) {
+      const failure = { type: "capsule_open_failed" as const, error: message.error };
+      state.openFailure ??= failure;
+      Deferred.doneUnsafe(state.ready, Effect.fail(state.openFailure));
     }
-    if (state.active) settleActive(state, failedSettlement(state));
-    return;
+    return state.active === undefined ? Effect.void : settleActive(state, failedSettlement(state));
   }
+
   const active = state.active;
   if ((message.type === "event" || message.type === "terminal")
-    && (!active || active.turnId !== message.turnId || active.terminal)) {
-    faultCapsule(state, capsuleError(phaseForError(state), "ipc_protocol", "ACP capsule sent an event outside the active Turn."));
-    return;
+    && (active === undefined || active.turnId !== message.turnId || active.terminal)) {
+    return faultCapsule(state, capsuleError(
+      phaseForError(state),
+      "ipc_protocol",
+      "ACP capsule sent an event outside the active Turn.",
+    ));
   }
-  if (!active) return;
+  if (active === undefined) return Effect.void;
   if (message.type === "terminal") {
-    settleActive(state, settlementFromTerminal(state, active, message.terminal));
-    return;
+    return settleActive(state, settlementFromTerminal(state, active, message.terminal));
   }
-  if (message.type !== "event") return;
+  if (message.type !== "event") return Effect.void;
+
+  const observedAt = nowIso(state.clock);
   const envelope: AgentTurnEvent = {
     sequence: active.sequence++,
-    observedAt: new Date().toISOString(),
-    elapsedMs: Math.max(0, Math.round(performance.now() - active.startedAtMonotonic)),
+    observedAt,
+    elapsedMs: elapsedMillis(active.startedAtMonotonic, state.clock.monotonicTimeNanosUnsafe()),
     event: message.event,
   };
   active.reducer.observe(envelope);
-  noteActivity(state, active, envelope.observedAt);
-  if (active.sinkError !== undefined) return;
-  let accepted: Result<void, unknown>;
+  const activity = recordActivity(state, active, observedAt);
+  if (active.sinkError !== undefined) return scheduleActivity(state, active, activity);
+
+  let accepted: Result.Result<void, unknown>;
   try {
     accepted = active.onEvent(envelope);
   } catch (error) {
-    accepted = err(error);
+    accepted = Result.fail(error);
   }
-  if (accepted.isErr()) {
-    active.sinkError = accepted.error;
-    requestPolicy(state, active, {
+  if (Result.isFailure(accepted)) {
+    active.sinkError = accepted.failure;
+    return requestPolicy(state, active, {
       type: "cancelled",
       reason: "event_sink",
-      requestedAt: new Date().toISOString(),
+      requestedAt: nowIso(state.clock),
     });
   }
+  return scheduleActivity(state, active, activity);
 }
 
 function publicCapsule(state: CapsuleState): ProcessCapsule {
@@ -366,254 +442,363 @@ function publicCapsule(state: CapsuleState): ProcessCapsule {
 function runCapsuleTurn<E>(
   state: CapsuleState,
   input: ProcessCapsuleTurnInput<E>,
-): Promise<ProcessCapsuleTurnSettlement<E>> {
-  if (state.phase !== "ready" || state.active || !state.child.connected) {
-    return Promise.resolve(failedSettlement(state) as ProcessCapsuleTurnSettlement<E>);
-  }
-  return new Promise(resolve => {
-    const active: ActiveTurn = {
-      turnId: input.turnId,
-      startedAt: new Date().toISOString(),
-      startedAtMonotonic: performance.now(),
-      signal: input.signal,
-      onEvent: input.onEvent as (event: AgentTurnEvent) => Result<void, unknown>,
-      resolve: resolve as (settlement: ProcessCapsuleTurnSettlement<unknown>) => void,
-      reducer: createAgentTurnReducer(),
-      sequence: 0,
-      abort: () => requestPolicy(state, active, {
-        type: "cancelled",
-        reason: input.signal.reason === "steer" ? "steer" : "operator",
-        requestedAt: new Date().toISOString(),
+): Effect.Effect<ProcessCapsuleTurnSettlement<E>> {
+  return Effect.scoped(Effect.gen(function*() {
+    const turnScope = yield* Scope.Scope;
+    const active = yield* Effect.sync(() => {
+      if (state.phase !== "ready" || state.active !== undefined) return undefined;
+      const startedAt = nowIso(state.clock);
+      const claimed: ActiveTurn = {
+        turnId: input.turnId,
+        startedAt,
+        startedAtMonotonic: state.clock.monotonicTimeNanosUnsafe(),
+        scope: turnScope,
+        onEvent: input.onEvent as (event: AgentTurnEvent) => Result.Result<void, unknown>,
+        settlement: Deferred.makeUnsafe<ProcessCapsuleTurnSettlement<unknown>>(),
+        reducer: createAgentTurnReducer(startedAt),
+        sequence: 0,
+        terminal: false,
+      };
+      state.active = claimed;
+      state.phase = "running";
+      return claimed;
+    });
+    if (active === undefined) return failedSettlement(state) as ProcessCapsuleTurnSettlement<E>;
+
+    const manifestReady = yield* updateManifestPhase(state, { phase: "running", turnId: input.turnId }).pipe(
+      Effect.matchEffect({
+        onFailure: error => faultCapsule(state, error).pipe(Effect.as(false)),
+        onSuccess: () => Effect.succeed(true),
       }),
-      terminal: false,
-    };
-    state.active = active;
-    state.phase = "running";
-    void updateManifestPhase(state, { phase: "running", turnId: input.turnId }).then(() => {
-      if (state.active !== active || active.terminal) return;
-      noteActivity(state, active, active.startedAt, input.inactivityFailAfterMs);
-      const deadlineMs = millisecondsUntil(input.deadlineAt);
-      if (deadlineMs !== undefined) {
-        active.deadlineTimer = setTimeout(() => requestPolicy(state, active, {
-          type: "deadline",
-          deadlineAt: input.deadlineAt!,
-          requestedAt: new Date().toISOString(),
-        }), deadlineMs);
-      }
-      input.signal.addEventListener("abort", active.abort, { once: true });
-      if (input.signal.aborted) active.abort();
-      else send(state, {
+    );
+    if (!manifestReady || state.active !== active || active.terminal) {
+      return yield* Deferred.await(active.settlement) as Effect.Effect<ProcessCapsuleTurnSettlement<E>>;
+    }
+
+    yield* scheduleActivity(state, active, recordActivity(
+      state,
+      active,
+      active.startedAt,
+      input.inactivityFailAfterMs,
+    ));
+    if (input.deadlineAt !== undefined) {
+      yield* Effect.forkIn(deadlinePolicy(state, active, input.deadlineAt), turnScope);
+    }
+    yield* Effect.forkIn(abortPolicy(state, active, input.signal), turnScope);
+
+    if (input.signal.aborted) {
+      yield* requestPolicy(state, active, cancellationPolicy(state, input.signal));
+    } else if (state.active === active && !active.terminal && active.policy === undefined) {
+      yield* sendMessage(state, {
         type: "run",
         protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
         hostId: state.hostId,
         sessionLeaseId: state.input.sessionLeaseId,
         turnId: input.turnId,
         prompt: input.prompt,
-      });
-    }).catch(error => faultCapsule(state, manifestError(state, error)));
-  });
+      }).pipe(Effect.catch(error => faultCapsule(state, error)));
+    }
+    return yield* Deferred.await(active.settlement) as Effect.Effect<ProcessCapsuleTurnSettlement<E>>;
+  }));
 }
 
-function noteActivity(
+function recordActivity(
   state: CapsuleState,
   active: ActiveTurn,
   observedAt: string,
   configuredFailAfterMs = state.input.attempt.inactivityFailAfterMs,
-): void {
-  if (active.terminal || active.policy !== undefined) return;
-  if (active.silence?.timer) clearTimeout(active.silence.timer);
-  const silence = { startedAt: observedAt, startedAtMonotonic: performance.now() } as NonNullable<ActiveTurn["silence"]>;
+): Readonly<{ previous?: Fiber.Fiber<void>; silence?: Silence; failAfterMs?: number }> {
+  if (active.terminal || active.policy !== undefined) return {};
+  const previous = active.silence?.fiber;
+  const silence: Silence = {
+    startedAt: observedAt,
+    startedAtMonotonic: state.clock.monotonicTimeNanosUnsafe(),
+  };
   active.silence = silence;
-  if (configuredFailAfterMs === undefined) return;
-  silence.timer = setTimeout(() => {
-    if (active.terminal || active.silence !== silence || active.policy !== undefined) return;
-    requestPolicy(state, active, {
-      type: "inactivity",
-      failAfterMs: configuredFailAfterMs,
-      silentForMs: Math.max(0, Math.round(performance.now() - silence.startedAtMonotonic)),
-      silenceStartedAt: silence.startedAt,
-      requestedAt: new Date().toISOString(),
-    });
-  }, configuredFailAfterMs);
+  return {
+    ...(previous === undefined ? {} : { previous }),
+    silence,
+    ...(configuredFailAfterMs === undefined ? {} : { failAfterMs: configuredFailAfterMs }),
+  };
 }
 
-function requestPolicy(state: CapsuleState, active: ActiveTurn, policy: AgentTurnPolicyEvidence): void {
-  if (state.active !== active || active.terminal || active.policy !== undefined) return;
-  active.policy = policy;
-  state.phase = "cancelling";
-  clearTurnTimers(active);
-  void updateManifestPhase(state, { phase: "cancelling", turnId: active.turnId }).then(() => {
-    if (state.active !== active || active.terminal) return;
-    send(state, {
-      type: "cancel",
+function scheduleActivity(
+  state: CapsuleState,
+  active: ActiveTurn,
+  activity: Readonly<{ previous?: Fiber.Fiber<void>; silence?: Silence; failAfterMs?: number }>,
+): Effect.Effect<void> {
+  return Effect.gen(function*() {
+    if (activity.previous !== undefined) yield* Fiber.interrupt(activity.previous);
+    const { failAfterMs, silence } = activity;
+    if (failAfterMs === undefined || silence === undefined
+      || state.active !== active || active.terminal || active.policy !== undefined
+      || active.silence !== silence) return;
+    silence.fiber = yield* Effect.forkIn(
+      Effect.sleep(failAfterMs).pipe(Effect.andThen(Effect.suspend(() => {
+        if (state.active !== active || active.terminal || active.policy !== undefined
+          || active.silence !== silence) return Effect.void;
+        return requestPolicy(state, active, {
+          type: "inactivity",
+          failAfterMs,
+          silentForMs: elapsedMillis(silence.startedAtMonotonic, state.clock.monotonicTimeNanosUnsafe()),
+          silenceStartedAt: silence.startedAt,
+          requestedAt: nowIso(state.clock),
+        });
+      }))),
+      active.scope,
+    );
+  });
+}
+
+function deadlinePolicy(
+  state: CapsuleState,
+  active: ActiveTurn,
+  deadlineAt: string,
+): Effect.Effect<void> {
+  return Effect.sleep(millisecondsUntil(deadlineAt, state.clock)).pipe(
+    Effect.andThen(Effect.suspend(() => requestPolicy(state, active, {
+      type: "deadline",
+      deadlineAt,
+      requestedAt: nowIso(state.clock),
+    }))),
+  );
+}
+
+function abortPolicy(
+  state: CapsuleState,
+  active: ActiveTurn,
+  signal: AbortSignal,
+): Effect.Effect<void> {
+  return awaitAbort(signal).pipe(
+    Effect.andThen(Effect.suspend(() => requestPolicy(state, active, cancellationPolicy(state, signal)))),
+  );
+}
+
+function cancellationPolicy(state: CapsuleState, signal: AbortSignal): AgentTurnPolicyEvidence {
+  return {
+    type: "cancelled",
+    reason: signal.reason === "steer" ? "steer" : "operator",
+    requestedAt: nowIso(state.clock),
+  };
+}
+
+function requestPolicy(
+  state: CapsuleState,
+  active: ActiveTurn,
+  policy: AgentTurnPolicyEvidence,
+): Effect.Effect<void> {
+  return Effect.suspend(() => {
+    if (state.active !== active || active.terminal || active.policy !== undefined) return Effect.void;
+    active.policy = policy;
+    const cleaning = state.phase === "cleaning";
+    if (!cleaning) state.phase = "cancelling";
+    const persist = cleaning
+      ? Effect.void
+      : updateManifestPhase(state, { phase: "cancelling", turnId: active.turnId });
+    return persist.pipe(
+      Effect.matchEffect({
+        onFailure: error => faultCapsule(state, error).pipe(Effect.as(false)),
+        onSuccess: () => Effect.succeed(true),
+      }),
+      Effect.flatMap(written => {
+        if (!written || state.active !== active || active.terminal) return Effect.void;
+        return sendMessage(state, {
+          type: "cancel",
+          protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
+          hostId: state.hostId,
+          sessionLeaseId: state.input.sessionLeaseId,
+          turnId: active.turnId,
+          reason: policy.type === "deadline"
+            ? "deadline"
+            : policy.type === "inactivity"
+              ? "inactivity"
+              : policy.reason,
+        }).pipe(Effect.catch(error => faultCapsule(state, error)));
+      }),
+      Effect.flatMap(() => cleaning || state.active !== active || active.terminal
+        ? Effect.void
+        : Effect.forkIn(
+            Effect.sleep(COOPERATIVE_CLOSE_GRACE_MS).pipe(Effect.andThen(Effect.suspend(() => {
+              if (state.active !== active || active.terminal) return Effect.void;
+              state.cleanupReason ??= "lease_settled";
+              return state.cleanup.pipe(Effect.ignore);
+            }))),
+            active.scope,
+          ).pipe(Effect.asVoid)),
+    );
+  });
+}
+
+function settleActive(
+  state: CapsuleState,
+  settlement: ProcessCapsuleTurnSettlement<unknown>,
+): Effect.Effect<void> {
+  return Effect.suspend(() => {
+    const active = state.active;
+    if (active === undefined || active.terminal) return Effect.void;
+    active.terminal = true;
+    const resolved: ProcessCapsuleTurnSettlement<unknown> = {
+      ...settlement,
+      ...(active.policy === undefined ? {} : { policy: active.policy }),
+      ...(active.sinkError === undefined ? {} : { sinkError: active.sinkError }),
+      ...(state.hardCleanup === undefined ? {} : { hardCleanup: state.hardCleanup }),
+    };
+    delete state.active;
+    if (state.phase === "cleaning" || state.phase === "closed") {
+      Deferred.doneUnsafe(active.settlement, Effect.succeed(resolved));
+      return Effect.void;
+    }
+    state.phase = "ready";
+    return updateManifestPhase(state, { phase: "ready" }).pipe(
+      Effect.andThen(Effect.sync(() => {
+        Deferred.doneUnsafe(active.settlement, Effect.succeed(resolved));
+      })),
+      Effect.catch(error => {
+        state.capsuleError ??= error;
+        Deferred.doneUnsafe(active.settlement, Effect.succeed({ ...resolved, capsuleError: error }));
+        state.cleanupReason ??= "lease_settled";
+        return state.cleanup.pipe(Effect.ignore);
+      }),
+    );
+  });
+}
+
+function closeCapsule(
+  state: CapsuleState,
+  reason: CapsuleCloseReason,
+): Effect.Effect<SessionNeutralizationEvidence, AgentSessionCleanupError> {
+  return Effect.uninterruptible(Effect.gen(function*() {
+    state.cleanupObserved = true;
+    state.cleanupReason ??= reason;
+    const result = yield* Effect.result(state.cleanup);
+    yield* Scope.close(state.scope, Exit.void);
+    return yield* Effect.fromResult(result);
+  }));
+}
+
+function capsuleFinalizer(state: CapsuleState): Effect.Effect<void> {
+  return Effect.suspend(() => {
+    state.cleanupReason ??= state.projectionRef === undefined ? "open_failed" : "shutdown";
+    return state.cleanupObserved
+      ? state.cleanup.pipe(Effect.ignore)
+      : state.cleanup.pipe(Effect.orDie, Effect.asVoid);
+  });
+}
+
+function closeCapsuleValue(
+  state: CapsuleState,
+  reason: CapsuleCloseReason,
+): Effect.Effect<SessionNeutralizationEvidence, AgentSessionCleanupError> {
+  return Effect.gen(function*() {
+    state.phase = "cleaning";
+    yield* updateManifestPhase(state, { phase: "cleaning" }).pipe(Effect.catch(error => {
+      state.manifestError ??= error;
+      return Effect.void;
+    }));
+    if (state.active !== undefined && state.active.policy === undefined) {
+      yield* requestPolicy(state, state.active, {
+        type: "cancelled",
+        reason: reason === "neutralize" ? "lease_lost" : "operator",
+        requestedAt: nowIso(state.clock),
+      });
+    }
+    yield* sendMessage(state, {
+      type: "close",
       protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
       hostId: state.hostId,
       sessionLeaseId: state.input.sessionLeaseId,
-      turnId: active.turnId,
-      reason: policy.type === "deadline" ? "deadline" : policy.type === "inactivity" ? "inactivity" : policy.reason,
-    });
-  }).catch(error => faultCapsule(state, manifestError(state, error)));
-  active.cleanupTimer = setTimeout(() => {
-    if (state.active !== active || active.terminal) return;
-    void closeCapsule(state, "lease_settled");
-  }, COOPERATIVE_CLOSE_GRACE_MS);
-}
+      reason,
+    }).pipe(Effect.catch(error => {
+      state.capsuleError ??= error;
+      return Effect.void;
+    }));
 
-function settleActive(state: CapsuleState, settlement: ProcessCapsuleTurnSettlement<unknown>): void {
-  const active = state.active;
-  if (!active || active.terminal) return;
-  active.terminal = true;
-  clearTurnTimers(active);
-  active.signal.removeEventListener("abort", active.abort);
-  const resolved = {
-    ...settlement,
-    ...(active.policy === undefined ? {} : { policy: active.policy }),
-    ...(active.sinkError === undefined ? {} : { sinkError: active.sinkError }),
-    ...(state.hardCleanup === undefined ? {} : { hardCleanup: state.hardCleanup }),
-  };
-  delete state.active;
-  if (state.phase !== "cleaning" && state.phase !== "closed") {
-    state.phase = "ready";
-    void updateManifestPhase(state, { phase: "ready" })
-      .then(() => active.resolve(resolved))
-      .catch(error => {
-        const failure = manifestError(state, error);
-        state.capsuleError ??= failure;
-        active.resolve({ ...resolved, capsuleError: failure });
-        void closeCapsule(state, "lease_settled");
+    const startedAt = nowIso(state.clock);
+    const deadline = yield* processTreeDeadline(PROCESS_TREE_CLEANUP_BUDGET_MS);
+    const graceMs = Math.min(COOPERATIVE_CLOSE_GRACE_MS, yield* remaining(deadline));
+    if (graceMs > 0) {
+      yield* Effect.raceFirst(Deferred.await(state.closed), Effect.sleep(graceMs)).pipe(Effect.asVoid);
+    }
+    const stopped = yield* stopProcessTreeWithDisposition(state.processes, state.child.target, deadline);
+    const finishedAt = nowIso(state.clock);
+    state.hardCleanup = { disposition: stopped.disposition, startedAt, finishedAt };
+    if (state.active !== undefined) yield* settleActive(state, failedSettlement(state));
+
+    const ownership = yield* persistFinishedOwnership(
+      state,
+      stopped.disposition === "unverified" ? "unverified" : stopped.alive,
+    ).pipe(Effect.catch(error =>
+      Effect.fail({
+        type: "cleanup_unverified" as const,
+        agentSessionId: state.input.session.agentSessionId,
+        evidence: {
+          state: "unverified" as const,
+          observedAt: nowIso(state.clock),
+          reason: error.message,
+        },
+        message: "ACP capsule ownership cleanup could not be persisted.",
+      })));
+    if (stopped.alive) {
+      if (ownership.state === "unverified") {
+        return yield* Effect.fail({
+          type: "cleanup_unverified" as const,
+          agentSessionId: state.input.session.agentSessionId,
+          evidence: { ...ownership, state: "unverified" as const },
+          message: "ACP capsule process-tree death could not be proven.",
+        });
+      }
+      return yield* Effect.fail({
+        type: "cleanup_failed" as const,
+        agentSessionId: state.input.session.agentSessionId,
+        evidence: ownership,
+        message: "ACP capsule process-tree death could not be proven.",
       });
-    return;
-  }
-  active.resolve(resolved);
-}
-
-async function closeCapsule(
-  state: CapsuleState,
-  reason: "lease_settled" | "open_failed" | "neutralize" | "shutdown",
-): Promise<Result<SessionNeutralizationEvidence, AgentSessionCleanupError>> {
-  if (state.cleanup) return state.cleanup;
-  state.cleanup = closeCapsuleValue(state, reason);
-  return state.cleanup;
-}
-
-async function closeCapsuleValue(
-  state: CapsuleState,
-  reason: "lease_settled" | "open_failed" | "neutralize" | "shutdown",
-): Promise<Result<SessionNeutralizationEvidence, AgentSessionCleanupError>> {
-  state.phase = "cleaning";
-  await updateManifestPhase(state, { phase: "cleaning" }).catch(error => {
-    state.manifestError ??= manifestError(state, error);
-  });
-  if (state.active && state.active.policy === undefined) {
-    requestPolicy(state, state.active, {
-      type: "cancelled",
-      reason: reason === "neutralize" ? "lease_lost" : "operator",
-      requestedAt: new Date().toISOString(),
-    });
-  }
-  send(state, {
-    type: "close",
-    protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
-    hostId: state.hostId,
-    sessionLeaseId: state.input.sessionLeaseId,
-    reason,
-  });
-  const startedAt = new Date().toISOString();
-  const deadline = performance.now() + PROCESS_TREE_CLEANUP_BUDGET_MS;
-  await settleWithin(state.closed, Math.min(COOPERATIVE_CLOSE_GRACE_MS, remaining(deadline)));
-  const stopped = await stopProcessTreeWithDisposition(state.manifest.worker.pid, deadline);
-  const finishedAt = new Date().toISOString();
-  state.hardCleanup = { disposition: stopped.disposition, startedAt, finishedAt };
-  if (state.active) settleActive(state, failedSettlement(state));
-  let ownership;
-  try {
-    ownership = await finishAcpOwnership(
-      state.manifestPath,
-      state.manifest,
-      stopped.alive,
-      "cleanup_unverified",
-    );
-  } catch (error) {
-    const failure = manifestError(state, error);
-    return err({
-      type: "cleanup_unverified",
-      agentSessionId: state.input.session.agentSessionId,
-      evidence: {
-        state: "unverified",
-        observedAt: new Date().toISOString(),
-        reason: failure.message,
-      },
-      message: "ACP capsule ownership cleanup could not be persisted.",
-    });
-  }
-  if (stopped.alive) {
-    return err({
-      type: ownership.state === "unverified" ? "cleanup_unverified" : "cleanup_failed",
-      agentSessionId: state.input.session.agentSessionId,
-      evidence: ownership as Extract<typeof ownership, { state: "unverified" }> & { state: "unverified" },
-      message: "ACP capsule process-tree death could not be proven.",
-    } as AgentSessionCleanupError);
-  }
-  if (state.manifestError) {
-    return err({
-      type: "cleanup_failed",
-      agentSessionId: state.input.session.agentSessionId,
-      evidence: {
-        state: "dead",
-        observedAt: finishedAt,
-        reason: state.manifestError.message,
-      },
-      message: state.manifestError.message,
-    });
-  }
-  state.phase = "closed";
-  return ok({
-    session: { runId: state.input.attempt.runId, agentSessionId: state.input.session.agentSessionId },
-    disposition: stopped.disposition === "unverified" ? "kill" : stopped.disposition,
-    observedAt: finishedAt,
+    }
+    if (state.manifestError !== undefined) {
+      return yield* Effect.fail({
+        type: "cleanup_failed" as const,
+        agentSessionId: state.input.session.agentSessionId,
+        evidence: {
+          state: "dead" as const,
+          observedAt: finishedAt,
+          reason: state.manifestError.message,
+        },
+        message: state.manifestError.message,
+      });
+    }
+    state.phase = "closed";
+    return {
+      session: { runId: state.input.attempt.runId, agentSessionId: state.input.session.agentSessionId },
+      disposition: stopped.disposition === "unverified" ? "kill" : stopped.disposition,
+      observedAt: finishedAt,
+    };
   });
 }
 
-function faultCapsule(state: CapsuleState, error: ProcessCapsuleError): void {
-  state.capsuleError ??= error;
-  if (!state.projectionRef) {
-    state.openFailure ??= { type: "capsule_open_failed", error };
-    state.settleReady(new Error(error.message));
-  }
-  if (state.active) settleActive(state, failedSettlement(state));
-  void closeCapsule(state, state.projectionRef ? "lease_settled" : "open_failed");
+function faultCapsule(state: CapsuleState, error: ProcessCapsuleError): Effect.Effect<void> {
+  return Effect.suspend(() => {
+    state.capsuleError ??= error;
+    if (state.projectionRef === undefined) {
+      const failure = state.openFailure ?? { type: "capsule_open_failed" as const, error };
+      state.openFailure = failure;
+      Deferred.doneUnsafe(state.ready, Effect.fail(failure));
+    }
+    state.cleanupReason ??= state.projectionRef === undefined ? "open_failed" : "lease_settled";
+    const settle = state.active === undefined ? Effect.void : settleActive(state, failedSettlement(state));
+    return settle.pipe(Effect.andThen(state.cleanup), Effect.ignore);
+  });
 }
 
-function failedSettlement(
-  state: CapsuleState,
-): ProcessCapsuleTurnSettlement<never> {
+function failedSettlement(state: CapsuleState): ProcessCapsuleTurnSettlement<never> {
   const active = state.active;
   return {
-    snapshot: active?.reducer.snapshot() ?? emptySnapshot(),
+    snapshot: active === undefined
+      ? emptySnapshot(state.clock)
+      : active.reducer.snapshot(undefined, turnTiming(state, active)),
     finalResponse: active?.reducer.finalResponse() ?? "",
     ...(state.capsuleError === undefined ? {} : { capsuleError: state.capsuleError }),
     ...(state.hardCleanup === undefined ? {} : { hardCleanup: state.hardCleanup }),
   };
-}
-
-async function updateManifestPhase(state: CapsuleState, phase: AcpOwnershipManifest["state"]): Promise<void> {
-  const manifest = { ...state.manifest, state: phase };
-  state.manifest = manifest;
-  const write = state.manifestWrites.then(() => writeAcpOwnershipManifest(state.manifestPath, manifest));
-  state.manifestWrites = write.catch(() => undefined);
-  await write;
-}
-
-function manifestError(state: CapsuleState, error: unknown): ProcessCapsuleError {
-  const failure = capsuleError(phaseForError(state), "worker_exception", `ACP ownership manifest write failed: ${errorMessage(error)}`);
-  state.manifestError ??= failure;
-  return failure;
-}
-
-function clearTurnTimers(active: ActiveTurn): void {
-  if (active.deadlineTimer) clearTimeout(active.deadlineTimer);
-  if (active.silence?.timer) clearTimeout(active.silence.timer);
-  if (active.cleanupTimer) clearTimeout(active.cleanupTimer);
 }
 
 function settlementFromTerminal(
@@ -624,7 +809,7 @@ function settlementFromTerminal(
   const protocolResult = terminal.type === "provider_result" ? terminal.result : undefined;
   return {
     terminal,
-    snapshot: active.reducer.snapshot(protocolResult),
+    snapshot: active.reducer.snapshot(protocolResult, turnTiming(state, active)),
     finalResponse: active.reducer.finalResponse(),
     ...(active.policy === undefined ? {} : { policy: active.policy }),
     ...(active.sinkError === undefined ? {} : { sinkError: active.sinkError }),
@@ -632,14 +817,64 @@ function settlementFromTerminal(
   };
 }
 
-function send(state: CapsuleState, message: AcpWorkerParentMessage): void {
-  if (!state.child.connected) {
-    faultCapsule(state, capsuleError(phaseForError(state), "ipc_closed", "ACP capsule IPC is closed."));
-    return;
-  }
-  state.child.send(message, error => {
-    if (error) faultCapsule(state, capsuleError(phaseForError(state), "ipc_closed", "ACP capsule IPC write failed."));
+function updateManifestPhase(
+  state: CapsuleState,
+  phase: AcpOwnershipManifest["state"],
+): Effect.Effect<void, ProcessCapsuleError> {
+  return state.manifestLock.withPermit(Effect.suspend(() => {
+    const manifest = { ...state.manifest, state: phase };
+    state.manifest = manifest;
+    return persistManifest(state.manifestPath, manifest).pipe(
+      Effect.mapError(error => manifestError(state, error)),
+    );
+  }));
+}
+
+function persistManifest(path: string, manifest: AcpOwnershipManifest): Effect.Effect<void, unknown> {
+  return Effect.tryPromise({
+    try: () => writeAcpOwnershipManifest(path, manifest),
+    catch: cause => cause,
   });
+}
+
+function persistFinishedOwnership(
+  state: CapsuleState,
+  liveness: boolean | "unverified",
+): Effect.Effect<import("./types.js").SessionOwnershipEvidence, ProcessCapsuleError> {
+  return Effect.tryPromise({
+    try: () => finishAcpOwnership(
+      state.manifestPath,
+      state.manifest,
+      liveness,
+      "cleanup_unverified",
+    ),
+    catch: cause => manifestError(state, cause),
+  });
+}
+
+function sendMessage(
+  state: CapsuleState,
+  message: AcpWorkerParentMessage,
+): Effect.Effect<void, ProcessCapsuleError> {
+  return state.child.send(message).pipe(Effect.mapError(error => processFailure(state, error)));
+}
+
+function processFailure(state: CapsuleState, error: OwnedProcessError): ProcessCapsuleError {
+  return capsuleError(
+    phaseForError(state),
+    error.operation === "ipc" ? "ipc_closed" : "worker_exception",
+    error.message,
+  );
+}
+
+function manifestError(state: CapsuleState, error: unknown): ProcessCapsuleError {
+  const failure = capsuleError(
+    phaseForError(state),
+    "worker_exception",
+    `ACP ownership manifest write failed: ${errorMessage(error)}`,
+  );
+  state.manifestError ??= failure;
+  return failure;
 }
 
 function phaseForError(state: CapsuleState): ProcessCapsuleError["phase"] {
@@ -657,8 +892,65 @@ function capsuleError(
   return { type: "process_capsule", phase, code, message };
 }
 
-function emptySnapshot(): AgentTurnSnapshot {
-  const now = new Date().toISOString();
+function openCapsuleFailure(
+  phase: ProcessCapsuleError["phase"],
+  code: ProcessCapsuleError["code"],
+  message: string,
+): ProcessCapsuleOpenFailure {
+  return { type: "capsule_open_failed", error: capsuleError(phase, code, message) };
+}
+
+function cancelledOpen(message: string): ProcessCapsuleOpenFailure {
+  return { type: "cancelled", message };
+}
+
+function prepareDirectories(input: ProcessCapsuleOpenInput): Effect.Effect<void, ProcessCapsuleOpenFailure> {
+  return Effect.all([
+    Effect.tryPromise({
+      try: () => mkdir(input.options.workersRoot, { recursive: true, mode: WORKERS_DIRECTORY_MODE }),
+      catch: cause => cause,
+    }),
+    Effect.tryPromise({
+      try: () => mkdir(input.options.sessionStateDirectoryForRun(input.attempt.runId), {
+        recursive: true,
+        mode: WORKERS_DIRECTORY_MODE,
+      }),
+      catch: cause => cause,
+    }),
+  ], { concurrency: "unbounded" }).pipe(
+    Effect.asVoid,
+    Effect.mapError(error => openCapsuleFailure("bootstrap", "worker_exception", errorMessage(error))),
+  );
+}
+
+function ensureOpeningAvailable(
+  input: ProcessCapsuleOpenInput,
+  clock: Clock.Clock,
+): Effect.Effect<void, ProcessCapsuleOpenFailure> {
+  if (input.attempt.signal.aborted) {
+    return Effect.fail(cancelledOpen("Agent Session acquire was cancelled."));
+  }
+  if (input.attempt.deadlineAt !== undefined
+    && millisecondsUntil(input.attempt.deadlineAt, clock) <= 0) {
+    return Effect.fail(cancelledOpen("Agent Session acquire deadline elapsed before capsule open."));
+  }
+  return Effect.void;
+}
+
+function awaitAbort(signal: AbortSignal): Effect.Effect<void> {
+  return Effect.callback<void>(resume => {
+    const onAbort = () => resume(Effect.void);
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    return Effect.sync(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+function emptySnapshot(clock: Clock.Clock): AgentTurnSnapshot {
+  const now = nowIso(clock);
   return {
     responses: [],
     summary: {
@@ -668,6 +960,24 @@ function emptySnapshot(): AgentTurnSnapshot {
     },
     timing: { startedAt: now, finishedAt: now, elapsedMs: 0 },
   };
+}
+
+function turnTiming(
+  state: CapsuleState,
+  active: ActiveTurn,
+): Readonly<{ finishedAt: string; elapsedMs: number }> {
+  return {
+    finishedAt: nowIso(state.clock),
+    elapsedMs: elapsedMillis(active.startedAtMonotonic, state.clock.monotonicTimeNanosUnsafe()),
+  };
+}
+
+function elapsedMillis(startedAt: bigint, finishedAt: bigint): number {
+  return Math.max(0, Math.round(Number(finishedAt - startedAt) / 1_000_000));
+}
+
+function nowIso(clock: Clock.Clock): string {
+  return new Date(clock.currentTimeMillisUnsafe()).toISOString();
 }
 
 function definedEnvironment(env: Readonly<NodeJS.ProcessEnv>): Record<string, string> {
@@ -684,45 +994,21 @@ function workerEntryArgs(): string[] {
 
 function safeWorkerEnvironment(): NodeJS.ProcessEnv {
   return {
-    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key !== "NODE_OPTIONS" && key !== "NODE_PATH")),
+    ...Object.fromEntries(Object.entries(globalThis.process.env)
+      .filter(([key]) => key !== "NODE_OPTIONS" && key !== "NODE_PATH")),
     [INHERIT_PROCESS_GROUP_ENV]: randomUUID(),
   };
 }
 
-function openTimeout(deadlineAt: string | undefined): number {
-  const remainingMs = millisecondsUntil(deadlineAt);
-  return remainingMs === undefined ? CAPSULE_OPEN_TIMEOUT_MS : Math.min(CAPSULE_OPEN_TIMEOUT_MS, remainingMs);
+function openTimeout(deadlineAt: string | undefined, clock: Clock.Clock): number {
+  const remainingMs = deadlineAt === undefined ? undefined : millisecondsUntil(deadlineAt, clock);
+  return remainingMs === undefined
+    ? CAPSULE_OPEN_TIMEOUT_MS
+    : Math.min(CAPSULE_OPEN_TIMEOUT_MS, remainingMs);
 }
 
-function openingDeadline(deadlineAt: string | undefined): ProcessCapsuleOpenFailure | undefined {
-  if (deadlineAt === undefined || millisecondsUntil(deadlineAt)! > 0) return undefined;
-  return { type: "cancelled", message: "Agent Session acquire deadline elapsed before capsule open." };
-}
-
-function millisecondsUntil(deadlineAt: string | undefined): number | undefined {
-  if (deadlineAt === undefined) return undefined;
-  return Math.max(0, new Date(deadlineAt).getTime() - Date.now());
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise,
-      new Promise<T>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), timeoutMs); }),
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-async function settleWithin(promise: Promise<void>, timeoutMs: number): Promise<void> {
-  if (timeoutMs <= 0) return;
-  await withTimeout(promise, timeoutMs, "cleanup wait elapsed").catch(() => undefined);
-}
-
-function remaining(deadline: number): number {
-  return Math.max(0, Math.floor(deadline - performance.now()));
+function millisecondsUntil(deadlineAt: string, clock: Clock.Clock): number {
+  return Math.max(0, new Date(deadlineAt).getTime() - clock.currentTimeMillisUnsafe());
 }
 
 function errorMessage(error: unknown): string {

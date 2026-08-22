@@ -1,6 +1,6 @@
 import type { FanoutNodeIR, LoopNodeIR, NodeIR, ParallelNodeIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import { tryNormalizeWorkflowData } from "../evaluation/admissible.js";
 import { tryEvaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import { resolutionErrorPayload, tryResolveConcurrencyLimit, tryResolveDuration, tryResolveInteger, tryResolveString } from "../evaluation/resolvable.js";
@@ -92,8 +92,8 @@ function continueScopeFrameEvents(input: ScopeFrame, projection: SchedulerProjec
   }
 
   const evaluated = evaluateOutput(input.scopeIR.output, scope);
-  if (evaluated.isErr()) return terminalScopeFrameEvents(input, "failed", expressionFailure(evaluated.error), "expression_failed");
-  const result = evaluated.value;
+  if (Result.isFailure(evaluated)) return terminalScopeFrameEvents(input, "failed", expressionFailure(evaluated.failure), "expression_failed");
+  const result = evaluated.success;
   const events: SchedulerEvent[] = [
     { type: "frame.completed", payload: { frameKey: input.frame.frameKey, result, terminalReason: completionReason(input, projection) } },
   ];
@@ -243,16 +243,16 @@ function materializeAssertEvents(input: { runId: string; node: Extract<NodeIR, {
   const nodeKey = deriveInstanceKey(nodePath);
   const start = nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "node");
   const evaluated = tryEvaluateExpr(input.node.condition, input.scope);
-  if (evaluated.isErr()) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(evaluated.error), terminalReason: "expression_failed" } }];
-  if (typeof evaluated.value !== "boolean") {
+  if (Result.isFailure(evaluated)) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(evaluated.failure), terminalReason: "expression_failed" } }];
+  if (typeof evaluated.success !== "boolean") {
     return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(new Error(`Assert node '${input.node.id}' condition must evaluate to boolean.`)), terminalReason: "expression_failed" } }];
   }
-  if (evaluated.value) return [start, { type: "frame.completed", payload: { frameKey: nodeKey, result: {}, terminalReason: "assert_passed" } }];
+  if (evaluated.success) return [start, { type: "frame.completed", payload: { frameKey: nodeKey, result: {}, terminalReason: "assert_passed" } }];
   if (!input.node.message) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { message: `Assert node '${input.node.id}' failed.` }, terminalReason: "assert_failed" } }];
-  return tryResolveString(input.node.message, input.scope, `Assert node '${input.node.id}' message`).match(
-    message => [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { message }, terminalReason: "assert_failed" } }],
-    error => [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(error), terminalReason: "expression_resolution_failed" } }],
-  );
+  return Result.match(tryResolveString(input.node.message, input.scope, `Assert node '${input.node.id}' message`), {
+    onSuccess: message => [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { message }, terminalReason: "assert_failed" } }],
+    onFailure: error => [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(error), terminalReason: "expression_resolution_failed" } }],
+  });
 }
 
 function materializeConditionalEvents(input: { runId: string; node: Extract<NodeIR, { kind: "if" | "switch" }>; parentFrameKey: string; basePath: InstancePath; scope: EvaluationScope; readinessSequence: number }): SchedulerEvent[] {
@@ -260,8 +260,8 @@ function materializeConditionalEvents(input: { runId: string; node: Extract<Node
   const nodeKey = deriveInstanceKey(nodePath);
   const start = nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "node");
   const selectedResult = selectConditionalBranch(input.node, input.scope);
-  if (selectedResult.isErr()) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(selectedResult.error), terminalReason: "expression_failed" } }];
-  const selected = selectedResult.value;
+  if (Result.isFailure(selectedResult)) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(selectedResult.failure), terminalReason: "expression_failed" } }];
+  const selected = selectedResult.success;
   const branchPath = appendBranch(input.basePath, input.node.id, selected.branchId);
   const branchFrameKey = deriveInstanceKey(branchPath);
   return [
@@ -290,10 +290,10 @@ function materializeParallelEvents(input: { runId: string; node: ParallelNodeIR;
   let maxConcurrency: number | undefined;
   if (input.node.maxConcurrency !== undefined) {
     const resolved = tryResolveConcurrencyLimit(input.node.maxConcurrency, input.scope, `Parallel node '${input.node.id}' maxConcurrency`);
-    if (resolved.isErr()) {
-      return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.error), terminalReason: "expression_resolution_failed" } }];
+    if (Result.isFailure(resolved)) {
+      return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.failure), terminalReason: "expression_resolution_failed" } }];
     }
-    maxConcurrency = resolved.value;
+    maxConcurrency = resolved.success;
   }
   const events: SchedulerEvent[] = [
     start,
@@ -341,26 +341,26 @@ function materializeFanoutEvents(input: { runId: string; node: FanoutNodeIR; par
   const nodeKey = deriveInstanceKey(nodePath);
   const start = nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "node", input.node.strategy);
   const evaluated = tryEvaluateExpr(input.node.over, input.scope);
-  if (evaluated.isErr()) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(evaluated.error), terminalReason: "expression_failed" } }];
-  const items = evaluated.value;
+  if (Result.isFailure(evaluated)) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(evaluated.failure), terminalReason: "expression_failed" } }];
+  const items = evaluated.success;
   if (!Array.isArray(items)) {
     return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: { reason: "fanout_over_not_array" }, terminalReason: "fanout_over_not_array" } }];
   }
   let maxConcurrency: number | undefined;
   if (input.node.maxConcurrency !== undefined) {
     const resolved = tryResolveConcurrencyLimit(input.node.maxConcurrency, input.scope, `Fanout node '${input.node.id}' maxConcurrency`);
-    if (resolved.isErr()) {
-      return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.error), terminalReason: "expression_resolution_failed" } }];
+    if (Result.isFailure(resolved)) {
+      return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.failure), terminalReason: "expression_resolution_failed" } }];
     }
-    maxConcurrency = resolved.value;
+    maxConcurrency = resolved.success;
   }
   let quorumCount: number | undefined;
   if (input.node.strategy === "quorum") {
     const resolved = tryResolveInteger(input.node.count, input.scope, `Fanout node '${input.node.id}' quorum count`, 1);
-    if (resolved.isErr()) {
-      return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.error), terminalReason: "expression_resolution_failed" } }];
+    if (Result.isFailure(resolved)) {
+      return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: resolutionErrorPayload(resolved.failure), terminalReason: "expression_resolution_failed" } }];
     }
-    quorumCount = resolved.value;
+    quorumCount = resolved.success;
   }
   const events: SchedulerEvent[] = [
     start,
@@ -410,10 +410,10 @@ function materializeLoopEvents(input: { runId: string; node: LoopNodeIR; parentF
   const nodeKey = deriveInstanceKey(nodePath);
   const start = nodeFrameStarted(input.runId, input.node, nodePath, input.parentFrameKey, "loop");
   const evaluated = tryEvaluateExpr(input.node.state, input.scope);
-  if (evaluated.isErr()) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(evaluated.error), terminalReason: "expression_failed" } }];
-  const normalized = tryNormalizeWorkflowData(evaluated.value, `Loop node '${input.node.id}' initial state`);
-  if (normalized.isErr()) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(normalized.error), terminalReason: "expression_failed" } }];
-  const state = normalized.value as JsonValue;
+  if (Result.isFailure(evaluated)) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(evaluated.failure), terminalReason: "expression_failed" } }];
+  const normalized = tryNormalizeWorkflowData(evaluated.success, `Loop node '${input.node.id}' initial state`);
+  if (Result.isFailure(normalized)) return [start, { type: "frame.failed", payload: { frameKey: nodeKey, error: expressionFailure(normalized.failure), terminalReason: "expression_failed" } }];
+  const state = normalized.success as JsonValue;
 
   const seed = { type: "frame.loop_advanced", payload: { frameKey: nodeKey, iter: 0, state } } satisfies SchedulerEvent;
   return [
@@ -455,15 +455,15 @@ function materializeScopeStart(runId: string, frameKey: string, scopeIR: ScopeIR
   const first = scopeIR.nodes[0];
   if (!first) {
     const evaluated = evaluateOutput(scopeIR.output, scope);
-    if (evaluated.isErr()) {
+    if (Result.isFailure(evaluated)) {
       return [
-        { type: "frame.failed", payload: { frameKey, error: expressionFailure(evaluated.error), terminalReason: "expression_failed" } },
+        { type: "frame.failed", payload: { frameKey, error: expressionFailure(evaluated.failure), terminalReason: "expression_failed" } },
         ...(memberKey === undefined
           ? []
-          : [{ type: "group.member_failed", payload: { memberKey, error: expressionFailure(evaluated.error), terminalReason: "expression_failed" } } satisfies SchedulerEvent]),
+          : [{ type: "group.member_failed", payload: { memberKey, error: expressionFailure(evaluated.failure), terminalReason: "expression_failed" } } satisfies SchedulerEvent]),
       ];
     }
-    const result = evaluated.value;
+    const result = evaluated.success;
     return [
       { type: "frame.completed", payload: { frameKey, result, terminalReason: "frame_completed" } },
       ...(memberKey === undefined
@@ -495,15 +495,15 @@ function schedulerLeafEvents(input: {
       instancePath: input.instancePath,
       parentFrameKey: input.parentFrameKey,
       readinessSequence: input.readinessSequence,
-      ...(timeout?.isOk() ? { timeoutMs: timeout.value.milliseconds } : {}),
+      ...(timeout !== undefined && Result.isSuccess(timeout) ? { timeoutMs: timeout.success.milliseconds } : {}),
     },
   }];
-  if (timeout?.isErr()) {
+  if (timeout !== undefined && Result.isFailure(timeout)) {
     events.push({
       type: "instance.failed",
       payload: {
         nodeKey: input.nodeKey,
-        error: resolutionErrorPayload(timeout.error),
+        error: resolutionErrorPayload(timeout.failure),
         statusReason: "expression_resolution_failed",
       },
     });
@@ -746,20 +746,20 @@ function nextCompletionSequence(projection: SchedulerProjection): number {
 function selectConditionalBranch(
   node: Extract<NodeIR, { kind: "if" | "switch" }>,
   scope: EvaluationScope,
-): Result<{ branchId: string; scope: ScopeIR }, { message: string }> {
+): Result.Result<{ branchId: string; scope: ScopeIR }, { message: string }> {
   if (node.kind === "if") {
     const condition = tryEvaluateExpr(node.condition, scope);
-    if (condition.isErr()) return err(condition.error);
-    if (typeof condition.value !== "boolean") return err({ message: `If node '${node.id}' condition must evaluate to boolean.` });
-    return ok(condition.value ? { branchId: "then", scope: node.then } : { branchId: "else", scope: node.else });
+    if (Result.isFailure(condition)) return Result.fail(condition.failure);
+    if (typeof condition.success !== "boolean") return Result.fail({ message: `If node '${node.id}' condition must evaluate to boolean.` });
+    return Result.succeed(condition.success ? { branchId: "then", scope: node.then } : { branchId: "else", scope: node.else });
   }
   for (const [index, candidate] of node.cases.entries()) {
     const condition = tryEvaluateExpr(candidate.when, scope);
-    if (condition.isErr()) return err(condition.error);
-    if (typeof condition.value !== "boolean") return err({ message: `Switch node '${node.id}' case condition must evaluate to boolean.` });
-    if (condition.value) return ok({ branchId: `case:${index}`, scope: candidate.then });
+    if (Result.isFailure(condition)) return Result.fail(condition.failure);
+    if (typeof condition.success !== "boolean") return Result.fail({ message: `Switch node '${node.id}' case condition must evaluate to boolean.` });
+    if (condition.success) return Result.succeed({ branchId: `case:${index}`, scope: candidate.then });
   }
-  return ok({ branchId: "default", scope: node.default });
+  return Result.succeed({ branchId: "default", scope: node.default });
 }
 
 function conditionalBranchById(node: Extract<NodeIR, { kind: "if" | "switch" }>, branchId: string): { branchId: string; scope: ScopeIR } | undefined {
@@ -780,11 +780,11 @@ function scopeMapForScope(basePath: InstancePath, scope: ScopeIR): Record<string
   return Object.fromEntries(scope.nodes.map(node => [node.id, deriveInstanceKey(appendNode(basePath, node.id))]));
 }
 
-function evaluateOutput(output: ScopeIR["output"], scope: EvaluationScope): Result<JsonValue, { message: string }> {
+function evaluateOutput(output: ScopeIR["output"], scope: EvaluationScope): Result.Result<JsonValue, { message: string }> {
   const evaluated = tryEvaluateExpr(output, scope);
-  if (evaluated.isErr()) return err(evaluated.error);
-  const normalized = tryNormalizeWorkflowData(evaluated.value, "Scope output");
-  return normalized.isErr() ? err(normalized.error) : ok(normalized.value as JsonValue);
+  if (Result.isFailure(evaluated)) return Result.fail(evaluated.failure);
+  const normalized = tryNormalizeWorkflowData(evaluated.success, "Scope output");
+  return Result.isFailure(normalized) ? Result.fail(normalized.failure) : Result.succeed(normalized.success as JsonValue);
 }
 
 function requireWorkflowOutput(value: JsonValue | undefined, label: string): JsonValue {

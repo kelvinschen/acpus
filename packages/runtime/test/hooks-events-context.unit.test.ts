@@ -1,11 +1,11 @@
+import * as Result from "effect/Result";
 import type { AdmittedWorkflowIR } from "@acpus/core/ir";
-import { ok } from "neverthrow";
 import { describe, expect, it } from "vitest";
 import type { HookEvent } from "../src/hooks/config.js";
 import { dispatchCommittedHooksForRun, type HookContext } from "../src/hooks/dispatch.js";
 import type { SchedulerProjection } from "../src/scheduler/types.js";
 import { decodeCommittedRuntimeEventRow, type CommittedRuntimeEventRow } from "../src/store/committed-event.js";
-import type { FrozenRun, RuntimeStore } from "../src/store/store.js";
+import type { FrozenRun, RuntimeStoreAdapter } from "../src/store/store.js";
 
 describe("hooks events and context", () => {
   it("decodes scheduler envelopes and public run event payloads", () => {
@@ -47,7 +47,7 @@ describe("hooks events and context", () => {
     const executionMetadata = [
       { id: 1, attemptId: "attempt-task", kind: "task_attempt", metadata: { nodeKey: "build~1", input: { packageName: "core" } }, createdAt: "2026-07-04T00:00:01.000Z" },
       { id: 2, attemptId: "attempt-agent", kind: "agent_attempt", metadata: { nodeKey: "review~1" }, createdAt: "2026-07-04T00:00:02.000Z" },
-    ] satisfies ReturnType<RuntimeStore["getExecutionMetadata"]>;
+    ] satisfies ReturnType<RuntimeStoreAdapter["getExecutionMetadata"]>;
     const calls: Array<{ event: HookEvent; context: HookContext }> = [];
     const store = runtimeStore(events, executionMetadata);
     const hookRunner = {
@@ -56,7 +56,7 @@ describe("hooks events and context", () => {
       },
     };
 
-    expect(dispatchCommittedHooksForRun({ cwd: "/workspace", runId: "run_1", store, hookRunner })).toEqual(ok({
+    expect(dispatchCommittedHooksForRun({ cwd: "/workspace", runId: "run_1", store, hookRunner })).toEqual(Result.succeed({
       runId: "run_1",
       eventSequence: 13,
       dispatched: 10,
@@ -108,7 +108,7 @@ describe("hooks events and context", () => {
       node: { id: "approve", key: "approve~1", kind: "signal", status: "awaiting" },
     });
 
-    expect(dispatchCommittedHooksForRun({ cwd: "/workspace", runId: "run_1", store, hookRunner })).toEqual(ok({
+    expect(dispatchCommittedHooksForRun({ cwd: "/workspace", runId: "run_1", store, hookRunner })).toEqual(Result.succeed({
       runId: "run_1",
       eventSequence: 13,
       dispatched: 0,
@@ -119,8 +119,8 @@ describe("hooks events and context", () => {
 
 function runtimeStore(
   events: readonly CommittedRuntimeEventRow[],
-  executionMetadata: ReturnType<RuntimeStore["getExecutionMetadata"]>,
-): RuntimeStore {
+  executionMetadata: ReturnType<RuntimeStoreAdapter["getExecutionMetadata"]>,
+): RuntimeStoreAdapter {
   let cursor = 0;
   return {
     getFrozenRun: () => frozenRun(),
@@ -136,9 +136,9 @@ function runtimeStore(
     },
     getExecutionMetadata: () => executionMetadata,
     scheduler: {
-      tryLoadRunSnapshot: () => ok({ runId: "run_1", version: events.length, projection: schedulerProjection() }),
+      tryLoadRunSnapshot: () => ({ runId: "run_1", version: events.length, projection: schedulerProjection() }),
     },
-  } as unknown as RuntimeStore;
+  } as unknown as RuntimeStoreAdapter;
 }
 
 function frozenRun(): FrozenRun {

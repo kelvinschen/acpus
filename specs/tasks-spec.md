@@ -12,7 +12,7 @@
 - `createWorktree` MUST use the [Core reusable Task authoring contract](core-spec.md#task-authoring-and-runtime-context-types).
 - `createWorktree` MUST accept source repository path, worktree path, optional ref, and optional `forceRemove`; it MUST create a detached worktree.
 - Successful creation MUST return the resolved repository path, resolved worktree path, requested ref, and resolved base commit SHA.
-- Recoverable domain execution MUST remain an internal typed `ResultAsync` with tagged dirty-repository, source-repository-path, unregistered-removal, and Git command failures. The dirty-repository error MUST retain Git's dirty status.
+- Recoverable domain execution MUST remain an internal typed `Effect.Effect` with tagged dirty-repository, source-repository-path, unregistered-removal, and Git command failures. The dirty-repository error MUST retain Git's dirty status.
 - Worktree path inspection failures MUST use the internal `worktree-path-inspection-failed` tag and identify the inspected path.
 - `createWorktree.fn(...)` MUST return the successful internal result or throw an `Error` carrying the task-domain failure message.
 - The task MUST reject dirty source repositories and MUST reject the source repository itself as the requested worktree path.

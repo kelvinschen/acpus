@@ -3,7 +3,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { Sha256Digest } from "@acpus/core/content-identity";
 import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import { checkWorkflow, type WorkflowCheckResult } from "../check/runner.js";
 import {
   canonicalizeFilesSource,
@@ -87,12 +87,12 @@ export async function prepareWorkflowSource(input: {
   workspaceDir: string;
   scratchDir: string;
   source: WorkflowSourceInput;
-}): Promise<Result<PreparedWorkflowSource, WorkflowSourcePreparationFailure>> {
+}): Promise<Result.Result<PreparedWorkflowSource, WorkflowSourcePreparationFailure>> {
   if (input.source.kind === "files") {
     const validated = canonicalizeFilesSource(input.source);
-    if (validated.isErr()) return err(validated.error);
+    if (Result.isFailure(validated)) return Result.fail(validated.failure);
     const modulePaths = new Set(
-      validated.value.files
+      validated.success.files
         .filter(file => isSourceGraphTypeScript(file.path))
         .map(file => file.path),
     );
@@ -100,20 +100,20 @@ export async function prepareWorkflowSource(input: {
       input.scratchDir,
       input.workspaceDir,
       {
-        entry: validated.value.entry,
-        files: validated.value.files,
+        entry: validated.success.entry,
+        files: validated.success.files,
         modulePaths,
-        displayEntry: validated.value.entry,
+        displayEntry: validated.success.entry,
       },
     );
     return prepareFrozenSource(input.workspaceDir, input.scratchDir, frozen);
   }
 
   const resolved = await resolvePathSource(input.workspaceDir, input.source.entry);
-  if (resolved.isErr()) return err(resolved.error);
-  if (resolved.value.kind === "workspace") {
+  if (Result.isFailure(resolved)) return Result.fail(resolved.failure);
+  if (resolved.success.kind === "workspace") {
     const checkedWorkflow = await checkWorkflow(
-      resolved.value.entryPath,
+      resolved.success.entryPath,
       input.workspaceDir,
       input.scratchDir,
     );
@@ -122,26 +122,26 @@ export async function prepareWorkflowSource(input: {
       diagnostics: sanitizeDiagnostics(checkedWorkflow.diagnostics, input.scratchDir),
     };
     const checked = checkFailure(check);
-    if (checked) return err(checked);
+    if (checked) return Result.fail(checked);
     const graph = await workspaceSourceGraph(
       check,
-      resolved.value.sourceRoot,
-      resolved.value.source.entry,
+      resolved.success.sourceRoot,
+      resolved.success.source.entry,
     );
-    if (graph.isErr()) return err(graph.error);
-    return ok({
+    if (Result.isFailure(graph)) return Result.fail(graph.failure);
+    return Result.succeed({
       check,
-      entryPath: resolved.value.entryPath,
-      sourceRoot: resolved.value.sourceRoot,
-      source: resolved.value.source,
-      sourceGraphDigest: graph.value.sourceGraphDigest,
-      displayEntry: resolved.value.entryPath,
+      entryPath: resolved.success.entryPath,
+      sourceRoot: resolved.success.sourceRoot,
+      source: resolved.success.source,
+      sourceGraphDigest: graph.success.sourceGraphDigest,
+      displayEntry: resolved.success.entryPath,
     });
   }
 
   await exposeWorkspaceDependencies(input.scratchDir, input.workspaceDir);
   const discoveredWorkflow = await checkWorkflow(
-    resolved.value.entryPath,
+    resolved.success.entryPath,
     input.workspaceDir,
     input.scratchDir,
     { dependencyFallback: true },
@@ -151,19 +151,19 @@ export async function prepareWorkflowSource(input: {
     diagnostics: sanitizeDiagnostics(discoveredWorkflow.diagnostics, input.scratchDir),
   };
   const discoveryFailure = checkFailure(discovery);
-  if (discoveryFailure) return err(discoveryFailure);
-  const captured = await capturePathSource(discovery, resolved.value.entryPath);
-  if (captured.isErr()) return err(captured.error);
+  if (discoveryFailure) return Result.fail(discoveryFailure);
+  const captured = await capturePathSource(discovery, resolved.success.entryPath);
+  if (Result.isFailure(captured)) return Result.fail(captured.failure);
   const frozen = await materializeSource(
     input.scratchDir,
     input.workspaceDir,
     {
-      entry: captured.value.entry,
-      files: captured.value.files,
-      modulePaths: captured.value.modulePaths,
-      expectedModulePaths: captured.value.modulePaths,
-      diagnostics: captured.value.diagnostics,
-      displayEntry: resolved.value.displayEntry,
+      entry: captured.success.entry,
+      files: captured.success.files,
+      modulePaths: captured.success.modulePaths,
+      expectedModulePaths: captured.success.modulePaths,
+      diagnostics: captured.success.diagnostics,
+      displayEntry: resolved.success.displayEntry,
     },
   );
   return prepareFrozenSource(input.workspaceDir, input.scratchDir, frozen);
@@ -173,7 +173,7 @@ async function prepareFrozenSource(
   workspaceDir: string,
   scratchDir: string,
   frozen: FrozenSource,
-): Promise<Result<PreparedWorkflowSource, WorkflowSourcePreparationFailure>> {
+): Promise<Result.Result<PreparedWorkflowSource, WorkflowSourcePreparationFailure>> {
   const checkedWorkflow = await checkWorkflow(frozen.entryPath, workspaceDir, scratchDir);
   const authoritativeDiagnostics = sanitizeDiagnostics(
     remapSourceDiagnostics(checkedWorkflow.diagnostics, frozen.sourceRoot),
@@ -185,10 +185,10 @@ async function prepareFrozenSource(
   );
   const check = { ...checkedWorkflow, diagnostics };
   const checked = checkFailure(check);
-  if (checked) return err(checked);
+  if (checked) return Result.fail(checked);
   const closure = validateFrozenClosure(check, frozen);
-  if (closure.isErr()) return err(closure.error);
-  return ok({
+  if (Result.isFailure(closure)) return Result.fail(closure.failure);
+  return Result.succeed({
     check,
     entryPath: frozen.entryPath,
     sourceRoot: frozen.sourceRoot,
@@ -216,74 +216,74 @@ function checkFailure(
 async function resolvePathSource(
   workspaceDir: string,
   entry: string,
-): Promise<Result<ResolvedPathSource, SourcePreparationFailure>> {
+): Promise<Result.Result<ResolvedPathSource, SourcePreparationFailure>> {
   const workspace = resolve(workspaceDir);
   const entryPath = resolve(workspace, entry);
   let physicalWorkspace: string;
   try {
     physicalWorkspace = await realpath(workspace);
   } catch (cause) {
-    return err(sourceInvalid(`Workflow workspace '${workspace}' could not be resolved: ${causeMessage(cause)}`));
+    return Result.fail(sourceInvalid(`Workflow workspace '${workspace}' could not be resolved: ${causeMessage(cause)}`));
   }
 
   try {
     const physicalEntry = await realpath(entryPath);
     if (isContained(physicalWorkspace, physicalEntry)) {
       const sourceEntry = portableSourcePath(physicalWorkspace, physicalEntry);
-      if (!sourceEntry) return err(sourceInvalid(`Workflow entry '${entryPath}' must be a file inside workspace '${workspace}'.`));
+      if (!sourceEntry) return Result.fail(sourceInvalid(`Workflow entry '${entryPath}' must be a file inside workspace '${workspace}'.`));
       const validatedEntry = canonicalizeSourcePath(sourceEntry);
-      if (validatedEntry.isErr()) return err(validatedEntry.error);
-      return ok({
+      if (Result.isFailure(validatedEntry)) return Result.fail(validatedEntry.failure);
+      return Result.succeed({
         kind: "workspace",
         entryPath: physicalEntry,
         sourceRoot: physicalWorkspace,
-        source: { kind: "workspace", entry: validatedEntry.value },
+        source: { kind: "workspace", entry: validatedEntry.success },
       });
     }
-    return ok({ kind: "snapshot", entryPath, displayEntry: entryPath });
+    return Result.succeed({ kind: "snapshot", entryPath, displayEntry: entryPath });
   } catch (cause) {
     if (!isMissingPathError(cause)) {
-      return err(sourceInvalid(`Workflow entry '${entryPath}' could not be resolved: ${causeMessage(cause)}`));
+      return Result.fail(sourceInvalid(`Workflow entry '${entryPath}' could not be resolved: ${causeMessage(cause)}`));
     }
     const lexicalEntry = portableSourcePath(workspace, entryPath);
     if (lexicalEntry) {
       const validatedEntry = canonicalizeSourcePath(lexicalEntry);
-      if (validatedEntry.isErr()) return err(validatedEntry.error);
-      return ok({
+      if (Result.isFailure(validatedEntry)) return Result.fail(validatedEntry.failure);
+      return Result.succeed({
         kind: "workspace",
         entryPath,
         sourceRoot: physicalWorkspace,
-        source: { kind: "workspace", entry: validatedEntry.value },
+        source: { kind: "workspace", entry: validatedEntry.success },
       });
     }
-    return ok({ kind: "snapshot", entryPath, displayEntry: entryPath });
+    return Result.succeed({ kind: "snapshot", entryPath, displayEntry: entryPath });
   }
 }
 
 async function capturePathSource(
   check: WorkflowCheckResult,
   entryPath: string,
-): Promise<Result<CapturedSource, SourcePreparationFailure>> {
-  if (!check.sourceFiles) return err(sourceChanged("Workflow source graph was unavailable after discovery."));
+): Promise<Result.Result<CapturedSource, SourcePreparationFailure>> {
+  if (!check.sourceFiles) return Result.fail(sourceChanged("Workflow source graph was unavailable after discovery."));
   const captured = new Map<string, string>();
   for (const sourceFile of check.sourceFiles) {
     if (!isSourceGraphTypeScript(sourceFile.path)) continue;
     const stable = await readStableText(sourceFile.path, sourceFile.content);
-    if (stable.isErr()) return err(stable.error);
-    captured.set(resolve(sourceFile.path), stable.value);
+    if (Result.isFailure(stable)) return Result.fail(stable.failure);
+    captured.set(resolve(sourceFile.path), stable.success);
   }
   if (!captured.has(resolve(entryPath))) {
-    return err(sourceChanged(`Workflow entry '${entryPath}' was not present in its discovered static source graph.`));
+    return Result.fail(sourceChanged(`Workflow entry '${entryPath}' was not present in its discovered static source graph.`));
   }
 
   const manifests = new Map<string, string>();
   const manifestBySource = new Map<string, string>();
   for (const path of captured.keys()) {
     const manifest = await nearestPackageManifest(path);
-    if (manifest.isErr()) return err(manifest.error);
-    if (manifest.value) {
-      manifests.set(manifest.value.path, manifest.value.content);
-      manifestBySource.set(path, manifest.value.path);
+    if (Result.isFailure(manifest)) return Result.fail(manifest.failure);
+    if (manifest.success) {
+      manifests.set(manifest.success.path, manifest.success.content);
+      manifestBySource.set(path, manifest.success.path);
     }
   }
 
@@ -305,18 +305,18 @@ async function capturePathSource(
     });
   }
   if (files.some(file => !file.path)) {
-    return err(sourceInvalid("Workflow source graph could not be projected beneath one source root."));
+    return Result.fail(sourceInvalid("Workflow source graph could not be projected beneath one source root."));
   }
   const entry = portableSourcePath(root, entryPath);
   if (!entry) {
-    return err(sourceInvalid(`Workflow entry '${entryPath}' could not be projected into its source bundle.`));
+    return Result.fail(sourceInvalid(`Workflow entry '${entryPath}' could not be projected into its source bundle.`));
   }
   const canonical = canonicalizeFilesSource({ kind: "files", entry, files });
-  if (canonical.isErr()) return err(canonical.error);
-  return ok({
+  if (Result.isFailure(canonical)) return Result.fail(canonical.failure);
+  return Result.succeed({
     root,
-    entry: canonical.value.entry,
-    files: canonical.value.files,
+    entry: canonical.success.entry,
+    files: canonical.success.files,
     modulePaths: new Set(
       [...captured.keys()]
         .map(path => portableSourcePath(root, path))
@@ -367,20 +367,20 @@ async function workspaceSourceGraph(
   check: WorkflowCheckResult,
   sourceRoot: string,
   entry: string,
-): Promise<Result<{ sourceGraphDigest: Sha256Digest }, SourcePreparationFailure>> {
-  if (!check.sourceFiles) return err(sourceChanged("Workflow source graph was unavailable after check."));
+): Promise<Result.Result<{ sourceGraphDigest: Sha256Digest }, SourcePreparationFailure>> {
+  if (!check.sourceFiles) return Result.fail(sourceChanged("Workflow source graph was unavailable after check."));
   const files = new Map<string, string>();
   for (const sourceFile of check.sourceFiles) {
     if (!isSourceGraphTypeScript(sourceFile.path)) continue;
     const path = workspaceGraphRelative(sourceRoot, sourceFile.path);
-    if (path.isErr()) return err(path.error);
-    files.set(path.value, sourceFile.content);
+    if (Result.isFailure(path)) return Result.fail(path.failure);
+    files.set(path.success, sourceFile.content);
     const manifest = await nearestWorkspacePackageManifest(sourceFile.path, sourceRoot);
-    if (manifest.isErr()) return err(manifest.error);
-    if (manifest.value) files.set(manifest.value.path, manifest.value.content);
+    if (Result.isFailure(manifest)) return Result.fail(manifest.failure);
+    if (manifest.success) files.set(manifest.success.path, manifest.success.content);
   }
-  if (!files.has(entry)) return err(sourceChanged(`Workspace workflow entry '${entry}' was not present in its static source graph.`));
-  return ok({
+  if (!files.has(entry)) return Result.fail(sourceChanged(`Workspace workflow entry '${entry}' was not present in its static source graph.`));
+  return Result.succeed({
     sourceGraphDigest: sourceGraphDigest(
       entry,
       [...files].map(([path, content]) => ({ path, content })),
@@ -391,71 +391,71 @@ async function workspaceSourceGraph(
 function validateFrozenClosure(
   check: WorkflowCheckResult,
   frozen: FrozenSource,
-): Result<void, SourcePreparationFailure> {
-  if (!check.sourceFiles) return err(sourceChanged("Frozen workflow source graph was unavailable."));
+): Result.Result<void, SourcePreparationFailure> {
+  if (!check.sourceFiles) return Result.fail(sourceChanged("Frozen workflow source graph was unavailable."));
   const actual = new Set<string>();
   for (const sourceFile of check.sourceFiles) {
     if (!isSourceGraphTypeScript(sourceFile.path)) continue;
     const path = portableSourcePath(frozen.sourceRoot, resolve(sourceFile.path));
     if (!path) {
-      return err(sourceChanged(`Frozen workflow discovered local source '${sourceFile.path}' outside its source bundle.`));
+      return Result.fail(sourceChanged(`Frozen workflow discovered local source '${sourceFile.path}' outside its source bundle.`));
     }
     actual.add(path);
   }
   for (const path of actual) {
     if (!frozen.availableModulePaths.has(path)) {
-      return err(sourceChanged(`Frozen workflow discovered local source '${path}' after capture.`));
+      return Result.fail(sourceChanged(`Frozen workflow discovered local source '${path}' after capture.`));
     }
   }
   for (const path of frozen.expectedModulePaths ?? []) {
-    if (!actual.has(path)) return err(sourceChanged(`Frozen workflow source '${path}' disappeared after capture.`));
+    if (!actual.has(path)) return Result.fail(sourceChanged(`Frozen workflow source '${path}' disappeared after capture.`));
   }
-  return ok(undefined);
+  return Result.succeed(undefined);
 }
 
 async function nearestWorkspacePackageManifest(
   sourcePath: string,
   root: string,
-): Promise<Result<WorkflowSourceFile | undefined, SourcePreparationFailure>> {
+): Promise<Result.Result<WorkflowSourceFile | undefined, SourcePreparationFailure>> {
   let current = dirname(resolve(sourcePath));
   while (true) {
     const path = join(current, "package.json");
     try {
       const projected = workspaceGraphRelative(root, path);
-      if (projected.isErr()) return err(projected.error);
-      return ok({
-        path: projected.value,
+      if (Result.isFailure(projected)) return Result.fail(projected.failure);
+      return Result.succeed({
+        path: projected.success,
         content: await readFile(path, "utf8"),
       });
     } catch (cause) {
       if (!isMissingPathError(cause)) {
-        return err(sourceInvalid(`Package manifest '${path}' could not be read: ${causeMessage(cause)}`));
+        return Result.fail(sourceInvalid(`Package manifest '${path}' could not be read: ${causeMessage(cause)}`));
       }
     }
     const parent = dirname(current);
-    if (parent === current) return ok(undefined);
+    if (parent === current) return Result.succeed(undefined);
     current = parent;
   }
 }
 
 async function nearestPackageManifest(
   sourcePath: string,
-): Promise<Result<{ path: string; content: string } | undefined, SourcePreparationFailure>> {
+): Promise<Result.Result<{ path: string; content: string } | undefined, SourcePreparationFailure>> {
   let current = dirname(resolve(sourcePath));
   while (true) {
     const path = join(current, "package.json");
     try {
       await lstat(path);
       const stable = await readStableText(path);
-      if (stable.isErr()) return err(stable.error);
-      return ok({ path, content: stable.value });
+      if (Result.isFailure(stable)) return Result.fail(stable.failure);
+      return Result.succeed({ path, content: stable.success });
     } catch (cause) {
       if (!isMissingPathError(cause)) {
-        return err(sourceInvalid(`Package manifest '${path}' could not be inspected: ${causeMessage(cause)}`));
+        return Result.fail(sourceInvalid(`Package manifest '${path}' could not be inspected: ${causeMessage(cause)}`));
       }
     }
     const parent = dirname(current);
-    if (parent === current) return ok(undefined);
+    if (parent === current) return Result.succeed(undefined);
     current = parent;
   }
 }
@@ -463,15 +463,15 @@ async function nearestPackageManifest(
 async function readStableText(
   path: string,
   expected?: string,
-): Promise<Result<string, SourcePreparationFailure>> {
+): Promise<Result.Result<string, SourcePreparationFailure>> {
   try {
     const before = await lstat(path, { bigint: true });
     if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) {
-      return err(sourceInvalid(`Workflow source '${path}' must be a regular, unlinked file.`));
+      return Result.fail(sourceInvalid(`Workflow source '${path}' must be a regular, unlinked file.`));
     }
     const physical = await realpath(path);
     if (resolve(physical) !== resolve(path)) {
-      return err(sourceInvalid(`Workflow source '${path}' must not pass through a symbolic link.`));
+      return Result.fail(sourceInvalid(`Workflow source '${path}' must not pass through a symbolic link.`));
     }
     const content = UTF8.decode(await readFile(path));
     const after = await stat(path, { bigint: true });
@@ -481,13 +481,13 @@ async function readStableText(
       || before.mtimeNs !== after.mtimeNs
       || before.ctimeNs !== after.ctimeNs
       || (expected !== undefined && expected !== content)) {
-      return err(sourceChanged(`Workflow source '${path}' changed while its source graph was captured.`));
+      return Result.fail(sourceChanged(`Workflow source '${path}' changed while its source graph was captured.`));
     }
-    return ok(content);
+    return Result.succeed(content);
   } catch (cause) {
-    if (isMissingPathError(cause)) return err(sourceChanged(`Workflow source '${path}' disappeared while it was captured.`));
-    if (cause instanceof TypeError) return err(sourceInvalid(`Workflow source '${path}' is not valid UTF-8.`));
-    return err(sourceInvalid(`Workflow source '${path}' could not be captured: ${causeMessage(cause)}`));
+    if (isMissingPathError(cause)) return Result.fail(sourceChanged(`Workflow source '${path}' disappeared while it was captured.`));
+    if (cause instanceof TypeError) return Result.fail(sourceInvalid(`Workflow source '${path}' is not valid UTF-8.`));
+    return Result.fail(sourceInvalid(`Workflow source '${path}' could not be captured: ${causeMessage(cause)}`));
   }
 }
 
@@ -535,14 +535,14 @@ function commonAncestor(paths: readonly string[]): string {
 function workspaceGraphRelative(
   root: string,
   path: string,
-): Result<string, SourcePreparationFailure> {
+): Result.Result<string, SourcePreparationFailure> {
   const child = relative(resolve(root), resolve(path));
   if (child === "" || isAbsolute(child)) {
-    return err(sourceInvalid(
+    return Result.fail(sourceInvalid(
       `Workflow source graph path '${path}' cannot be represented relative to workspace '${root}'.`,
     ));
   }
-  return ok(child.split(sep).join("/"));
+  return Result.succeed(child.split(sep).join("/"));
 }
 
 function isContained(root: string, path: string): boolean {

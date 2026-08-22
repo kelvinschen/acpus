@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import type { PreparedWorkflow } from "@acpus/workflow-compiler";
-import { err, errAsync, ok, okAsync } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CaptureStream } from "./support/capture-stream.js";
 
@@ -40,12 +41,58 @@ describe("workflow source command plumbing", () => {
     vi.clearAllMocks();
     mock.prepareWorkflowForCli.mockResolvedValue({ prepared: snapshotPrepared });
     mock.sendDaemonSubmitAndObserve.mockImplementation(() => daemonFrames(admittedFrame()));
-    mock.sendDaemonControl.mockReturnValue(okAsync({
+    mock.sendDaemonControl.mockReturnValue(Effect.succeed({
       type: "fork",
       sourceRunId: "run_source",
       run: runDetails("run_child"),
     }));
-    mock.tryNormalizeForkInput.mockReturnValue(okAsync({}));
+    mock.tryNormalizeForkInput.mockReturnValue(Effect.succeed({}));
+  });
+
+  it("presents structurally unbound Agent slots in stable order", async () => {
+    const stdout = new CaptureStream();
+    const setExitCode = vi.fn();
+    mock.prepareWorkflowForCli.mockResolvedValue({
+      prepared: preparedWorkflow([], agentSlots()),
+    });
+    const command = createWorkflowCommand({
+      cwd: "/workspace",
+      stdin: Readable.from([]),
+      stdout,
+      stderr: new CaptureStream(),
+      setExitCode,
+    });
+
+    await command.parseAsync(["check", "workflow.ts"], { from: "user" });
+
+    expect(stdout.text).toContain("Unbound Agent slots: reviewer, worker\n");
+    expect(setExitCode).toHaveBeenLastCalledWith(0);
+  });
+
+  it("rejects an incomplete Agent injection after workflow preparation", async () => {
+    mock.prepareWorkflowForCli.mockResolvedValue({
+      prepared: preparedWorkflow([], agentSlots()),
+    });
+    const command = createWorkflowCommand({
+      cwd: "/workspace",
+      stdin: Readable.from([]),
+      stdout: new CaptureStream(),
+      stderr: new CaptureStream(),
+      setExitCode: vi.fn(),
+    });
+
+    await expect(command.parseAsync([
+      "check",
+      "workflow.ts",
+      "--agents",
+      '{"worker":{"use":"codex"}}',
+    ], { from: "user" })).rejects.toMatchObject({
+      exitCode: 1,
+      result: {
+        phase: "validate",
+        message: "Agent bindings are required for: reviewer.",
+      },
+    });
   });
 
   it.each([
@@ -170,7 +217,7 @@ describe("workflow source command plumbing", () => {
   });
 
   it("preserves the Runtime repair code when fork input normalization cannot bind the store", async () => {
-    mock.tryNormalizeForkInput.mockReturnValueOnce(errAsync({
+    mock.tryNormalizeForkInput.mockReturnValueOnce(Effect.fail({
       type: "runtime-store-repair-required",
       command: "acpus doctor --fix",
       message: "Runtime store repair is required.",
@@ -263,8 +310,8 @@ describe("workflow source command plumbing", () => {
 
   it("preserves a post-admission daemon error and its durable run recovery", async () => {
     mock.sendDaemonSubmitAndObserve.mockReturnValueOnce((async function* () {
-      yield ok(admittedFrame());
-      yield err({
+      yield Result.succeed(admittedFrame());
+      yield Result.fail({
         type: "request-failed",
         method: "submitAndObserve",
         code: "STORE_ERROR",
@@ -294,7 +341,7 @@ describe("workflow source command plumbing", () => {
     const releaseAdmission = deferred<void>();
     mock.sendDaemonSubmitAndObserve.mockImplementationOnce(() => (async function* () {
       await releaseAdmission.promise;
-      yield ok(admittedFrame());
+      yield Result.succeed(admittedFrame());
     })());
     const stdout = new CaptureStream();
     const setExitCode = vi.fn();
@@ -361,7 +408,7 @@ describe("workflow source command plumbing", () => {
         next: () => {
           nextCount += 1;
           return nextCount === 1
-            ? Promise.resolve({ done: false as const, value: ok(admittedFrame()) })
+            ? Promise.resolve({ done: false as const, value: Result.succeed(admittedFrame()) })
             : new Promise<IteratorResult<unknown>>(resolve => { resolveNext = resolve; });
         },
         return: async () => ({ done: true as const, value: undefined }),
@@ -382,7 +429,7 @@ describe("workflow source command plumbing", () => {
     process.emit("SIGINT");
     resolveNext({
       done: false,
-      value: err({
+      value: Result.fail({
         type: "request-failed",
         method: "submitAndObserve",
         code: "STORE_ERROR",
@@ -458,34 +505,6 @@ describe("workflow source command plumbing", () => {
     expect(mock.sendDaemonControl).not.toHaveBeenCalled();
   });
 
-  it("sends an empty fork workflow value through scoped preparation instead of treating it as absent", async () => {
-    const preparationError = new Error("empty workflow reached source preparation");
-    mock.prepareWorkflowForCli.mockRejectedValueOnce(preparationError);
-    const stdin = Readable.from([]);
-    const command = createRunsCommand({
-      cwd: "/workspace",
-      stdin,
-      stdout: new CaptureStream(),
-      stderr: new CaptureStream(),
-      setExitCode: vi.fn(),
-    });
-
-    await expect(command.parseAsync([
-      "fork",
-      "run_source",
-      "--workflow",
-      "",
-      "--global",
-    ], { from: "user" })).rejects.toBe(preparationError);
-    expect(mock.prepareWorkflowForCli).toHaveBeenCalledWith({
-      workspaceDir: "/workspace",
-      workflow: "",
-      stdin,
-      global: true,
-    });
-    expect(mock.sendDaemonControl).not.toHaveBeenCalled();
-  });
-
   it("rejects mutually exclusive fork catalog scopes before preparation or daemon control", async () => {
     const command = createRunsCommand({
       cwd: "/workspace",
@@ -513,41 +532,16 @@ describe("workflow source command plumbing", () => {
     expect(mock.sendDaemonControl).not.toHaveBeenCalled();
   });
 
-  it("rejects invalid fork Agent JSON before replacement workflow preparation", async () => {
-    const command = createRunsCommand({
-      cwd: "/workspace",
-      stdin: Readable.from([]),
-      stdout: new CaptureStream(),
-      stderr: new CaptureStream(),
-      setExitCode: vi.fn(),
-    });
-
-    await expect(command.parseAsync([
-      "fork",
-      "run_source",
-      "--workflow",
-      "replacement",
-      "--agents",
-      "missing-agents.json",
-    ], { from: "user" })).rejects.toMatchObject({
-      exitCode: 2,
-      result: {
-        phase: "usage",
-        message: expect.stringContaining("--agents file '/workspace/missing-agents.json' could not be read"),
-      },
-    });
-    expect(mock.prepareWorkflowForCli).not.toHaveBeenCalled();
-    expect(mock.sendDaemonControl).not.toHaveBeenCalled();
-  });
 });
 
 function preparedWorkflow(
   diagnostics: PreparedWorkflow["ir"]["diagnostics"] = [],
+  agents: PreparedWorkflow["ir"]["agents"] = {},
 ): PreparedWorkflow {
   const ir: PreparedWorkflow["ir"] = {
     irVersion: 8,
     name: "dynamic-source",
-    agents: {},
+    agents,
     root: {
       nodes: [],
       output: { kind: "object", fields: {} },
@@ -589,6 +583,13 @@ function preparedWorkflow(
       },
       sourceGraphDigest: preparedSourceGraphDigest,
     },
+  };
+}
+
+function agentSlots(): PreparedWorkflow["ir"]["agents"] {
+  return {
+    worker: { kind: "agent_slot" },
+    reviewer: { kind: "agent_slot" },
   };
 }
 
@@ -668,7 +669,7 @@ function closedFrame(
 
 function daemonFrames(...frames: unknown[]): AsyncIterable<unknown> {
   return (async function* () {
-    for (const frame of frames) yield ok(frame);
+    for (const frame of frames) yield Result.succeed(frame);
   })();
 }
 

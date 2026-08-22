@@ -1,28 +1,40 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { sha256Digest } from "@acpus/core/content-identity";
 import { defineWorkflow } from "@acpus/core";
 import { describe, expect, it } from "vitest";
 import { agentSessionScopeDigest } from "../src/execution/agent-session.js";
-import { readInspectionAtStore } from "../src/inspection/use-cases.js";
+import { readInspectionAtStore as readInspectionAtStoreEffect } from "../src/inspection/use-cases.js";
 import { captureProcessIdentity } from "../src/process-liveness.js";
 import type { SchedulerSteerProof } from "../src/scheduler/store-port.js";
-import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
+import { makeRuntimeStoreService } from "../src/store/service.js";
+import { openRuntimeStoreAdapter, type RuntimeStoreAdapter } from "../src/store/store.js";
 import { admitRunForTest } from "./support/runtime-store.js";
-import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
-import { throwingSchedulerStore } from "./support/scheduler-store.js";
+import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-harness.js";
+import { captureSchedulerCall, throwingSchedulerStore } from "./support/scheduler-store.js";
+
+function readInspectionAtStore(
+  store: RuntimeStoreAdapter,
+  ...args: Tail<Parameters<typeof readInspectionAtStoreEffect>>
+) {
+  return Effect.runPromise(Effect.result(readInspectionAtStoreEffect(makeRuntimeStoreService(store), ...args)));
+}
+
+type Tail<Values extends readonly unknown[]> = Values extends readonly [unknown, ...infer Rest] ? Rest : never;
 
 describe("scheduler store Agent Steer", () => {
   it("projects Steer only when the live registry proves the exact durable Turn tuple", async () => {
     await withRuntimeWorkspace("scheduler-store-steer-inspection-proof", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const started = await startedAgentTurn(store, workspace);
         const query = { kind: "target", runId: started.runId, target: "review", detail: "summary" } as const;
-        const offline = (await readInspectionAtStore(store, query))._unsafeUnwrap();
+        const offline = Result.getOrThrow((await readInspectionAtStore(store, query)));
         expect(offline.kind === "target" && offline.detail === "summary" ? offline.availableControls ?? [] : [])
           .not.toContainEqual(expect.objectContaining({ type: "steer" }));
 
         let proved: unknown;
-        const live = (await readInspectionAtStore(store, query, proof => {
+        const live = Result.getOrThrow((await readInspectionAtStore(store, query, proof => {
           proved = proof;
           return proof.runId === started.runId
             && proof.nodeKey === started.nodeKey
@@ -30,7 +42,7 @@ describe("scheduler store Agent Steer", () => {
             && proof.attemptId === started.proof.attemptId
             && proof.turnId === started.proof.turnId
             && proof.sessionLeaseId === started.proof.sessionLeaseId;
-        }))._unsafeUnwrap();
+        })));
         expect(proved).toEqual({ runId: started.runId, nodeKey: started.nodeKey, ...started.proof });
         expect(live.kind === "target" && live.detail === "summary" ? live.availableControls ?? [] : []).toContainEqual({
           type: "steer",
@@ -46,18 +58,18 @@ describe("scheduler store Agent Steer", () => {
 
   it("requires the exact active Turn proof and commits only the durable drain fence", async () => {
     await withRuntimeWorkspace("scheduler-store-steer-proof", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const started = await startedAgentTurn(store, workspace);
         const before = store.getLastRunEventSequence(started.runId);
-        expect(store.scheduler.trySteerAgent({
+        expect(Result.getOrThrow(Result.flip(captureSchedulerCall(() => store.scheduler.trySteerAgent({
           runId: started.runId,
           ownerEpoch: started.ownerEpoch,
           idempotencyKey: "steer:missing-proof",
           steerId: "steer:missing-proof",
           target: started.attemptId,
           instruction: "Use the smaller fix.",
-        })._unsafeUnwrapErr()).toMatchObject({ type: "steer-session-conflict" });
+        }))))).toMatchObject({ type: "steer-session-conflict" });
         expect(store.getLastRunEventSequence(started.runId)).toBe(before);
 
         const accepted = store.scheduler.trySteerAgent({
@@ -68,7 +80,7 @@ describe("scheduler store Agent Steer", () => {
           target: started.attemptId,
           instruction: "Use the smaller fix.",
           proof: started.proof,
-        })._unsafeUnwrap();
+        });
 
         expect(accepted.snapshot.projection.instances[started.nodeKey]).toMatchObject({
           status: "running",
@@ -78,14 +90,14 @@ describe("scheduler store Agent Steer", () => {
           "control.agent_steer_requested",
           "attempt.superseded",
         ]);
-        expect(store.scheduler.tryStartAttempt({
+        expect(Result.getOrThrow(Result.flip(captureSchedulerCall(() => store.scheduler.tryStartAttempt({
           runId: started.runId,
           nodeKey: started.nodeKey,
           nodeId: "review",
           ownerEpoch: started.ownerEpoch,
           expectedVersion: accepted.snapshot.version,
           idempotencyKey: "steer:premature-replacement",
-        })._unsafeUnwrapErr()).toMatchObject({ type: "instance-not-ready" });
+        }))))).toMatchObject({ type: "instance-not-ready" });
 
         const replay = store.scheduler.trySteerAgent({
           runId: started.runId,
@@ -94,7 +106,7 @@ describe("scheduler store Agent Steer", () => {
           steerId: "steer:accepted",
           target: started.attemptId,
           instruction: "Use the smaller fix.",
-        })._unsafeUnwrap();
+        });
         expect(replay).toMatchObject({ fencedAttemptId: started.attemptId, target: started.nodeKey });
         expect(store.getLastRunEventSequence(started.runId)).toBe(before + 2);
       } finally {
@@ -105,7 +117,7 @@ describe("scheduler store Agent Steer", () => {
 
   it("queues the replacement in the same transaction as terminal settlement", async () => {
     await withRuntimeWorkspace("scheduler-store-steer-settlement", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const started = await startedAgentTurn(store, workspace);
         const accepted = acceptSteer(store, started, "steer:settled");
@@ -121,7 +133,7 @@ describe("scheduler store Agent Steer", () => {
           next: "terminal_observed",
           cause: "provider_terminal",
           observedAt: new Date("2026-08-19T00:00:00.000Z"),
-        })._unsafeUnwrap();
+        });
         expect(settled.checkpoint).toBe("terminal_observed");
         const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(started.runId);
         expect(snapshot.projection.instances[started.nodeKey]).toMatchObject({
@@ -149,7 +161,7 @@ describe("scheduler store Agent Steer", () => {
 
   it("reconciles an accepted-but-unsignalled Steer to unknown and blocked", async () => {
     await withRuntimeWorkspace("scheduler-store-steer-reconcile", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const started = await startedAgentTurn(store, workspace);
         acceptSteer(store, started, "steer:crashed");
@@ -159,11 +171,11 @@ describe("scheduler store Agent Steer", () => {
           runId: started.runId,
           runtimeOwnerEpoch: authorityEpoch,
           now: new Date("2026-08-19T00:00:00.000Z"),
-        })._unsafeUnwrap()).toBe(1);
+        })).toBe(1);
         expect(store.scheduler.tryReconcileAgentSteers({
           runId: started.runId,
           runtimeOwnerEpoch: authorityEpoch,
-        })._unsafeUnwrap()).toBe(0);
+        })).toBe(0);
 
         const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(started.runId);
         expect(snapshot.projection.instances[started.nodeKey]).toMatchObject({
@@ -200,7 +212,7 @@ type StartedAgentTurn = Readonly<{
   proof: SchedulerSteerProof;
 }>;
 
-async function startedAgentTurn(store: RuntimeStore, workspace: string): Promise<StartedAgentTurn> {
+async function startedAgentTurn(store: RuntimeStoreAdapter, workspace: string): Promise<StartedAgentTurn> {
   const prepared = await prepareSyntheticWorkflow(workspace, agentWorkflow());
   const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
   const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -225,7 +237,7 @@ async function startedAgentTurn(store: RuntimeStore, workspace: string): Promise
   });
   const scopeDigest = agentSessionScopeDigest(run.id, "node", nodeKey);
   const inputDigest = sha256Digest("Review.");
-  const plan = store.scheduler.planAgentAttemptAdmission({
+  const plan = Result.getOrThrow(store.scheduler.planAgentAttemptAdmission({
     runId: run.id,
     attemptId: attempt.attemptId,
     ownerEpoch: claim.ownerEpoch,
@@ -233,7 +245,7 @@ async function startedAgentTurn(store: RuntimeStore, workspace: string): Promise
     scopeDigest,
     explicitShared: false,
     authored: { promptOrigin: "authored", inputDigest },
-  })._unsafeUnwrap();
+  }));
   store.scheduler.tryBindAgentAttemptSession({
     runId: run.id,
     attemptId: attempt.attemptId,
@@ -246,13 +258,13 @@ async function startedAgentTurn(store: RuntimeStore, workspace: string): Promise
     sessionOpenMode: "new_or_empty",
     promptOrigin: "authored",
     inputDigest,
-  })._unsafeUnwrap();
+  });
   store.scheduler.tryRecordAgentSessionReady({
     runId: run.id,
     attemptId: attempt.attemptId,
     ownerEpoch: claim.ownerEpoch,
     agentSessionId: plan.session.agentSessionId,
-  })._unsafeUnwrap();
+  });
   const turnId = "turn-active";
   const sessionLeaseId = "lease-active";
   const dispatch = store.scheduler.tryCommitAgentTurnDispatch({
@@ -264,7 +276,7 @@ async function startedAgentTurn(store: RuntimeStore, workspace: string): Promise
     sessionLeaseId,
     expected: { checkpoint: "not_dispatched", attemptId: attempt.attemptId, promptOrigin: "authored", inputDigest },
     invocationMetadata: { prompt: "Review." },
-  })._unsafeUnwrap();
+  });
   store.scheduler.tryAdvanceAgentSessionCheckpoint({
     runId: run.id,
     ownerEpoch: claim.ownerEpoch,
@@ -280,7 +292,7 @@ async function startedAgentTurn(store: RuntimeStore, workspace: string): Promise
       inputDigest,
     },
     cause: "local_call_pending",
-  })._unsafeUnwrap();
+  });
   return {
     runId: run.id,
     nodeKey,
@@ -290,7 +302,7 @@ async function startedAgentTurn(store: RuntimeStore, workspace: string): Promise
   };
 }
 
-function acceptSteer(store: RuntimeStore, started: StartedAgentTurn, steerId: string) {
+function acceptSteer(store: RuntimeStoreAdapter, started: StartedAgentTurn, steerId: string) {
   return store.scheduler.trySteerAgent({
     runId: started.runId,
     ownerEpoch: started.ownerEpoch,
@@ -299,12 +311,12 @@ function acceptSteer(store: RuntimeStore, started: StartedAgentTurn, steerId: st
     target: started.attemptId,
     instruction: "Use the smaller fix.",
     proof: started.proof,
-  })._unsafeUnwrap();
+  });
 }
 
-function claimRuntimeAuthority(store: RuntimeStore, workspace: string, runId: string): number {
+function claimRuntimeAuthority(store: RuntimeStoreAdapter, workspace: string, runId: string): number {
   const identity = captureProcessIdentity();
-  return store.claimRuntimeAuthority({
+  return Result.getOrThrow(store.claimRuntimeAuthority({
     workspaceRealpath: workspace,
     ownerId: `runtime:${runId}`,
     pid: identity.pid,
@@ -313,7 +325,7 @@ function claimRuntimeAuthority(store: RuntimeStore, workspace: string, runId: st
     packageVersion: "0.0.0-test",
     nodeVersion: process.version,
     execPath: process.execPath,
-  })._unsafeUnwrap().epoch;
+  })).epoch;
 }
 
 function agentWorkflow() {

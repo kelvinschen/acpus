@@ -1,4 +1,4 @@
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import { DEFAULT_MAX_LEAF_CONCURRENCY } from "./scheduler/advance.js";
 
 export const RUN_MAX_LEAF_CONCURRENCY_ENV = "ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY";
@@ -39,12 +39,16 @@ export type RuntimeConfigurationFailure = {
   message: string;
 };
 
-export function tryLoadRuntimeConfiguration(env: NodeJS.ProcessEnv): Result<RuntimeConfiguration, RuntimeConfigurationFailure> {
-  return tryRunMaxLeafConcurrency(env[RUN_MAX_LEAF_CONCURRENCY_ENV]).andThen(runMaxLeafConcurrency =>
-    tryAcpInactivityFailAfterMs(env[AGENT_ACP_INACTIVITY_FAIL_AFTER_MS_ENV]).map(inactivityFailAfterMs => ({
-      runMaxLeafConcurrency,
-      agentHostPolicy: loadAgentHostPolicy(env, inactivityFailAfterMs),
-    })),
+export function tryLoadRuntimeConfiguration(env: NodeJS.ProcessEnv): Result.Result<RuntimeConfiguration, RuntimeConfigurationFailure> {
+  return Result.flatMap(
+    tryRunMaxLeafConcurrency(env[RUN_MAX_LEAF_CONCURRENCY_ENV]),
+    runMaxLeafConcurrency => Result.map(
+      tryAcpInactivityFailAfterMs(env[AGENT_ACP_INACTIVITY_FAIL_AFTER_MS_ENV]),
+      inactivityFailAfterMs => ({
+        runMaxLeafConcurrency,
+        agentHostPolicy: loadAgentHostPolicy(env, inactivityFailAfterMs),
+      }),
+    ),
   );
 }
 
@@ -72,13 +76,13 @@ export function loadAgentHostPolicy(env: NodeJS.ProcessEnv, inactivityFailAfterM
   };
 }
 
-function tryAcpInactivityFailAfterMs(value: string | undefined): Result<number | undefined, RuntimeConfigurationFailure> {
-  if (value === undefined) return ok(undefined);
+function tryAcpInactivityFailAfterMs(value: string | undefined): Result.Result<number | undefined, RuntimeConfigurationFailure> {
+  if (value === undefined) return Result.succeed(undefined);
   if (/^[1-9]\d*$/u.test(value)) {
     const parsed = Number(value);
-    if (Number.isSafeInteger(parsed) && parsed <= MAX_NATIVE_TIMER_DELAY_MS) return ok(parsed);
+    if (Number.isSafeInteger(parsed) && parsed <= MAX_NATIVE_TIMER_DELAY_MS) return Result.succeed(parsed);
   }
-  return err({
+  return Result.fail({
     type: "invalid-agent-acp-inactivity-fail-after-ms",
     variable: AGENT_ACP_INACTIVITY_FAIL_AFTER_MS_ENV,
     value,
@@ -86,13 +90,13 @@ function tryAcpInactivityFailAfterMs(value: string | undefined): Result<number |
   });
 }
 
-function tryRunMaxLeafConcurrency(value: string | undefined): Result<number, RuntimeConfigurationFailure> {
-  if (value === undefined) return ok(DEFAULT_MAX_LEAF_CONCURRENCY);
+function tryRunMaxLeafConcurrency(value: string | undefined): Result.Result<number, RuntimeConfigurationFailure> {
+  if (value === undefined) return Result.succeed(DEFAULT_MAX_LEAF_CONCURRENCY);
   if (/^[1-9]\d*$/.test(value)) {
     const parsed = Number(value);
-    if (Number.isSafeInteger(parsed)) return ok(parsed);
+    if (Number.isSafeInteger(parsed)) return Result.succeed(parsed);
   }
-  return err({
+  return Result.fail({
     type: "invalid-run-max-leaf-concurrency",
     variable: RUN_MAX_LEAF_CONCURRENCY_ENV,
     value,

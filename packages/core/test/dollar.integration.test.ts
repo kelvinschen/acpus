@@ -1,9 +1,54 @@
 import { getEventListeners } from "node:events";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { $ as zxDollar, quote, quotePowerShell } from "zx/core";
 import { createDollar } from "../src/runtime.js";
 
 describe("dollar runtime", () => {
+  it("resolves live process defaults after wrapper creation", async () => {
+    const $ = createDollar();
+    const root = await mkdtemp(join(tmpdir(), "acpus-dollar-live-"));
+    const cwd = join(root, "cwd");
+    const previousCwd = process.cwd();
+    const previousMarker = process.env.ACPUS_DOLLAR_MARKER;
+    await mkdir(cwd);
+    try {
+      process.chdir(cwd);
+      process.env.ACPUS_DOLLAR_MARKER = "live";
+
+      const output = await $`${process.execPath} -e ${"process.stdout.write(JSON.stringify({ cwd: process.cwd(), marker: process.env.ACPUS_DOLLAR_MARKER }))"}`
+        .json<{ cwd: string; marker: string }>();
+
+      expect(output).toEqual({ cwd, marker: "live" });
+    } finally {
+      process.chdir(previousCwd);
+      if (previousMarker === undefined) delete process.env.ACPUS_DOLLAR_MARKER;
+      else process.env.ACPUS_DOLLAR_MARKER = previousMarker;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("merges chained command configuration and applies the latest overrides", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acpus-dollar-config-"));
+    const first = join(root, "first");
+    const second = join(root, "second");
+    await Promise.all([mkdir(first), mkdir(second)]);
+    try {
+      const configured = createDollar()({
+        cwd: first,
+        env: { ...process.env, ACPUS_DOLLAR_MARKER: "configured" },
+      })({ cwd: second });
+      const output = await configured`${process.execPath} -e ${"process.stdout.write(JSON.stringify({ cwd: process.cwd(), marker: process.env.ACPUS_DOLLAR_MARKER }))"}`
+        .json<{ cwd: string; marker: string }>();
+
+      expect(output).toEqual({ cwd: second, marker: "configured" });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("returns command results and reader outputs", async () => {
     const $ = createDollar();
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);

@@ -1,4 +1,4 @@
-import type { ResultAsync } from "neverthrow";
+import type * as Effect from "effect/Effect";
 
 export type AcpJsonValue =
   | null
@@ -156,6 +156,6 @@ export interface AcpSession {
   readonly sessionId: string;
   readonly projectionPath: string;
   readonly reportedVersion?: string;
-  runTurn(input: AcpTurnInput): ResultAsync<AcpTurnResult, AcpError>;
-  close(reason?: string): ResultAsync<void, AcpError>;
+  runTurn(input: AcpTurnInput): Effect.Effect<AcpTurnResult, AcpError>;
+  close(reason?: string): Effect.Effect<void, AcpError>;
 }

@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "./packages/owned-process/tsconfig.build.json" },
     { "path": "./packages/acp/tsconfig.build.json" },
     { "path": "./packages/agent-executor/tsconfig.build.json" },
     { "path": "./packages/dsh/tsconfig.build.json" },

@@ -1,13 +1,10 @@
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AdmittedWorkflowIR } from "@acpus/core/ir";
-import { err, ok, ResultAsync } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { tryNormalizeWorkflowInput, type SchemaNormalizationFailure } from "../admission/input.js";
 import type { PreparedRunWorkflow } from "../admission/prepared-workflow.js";
-import {
-  ArtifactReadUnavailableError,
-  readVerifiedArtifact,
-  tryResolveArtifactRef,
-} from "../artifacts/access.js";
+import { ArtifactReadUnavailableError } from "../artifacts/access.js";
 import { parseArtifactUri } from "../artifacts/reference.js";
 import type { ArtifactRecord } from "../artifacts/types.js";
 import { probeProcessIdentity } from "../process-liveness.js";
@@ -19,24 +16,24 @@ import {
   type RuntimeControlTarget,
 } from "../scheduler/control-plan.js";
 import { planRetrySessionImpact } from "../scheduler/retry-session-impact.js";
-import { throwSchedulerStoreResult } from "../scheduler/store-port.js";
 import { createWorkflowVisualizationOverlay, type WorkflowVisualizationOverlay } from "../visualization/overlay.js";
 import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout } from "../runtime-layout.js";
-import { inspectRuntimeStore } from "../runtime-store-lifecycle.js";
+import { inspectRuntimeStoreInternal } from "../runtime-store-lifecycle.js";
 import { inspectAcpOwnership } from "@acpus/agent-executor";
+import { makeNodeProcessHost } from "@acpus/owned-process";
 import {
-  openBoundRuntimeReadSession,
-  openExistingRuntimeStore,
-  openExistingWritableRuntimeStore,
-  runtimeReadFailureFromError,
-  withRunInspectionSnapshot,
   type RuntimeDiagnostics,
   type RuntimeAuthorityDiagnostics,
   type RunDetails,
   type RunDeleteFailure, type RunRecord,
   type RuntimeReadFailure,
-  type RuntimeStore,
 } from "../store/store.js";
+import {
+  acquireBoundRuntimeReadSession,
+  acquireExistingWritableRuntimeStore,
+  type RuntimeStoreBusy,
+  type RuntimeStoreShape,
+} from "../store/service.js";
 export type { RunDeleteFailure } from "../store/store.js";
 
 export type RunVisualizationControlTarget = RuntimeControlTarget;
@@ -96,118 +93,105 @@ export type ResolvedArtifact = ArtifactRecord & {
 function withBoundRuntimeRead<T>(
   cwd: string,
   absent: T,
-  read: (store: RuntimeStore) => T | Promise<T>,
-): ResultAsync<T, RuntimeReadFailure> {
-  return new ResultAsync((async () => {
-    const session = await openBoundRuntimeReadSession(cwd);
-    if (session.isErr()) return err(session.error);
-    if (!session.value) return ok(absent);
-    try {
-      return ok(await read(session.value.store));
-    } catch (error) {
-      return err(runtimeReadFailureFromError(error));
-    } finally {
-      session.value.close();
-    }
-  })());
+  read: (store: RuntimeStoreShape) => Effect.Effect<T, RuntimeStoreBusy>,
+): Effect.Effect<T, RuntimeReadFailure> {
+  return Effect.scoped(Effect.gen(function* () {
+    const session = yield* acquireBoundRuntimeReadSession(cwd);
+    if (!session) return absent;
+    return yield* read(session.store).pipe(Effect.mapError(runtimeReadBusyFailure));
+  }));
 }
 
-export function listRuns(cwd: string): ResultAsync<RunRecord[], RuntimeReadFailure> {
+export function listRuns(cwd: string): Effect.Effect<RunRecord[], RuntimeReadFailure> {
   return withBoundRuntimeRead(cwd, [] as RunRecord[], store => store.listRuns());
 }
 
-export function getRun(cwd: string, runId: string): ResultAsync<RunDetails | undefined, RuntimeReadFailure> {
+export function getRun(cwd: string, runId: string): Effect.Effect<RunDetails | undefined, RuntimeReadFailure> {
   return withBoundRuntimeRead(cwd, undefined, store => store.getRun(runId));
 }
 
-export function deleteRun(cwd: string, runId: string): ResultAsync<RunRecord | undefined, RunDeleteFailure> {
-  return new ResultAsync((async () => {
-    const store = await openExistingWritableRuntimeStore(cwd);
-    if (!store) return ok(undefined);
-    try {
-      return await store.deleteRun(runId);
-    } finally {
-      store.close();
-    }
-  })());
+export function deleteRun(cwd: string, runId: string): Effect.Effect<RunRecord | undefined, RunDeleteFailure> {
+  return Effect.scoped(Effect.gen(function* () {
+    const store = yield* acquireExistingWritableRuntimeStore(cwd).pipe(
+      Effect.catch(failure => Effect.die(failure.cause)),
+    );
+    if (!store) return undefined;
+    return yield* store.deleteRun(runId).pipe(
+      Effect.catchIf(
+        (failure): failure is RuntimeStoreBusy => isRuntimeStoreBusy(failure),
+        failure => Effect.die(failure.cause),
+      ),
+    );
+  }));
 }
 
 export function getArtifact(
   cwd: string,
   runId: string,
   artifactId: string,
-): ResultAsync<ArtifactRecord | undefined, RuntimeReadFailure> {
+): Effect.Effect<ArtifactRecord | undefined, RuntimeReadFailure> {
   return withBoundRuntimeRead(cwd, undefined, store => store.getArtifact(runId, artifactId));
 }
 
 export function resolveArtifact(
   cwd: string,
   artifactRef: string,
-): ResultAsync<ResolvedArtifact, ArtifactResolutionFailure | RuntimeReadFailure> {
-  return new ResultAsync((async () => {
-    const parsed = parseArtifactUri(artifactRef);
-    if (parsed.isErr()) return err(parsed.error);
-    const session = await openBoundRuntimeReadSession(cwd);
-    if (session.isErr()) return err(session.error);
-    if (!session.value) return err(artifactNotFound(artifactRef, parsed.value));
-    try {
-      const resolved = tryResolveArtifactRef(
-        { kind: "artifact", uri: artifactRef },
-        { runId: parsed.value.runId, store: session.value.store },
-      );
-      if (resolved.isErr()) {
-        if (resolved.error.type === "artifact-run-mismatch") throw new Error(resolved.error.message);
-        return err(resolved.error);
+): Effect.Effect<ResolvedArtifact, ArtifactResolutionFailure | RuntimeReadFailure> {
+  return Effect.scoped(Effect.gen(function* () {
+    const parsed = yield* Effect.fromResult(parseArtifactUri(artifactRef));
+    const session = yield* acquireBoundRuntimeReadSession(cwd);
+    if (!session) return yield* Effect.fail(artifactNotFound(artifactRef, parsed));
+    const resolved = yield* Effect.result(session.store.resolveArtifactRef(
+      { kind: "artifact", uri: artifactRef },
+      parsed.runId,
+    ));
+    if (Result.isFailure(resolved)) {
+      if (isRuntimeStoreBusy(resolved.failure)) {
+        return yield* Effect.fail(runtimeReadBusyFailure(resolved.failure));
       }
-      return ok({ ...resolved.value.artifact, uri: artifactRef });
-    } catch (error) {
-      return err(runtimeReadFailureFromError(error));
-    } finally {
-      session.value.close();
+      if (resolved.failure.type === "artifact-run-mismatch") {
+        return yield* Effect.fail(runtimeReadUnavailable(resolved.failure.message));
+      }
+      return yield* Effect.fail(resolved.failure);
     }
-  })());
+    return { ...resolved.success.artifact, uri: artifactRef };
+  }));
 }
 
 export function readArtifact(
   cwd: string,
   runId: string,
   artifactId: string,
-): ResultAsync<{ artifact: ArtifactRecord; bytes: Buffer } | undefined, RuntimeReadFailure> {
-  return new ResultAsync((async () => {
-    const session = await openBoundRuntimeReadSession(cwd);
-    if (session.isErr()) return err(session.error);
-    if (!session.value) return ok(undefined);
-    try {
-      return ok(readVerifiedArtifact({ runId, store: session.value.store }, artifactId));
-    } catch (error) {
-      if (error instanceof ArtifactReadUnavailableError) {
-        return err({ type: "runtime-store-unavailable", message: error.message });
-      }
-      return err(runtimeReadFailureFromError(error));
-    } finally {
-      session.value.close();
-    }
-  })());
+): Effect.Effect<{ artifact: ArtifactRecord; bytes: Buffer } | undefined, RuntimeReadFailure> {
+  return Effect.scoped(Effect.gen(function* () {
+    const session = yield* acquireBoundRuntimeReadSession(cwd);
+    if (!session) return undefined;
+    return yield* session.store.readVerifiedArtifact(runId, artifactId).pipe(
+      Effect.mapError(error => error instanceof ArtifactReadUnavailableError
+        ? runtimeReadUnavailable(error.message)
+        : runtimeReadBusyFailure(error)),
+    );
+  }));
 }
 
-export function listArtifacts(cwd: string, runId: string): ResultAsync<ArtifactRecord[] | undefined, RuntimeReadFailure> {
-  return withBoundRuntimeRead(cwd, undefined, store => {
-    if (!store.getRun(runId)) return undefined;
-    return store.listArtifacts(runId);
-  });
+export function listArtifacts(cwd: string, runId: string): Effect.Effect<ArtifactRecord[] | undefined, RuntimeReadFailure> {
+  return withBoundRuntimeRead(cwd, undefined, store => Effect.gen(function* () {
+    if (!(yield* store.getRun(runId))) return undefined;
+    return yield* store.listArtifacts(runId);
+  }));
 }
 
 export function getRunVisualizationSnapshot(
   cwd: string,
   runId: string,
-): ResultAsync<RunVisualizationSnapshot | undefined, RuntimeReadFailure> {
-  return withBoundRuntimeRead(cwd, undefined, async store => {
-    return await withRunInspectionSnapshot(store, async () => {
-      const run = store.getRun(runId);
+): Effect.Effect<RunVisualizationSnapshot | undefined, RuntimeReadFailure> {
+  return withBoundRuntimeRead(cwd, undefined, store =>
+    store.withRunInspectionSnapshot(Effect.gen(function* () {
+      const run = yield* store.getRun(runId);
       if (!run) return undefined;
-      const frozen = store.getFrozenRun(runId);
+      const frozen = yield* store.getFrozenRun(runId);
       if (!frozen) throw new Error(`Run '${runId}' has no frozen workflow.`);
-      const scheduler = throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(runId));
+      const scheduler = yield* store.scheduler.tryLoadRunSnapshot(runId).pipe(schedulerFailureAsDefect);
       const retryScheduler = settleRetryControlSnapshot({
         frozen,
         snapshot: scheduler,
@@ -215,11 +199,11 @@ export function getRunVisualizationSnapshot(
       }).snapshot;
       const retryTargets = retryControlTargets(retryScheduler).filter(target => {
         const retry = planRetryControl(retryScheduler, target.target);
-        return retry.isOk() && planRetrySessionImpact({
+        return Result.isSuccess(retry) && Result.isSuccess(planRetrySessionImpact({
           frozen,
           snapshot: retryScheduler,
-          reexecutedNodeKeys: retry.value.reexecutedNodeKeys,
-        }).isOk();
+          reexecutedNodeKeys: retry.success.reexecutedNodeKeys,
+        }));
       });
       return {
         run,
@@ -234,8 +218,8 @@ export function getRunVisualizationSnapshot(
           retryTargets,
         },
       };
-    });
-  });
+    })),
+  );
 }
 
 export function tryNormalizeForkInput(
@@ -243,88 +227,111 @@ export function tryNormalizeForkInput(
   runId: string,
   input: JsonValue | undefined,
   prepared?: PreparedRunWorkflow,
-): ResultAsync<JsonValue | undefined, ForkInputNormalizationFailure | RuntimeReadFailure> {
-  return new ResultAsync((async () => {
-    const session = await openBoundRuntimeReadSession(cwd);
-    if (session.isErr()) return err(session.error);
-    if (!session.value) return err(runNotFound(runId));
-    try {
-      const frozen = session.value.store.getFrozenRun(runId);
-      if (!frozen) return err(runNotFound(runId));
-      if (input !== undefined) return tryNormalizeWorkflowInput(prepared?.ir ?? frozen.ir, input, "Fork input");
-      return prepared ? tryNormalizeWorkflowInput(prepared.ir, frozen.input, "Fork input") : ok(undefined);
-    } catch (error) {
-      return err(runtimeReadFailureFromError(error));
-    } finally {
-      session.value.close();
-    }
-  })());
+): Effect.Effect<JsonValue | undefined, ForkInputNormalizationFailure | RuntimeReadFailure> {
+  return Effect.scoped(Effect.gen(function* () {
+    const session = yield* acquireBoundRuntimeReadSession(cwd);
+    if (!session) return yield* Effect.fail(runNotFound(runId));
+    const frozen = yield* session.store.getFrozenRun(runId).pipe(Effect.mapError(runtimeReadBusyFailure));
+    if (!frozen) return yield* Effect.fail(runNotFound(runId));
+    const normalized = input !== undefined
+      ? tryNormalizeWorkflowInput(prepared?.ir ?? frozen.ir, input, "Fork input")
+      : prepared ? tryNormalizeWorkflowInput(prepared.ir, frozen.input, "Fork input") : Result.succeed(undefined);
+    return yield* Effect.fromResult(normalized);
+  }));
 }
 
-export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport> {
-  let persistence: RuntimePersistence;
-  try {
-    persistence = { path: resolveRuntimeWorkspaceLayout(cwd).workspaceRoot };
-  } catch (error) {
-    return {
-      ok: false,
-      phase: "doctor",
-      state: "unreadable",
-      checks: [{
-        area: "store",
-        status: "fail",
-        message: error instanceof Error ? error.message : String(error),
-      }],
-    };
-  }
+function runtimeReadBusyFailure(failure: RuntimeStoreBusy): RuntimeReadFailure {
+  return runtimeReadUnavailable(failure.message);
+}
 
-  const status = await inspectRuntimeStore(cwd);
-  if (status.isErr()) {
-    return lifecycleHealthFailure(persistence, status.error.message);
-  }
-  if (status.value.state === "repairable") {
-    return {
-      ok: true,
-      phase: "doctor",
-      state: "unreadable",
-      persistence,
-      checks: [{
-        area: "store",
-        status: "warn",
-        message: `${status.value.message} Run 'acpus doctor --fix'.`,
-      }],
-    };
-  }
-  if (status.value.state === "unsupported") {
-    return lifecycleHealthFailure(persistence, status.value.message);
-  }
+function runtimeReadUnavailable(message: string): RuntimeReadFailure {
+  return { type: "runtime-store-unavailable", message };
+}
 
-  let store: Awaited<ReturnType<typeof openExistingRuntimeStore>>;
-  try {
-    store = await openExistingRuntimeStore(cwd);
-  } catch (error) {
-    return lifecycleHealthFailure(persistence, error instanceof Error ? error.message : String(error));
-  }
-  if (!store) {
-    const acp = await acpOwnershipCheck(cwd);
-    return {
-      ok: true,
-      phase: "doctor",
-      state: "not-initialized",
-      persistence,
-      checks: [
-        {
-          area: "workspace",
-          status: "ok",
-          message: "Runtime store is not initialized.",
-          details: { cwd },
-        },
-        ...(acp === undefined ? [] : [acp]),
-      ],
-    };
-  }
-  try {
-    const diagnostics = store.getRuntimeDiagnostics();
+function isRuntimeStoreBusy(failure: unknown): failure is RuntimeStoreBusy {
+  return typeof failure === "object" && failure !== null
+    && "type" in failure && failure.type === "runtime-store-busy";
+}
+
+function schedulerFailureAsDefect<Success, Failure, Requirements>(
+  effect: Effect.Effect<Success, Failure | RuntimeStoreBusy, Requirements>,
+): Effect.Effect<Success, RuntimeStoreBusy, Requirements> {
+  return effect.pipe(Effect.catchIf(
+    (failure): failure is Failure => !isRuntimeStoreBusy(failure),
+    failure => Effect.die(failure),
+  ));
+}
+
+export function getRuntimeHealth(cwd: string): Effect.Effect<RuntimeHealthReport> {
+  return Effect.gen(function* () {
+    const resolvedPersistence = yield* Effect.result(Effect.try({
+      try: () => ({ path: resolveRuntimeWorkspaceLayout(cwd).workspaceRoot }),
+      catch: errorMessage,
+    }));
+    if (Result.isFailure(resolvedPersistence)) {
+      return {
+        ok: false,
+        phase: "doctor",
+        state: "unreadable",
+        checks: [{
+          area: "store",
+          status: "fail",
+          message: resolvedPersistence.failure,
+        }],
+      } satisfies RuntimeHealthReport;
+    }
+    const persistence = resolvedPersistence.success;
+    const inspected = yield* inspectRuntimeStoreInternal(cwd);
+    if (Result.isFailure(inspected)) {
+      return lifecycleHealthFailure(persistence, inspected.failure.message);
+    }
+    const current = inspected.success.current;
+    if (current.state !== "absent" && current.state !== "ready" && current.state !== "unsupported") {
+      return {
+        ok: true,
+        phase: "doctor",
+        state: "unreadable",
+        persistence,
+        checks: [{
+          area: "store",
+          status: "warn",
+          message: "The Runtime store needs repair for this version of Acpus. Run 'acpus doctor --fix'.",
+        }],
+      } satisfies RuntimeHealthReport;
+    }
+    if (current.state === "unsupported") {
+      return lifecycleHealthFailure(persistence, current.detail);
+    }
+
+    return yield* readRuntimeHealth(cwd, persistence);
+  });
+}
+
+function readRuntimeHealth(
+  cwd: string,
+  persistence: RuntimePersistence,
+): Effect.Effect<RuntimeHealthReport> {
+  return Effect.scoped(Effect.gen(function* () {
+    const session = yield* acquireBoundRuntimeReadSession(cwd);
+    if (!session) {
+      const acp = yield* acpOwnershipCheck(cwd);
+      return {
+        ok: true,
+        phase: "doctor",
+        state: "not-initialized",
+        persistence,
+        checks: [
+          {
+            area: "workspace",
+            status: "ok",
+            message: "Runtime store is not initialized.",
+            details: { cwd },
+          },
+          ...(acp === undefined ? [] : [acp]),
+        ],
+      } satisfies RuntimeHealthReport;
+    }
+    const diagnostics = yield* session.store.getRuntimeDiagnostics();
     const checks: RuntimeHealthCheck[] = [
       { area: "workspace", status: "ok", message: "Workspace resolved.", details: { cwd } },
       { area: "store", status: "ok", message: "Runtime store opened read-only." },
@@ -345,7 +352,7 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
         details: { staleRunLeases: diagnostics.leases.stale },
       });
     }
-    const acp = await acpOwnershipCheck(cwd, diagnostics.authority);
+    const acp = yield* acpOwnershipCheck(cwd, diagnostics.authority);
     if (acp) checks.push(acp);
     return {
       ok: checks.every(check => check.status !== "fail"),
@@ -353,22 +360,11 @@ export async function getRuntimeHealth(cwd: string): Promise<RuntimeHealthReport
       state: "ready",
       persistence,
       checks,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      phase: "doctor",
-      state: "unreadable",
-      persistence,
-      checks: [{
-        area: "store",
-        status: "fail",
-        message: error instanceof Error ? error.message : String(error),
-      }],
-    };
-  } finally {
-    store.close();
-  }
+    } satisfies RuntimeHealthReport;
+  })).pipe(
+    Effect.catch(failure => Effect.succeed(lifecycleHealthFailure(persistence, failure.message))),
+    Effect.catchDefect(defect => Effect.succeed(lifecycleHealthFailure(persistence, errorMessage(defect)))),
+  );
 }
 
 function lifecycleHealthFailure(persistence: RuntimePersistence, message: string): RuntimeHealthReport {
@@ -381,9 +377,11 @@ function lifecycleHealthFailure(persistence: RuntimePersistence, message: string
   };
 }
 
-async function acpOwnershipCheck(cwd: string, authority?: RuntimeAuthorityDiagnostics): Promise<RuntimeHealthCheck | undefined> {
-  try {
-    const ownership = await inspectAcpOwnership({
+function acpOwnershipCheck(
+  cwd: string,
+  authority?: RuntimeAuthorityDiagnostics,
+): Effect.Effect<RuntimeHealthCheck | undefined> {
+  return inspectAcpOwnership({
       workersRoot: resolveRuntimeLayout(cwd).acpWorkersRoot,
       ...(authority?.pid === undefined ? {} : {
         owner: {
@@ -392,7 +390,8 @@ async function acpOwnershipCheck(cwd: string, authority?: RuntimeAuthorityDiagno
           ...(authority.processStartToken === undefined ? {} : { startToken: authority.processStartToken }),
         },
       }),
-    });
+    }, makeNodeProcessHost()).pipe(
+    Effect.map(ownership => {
     if (ownership.degraded === 0 && ownership.orphaned === 0) return undefined;
     return {
       area: "acp",
@@ -403,10 +402,10 @@ async function acpOwnershipCheck(cwd: string, authority?: RuntimeAuthorityDiagno
         orphaned: ownership.orphaned,
         manifests: ownership.manifests as unknown as JsonValue,
       },
-    };
-  } catch {
-    return undefined;
-  }
+    } satisfies RuntimeHealthCheck;
+    }),
+    Effect.catchDefect(() => Effect.succeed(undefined)),
+  );
 }
 
 function runNotFound(runId: string): Extract<ForkInputNormalizationFailure, { type: "run-not-found" }> {
@@ -473,4 +472,8 @@ function idleStopCheck(diagnostics: RuntimeDiagnostics): RuntimeHealthCheck {
       ...(diagnostics.authority?.idleStopMs === undefined ? {} : { idleStopMs: diagnostics.authority.idleStopMs }),
     },
   };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

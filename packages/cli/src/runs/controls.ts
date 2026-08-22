@@ -11,6 +11,8 @@ import {
   type RunDetails,
   type RuntimeReadFailure,
 } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import type { WorkflowCatalogScopeOptions } from "../workflow/catalog.js";
 import { controlError, usageError, validationError } from "../presentation/errors.js";
 import { parseAgents, parseInput, parseRequiredPayload } from "../presentation/json-input.js";
@@ -127,15 +129,15 @@ export function createControlCommands(ctx: RunsCommandContext): Command[] {
 
 async function signalRun(ctx: RunsCommandContext, runId: string, options: SignalOptions): Promise<void> {
   const payload = parseRequiredPayload(options.payload);
-  const controlled = await sendDaemonControl(ctx.cwd, {
+  const controlled = await Effect.runPromise(Effect.result(sendDaemonControl(ctx.cwd, {
     requestId: daemonControlRequestId(),
     type: "signal",
     runId,
     nodeId: options.target,
     payload,
-  });
-  if (controlled.isErr()) throw await runControlError(ctx, controlled.error, options.target);
-  const result = controlled.value;
+  })));
+  if (Result.isFailure(controlled)) throw await runControlError(ctx, controlled.failure, options.target);
+  const result = controlled.success;
   if (result.type !== "signal") throw new Error(`Daemon returned '${result.type}' for signal control.`);
   ctx.setExitCode(writeControlResult({
     ok: true,
@@ -150,15 +152,15 @@ async function signalRun(ctx: RunsCommandContext, runId: string, options: Signal
 async function steerRun(ctx: RunsCommandContext, runId: string, options: SteerOptions): Promise<void> {
   if (options.target.trim() === "") throw usageError("--target must be a non-empty string.");
   if (options.instruction.trim() === "") throw usageError("--instruction must be a non-empty string.");
-  const controlled = await sendDaemonControl(ctx.cwd, {
+  const controlled = await Effect.runPromise(Effect.result(sendDaemonControl(ctx.cwd, {
     requestId: daemonControlRequestId(),
     type: "steer",
     runId,
     target: options.target,
     instruction: options.instruction,
-  });
-  if (controlled.isErr()) throw await runControlError(ctx, controlled.error, options.target);
-  const result = controlled.value;
+  })));
+  if (Result.isFailure(controlled)) throw await runControlError(ctx, controlled.failure, options.target);
+  const result = controlled.success;
   if (result.type !== "steer") throw new Error(`Daemon returned '${result.type}' for steer control.`);
   ctx.setExitCode(writeControlResult({
     ok: true,
@@ -226,9 +228,9 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
       };
       break;
   }
-  const controlled = await sendDaemonControl(ctx.cwd, intent);
-  if (controlled.isErr()) throw await runControlError(ctx, controlled.error, requestedTarget);
-  const result = controlled.value;
+  const controlled = await Effect.runPromise(Effect.result(sendDaemonControl(ctx.cwd, intent)));
+  if (Result.isFailure(controlled)) throw await runControlError(ctx, controlled.failure, requestedTarget);
+  const result = controlled.success;
   if (result.type !== request.type) throw new Error(`Daemon returned '${result.type}' for ${request.type} control.`);
   const control = appliedControl(result, requestedTarget);
   const run = toRunRecord(result.run);
@@ -329,17 +331,19 @@ async function maybeNormalizeForkInput(
   prepared: PreparedRunWorkflow | undefined,
 ): Promise<JsonValue | undefined> {
   if (replacementInput === undefined && !prepared) return undefined;
-  const normalized = await tryNormalizeForkInput(ctx.cwd, runId, replacementInput, prepared);
-  if (normalized.isErr()) {
-    if (isRuntimeReadFailure(normalized.error)) {
-      throw controlError(runtimeReadFailureMessage(normalized.error), {
-        errorCode: runtimeReadFailureCode(normalized.error),
+  const normalized = await Effect.runPromise(Effect.result(
+    tryNormalizeForkInput(ctx.cwd, runId, replacementInput, prepared),
+  ));
+  if (Result.isFailure(normalized)) {
+    if (isRuntimeReadFailure(normalized.failure)) {
+      throw controlError(runtimeReadFailureMessage(normalized.failure), {
+        errorCode: runtimeReadFailureCode(normalized.failure),
         control: { type: "fork", runId },
       });
     }
-    throw validationError(normalized.error.message);
+    throw validationError(normalized.failure.message);
   }
-  return normalized.value;
+  return normalized.success;
 }
 
 function isRuntimeReadFailure(
@@ -387,9 +391,11 @@ async function controlCandidates(
   runId: string,
   target: string,
 ): Promise<InspectionCandidates | undefined> {
-  const inspected = await readInspection(cwd, { kind: "target", runId, target, detail: "summary" });
-  return inspected.isOk() && inspected.value.kind === "candidates"
-    ? inspected.value
+  const inspected = await Effect.runPromise(Effect.result(
+    readInspection(cwd, { kind: "target", runId, target, detail: "summary" }),
+  ));
+  return Result.isSuccess(inspected) && inspected.success.kind === "candidates"
+    ? inspected.success
     : undefined;
 }
 

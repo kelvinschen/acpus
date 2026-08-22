@@ -2,9 +2,9 @@ import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow } from "@acpus/core";
 import { describe, expect, it } from "vitest";
 import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
-import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
+import { advanceFrozenRun } from "./support/effect-scheduler.js";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
-import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter, type RuntimeStoreAdapter } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, signalWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { applySchedulerControlIntent } from "./support/scheduler.js";
@@ -13,7 +13,7 @@ describe("scheduler control intents", () => {
   it("pauses, resumes, and advances an admitted run", async () => {
     await withRuntimeWorkspace("scheduler-control-intent-resume", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
 
@@ -54,7 +54,7 @@ describe("scheduler control intents", () => {
   it("does not consume signal waits when payload validation fails", async () => {
     await withRuntimeWorkspace("scheduler-control-intent-signal-validation", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, signalWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const nodeKey = deriveInstanceKey(appendNode([], "approve"));
@@ -97,7 +97,7 @@ describe("scheduler control intents", () => {
   it("reports raw-string validation for schema-less signal controls", async () => {
     await withRuntimeWorkspace("scheduler-control-intent-raw-signal", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, rawSignalWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const nodeKey = deriveInstanceKey(appendNode([], "approve"));
@@ -128,7 +128,7 @@ describe("scheduler control intents", () => {
   it("reports lease loss without mutating scheduler state", async () => {
     await withRuntimeWorkspace("scheduler-control-intent-lease-loss", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, signalWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 30_000);
@@ -152,7 +152,7 @@ describe("scheduler control intents", () => {
   it("treats already resumed and already canceled run controls as applied", async () => {
     await withRuntimeWorkspace("scheduler-control-intent-already-applied", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, signalWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
 
@@ -189,7 +189,7 @@ describe("scheduler control intents", () => {
   it("replays a retry request by its authored target after the resolved instance changes state", async () => {
     await withRuntimeWorkspace("scheduler-control-intent-retry-alias", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const nodeKey = seedControlTarget(store, run.id, "root_task", "failed");
@@ -227,7 +227,7 @@ describe("scheduler control intents", () => {
   it("replays a cancel request by its authored target after the resolved instance becomes terminal", async () => {
     await withRuntimeWorkspace("scheduler-control-intent-cancel-alias", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const nodeKey = seedControlTarget(store, run.id, "root_task", "ready");
@@ -264,7 +264,7 @@ describe("scheduler control intents", () => {
   it("distinguishes the explicit root retry alias from an absent run retry target", async () => {
     await withRuntimeWorkspace("scheduler-control-intent-root-retry-alias", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow("root"));
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const targetedRun = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const targetedNodeKey = seedControlTarget(store, targetedRun.id, "root", "failed");
@@ -288,7 +288,7 @@ describe("scheduler control intents", () => {
   it("distinguishes the explicit root cancel alias from an absent run cancel target", async () => {
     await withRuntimeWorkspace("scheduler-control-intent-root-cancel-alias", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootTaskWorkflow("root"));
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const targetedRun = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const targetedNodeKey = seedControlTarget(store, targetedRun.id, "root", "ready");
@@ -322,7 +322,7 @@ describe("scheduler control intents", () => {
   });
 });
 
-function seedControlTarget(store: RuntimeStore, runId: string, nodeId: string, status: "ready" | "failed"): string {
+function seedControlTarget(store: RuntimeStoreAdapter, runId: string, nodeId: string, status: "ready" | "failed"): string {
   const claim = store.scheduler.claimRun(runId, `seed-${status}`, 60_000);
   if (!claim) throw new Error(`Run '${runId}' could not be claimed for control test setup.`);
   const instancePath = appendNode([], nodeId);
@@ -343,7 +343,7 @@ function seedControlTarget(store: RuntimeStore, runId: string, nodeId: string, s
   return nodeKey;
 }
 
-function appendControlCandidates(store: RuntimeStore, runId: string, nodeId: string, status: "ready" | "failed", id: string): void {
+function appendControlCandidates(store: RuntimeStoreAdapter, runId: string, nodeId: string, status: "ready" | "failed", id: string): void {
   const claim = store.scheduler.claimRun(runId, `seed-${id}`, 60_000);
   if (!claim) throw new Error(`Run '${runId}' could not be claimed for control candidate setup.`);
   try {
@@ -366,7 +366,7 @@ function appendControlCandidates(store: RuntimeStore, runId: string, nodeId: str
   }
 }
 
-function controlEventCount(store: RuntimeStore, runId: string, type: string): number {
+function controlEventCount(store: RuntimeStoreAdapter, runId: string, type: string): number {
   return store.getCommittedRuntimeEventsAfter(runId, 0).filter(event => event.type === type).length;
 }
 

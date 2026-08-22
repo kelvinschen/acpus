@@ -41,7 +41,7 @@
 - A catalog or workspace visualization source that cannot be resolved before workflow preparation MUST return a failed visualization with phase `source`.
 - Static workflow visualization failures MUST preserve compiler-owned `source`, `check`, `compile`, `lock`, and `validate` phases.
 - The `@acpus/web` package root MUST expose only the runtime values `startWebServer`, `workflowIrToWebGraph`, and `renderWorkflowVizHtml`.
-- `startWebServer` MUST return a tagged `listen-failed` Result when the requested listener cannot be established.
+- `startWebServer` MUST expose listener acquisition as a Scope-required Effect, fail through its typed error channel with tagged `listen-failed` details when the requested listener cannot be established, and await listener close when the owning Scope finalizes. Its successful handle is informational and MUST NOT expose a second Promise-owned close path.
 - `startWebServer` MUST NOT ensure, start, or wake the Runtime daemon; daemon readiness remains lazy and action-specific after the listener is available.
 - Self-contained workflow visualization HTML MUST use the same WebUI static graph React component as the browser Workflows graph. It MUST remain a single offline HTML bundle without live WebUI API calls, and it MUST embed only the static graph runtime needed for graph rendering, static inspection, and workflow I/O.
 - `renderWorkflowVizHtml` MUST receive canonical [Core](core-spec.md) `WorkflowIR` and source graph digest and MUST derive workflow metadata, workflow contract, and Web graph data internally. Its document title MUST use the workflow name.

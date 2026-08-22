@@ -13,6 +13,7 @@ const expectedPublicPackages = new Set([
   "@acpus/dsh",
   "@acpus/expression",
   "@acpus/loader",
+  "@acpus/owned-process",
   "@acpus/runtime",
   "@acpus/tasks",
   "@acpus/web",

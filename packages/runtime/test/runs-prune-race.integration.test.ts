@@ -1,8 +1,9 @@
 import { access } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
+import * as Effect from "effect/Effect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
 import { admitRunForTest } from "./support/runtime-store.js";
 import {
   prepareSyntheticWorkflow,
@@ -19,14 +20,17 @@ vi.mock("../src/runtime-lock.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../src/runtime-lock.js")>();
   return {
     ...actual,
-    acquireRuntimeExclusiveLock: async (...args: Parameters<typeof actual.acquireRuntimeExclusiveLock>) => {
-      await lockInterleave.beforeAcquire?.();
-      return actual.acquireRuntimeExclusiveLock(...args);
-    },
+    acquireRuntimeExclusiveLock: (...args: Parameters<typeof actual.acquireRuntimeExclusiveLock>) => Effect.promise(
+      () => lockInterleave.beforeAcquire?.() ?? Promise.resolve(),
+    ).pipe(Effect.andThen(actual.acquireRuntimeExclusiveLock(...args))),
   };
 });
 
-const { pruneRuns } = await import("../src/runs/prune.js");
+const { pruneRuns: pruneRunsEffect } = await import("../src/runs/prune.js");
+
+function pruneRuns(...args: Parameters<typeof pruneRunsEffect>) {
+  return Effect.runPromise(pruneRunsEffect(...args));
+}
 
 afterEach(() => {
   lockInterleave.beforeAcquire = undefined;
@@ -35,7 +39,7 @@ afterEach(() => {
 describe("runtime prune selection race", () => {
   it("preserves a selected terminal run updated beyond the cutoff before the exclusive lock", async () => {
     await withStorageWorkspace("runs-prune-race", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let runId: string;
       try {
         const run = await admitRunForTest(store, {

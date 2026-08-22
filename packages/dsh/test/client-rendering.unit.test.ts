@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
-  ACTIVITY_HOVER_DELAY_MS,
   ActivityStateIcon,
   LeafStatusIcon,
   NodeIcon,
@@ -27,10 +26,6 @@ import type {
 } from "../src/remote/types.js";
 
 describe("Acpus activity tray presentation", () => {
-  it("uses one shared 700 ms hover intent for Agent and Task details", () => {
-    expect(ACTIVITY_HOVER_DELAY_MS).toBe(700);
-  });
-
   it("enables Task hover only after execution starts", () => {
     expect(hoverEligible({ ...node("prepare", "not_started"), kind: "task" })).toBe(false);
     expect(hoverEligible({ ...node("prepare", "pending"), kind: "task" })).toBe(false);

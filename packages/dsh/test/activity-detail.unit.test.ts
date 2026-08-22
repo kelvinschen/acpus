@@ -1,6 +1,6 @@
 import type { InspectionForensicsView } from "@acpus/runtime";
 import type { WorkspaceRuntime } from "@acpus/runtime/host";
-import { okAsync } from "neverthrow";
+import * as Effect from "effect/Effect";
 import { describe, expect, it, vi } from "vitest";
 import { AcpusMode } from "../src/host/mode.js";
 
@@ -43,12 +43,12 @@ describe("DSH activity detail", () => {
       invocation: fixture.invocation,
       result: { status: "pending" },
     };
-    const inspect = vi.fn(() => okAsync(view));
+    const inspect = vi.fn(() => Effect.succeed(view));
     const runtime = { inspect } as unknown as WorkspaceRuntime;
     const mode = Object.create(AcpusMode.prototype) as AcpusMode;
     Object.assign(mode, {
       links: {
-        readSession: vi.fn(async () => ({
+        readSession: vi.fn(() => Effect.succeed({
           sessionId: "session-1",
           revision: 1,
           runs: [{
@@ -66,7 +66,7 @@ describe("DSH activity detail", () => {
             }],
           }],
         })),
-        listLinks: vi.fn(async () => [{
+        listLinks: vi.fn(() => Effect.succeed([{
           workspace: "/workspace",
           admissionRequestId: "admission-1",
           runId: "run-1",
@@ -74,10 +74,10 @@ describe("DSH activity detail", () => {
           occurrence: 1,
           parentSessionId: "session-1",
           generation: 1,
-        }]),
+        }])),
       },
       supervision: {
-        openLinkedRuntime: vi.fn(() => okAsync({ workspace: "/workspace", runtime })),
+        openLinkedRuntime: vi.fn(() => Effect.succeed({ workspace: "/workspace", runtime })),
       },
     });
 

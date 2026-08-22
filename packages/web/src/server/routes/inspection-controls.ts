@@ -16,6 +16,8 @@ import {
   type RunInspectionError,
   type RunInspectionNodeDocument,
 } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import type { WebControlCommand } from "../../api-types.js";
 import { apiError, runtimeReadError } from "../errors.js";
 import { projectNodeExecution, projectNodeInspection, projectNodeRuntimeValues } from "../node-inspection.js";
@@ -110,18 +112,18 @@ async function submitControl(
         : command.type === "steer"
               ? { ...base, type: "steer", target: command.target, instruction: command.instruction }
               : { ...base, type: "cancel", ...(command.target === undefined ? {} : { target: command.target }) };
-  const controlled = await requestDaemonControl(cwd, intent);
-  if (controlled.isErr()) {
-    if (controlled.error.type === "rejected") {
+  const controlled = await Effect.runPromise(Effect.result(requestDaemonControl(cwd, intent)));
+  if (Result.isFailure(controlled)) {
+    if (controlled.failure.type === "rejected") {
       apiError(
-        controlled.error.code === "RUN_NOT_FOUND"
+        controlled.failure.code === "RUN_NOT_FOUND"
           ? 404
           : 400,
-        controlled.error.code.toLowerCase(),
-        controlled.error.message,
+        controlled.failure.code.toLowerCase(),
+        controlled.failure.message,
       );
     }
-    throw new Error(controlled.error.message);
+    throw new Error(controlled.failure.message);
   }
 }
 
@@ -181,9 +183,9 @@ async function readRunJsonArtifact(
   if (typeof artifactId !== "string" || artifactId.length === 0) return undefined;
   const artifact = artifacts.find(item => item.id === artifactId);
   if (!artifact) throw new Error(`Registered Agent artifact '${artifactId}' is missing from the run projection.`);
-  const read = await readArtifact(cwd, artifact.runId, artifact.id);
-  if (read.isErr()) runtimeReadError(read.error);
-  const verified = read.value;
+  const read = await Effect.runPromise(Effect.result(readArtifact(cwd, artifact.runId, artifact.id)));
+  if (Result.isFailure(read)) runtimeReadError(read.failure);
+  const verified = read.success;
   if (!verified) throw new Error(`Registered Agent artifact '${artifactId}' is missing from the runtime registry.`);
   const parsed = JSON.parse(verified.bytes.toString("utf8")) as unknown;
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -193,24 +195,26 @@ async function readRunJsonArtifact(
 }
 
 async function readNodeInspection(cwd: string, runId: string, target: string): Promise<RunInspectionNodeDocument> {
-  const result = await inspectNode(cwd, { runId, target });
-  if (result.isErr()) inspectionError(result.error);
-  const inspection = result.value;
-  const live = await requestDaemonInspection(cwd, { kind: "target", runId, target, detail: "summary" });
-  if (live.isErr()) {
-    if (allowsOfflineInspection(live.error)) return inspection;
-    apiError(503, "runtime_unavailable", live.error.message);
+  const result = await Effect.runPromise(Effect.result(inspectNode(cwd, { runId, target })));
+  if (Result.isFailure(result)) inspectionError(result.failure);
+  const inspection = result.success;
+  const live = await Effect.runPromise(Effect.result(
+    requestDaemonInspection(cwd, { kind: "target", runId, target, detail: "summary" }),
+  ));
+  if (Result.isFailure(live)) {
+    if (allowsOfflineInspection(live.failure)) return inspection;
+    apiError(503, "runtime_unavailable", live.failure.message);
   }
-  if (live.value.kind !== "target" || live.value.detail !== "summary") {
+  if (live.success.kind !== "target" || live.success.detail !== "summary") {
     return inspection;
   }
   return {
     ...inspection,
-    availableControls: live.value.availableControls ?? [],
+    availableControls: live.success.availableControls ?? [],
     summary: {
       ...inspection.summary,
-      ...(live.value.agentSession === undefined ? {} : { agentSession: live.value.agentSession }),
-      ...(live.value.steer === undefined ? {} : { steer: live.value.steer }),
+      ...(live.success.agentSession === undefined ? {} : { agentSession: live.success.agentSession }),
+      ...(live.success.steer === undefined ? {} : { steer: live.success.steer }),
     },
   };
 }
@@ -221,9 +225,11 @@ function allowsOfflineInspection(error: DaemonClientFailure): boolean {
 }
 
 async function readNodeRuntimeValues(cwd: string, runId: string, target: string): Promise<InspectionForensicsView> {
-  const result = await readInspection(cwd, { kind: "target", runId, target, detail: "forensics" });
-  if (result.isErr()) coherentInspectionError(result.error);
-  const view = result.value;
+  const result = await Effect.runPromise(Effect.result(
+    readInspection(cwd, { kind: "target", runId, target, detail: "forensics" }),
+  ));
+  if (Result.isFailure(result)) coherentInspectionError(result.failure);
+  const view = result.success;
   if (view.kind === "candidates") {
     apiError(409, "target_ambiguous", `Run target '${target}' matches multiple occurrences.`);
   }
@@ -234,9 +240,9 @@ async function readNodeRuntimeValues(cwd: string, runId: string, target: string)
 }
 
 async function readNodeExecution(cwd: string, runId: string, target: string): Promise<RunInspectionAgentExecutionDocument> {
-  const result = await inspectAgentExecution(cwd, { runId, target });
-  if (result.isErr()) inspectionError(result.error);
-  return result.value;
+  const result = await Effect.runPromise(Effect.result(inspectAgentExecution(cwd, { runId, target })));
+  if (Result.isFailure(result)) inspectionError(result.failure);
+  return result.success;
 }
 
 function inspectionError(error: RunInspectionError): never {

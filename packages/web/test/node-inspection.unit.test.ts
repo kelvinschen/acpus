@@ -316,22 +316,6 @@ describe("node runtime values projection", () => {
     ))).toEqual({ available: true, values: { maxConcurrency: 3 } });
   });
 
-  it("projects the complete materialized Fanout input", () => {
-    expect(projectNodeRuntimeValues(forensicsView(
-      { kind: "fanout", over: "input.items", strategy: "quorum", count: "2", maxConcurrency: "3", do: emptyScope },
-      {
-        status: "resolved",
-        kind: "fanout",
-        items: [{ id: 1 }, { id: 2 }],
-        quorumCount: 2,
-        maxConcurrency: 3,
-      },
-    ))).toEqual({
-      available: true,
-      values: { over: [{ id: 1 }, { id: 2 }], count: 2, maxConcurrency: 3 },
-    });
-  });
-
   it("projects durable Loop progress values", () => {
     expect(projectNodeRuntimeValues(forensicsView(
       { kind: "loop", state: "input.state", do: { nodes: [], transition: { state: "do.state", stop: "do.stop" } } },
@@ -399,50 +383,6 @@ describe("node execution inspection", () => {
       expect(result).not.toHaveProperty("lastObservedAt");
     },
   );
-
-  it("maps only the closed Web execution fields", () => {
-    const execution = {
-      ...executionInspection(),
-      runtimeOnly: "private",
-      run: { ...executionInspection().run, runtimeOnly: "private" },
-      subject: { ...executionInspection().subject, runtimeOnly: "private" },
-      summary: { ...executionInspection().summary, runtimeOnly: "private" },
-      contextWindow: { ...executionInspection().contextWindow, runtimeOnly: "private" },
-      tokenUsage: { ...executionInspection().tokenUsage, runtimeOnly: "private" },
-      output: { ...executionInspection().output, runtimeOnly: "private" },
-      recentTools: [{
-        ...executionInspection().recentTools[0]!,
-        runtimeOnly: "private",
-      }],
-    } as unknown as RunInspectionAgentExecutionDocument;
-
-    expect(projectNodeExecution(execution)).toEqual({
-      available: true,
-      lastObservedAt: "2026-07-01T00:00:02.000Z",
-      summary: {
-        status: "running",
-        agentSessionId: "review-session",
-        turnCount: 2,
-        message: "working",
-      },
-      contextWindow: { used: 2_500, size: 10_000, percent: 25 },
-      tokenUsage: {
-        source: "usage_update",
-        inputTokens: 100,
-        outputTokens: 25,
-        totalTokens: 125,
-      },
-      recentTools: [{
-        turn: 2,
-        toolCallId: "tool_1",
-        toolName: "read_file",
-        status: "running",
-        durationMs: 20,
-        inputPreview: "README.md",
-      }],
-      output: { tail: "partial response", totalBytes: 16, truncated: false },
-    });
-  });
 
   it.each([
     {

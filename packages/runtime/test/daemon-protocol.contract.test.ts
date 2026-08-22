@@ -1,19 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  DAEMON_PROTOCOL_VERSION,
-  isDaemonControlResult,
   isDaemonInspectionResult,
   isDaemonRunStreamFrame,
   parseDaemonRequest,
 } from "../src/daemon/protocol.js";
-import { RUNTIME_ABI_VERSION } from "../src/runtime-contracts.js";
 
 describe("daemon M6 control protocol", () => {
-  it("cuts over the authority and daemon wire versions", () => {
-    expect(RUNTIME_ABI_VERSION).toBe(5);
-    expect(DAEMON_PROTOCOL_VERSION).toBe(10);
-  });
-
   it.each([
     { requestId: "retry-1", type: "retry", runId: "run_1", target: "@failed" },
     { requestId: "steer-1", type: "steer", runId: "run_1", target: "@active", instruction: "Focus on the failure." },
@@ -54,30 +46,6 @@ describe("daemon M6 control protocol", () => {
       ...view,
       availableControls: [{ type: "steer", target: "attempt-1", delivery: "in_place", effect: "inject" }],
     })).toBe(false);
-  });
-
-  it("accepts the current Steer receipt", () => {
-    expect(isDaemonControlResult({
-      type: "steer",
-      state: "applied",
-      run: runDetails(),
-      steerId: "steer-1",
-      requestedTarget: "@active",
-      target: "review~abc",
-      delivery: "interrupt_continue",
-      fencedAttemptId: "attempt-1",
-      continuation: "queued",
-    }, "steer")).toBe(true);
-    expect(isDaemonControlResult({
-      type: "steer",
-      state: "applied",
-      run: runDetails(),
-      steerId: "steer-1",
-      requestedTarget: "@active",
-      target: "review~abc",
-      fencedAttemptId: "attempt-1",
-      continuation: "queued",
-    }, "steer")).toBe(false);
   });
 
   it("accepts current Session and control projections on observation frames", () => {
@@ -158,24 +126,6 @@ describe("daemon M6 control protocol", () => {
     })).toBe(false);
   });
 });
-
-function runDetails() {
-  return {
-    id: "run_1",
-    name: "review",
-    status: "running",
-    workflowEntry: "review.workflow.ts",
-    sourceGraphDigest: "sha256:review",
-    createdAt: "2026-08-19T00:00:00.000Z",
-    updatedAt: "2026-08-19T00:00:01.000Z",
-    progressVersion: 2,
-    input: {},
-    hooks: [],
-    eventCount: 4,
-    nodeCount: 1,
-    execution: { state: "active", lastStatus: "running", reason: "run_lease_active" },
-  };
-}
 
 function activeTargetInspection() {
   return {

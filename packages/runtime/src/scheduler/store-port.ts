@@ -1,6 +1,6 @@
 import type { Sha256Digest } from "@acpus/core/content-identity";
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import type {
   AgentAttemptOperationPlan,
   AgentOperationPlanError,
@@ -59,8 +59,6 @@ export type SchedulerStoreError =
   | { type: "shared-session-retry-requires-fork"; runId: string; target: string; message: string }
   | { type: "deadline-out-of-range"; runId: string; nodeKey: string; message: string };
 
-export type SchedulerStoreResult<T> = Result<T, SchedulerStoreError>;
-
 export type WriteExecutionMetadataInput = {
   runId: string;
   attemptId: string;
@@ -77,25 +75,6 @@ export class SchedulerStoreException extends Error {
 
 export function schedulerStoreError(error: unknown): SchedulerStoreError | undefined {
   return error instanceof SchedulerStoreException ? error.failure : undefined;
-}
-
-export function schedulerStoreResult<T>(fn: () => T): SchedulerStoreResult<T> {
-  try {
-    return ok(fn());
-  } catch (error) {
-    const storeError = schedulerStoreError(error);
-    if (storeError) return err(storeError);
-    throw error;
-  }
-}
-
-export function throwSchedulerStoreResult<T>(result: SchedulerStoreResult<T>): T {
-  return result.match(
-    value => value,
-    error => {
-      throw new SchedulerStoreException(error);
-    },
-  );
 }
 
 export type SchedulerCommit = {
@@ -395,27 +374,27 @@ export type SchedulerStorePort = {
   claimRun(runId: string, ownerId: string, leaseMs: number): RunOwnerClaim | undefined;
   heartbeatRun(claim: RunOwnerClaim, leaseMs: number): boolean;
   releaseRun(claim: RunOwnerClaim): boolean;
-  tryLoadRunSnapshot(runId: string): SchedulerStoreResult<SchedulerSnapshot>;
-  tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerStoreResult<SchedulerSnapshot>;
-  tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<AttemptStartResult>;
+  tryLoadRunSnapshot(runId: string): SchedulerSnapshot;
+  tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerSnapshot;
+  tryStartAttempt(input: AttemptStartInput): AttemptStartResult;
   listReplayCandidates(runId: string): ReplayCandidate[];
-  tryCommitReplay(input: ReplayCommitInput): SchedulerStoreResult<ReplayCommitResult>;
-  tryCommitAttemptResult(input: AttemptCommitInput): SchedulerStoreResult<SchedulerSnapshot>;
-  tryConsumeSignal(input: SignalConsumeInput): SchedulerStoreResult<SchedulerSnapshot>;
-  tryPauseRun(input: SchedulerPauseInput): SchedulerStoreResult<SchedulerSnapshot>;
-  tryResumeRun(input: SchedulerResumeInput): SchedulerStoreResult<SchedulerSnapshot>;
-  tryPlanRetry(input: Omit<SchedulerRetryInput, "ownerEpoch">): SchedulerStoreResult<SchedulerRetryPlan>;
-  tryCommitRetry(input: SchedulerRetryCommitInput): SchedulerStoreResult<SchedulerSnapshot>;
-  tryCancel(input: SchedulerCancelInput): SchedulerStoreResult<SchedulerSnapshot>;
-  tryPlanAgentSteer(runId: string, target: string): SchedulerStoreResult<SchedulerSteerTarget>;
-  trySteerAgent(input: SchedulerSteerInput): SchedulerStoreResult<SchedulerSteerResult>;
-  planAgentAttemptAdmission(input: PlanAgentAttemptAdmissionInput): Result<AgentAttemptOperationPlan, AgentOperationPlanError>;
-  tryBindAgentAttemptSession(input: BindAgentAttemptSessionInput): SchedulerStoreResult<AgentAttemptSessionBinding>;
-  tryRecordAgentSessionReady(input: RecordAgentSessionReadyInput): SchedulerStoreResult<void>;
-  tryAdvanceAgentSessionCheckpoint(input: AdvanceAgentSessionCheckpointInput): SchedulerStoreResult<AgentSessionCheckpointValue>;
-  tryCommitAgentTurnDispatch(input: CommitAgentTurnDispatchInput): SchedulerStoreResult<AgentSessionCheckpointValue>;
-  trySettleFencedAgentSessionCheckpoint(input: SettleFencedAgentSessionCheckpointInput): SchedulerStoreResult<AgentSessionCheckpointValue>;
-  tryReconcileAgentSteers(input: ReconcileAgentSteersInput): SchedulerStoreResult<number>;
+  tryCommitReplay(input: ReplayCommitInput): ReplayCommitResult;
+  tryCommitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot;
+  tryConsumeSignal(input: SignalConsumeInput): SchedulerSnapshot;
+  tryPauseRun(input: SchedulerPauseInput): SchedulerSnapshot;
+  tryResumeRun(input: SchedulerResumeInput): SchedulerSnapshot;
+  tryPlanRetry(input: Omit<SchedulerRetryInput, "ownerEpoch">): SchedulerRetryPlan;
+  tryCommitRetry(input: SchedulerRetryCommitInput): SchedulerSnapshot;
+  tryCancel(input: SchedulerCancelInput): SchedulerSnapshot;
+  tryPlanAgentSteer(runId: string, target: string): SchedulerSteerTarget;
+  trySteerAgent(input: SchedulerSteerInput): SchedulerSteerResult;
+  planAgentAttemptAdmission(input: PlanAgentAttemptAdmissionInput): Result.Result<AgentAttemptOperationPlan, AgentOperationPlanError>;
+  tryBindAgentAttemptSession(input: BindAgentAttemptSessionInput): AgentAttemptSessionBinding;
+  tryRecordAgentSessionReady(input: RecordAgentSessionReadyInput): void;
+  tryAdvanceAgentSessionCheckpoint(input: AdvanceAgentSessionCheckpointInput): AgentSessionCheckpointValue;
+  tryCommitAgentTurnDispatch(input: CommitAgentTurnDispatchInput): AgentSessionCheckpointValue;
+  trySettleFencedAgentSessionCheckpoint(input: SettleFencedAgentSessionCheckpointInput): AgentSessionCheckpointValue;
+  tryReconcileAgentSteers(input: ReconcileAgentSteersInput): number;
   readAgentControlInspection(runId: string): RuntimeAgentControlInspection;
-  tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerStoreResult<SchedulerSnapshot>;
+  tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerSnapshot;
 };

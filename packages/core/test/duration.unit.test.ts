@@ -1,4 +1,4 @@
-import { err, ok } from "neverthrow";
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import { tryParseDurationMs } from "../src/ir.js";
 
@@ -15,13 +15,13 @@ describe("duration parsing", () => {
     ["104249991d", 9_007_199_222_400_000],
     [String(Number.MAX_SAFE_INTEGER), Number.MAX_SAFE_INTEGER],
   ] as const)("parses %s as %i milliseconds", (value, durationMs) => {
-    expect(tryParseDurationMs(value)).toEqual(ok(durationMs));
+    expect(tryParseDurationMs(value)).toEqual(Result.succeed(durationMs));
   });
 
   it.each(["", "ms", "-1s", "+1s", "1.5s", "5 m", "1m30s", "1w"])(
     "rejects invalid syntax %j",
     value => {
-      expect(tryParseDurationMs(value)).toEqual(err({ type: "invalid-duration-syntax", value }));
+      expect(tryParseDurationMs(value)).toEqual(Result.fail({ type: "invalid-duration-syntax", value }));
     },
   );
 
@@ -31,6 +31,6 @@ describe("duration parsing", () => {
     "104249992d",
     `${"9".repeat(309)}h`,
   ])("rejects out-of-range duration %j", value => {
-    expect(tryParseDurationMs(value)).toEqual(err({ type: "duration-out-of-range", value }));
+    expect(tryParseDurationMs(value)).toEqual(Result.fail({ type: "duration-out-of-range", value }));
   });
 });

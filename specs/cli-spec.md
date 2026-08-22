@@ -11,6 +11,20 @@ The `acpus` package owns command parsing and natural-language presentation for a
 - The package MUST expose the `acpus` binary, the bundled `skills/acpus/SKILL.md`, and authoring facades at `acpus/core`, `acpus/expression`, and `acpus/tasks/git`.
 - The bundled skill version MUST equal the containing CLI package version; the root package entrypoint does not combine the authoring facades.
 - The CLI daemon entry MUST publish its containing CLI package version through daemon status and Runtime-authority `packageVersion` metadata.
+- The interactive `acpus` executable MUST execute exactly one fully formed main
+  Effect with `Effect.runPromise` at the process entry so commands retain
+  ownership of their documented signal semantics. The daemon executable MUST
+  hand exactly one fully formed main Effect to `NodeRuntime.runMain` from the
+  pinned `@effect/platform-node`. Application and command modules MUST NOT
+  start a second Effect Runtime or install a local Layer graph.
+- The `acpus` executable MUST adapt Commander's one Promise only at the process
+  entry, preserve exit codes 0/1/2 and the one-line unexpected-error message,
+  and MUST NOT install a root `SIGINT`/`SIGTERM` handler that competes with
+  command-owned detach or shutdown behavior.
+- The daemon executable MUST acquire its daemon loop inside an Effect Scope and
+  register shutdown as the resource finalizer. `NodeRuntime` MUST own
+  `SIGINT`/`SIGTERM`; daemon shutdown MUST await that finalizer and retain the
+  existing graceful zero exit code without a direct `process.exit` call.
 - The CLI MUST expose the following command grammar; bracketed flags are optional and `wf` aliases `workflow`.
 
 | Command | Options and behavior |

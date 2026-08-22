@@ -1,4 +1,4 @@
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 
 export type DurationParseError =
   | { type: "invalid-duration-syntax"; value: string }
@@ -12,14 +12,14 @@ const durationMultipliers = {
   d: 86_400_000,
 } as const;
 
-export function tryParseDurationMs(value: string): Result<number, DurationParseError> {
+export function tryParseDurationMs(value: string): Result.Result<number, DurationParseError> {
   const match = /^(\d+)(ms|s|m|h|d)?$/.exec(value);
-  if (!match) return err({ type: "invalid-duration-syntax", value });
+  if (!match) return Result.fail({ type: "invalid-duration-syntax", value });
 
   const unit = (match[2] ?? "ms") as keyof typeof durationMultipliers;
   const durationMs = Number(match[1]) * durationMultipliers[unit];
   if (!Number.isSafeInteger(durationMs)) {
-    return err({ type: "duration-out-of-range", value });
+    return Result.fail({ type: "duration-out-of-range", value });
   }
-  return ok(durationMs);
+  return Result.succeed(durationMs);
 }

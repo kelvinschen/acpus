@@ -55,7 +55,7 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 - The workflow-compiler and CLI distribution smokes MUST install their local publishable dependency closures from that shared archive set in separate temporary consumers.
 - The packed CLI distribution smoke MUST render a workflow HTML visualization through its packed `@acpus/web` dependency and verify the embedded static graph bundle.
 - Repository checks MUST expose one executable interface through `pnpm check`.
-- With no task argument, `pnpm check` MUST run the named `toolchain`, `graph:source`, `graph:strict`, `docs`, and `security` tasks in that order and MUST stop after the first failed task.
+- With no task argument, `pnpm check` MUST run the named `toolchain`, `dsh:remote`, `effect:architecture`, `graph:source`, `graph:strict`, `docs`, and `security` tasks in that order and MUST stop after the first failed task.
 - `pnpm check <task>` MUST run only that named task and MUST reject unknown task names.
 - CI MUST execute the toolchain task on the minimum supported Node.js version and MUST execute the complete default task set only once on the primary Node.js version, avoiding duplicate repository-graph and security-policy work across the runtime matrix.
 - The `graph:source` task MUST check the complete source/development graph for dead files and symbols as well as dependency issues, including browser build inputs.
@@ -69,8 +69,8 @@ The repository build toolchain owns deterministic TypeScript project ordering, p
 
 ## Verification
 
-- `pnpm check`: verifies the toolchain, complete source/development graph, strict published production graph, public documentation links, and locked dependency graph through the canonical fail-fast task sequence.
-- `pnpm check toolchain`: verifies the pnpm pin and supply-chain policy, CI Node.js coverage and version authority, publish provenance configuration, tool versions, project references, shared source/test settings, build entrypoint configuration and isolated build-plan scheduling/failure semantics, check entrypoint and task definitions, Web manifest declaration boundaries, typecheck/clean scripts, cache placement, and the absence of cross-command caches.
+- `pnpm check`: verifies the toolchain, generated DSH remote declarations, Effect source-boundary rules, complete source/development graph, strict published production graph, public documentation links, and locked dependency graph through the canonical fail-fast task sequence.
+- `pnpm check toolchain`: verifies the pnpm pin and supply-chain policy, CI Node.js coverage and version authority, publish provenance configuration, tool versions, project references, shared source/test settings, build and check entrypoint configuration, task definitions, Web manifest declaration boundaries, typecheck/clean scripts, cache placement, and the absence of cross-command caches.
 - `pnpm check graph:source` and `pnpm check graph:strict`: verify the complete source/development issue set and the distinct strict production dependency graph.
 - `pnpm check docs`, `pnpm check release`, and `pnpm check security`: verify public documentation links, the stable package-release state, and the locked dependency graph independently.
 - `pnpm build:clean`, repeated `pnpm build`, and `pnpm test:dist`: verify deterministic output ownership, opaque generated asset declarations, and publishable artifacts without build caches.

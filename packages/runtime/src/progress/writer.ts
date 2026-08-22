@@ -1,4 +1,6 @@
 import type { WriteNodeProgressInput } from "../store/store.js";
+import * as Effect from "effect/Effect";
+import type * as Scope from "effect/Scope";
 
 const DEFAULT_PROGRESS_FLUSH_INTERVAL_MS = 1_000;
 const TERMINAL_PROGRESS_STATUSES = new Set(["completed", "failed", "cancelled", "timed_out"]);
@@ -9,9 +11,20 @@ export type NodeProgressWriter = {
 
 export class CoalescingNodeProgressWriter implements NodeProgressWriter {
   private readonly pending = new Map<string, WriteNodeProgressInput>();
-  private timer: ReturnType<typeof setTimeout> | undefined;
+  private started = false;
 
   constructor(private readonly target: NodeProgressWriter, private readonly flushIntervalMs = DEFAULT_PROGRESS_FLUSH_INTERVAL_MS) {}
+
+  start(scope: Scope.Scope): Effect.Effect<void> {
+    if (this.started) return Effect.void;
+    this.started = true;
+    return Effect.sleep(this.flushIntervalMs).pipe(
+      Effect.andThen(Effect.sync(() => this.flushAll())),
+      Effect.forever,
+      Effect.forkIn(scope),
+      Effect.asVoid,
+    );
+  }
 
   writeNodeProgress(input: WriteNodeProgressInput): void {
     if (TERMINAL_PROGRESS_STATUSES.has(input.status)) {
@@ -20,14 +33,9 @@ export class CoalescingNodeProgressWriter implements NodeProgressWriter {
       return;
     }
     this.pending.set(progressKey(input), input);
-    this.schedule();
   }
 
   flushAll(): void {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = undefined;
-    }
     const snapshots = [...this.pending.values()];
     this.pending.clear();
     for (const snapshot of snapshots) this.flushNow(snapshot);
@@ -39,14 +47,6 @@ export class CoalescingNodeProgressWriter implements NodeProgressWriter {
       this.pending.delete(key);
       this.flushNow(snapshot);
     }
-  }
-
-  private schedule(): void {
-    if (this.timer) return;
-    this.timer = setTimeout(() => {
-      this.timer = undefined;
-      this.flushAll();
-    }, this.flushIntervalMs);
   }
 
   private flushNow(input: WriteNodeProgressInput): void {

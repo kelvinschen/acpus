@@ -1,11 +1,12 @@
 import { walkNodes, type WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
-import { err, ok, type Result } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { tryNormalizeSignalPayload } from "../admission/input.js";
 import { compactSchemaSummary } from "../schema-summary.js";
-import type { RuntimeStore } from "../store/store.js";
+import type { RuntimeStoreBusy, RuntimeStoreShape } from "../store/service.js";
 import { resolveOccurrenceRef } from "./occurrence-ref.js";
-import { schedulerStoreError, type SchedulerSnapshot, type SchedulerStoreError } from "./store-port.js";
+import type { SchedulerSnapshot, SchedulerStoreError } from "./store-port.js";
 import type { SchedulerSteerProof } from "./store-port.js";
 import { settleFrozenRunTransitions } from "./runtime-runner.js";
 
@@ -59,61 +60,64 @@ export type SchedulerControlFailure = SchedulerStoreError
   | { type: "signal-payload-invalid"; runId: string; target: string; message: string };
 
 export function applySchedulerControlIntent(
-  store: RuntimeStore,
+  store: RuntimeStoreShape,
   intent: RunControlIntent,
   ownerEpoch: number,
   steerProof?: SchedulerSteerProof,
-): Result<SchedulerControlResult, SchedulerControlFailure> {
+): Effect.Effect<SchedulerControlResult, SchedulerControlFailure | RuntimeStoreBusy> {
+  return Effect.gen(function* () {
   const runId = intent.runId;
   const idempotencyKey = `scheduler:control:${intent.requestId}`;
   if (intent.type === "pause") {
-    return store.scheduler.tryPauseRun({ runId, ownerEpoch, idempotencyKey }).map(snapshot => ({
+    const snapshot = yield* store.scheduler.tryPauseRun({ runId, ownerEpoch, idempotencyKey });
+    return {
       snapshot,
       effect: { type: "pause", state: "applied" } as const,
       reopened: false,
-    }));
+    };
   }
   if (intent.type === "cancel" && intent.target === undefined) {
-    return store.scheduler.tryCancel({ runId, ownerEpoch, idempotencyKey }).map(snapshot => ({
+    const snapshot = yield* store.scheduler.tryCancel({ runId, ownerEpoch, idempotencyKey });
+    return {
       snapshot,
       effect: { type: "cancel", state: "applied" } as const,
       reopened: false,
-    }));
+    };
   }
   if (intent.type === "retry") {
-    const planned = store.scheduler.tryPlanRetry({ runId, idempotencyKey, target: intent.target });
-    if (planned.isErr()) return err(planned.error);
-    if (planned.value.sessions.length > 0) {
-      return err({
-        type: "retry-neutralization-mismatch",
+    const planned = yield* store.scheduler.tryPlanRetry({ runId, idempotencyKey, target: intent.target });
+    if (planned.sessions.length > 0) {
+      return yield* Effect.fail({
+        type: "retry-neutralization-mismatch" as const,
         runId,
-        expectedAgentSessionIds: planned.value.sessions.map(session => session.agentSessionId),
+        expectedAgentSessionIds: planned.sessions.map(session => session.agentSessionId),
         actualAgentSessionIds: [],
         message: `Retry target '${intent.target}' requires Agent Session neutralization.`,
       });
     }
-    if (planned.value.duplicate) {
-      return ok({
-        snapshot: planned.value.snapshot,
+    if (planned.duplicate) {
+      return {
+        snapshot: planned.snapshot,
         effect: { type: "retry", state: "applied", target: intent.target },
         reopened: false,
-      });
+      };
     }
-    return store.scheduler.tryCommitRetry({
+    const snapshot = yield* store.scheduler.tryCommitRetry({
       runId,
       ownerEpoch,
       idempotencyKey,
       target: intent.target,
-      expectedVersion: planned.value.snapshot.version,
+      expectedVersion: planned.snapshot.version,
       neutralizedAgentSessionIds: [],
-    }).map(snapshot => ({
+    });
+    return {
       snapshot,
       effect: { type: "retry", state: "applied", target: intent.target } as const,
-      reopened: snapshot.version > planned.value.snapshot.version,
-    }));
+      reopened: snapshot.version > planned.snapshot.version,
+    };
   }
   if (intent.type === "steer") {
-    return store.scheduler.trySteerAgent({
+    const applied = yield* store.scheduler.trySteerAgent({
       runId,
       ownerEpoch,
       idempotencyKey,
@@ -121,7 +125,8 @@ export function applySchedulerControlIntent(
       target: intent.target,
       instruction: intent.instruction,
       ...(steerProof === undefined ? {} : { proof: steerProof }),
-    }).map(applied => ({
+    });
+    return {
       snapshot: applied.snapshot,
       effect: {
         type: "steer",
@@ -141,74 +146,66 @@ export function applySchedulerControlIntent(
         committedAt: applied.fencedAt,
         reason: "operator_steered",
       },
-    }));
+    };
   }
 
-  const settled = trySettleFrozenRunTransitions(store, runId, ownerEpoch);
-  if (settled.isErr()) return err(settled.error);
-  const snapshot = settled.value;
+  const snapshot = yield* settleFrozenRunTransitions({ store, runId, ownerEpoch });
 
   if (intent.type === "resume") {
-    return store.scheduler.tryResumeRun({ runId, ownerEpoch, idempotencyKey }).map(resumed => ({
+    const resumed = yield* store.scheduler.tryResumeRun({ runId, ownerEpoch, idempotencyKey });
+    return {
       snapshot: resumed,
       effect: { type: "resume", state: "applied" } as const,
       reopened: resumed.version > snapshot.version,
-    }));
+    };
   }
   if (intent.type === "cancel") {
     const target = intent.target;
-    return store.scheduler.tryCancel({ runId, ownerEpoch, idempotencyKey, ...(target === undefined ? {} : { target }) }).map(next => ({
+    const next = yield* store.scheduler.tryCancel({ runId, ownerEpoch, idempotencyKey, ...(target === undefined ? {} : { target }) });
+    return {
       snapshot: next,
       effect: { type: "cancel", state: "applied", ...(target === undefined ? {} : { target }) } as const,
       reopened: false,
-    }));
+    };
   }
   if (intent.type === "signal") {
-    const frozen = store.getFrozenRun(runId);
-    if (!frozen) return err({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
+    const frozen = yield* store.getFrozenRun(runId);
+    if (!frozen) return yield* Effect.fail({ type: "run-not-found" as const, runId, message: `Run '${runId}' was not found.` });
     const signal = resolveSignalPayload(intent, snapshot);
-    if (signal.isErr()) {
-      if (signal.error.type === "signal-target-not-found" && !looksLikeInstanceKey(intent.node) && !hasSignalNode(frozen.ir, intent.node)) {
-        return err({ type: "signal-target-not-found", runId, target: intent.node, message: `Signal node '${intent.node}' was not found.` });
+    if (Result.isFailure(signal)) {
+      if (signal.failure.type === "signal-target-not-found" && !looksLikeInstanceKey(intent.node) && !hasSignalNode(frozen.ir, intent.node)) {
+        return yield* Effect.fail({ type: "signal-target-not-found" as const, runId, target: intent.node, message: `Signal node '${intent.node}' was not found.` });
       }
-      return err(signal.error);
+      return yield* Effect.fail(signal.failure);
     }
-    const normalized = tryNormalizeSignalPayload(frozen.ir, signal.value.nodeId, signal.value.payload);
-    if (normalized.isErr()) {
-      return err({ type: "signal-payload-invalid", runId, target: intent.node, message: normalized.error.message });
+    const normalized = tryNormalizeSignalPayload(frozen.ir, signal.success.nodeId, signal.success.payload);
+    if (Result.isFailure(normalized)) {
+      return yield* Effect.fail({ type: "signal-payload-invalid" as const, runId, target: intent.node, message: normalized.failure.message });
     }
-    const validation = signalValidation(frozen.ir, signal.value.nodeId);
-    return store.scheduler.tryConsumeSignal({
+    const validation = signalValidation(frozen.ir, signal.success.nodeId);
+    const applied = yield* store.scheduler.tryConsumeSignal({
       runId,
       ownerEpoch,
-      nodeKey: signal.value.nodeKey,
+      nodeKey: signal.success.nodeKey,
       requestedTarget: intent.node,
-      payload: normalized.value,
+      payload: normalized.success,
       commandIdempotencyKey: intent.commandIdempotencyKey ?? intent.requestId,
       idempotencyKey,
-    }).map(applied => ({
+    });
+    return {
       snapshot: applied,
       effect: {
         type: "signal",
         state: "consumed",
         requestedTarget: intent.node,
-        target: signal.value.nodeKey,
+        target: signal.success.nodeKey,
         validation,
       } as const,
       reopened: false,
-    }));
+    };
   }
   return assertNever(intent);
-}
-
-function trySettleFrozenRunTransitions(store: RuntimeStore, runId: string, ownerEpoch: number): Result<SchedulerSnapshot, SchedulerStoreError> {
-  try {
-    return ok(settleFrozenRunTransitions({ store, runId, ownerEpoch }));
-  } catch (error) {
-    const failure = schedulerStoreError(error);
-    if (failure) return err(failure);
-    throw error;
-  }
+  });
 }
 
 function signalValidation(ir: WorkflowIR, nodeId: string): Extract<SchedulerControlEffect, { type: "signal" }>["validation"] {
@@ -224,7 +221,7 @@ function signalValidation(ir: WorkflowIR, nodeId: string): Extract<SchedulerCont
 export function resolveSignalPayload(
   intent: Extract<RunControlIntent, { type: "signal" }>,
   snapshot: SchedulerSnapshot,
-): Result<{ nodeKey: string; nodeId: string; payload: JsonValue }, Extract<SchedulerControlFailure, { type: "signal-target-not-found" | "signal-target-ambiguous" }>> {
+): Result.Result<{ nodeKey: string; nodeId: string; payload: JsonValue }, Extract<SchedulerControlFailure, { type: "signal-target-not-found" | "signal-target-ambiguous" }>> {
   const target = intent.node;
   const commandIdempotencyKey = intent.commandIdempotencyKey ?? intent.requestId;
   const duplicates = Object.values(snapshot.projection.signalWaits)
@@ -238,7 +235,7 @@ export function resolveSignalPayload(
     if (duplicate.status !== "consumed") {
       throw new Error(`Signal command idempotency key '${commandIdempotencyKey}' is bound to a non-consumed wait.`);
     }
-    return ok({ nodeKey: duplicate.nodeKey, nodeId: duplicate.nodeId, payload: intent.payload });
+    return Result.succeed({ nodeKey: duplicate.nodeKey, nodeId: duplicate.nodeId, payload: intent.payload });
   }
   const occurrence = resolveOccurrenceRef(snapshot.projection, target, { attempt: "reject" });
   if (occurrence && !occurrence.ok) {
@@ -248,7 +245,7 @@ export function resolveSignalPayload(
     const suffix = occurrence.error.type === "occurrence-ref-attempt-not-allowed"
       ? ` selects attempt ${occurrence.error.attemptNo}; signal the occurrence without an attempt suffix`
       : " was not found";
-    return err({
+    return Result.fail({
       type: "signal-target-not-found",
       runId: intent.runId,
       target,
@@ -256,7 +253,7 @@ export function resolveSignalPayload(
     });
   }
   if (occurrence?.value.kind === "frame") {
-    return err({
+    return Result.fail({
       type: "signal-target-not-found",
       runId: intent.runId,
       target,
@@ -265,7 +262,7 @@ export function resolveSignalPayload(
   }
   const resolvedTarget = occurrence?.value.nodeKey ?? target;
   if (isOpenSignalWait(snapshot, resolvedTarget)) {
-    return ok({
+    return Result.succeed({
       nodeKey: resolvedTarget,
       nodeId: snapshot.projection.signalWaits[resolvedTarget]!.nodeId,
       payload: intent.payload,
@@ -276,16 +273,16 @@ export function resolveSignalPayload(
       && wait.nodeId === target
       && isOpenSignalWait(snapshot, wait.nodeKey))
     .sort((left, right) => left.nodeKey.localeCompare(right.nodeKey));
-  if (matches.length === 1) return ok({ nodeKey: matches[0]!.nodeKey, nodeId: matches[0]!.nodeId, payload: intent.payload });
+  if (matches.length === 1) return Result.succeed({ nodeKey: matches[0]!.nodeKey, nodeId: matches[0]!.nodeId, payload: intent.payload });
   if (matches.length > 1) return ambiguousSignal(intent, matches.map(wait => wait.nodeKey));
   const consumedMatches = Object.values(snapshot.projection.signalWaits)
     .filter(wait => wait.status === "consumed"
       && (wait.nodeKey === resolvedTarget
         || (occurrence === undefined && wait.nodeId === target)))
     .sort((left, right) => left.nodeKey.localeCompare(right.nodeKey));
-  if (consumedMatches.length === 1) return ok({ nodeKey: consumedMatches[0]!.nodeKey, nodeId: consumedMatches[0]!.nodeId, payload: intent.payload });
+  if (consumedMatches.length === 1) return Result.succeed({ nodeKey: consumedMatches[0]!.nodeKey, nodeId: consumedMatches[0]!.nodeId, payload: intent.payload });
   if (consumedMatches.length > 1) return ambiguousSignal(intent, consumedMatches.map(wait => wait.nodeKey));
-  return err({
+  return Result.fail({
     type: "signal-target-not-found",
     runId: intent.runId,
     target,
@@ -296,8 +293,8 @@ export function resolveSignalPayload(
 function ambiguousSignal(
   intent: Extract<RunControlIntent, { type: "signal" }>,
   candidateKeys: string[],
-): Result<never, Extract<SchedulerControlFailure, { type: "signal-target-ambiguous" }>> {
-  return err({
+): Result.Result<never, Extract<SchedulerControlFailure, { type: "signal-target-ambiguous" }>> {
+  return Result.fail({
     type: "signal-target-ambiguous",
     runId: intent.runId,
     target: intent.node,

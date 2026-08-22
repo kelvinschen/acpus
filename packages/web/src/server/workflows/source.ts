@@ -1,6 +1,7 @@
 import { readdir, realpath, stat } from "node:fs/promises";
 import { extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import type {
   ProjectWorkflowCatalogEntry,
   WorkflowFiles,
@@ -48,25 +49,25 @@ export async function listProjectWorkflowCatalog(cwd: string): Promise<ProjectWo
   return catalog.flatMap(entry => entry ? [entry] : []).sort((left, right) => left.name.localeCompare(right.name));
 }
 
-export function listWorkflowFiles(cwd: string, dir = ""): ResultAsync<WorkflowFiles, WorkflowBrowseFailure> {
-  return new ResultAsync(listWorkflowFilesResult(cwd, dir));
+export function listWorkflowFiles(cwd: string, dir = ""): Effect.Effect<WorkflowFiles, WorkflowBrowseFailure> {
+  return Effect.promise(() => listWorkflowFilesResult(cwd, dir)).pipe(Effect.flatMap(Effect.fromResult));
 }
 
-async function listWorkflowFilesResult(cwd: string, dir: string): Promise<Result<WorkflowFiles, WorkflowBrowseFailure>> {
+async function listWorkflowFilesResult(cwd: string, dir: string): Promise<Result.Result<WorkflowFiles, WorkflowBrowseFailure>> {
   const base = resolve(cwd);
   const current = resolveWorkspacePath(base, dir);
-  if (!current) return err(workflowBrowseFailure("outside-workspace", "Path escapes workspace."));
+  if (!current) return Result.fail(workflowBrowseFailure("outside-workspace", "Path escapes workspace."));
   let currentStat;
   try {
     currentStat = await stat(current);
   } catch (error) {
-    if (isMissingPathError(error)) return err(workflowBrowseFailure("not-found", "Path does not exist."));
+    if (isMissingPathError(error)) return Result.fail(workflowBrowseFailure("not-found", "Path does not exist."));
     throw error;
   }
-  if (!currentStat.isDirectory()) return err(workflowBrowseFailure("not-directory", "Path is not a directory."));
+  if (!currentStat.isDirectory()) return Result.fail(workflowBrowseFailure("not-directory", "Path is not a directory."));
   const [realBase, realCurrent] = await Promise.all([realpath(base), realpath(current)]);
   if (!isContainedPath(realBase, realCurrent)) {
-    return err(workflowBrowseFailure("outside-workspace", "Path escapes workspace."));
+    return Result.fail(workflowBrowseFailure("outside-workspace", "Path escapes workspace."));
   }
 
   const entries = await Promise.all((await readdir(current, { withFileTypes: true }))
@@ -79,7 +80,7 @@ async function listWorkflowFilesResult(cwd: string, dir: string): Promise<Result
         ? { name: entry.name, path: rel, kind: "workflow" as const }
         : undefined;
     }));
-  return ok({
+  return Result.succeed({
     dir: relative(base, current),
     entries: entries.flatMap(entry => entry ? [entry] : []).sort((left, right) =>
       left.kind.localeCompare(right.kind) || left.name.localeCompare(right.name),
@@ -90,14 +91,14 @@ async function listWorkflowFilesResult(cwd: string, dir: string): Promise<Result
 export function resolveWorkflowSource(
   cwd: string,
   source: WorkflowVisualizationSource,
-): ResultAsync<string, WorkflowSourceFailure> {
-  return new ResultAsync(source.kind === "catalog"
+): Effect.Effect<string, WorkflowSourceFailure> {
+  return Effect.promise(() => source.kind === "catalog"
     ? catalogWorkflowPath(cwd, source.name)
-    : workspaceWorkflowPath(cwd, source.path));
+    : workspaceWorkflowPath(cwd, source.path)).pipe(Effect.flatMap(Effect.fromResult));
 }
 
-async function catalogWorkflowPath(cwd: string, name: string): Promise<Result<string, WorkflowSourceFailure>> {
-  if (!workflowCatalogName.test(name)) return err(workflowSourceFailure("not-found"));
+async function catalogWorkflowPath(cwd: string, name: string): Promise<Result.Result<string, WorkflowSourceFailure>> {
+  if (!workflowCatalogName.test(name)) return Result.fail(workflowSourceFailure("not-found"));
   const base = resolve(cwd);
   const root = join(base, ".acpus", "workflows");
   let realRoot: string;
@@ -105,43 +106,43 @@ async function catalogWorkflowPath(cwd: string, name: string): Promise<Result<st
     const realBase = await realpath(base);
     realRoot = await realpath(root);
     if (!isContainedPath(realBase, realRoot)) {
-      return err(workflowSourceFailure("outside-workspace"));
+      return Result.fail(workflowSourceFailure("outside-workspace"));
     }
   } catch (error) {
-    if (isMissingPathError(error)) return err(workflowSourceFailure("not-found"));
+    if (isMissingPathError(error)) return Result.fail(workflowSourceFailure("not-found"));
     throw error;
   }
 
   const workflow = join(root, name, "workflow.ts");
   try {
     const [info, realWorkflow] = await Promise.all([stat(workflow), realpath(workflow)]);
-    if (!info.isFile()) return err(workflowSourceFailure("not-file"));
+    if (!info.isFile()) return Result.fail(workflowSourceFailure("not-file"));
     return isContainedPath(realRoot, realWorkflow)
-      ? ok(workflow)
-      : err(workflowSourceFailure("outside-workspace"));
+      ? Result.succeed(workflow)
+      : Result.fail(workflowSourceFailure("outside-workspace"));
   } catch (error) {
-    if (isMissingPathError(error)) return err(workflowSourceFailure("not-found"));
+    if (isMissingPathError(error)) return Result.fail(workflowSourceFailure("not-found"));
     throw error;
   }
 }
 
-async function workspaceWorkflowPath(cwd: string, path: string): Promise<Result<string, WorkflowSourceFailure>> {
-  if (!isWorkflowFile(path)) return err(workflowSourceFailure("unsupported-extension"));
+async function workspaceWorkflowPath(cwd: string, path: string): Promise<Result.Result<string, WorkflowSourceFailure>> {
+  if (!isWorkflowFile(path)) return Result.fail(workflowSourceFailure("unsupported-extension"));
   const base = resolve(cwd);
   const candidate = resolveWorkspacePath(base, path);
-  if (!candidate) return err(workflowSourceFailure("outside-workspace"));
+  if (!candidate) return Result.fail(workflowSourceFailure("outside-workspace"));
   try {
     const [realBase, realCandidate, candidateStat] = await Promise.all([
       realpath(base),
       realpath(candidate),
       stat(candidate),
     ]);
-    if (!candidateStat.isFile()) return err(workflowSourceFailure("not-file"));
+    if (!candidateStat.isFile()) return Result.fail(workflowSourceFailure("not-file"));
     return isContainedPath(realBase, realCandidate)
-      ? ok(candidate)
-      : err(workflowSourceFailure("outside-workspace"));
+      ? Result.succeed(candidate)
+      : Result.fail(workflowSourceFailure("outside-workspace"));
   } catch (error) {
-    if (isMissingPathError(error)) return err(workflowSourceFailure("not-found"));
+    if (isMissingPathError(error)) return Result.fail(workflowSourceFailure("not-found"));
     throw error;
   }
 }

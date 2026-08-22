@@ -1,21 +1,21 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { isAbsolute } from "node:path";
-import { Readable, Writable } from "node:stream";
-import {
-  PROTOCOL_VERSION,
-  RequestError,
-  client,
-  methods,
-  ndJsonStream,
-  type ClientContext,
-  type AnyMessage,
-  type InitializeResponse,
-  type SendRequestOptions,
-  type SessionConfigOption,
-  type SessionUpdate,
-  type Stream,
+import type {
+  InitializeResponse,
+  SessionConfigOption,
+  SessionUpdate,
 } from "@agentclientprotocol/sdk";
-import { errAsync, ResultAsync } from "neverthrow";
+import { ProcessHost, type ProcessHostShape } from "@acpus/owned-process";
+import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as Option from "effect/Option";
+import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
+import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import {
   PersistenceIssue,
   SessionBindingMismatchIssue,
@@ -29,8 +29,14 @@ import {
 import {
   ClientOperationIssue,
   createReverseRpcHandlers,
+  type ReverseRpcHandlers,
 } from "./reverse-rpc.js";
 import { resolveAgentSessionBinding } from "./session-binding.js";
+import {
+  AcpTransport,
+  type AcpTransportConnection,
+  type AcpTransportUpdate,
+} from "./transport.js";
 import type {
   AcpError,
   AcpEvent,
@@ -44,30 +50,9 @@ import type {
   OpenAcpSessionInput,
 } from "./types.js";
 
-type ExitInfo = Readonly<{
-  exitCode: number | null;
-  signal: NodeJS.Signals | null;
-}>;
-
-type ProcessMonitor = Readonly<{
-  spawned: Promise<void>;
-  exitInfo(): ExitInfo | undefined;
-  settleExit(): Promise<ExitInfo | undefined>;
-  race<T>(request: Promise<T>, operation: AcpOperation): Promise<T>;
-}>;
-
 type ProjectionHolder = {
   value: AcpSessionProjection | undefined;
-  projectUpdates: boolean;
 };
-
-type ConfigurationState = {
-  options: SessionConfigOption[] | null | undefined;
-};
-
-const COOPERATIVE_CLOSE_GRACE_MS = 500;
-const INHERIT_PROCESS_GROUP_ENV = "ACPUS_INTERNAL_ACP_INHERIT_PROCESS_GROUP";
-const ownedProcessGroups = new WeakSet<ChildProcessWithoutNullStreams>();
 
 type OpenControl = {
   readonly signal: AbortSignal | undefined;
@@ -75,104 +60,650 @@ type OpenControl = {
   committed: boolean;
 };
 
-type OpenConnectionCleanup = () => Promise<unknown[]>;
-
-type TurnUpdateEpoch = {
-  accepting: boolean;
-  promptRequestId?: string | number | null;
-  pending: Set<Promise<void>>;
+type ActiveTurn = {
+  readonly scope: Scope.Closeable;
+  readonly completion: Deferred.Deferred<void>;
+  readonly updatesSettled: Deferred.Deferred<void>;
+  readonly onEvent: ((event: AcpEvent) => unknown) | undefined;
+  cancel: Effect.Effect<void, AcpError>;
+  cancelled: boolean;
+  projectUpdates: boolean;
+  promptEpoch?: number;
+  processedSequence: number;
+  updateFence?: number;
+  clientIssue?: ClientOperationIssue;
 };
 
-type TurnUpdateIngress = {
-  epoch: TurnUpdateEpoch | undefined;
-  settle(): void;
+type SessionState = {
+  readonly input: OpenAcpSessionInput;
+  readonly scope: Scope.Closeable;
+  readonly resourceScope: Scope.Closeable;
+  readonly processes: ProcessHostShape;
+  readonly reverse: ReverseRpcHandlers;
+  readonly connection: AcpTransportConnection;
+  readonly projection: ProjectionHolder;
+  readonly turnGate: Semaphore.Semaphore;
+  sessionId?: string;
+  initialized?: InitializeResponse;
+  transportError?: AcpError;
+  active?: ActiveTurn;
+  projectUpdates: boolean;
+  closed: boolean;
+  cleanupObserved: boolean;
+  closeReason?: string;
+  cleanup: Effect.Effect<void, AcpError>;
 };
 
-export function openAcpSession(input: OpenAcpSessionInput): ResultAsync<AcpSession, AcpError> {
-  const invalid = validateOpenInput(input);
-  if (invalid) return errAsync(invalid);
-  if (input.signal?.aborted) return errAsync(cancelledFailure("open_session"));
-  return ResultAsync.fromPromise(open(input), toAcpError("open_session"));
+const COOPERATIVE_CLOSE_GRACE_MS = 500;
+
+export function openAcpSession(
+  input: OpenAcpSessionInput,
+): Effect.Effect<AcpSession, AcpError, AcpTransport | ProcessHost | Scope.Scope> {
+  return Effect.suspend(() => {
+    const invalid = validateOpenInput(input);
+    if (invalid !== undefined) return Effect.fail(invalid);
+    if (input.signal?.aborted) return Effect.fail(cancelledFailure("open_session"));
+    return openValidatedSession(input);
+  });
 }
 
-async function open(input: OpenAcpSessionInput): Promise<AcpSession> {
-  const control: OpenControl = {
-    signal: input.signal,
-    operation: "open_session",
-    committed: false,
-  };
-  throwIfOpenCancelled(control);
-  let binding: Awaited<ReturnType<typeof resolveAgentSessionBinding>>;
-  try {
-    binding = await resolveAgentSessionBinding({
+function openValidatedSession(
+  input: OpenAcpSessionInput,
+): Effect.Effect<AcpSession, AcpError, AcpTransport | ProcessHost | Scope.Scope> {
+  return Effect.gen(function*() {
+    const parentScope = yield* Scope.Scope;
+    const sessionScope = yield* Scope.fork(parentScope);
+    const resourceScope = yield* Scope.fork(sessionScope);
+    const control: OpenControl = {
+      signal: input.signal,
+      operation: "open_session",
+      committed: false,
+    };
+    let state: SessionState | undefined;
+    const acquisition = Scope.provide(resourceScope)(openInResourceScope(
+      input,
+      control,
+      sessionScope,
+      resourceScope,
+      opened => { state = opened; },
+    ));
+    const cancellable = input.signal === undefined
+      ? acquisition
+      : Effect.raceFirst(acquisition, failWhenOpenAborted(control));
+    const opened = yield* Effect.result(cancellable);
+    if (Result.isSuccess(opened)) return opened.success;
+
+    const primary = opened.failure;
+    let cleanupError: AcpError | undefined;
+    if (state !== undefined) {
+      state.cleanupObserved = true;
+      const cleaned = yield* Effect.result(state.cleanup);
+      if (Result.isFailure(cleaned)) cleanupError = cleaned.failure;
+    }
+    yield* Scope.close(sessionScope, Exit.fail(primary));
+    return yield* cleanupError === undefined
+      ? Effect.fail(primary)
+      : Effect.fail(cleanupFailure(primary, control.operation, [cleanupError]));
+  });
+}
+
+function openInResourceScope(
+  input: OpenAcpSessionInput,
+  control: OpenControl,
+  sessionScope: Scope.Closeable,
+  resourceScope: Scope.Closeable,
+  onState: (state: SessionState) => void,
+): Effect.Effect<AcpSession, AcpError, AcpTransport | ProcessHost | Scope.Scope> {
+  return Effect.gen(function*() {
+    const transport = yield* AcpTransport;
+    const processes = yield* ProcessHost;
+    const binding = yield* Effect.tryPromise({
+      try: () => resolveAgentSessionBinding({
+        launch: input.launch,
+        cwd: input.cwd,
+        configuration: input.configuration,
+      }),
+      catch: () => failure(
+        "invalid_input",
+        "open_session",
+        "Agent Session cwd could not be resolved.",
+        false,
+        { code: "cwd" },
+      ),
+    });
+    const saved = yield* Effect.tryPromise({
+      try: () => loadAcpSessionProjection({
+        stateDirectory: input.stateDirectory,
+        agentSessionId: input.agentSessionId,
+        binding,
+      }),
+      catch: toAcpError("open_session"),
+    });
+    yield* Effect.try({
+      try: () => validateSessionOpenMode(input, saved),
+      catch: toAcpError("open_session"),
+    });
+    yield* checkOpenCancellation(control);
+
+    let currentState: SessionState | undefined;
+    const reverse = yield* createReverseRpcHandlers({
+      getSessionId: () => currentState?.sessionId,
+      cwd: input.cwd,
+      ...(input.env === undefined ? {} : { env: input.env }),
+      permissionMode: input.permissionMode,
+      onActivity: operation => {
+        if (currentState !== undefined) emit(currentState, { type: "activity", operation });
+      },
+    }, processes);
+    const rememberClientIssue = <Success>(
+      effect: Effect.Effect<Success, ClientOperationIssue>,
+    ): Effect.Effect<Success, ClientOperationIssue> => effect.pipe(Effect.tapError(error =>
+      Effect.sync(() => {
+        const active = currentState?.active;
+        if (active !== undefined && error.reason !== "permission") active.clientIssue = error;
+      })));
+    const connection = yield* transport.connect({
       launch: input.launch,
       cwd: input.cwd,
-      configuration: input.configuration,
-    });
-  } catch {
-    throw failure(
-      "invalid_input",
-      "open_session",
-      "Agent Session cwd could not be resolved.",
-      false,
-      { code: "cwd" },
-    );
-  }
-  let saved: AcpSessionProjection | undefined;
-  try {
-    saved = await loadAcpSessionProjection({
-      stateDirectory: input.stateDirectory,
-      agentSessionId: input.agentSessionId,
-      binding,
-    });
-    validateSessionOpenMode(input, saved);
-    throwIfOpenCancelled(control);
-  } catch (error) {
-    throw control.signal?.aborted ? cancelledFailure(control.operation) : error;
-  }
-  const child = launchAgent(input);
-  const monitor = monitorProcess(child);
-  child.stderr.resume();
-  let cleanupConnection: OpenConnectionCleanup | undefined;
-  let abortCleanup: Promise<unknown[]> | undefined;
-  const onAbort = (): void => {
-    if (!control.committed) {
-      abortCleanup ??= cleanupOpenResources(() => cleanupConnection, child, monitor);
-    }
-  };
-  control.signal?.addEventListener("abort", onAbort, { once: true });
-  if (control.signal?.aborted) onAbort();
-  try {
-    await monitor.spawned;
-    throwIfOpenCancelled(control);
-    return await openSpawned(
-      input,
-      binding,
-      saved,
-      child,
-      monitor,
-      control,
-      cleanup => { cleanupConnection = cleanup; },
-      () => {
-        throwIfOpenCancelled(control);
-        control.signal?.removeEventListener("abort", onAbort);
-        control.committed = true;
+      ...(input.env === undefined ? {} : { env: input.env }),
+      handlers: {
+        requestPermission: params => rememberClientIssue(reverse.requestPermission(params)),
+        readTextFile: params => rememberClientIssue(reverse.readTextFile(params)),
+        writeTextFile: params => rememberClientIssue(reverse.writeTextFile(params)),
+        createTerminal: params => rememberClientIssue(reverse.createTerminal(params)),
+        terminalOutput: params => rememberClientIssue(reverse.terminalOutput(params)),
+        waitForTerminalExit: params => rememberClientIssue(reverse.waitForTerminalExit(params)),
+        killTerminal: params => rememberClientIssue(reverse.killTerminal(params)),
+        releaseTerminal: params => rememberClientIssue(reverse.releaseTerminal(params)),
       },
-    );
-  } catch (error) {
-    control.signal?.removeEventListener("abort", onAbort);
-    const primary = control.signal?.aborted && !control.committed
-      ? cancelledFailure(control.operation)
-      : error;
-    const cleanupErrors = [
-      ...(await abortCleanup ?? []),
-      ...(await cleanupOpenResources(() => cleanupConnection, child, monitor)),
-    ];
-    if (cleanupErrors.length > 0) {
-      throw cleanupFailure(primary, control.operation, cleanupErrors);
+    });
+    const state: SessionState = {
+      input,
+      scope: sessionScope,
+      resourceScope,
+      processes,
+      reverse,
+      connection,
+      projection: { value: saved },
+      turnGate: Semaphore.makeUnsafe(1),
+      projectUpdates: false,
+      closed: false,
+      cleanupObserved: false,
+      cleanup: Effect.void,
+    };
+    currentState = state;
+    onState(state);
+    yield* Effect.forkScoped(Stream.runForEach(connection.updates, update =>
+      handleTransportUpdate(state, update)).pipe(Effect.catch(error => Effect.sync(() => {
+        state.transportError = error;
+      }))));
+    state.cleanup = yield* Effect.cached(Effect.uninterruptible(closeSessionValue(state)));
+    yield* Scope.addFinalizer(sessionScope, sessionFinalizer(state));
+
+    const initialized = yield* openingRequest(control, "initialize", connection.initialize());
+    yield* validateInitialize(initialized);
+    state.initialized = initialized;
+    const capabilities = capabilitiesFrom(initialized);
+    const reportedVersion = reportedAgentVersion(initialized);
+    let configuration: SessionConfigOption[] | null | undefined;
+
+    if (saved !== undefined && (capabilities.resume || capabilities.load)) {
+      state.sessionId = saved.backend.sessionId;
+      const recovered = capabilities.resume
+        ? yield* openingRequest(
+            control,
+            "resume_session",
+            connection.resumeSession(state.sessionId, input.cwd),
+          )
+        : yield* openingRequest(
+            control,
+            "load_session",
+            connection.loadSession(state.sessionId, input.cwd),
+          );
+      configuration = recovered?.configOptions;
+    } else if (saved !== undefined && input.sessionOpenMode === "existing_required") {
+      return yield* Effect.fail(failure(
+        "capability",
+        "resume_session",
+        "The ACP Agent cannot resume or load the recorded session.",
+        false,
+        { capability: "resume" },
+      ));
+    } else {
+      const created = yield* openingRequest(control, "new_session", connection.newSession(input.cwd));
+      if (!created || typeof created.sessionId !== "string" || created.sessionId.length === 0) {
+        return yield* Effect.fail(failure(
+          "protocol",
+          "new_session",
+          "The ACP Agent returned an invalid session id.",
+          false,
+        ));
+      }
+      state.sessionId = created.sessionId;
+      configuration = created.configOptions;
     }
-    throw primary;
+
+    const sessionId = requireSessionId(state);
+    const now = yield* currentIso;
+    state.projection.value = {
+      ...(saved ?? {
+        schema: "acpus.acp-session.v3",
+        agentSessionId: input.agentSessionId,
+        binding,
+        backend: { sessionId, capabilities },
+        conversation: [],
+        createdAt: now,
+        updatedAt: now,
+      }),
+      backend: { sessionId, capabilities },
+      updatedAt: now,
+    };
+    yield* applyConfiguration(
+      connection,
+      sessionId,
+      effectiveTurnConfiguration(input.configuration),
+      configuration,
+      control,
+    );
+    control.operation = "open_session";
+    yield* saveProjection(input, requireProjection(state.projection), "open_session", {
+      beforeRename: () => {
+        if (!control.committed && control.signal?.aborted) throw cancelledFailure(control.operation);
+      },
+      afterRename: () => { control.committed = true; },
+    });
+    state.projectUpdates = true;
+
+    return {
+      agentSessionId: input.agentSessionId,
+      sessionId,
+      projectionPath: acpSessionProjectionPath(input.agentSessionId),
+      ...(reportedVersion === undefined ? {} : { reportedVersion }),
+      runTurn: turnInput => runTurn(state, turnInput),
+      close: reason => closeSession(state, reason),
+    };
+  });
+}
+
+function runTurn(
+  state: SessionState,
+  input: AcpTurnInput,
+): Effect.Effect<AcpTurnResult, AcpError> {
+  return Effect.suspend(() => {
+    if (state.closed) {
+      return Effect.fail(failure("session", "run_turn", "The ACP session is closed.", false));
+    }
+    if (state.active !== undefined) {
+      return Effect.fail(failure(
+        "session",
+        "run_turn",
+        "The ACP session already has an active turn.",
+        false,
+      ));
+    }
+    const invalid = validateTurnInput(input);
+    if (invalid !== undefined) return Effect.fail(invalid);
+    return state.turnGate.withPermitsIfAvailable(1)(runOwnedTurn(state, input)).pipe(
+      Effect.flatMap(Option.match({
+        onNone: () => Effect.fail(failure(
+          "session",
+          "run_turn",
+          "The ACP session already has an active turn.",
+          false,
+        )),
+        onSome: Effect.succeed,
+      })),
+    );
+  });
+}
+
+function runOwnedTurn(
+  state: SessionState,
+  input: AcpTurnInput,
+): Effect.Effect<AcpTurnResult, AcpError> {
+  return Effect.uninterruptibleMask(restore => Effect.gen(function*() {
+    const turnScope = yield* Scope.fork(state.resourceScope);
+    const active: ActiveTurn = {
+      scope: turnScope,
+      completion: Deferred.makeUnsafe<void>(),
+      updatesSettled: Deferred.makeUnsafe<void>(),
+      onEvent: input.onEvent,
+      cancel: Effect.void,
+      cancelled: false,
+      projectUpdates: false,
+      processedSequence: 0,
+    };
+    active.cancel = yield* Effect.cached(Effect.uninterruptible(Effect.suspend(() => {
+      active.cancelled = true;
+      return state.reverse.cancelPendingPermissions().pipe(
+        Effect.andThen(state.connection.cancel(requireSessionId(state))),
+      );
+    })));
+    state.active = active;
+    if (input.signal !== undefined) {
+      yield* Scope.provide(turnScope)(Effect.forkScoped(
+        awaitAbort(input.signal).pipe(Effect.andThen(active.cancel), Effect.ignore),
+      ));
+    }
+    const task = runTurnTask(state, active, input).pipe(
+      Effect.catchCause(cause => Cause.hasInterrupts(cause) && active.cancelled
+        ? Effect.uninterruptible(persistCancelledTurn(state))
+        : Effect.failCause(cause)),
+      Effect.onExit(() => Effect.sync(() => {
+        Deferred.doneUnsafe(active.completion, Effect.void);
+      })),
+    );
+    const fiber = yield* Scope.provide(turnScope)(Effect.forkScoped(task));
+    const settled = yield* Effect.exit(restore(Fiber.join(fiber)).pipe(
+      Effect.onInterrupt(() => active.cancel.pipe(Effect.ignore)),
+    ));
+    yield* Scope.close(turnScope, settled);
+    if (state.active === active) delete state.active;
+    if (Exit.isSuccess(settled)) return settled.value;
+    if (Cause.hasInterrupts(settled.cause) && active.cancelled) {
+      return yield* persistCancelledTurn(state);
+    }
+    return yield* Effect.failCause(settled.cause);
+  }));
+}
+
+function runTurnTask(
+  state: SessionState,
+  active: ActiveTurn,
+  input: AcpTurnInput,
+): Effect.Effect<AcpTurnResult, AcpError> {
+  const body = Effect.gen(function*() {
+    if (input.configuration !== undefined
+      && !sameEffectiveConfiguration(state.input.configuration, input.configuration)) {
+      return yield* Effect.fail(failure(
+        "configuration",
+        "configure_session",
+        "Agent Session configuration is immutable after open.",
+        false,
+      ));
+    }
+    const now = yield* currentIso;
+    state.projection.value = appendConversation(requireProjection(state.projection), {
+      type: "message",
+      role: "user",
+      content: input.prompt,
+    }, now);
+    yield* saveProjection(state.input, requireProjection(state.projection), "run_turn");
+
+    if (input.signal?.aborted) yield* active.cancel.pipe(Effect.ignore);
+    if (active.cancelled) return yield* persistCancelledTurn(state);
+    if (state.transportError !== undefined) return yield* Effect.fail(state.transportError);
+
+    active.projectUpdates = true;
+    const prompted = yield* state.connection.prompt(requireSessionId(state), input.prompt);
+    if (active.cancelled) yield* active.cancel.pipe(Effect.ignore);
+    yield* waitForUpdateFence(active, prompted.promptEpoch, prompted.updateFence);
+    active.projectUpdates = false;
+    if (active.clientIssue !== undefined) {
+      return yield* Effect.fail(toAcpError("run_turn")(active.clientIssue));
+    }
+    const response = prompted.response;
+    if (!response || typeof response.stopReason !== "string" || response.stopReason.length === 0) {
+      return yield* Effect.fail(failure(
+        "protocol",
+        "run_turn",
+        "The ACP Agent returned an invalid prompt response.",
+        false,
+        { origin: "provider", providerEvidence: "inbound_activity" },
+      ));
+    }
+    const usage = tokenUsage(response.usage);
+    const status: AcpTurnResult["status"] = active.cancelled || response.stopReason === "cancelled"
+      ? "cancelled"
+      : "completed";
+    state.projection.value = withStop(
+      requireProjection(state.projection),
+      response.stopReason,
+      yield* currentIso,
+      usage,
+    );
+    yield* saveProjection(state.input, requireProjection(state.projection), "run_turn");
+    return {
+      status,
+      stopReason: response.stopReason,
+      ...(usage === undefined ? {} : { usage }),
+    };
+  });
+
+  return body.pipe(Effect.catch(error => Effect.gen(function*() {
+    active.projectUpdates = false;
+    if (active.cancelled) return yield* persistCancelledTurn(state);
+    if (state.projection.value !== undefined) {
+      yield* saveProjection(state.input, state.projection.value, "run_turn");
+    }
+    return yield* Effect.fail(error);
+  })));
+}
+
+function persistCancelledTurn(state: SessionState): Effect.Effect<AcpTurnResult, AcpError> {
+  return Effect.gen(function*() {
+    if (state.projection.value !== undefined) {
+      state.projection.value = withStop(state.projection.value, "cancelled", yield* currentIso);
+      yield* saveProjection(state.input, state.projection.value, "run_turn");
+    }
+    return { status: "cancelled", stopReason: "cancelled" };
+  });
+}
+
+function waitForUpdateFence(
+  active: ActiveTurn,
+  epoch: number,
+  fence: number,
+): Effect.Effect<void, AcpError> {
+  return Effect.suspend(() => {
+    if (active.promptEpoch !== undefined && active.promptEpoch !== epoch) {
+      return Effect.fail(failure(
+        "protocol",
+        "run_turn",
+        "The ACP Agent returned a prompt response for an unexpected update epoch.",
+        false,
+      ));
+    }
+    active.promptEpoch = epoch;
+    active.updateFence = fence;
+    if (active.processedSequence >= fence) {
+      Deferred.doneUnsafe(active.updatesSettled, Effect.void);
+    }
+    return Deferred.await(active.updatesSettled);
+  });
+}
+
+function handleTransportUpdate(
+  state: SessionState,
+  envelope: AcpTransportUpdate,
+): Effect.Effect<void> {
+  return Effect.gen(function*() {
+    const active = state.active;
+    if (active === undefined
+      || envelope.promptEpoch === undefined
+      || envelope.promptSequence === undefined) return;
+    if (active.promptEpoch !== undefined && active.promptEpoch !== envelope.promptEpoch) return;
+    active.promptEpoch ??= envelope.promptEpoch;
+    if (active.projectUpdates) emit(state, eventFromUpdate(envelope.update), yield* currentIso);
+    active.processedSequence = Math.max(active.processedSequence, envelope.promptSequence);
+    if (active.updateFence !== undefined && active.processedSequence >= active.updateFence) {
+      Deferred.doneUnsafe(active.updatesSettled, Effect.void);
+    }
+    return;
+  });
+}
+
+function emit(state: SessionState, event: AcpEvent, updatedAt?: string): void {
+  const active = state.active;
+  if (state.projectUpdates
+    && active?.projectUpdates
+    && state.projection.value !== undefined
+    && updatedAt !== undefined) {
+    state.projection.value = projectEvent(state.projection.value, event, updatedAt);
   }
+  const handler = active?.onEvent;
+  if (handler === undefined) return;
+  try {
+    const observed = handler(event);
+    if (isThenable(observed)) void observed.then(undefined, () => undefined);
+  } catch {
+    // Event observers never participate in protocol settlement.
+  }
+}
+
+function closeSession(state: SessionState, reason?: string): Effect.Effect<void, AcpError> {
+  return Effect.uninterruptible(Effect.gen(function*() {
+    state.cleanupObserved = true;
+    if (state.closeReason === undefined && reason !== undefined) state.closeReason = reason;
+    const result = yield* Effect.result(state.cleanup);
+    yield* Scope.close(state.scope, Exit.void);
+    return yield* Effect.fromResult(result);
+  }));
+}
+
+function closeSessionValue(state: SessionState): Effect.Effect<void, AcpError> {
+  return Effect.gen(function*() {
+    state.closed = true;
+    let primary: AcpError | undefined;
+    const cleanupErrors: AcpError[] = [];
+    yield* state.reverse.cancelPendingPermissions();
+    const active = state.active;
+    if (active !== undefined) {
+      yield* active.cancel.pipe(Effect.ignore);
+      const cooperative = yield* Effect.timeoutOption(
+        Deferred.await(active.completion),
+        COOPERATIVE_CLOSE_GRACE_MS,
+      );
+      if (Option.isNone(cooperative)) yield* Scope.close(active.scope, Exit.void);
+      yield* Deferred.await(active.completion);
+    }
+
+    if (state.sessionId !== undefined
+      && state.initialized?.agentCapabilities?.sessionCapabilities?.close) {
+      const closeRequest = yield* Effect.timeoutOption(
+        Effect.result(state.connection.closeSession(state.sessionId)),
+        COOPERATIVE_CLOSE_GRACE_MS,
+      );
+      if (Option.isSome(closeRequest) && Result.isFailure(closeRequest.value)) {
+        primary = closeRequest.value.failure;
+      }
+    }
+
+    const reverseClosed = yield* Effect.result(state.reverse.closeAll());
+    if (Result.isFailure(reverseClosed)) {
+      cleanupErrors.push(toAcpError("close_session")(reverseClosed.failure));
+    }
+    const connectionClosed = yield* Effect.result(state.connection.close(state.closeReason));
+    if (Result.isFailure(connectionClosed)) cleanupErrors.push(connectionClosed.failure);
+    const providerClosed = yield* Effect.result(terminateProvider(state.connection));
+    if (Result.isFailure(providerClosed)) cleanupErrors.push(providerClosed.failure);
+
+    if (cleanupErrors.length > 0) {
+      return yield* Effect.fail(cleanupFailure(
+        primary ?? failure(
+          "cleanup",
+          "close_session",
+          "ACP session close cleanup failed.",
+          false,
+        ),
+        "close_session",
+        cleanupErrors,
+      ));
+    }
+    if (primary !== undefined) return yield* Effect.fail(primary);
+  });
+}
+
+function terminateProvider(
+  connection: AcpTransportConnection,
+): Effect.Effect<void, AcpError> {
+  return Effect.gen(function*() {
+    if ((yield* connection.liveness()) === "dead") return;
+    yield* signalProvider(connection, "SIGTERM");
+    yield* waitForProviderDeath(connection, COOPERATIVE_CLOSE_GRACE_MS);
+    if ((yield* connection.liveness()) === "dead") return;
+    yield* signalProvider(connection, "SIGKILL");
+    yield* waitForProviderDeath(connection, COOPERATIVE_CLOSE_GRACE_MS);
+    const final = yield* connection.liveness();
+    if (final !== "dead") {
+      return yield* Effect.fail(failure(
+        "cleanup",
+        "close_session",
+        `ACP Agent process death could not be verified after SIGKILL (${final}).`,
+        false,
+        { origin: "process" },
+      ));
+    }
+  });
+}
+
+function signalProvider(
+  connection: AcpTransportConnection,
+  signal: NodeJS.Signals,
+): Effect.Effect<void, AcpError> {
+  return connection.signal(signal).pipe(Effect.catch(error =>
+    connection.liveness().pipe(Effect.flatMap(liveness =>
+      liveness === "dead" ? Effect.void : Effect.fail(error)))));
+}
+
+function waitForProviderDeath(
+  connection: AcpTransportConnection,
+  milliseconds: number,
+): Effect.Effect<void> {
+  return Effect.gen(function*() {
+    const checks = Math.max(1, Math.ceil(milliseconds / 25));
+    for (let attempt = 0; attempt < checks; attempt += 1) {
+      if ((yield* connection.liveness()) === "dead") return;
+      yield* Effect.sleep(25);
+    }
+  });
+}
+
+function sessionFinalizer(state: SessionState): Effect.Effect<void> {
+  return Effect.suspend(() => state.cleanupObserved
+    ? state.cleanup.pipe(Effect.ignore)
+    : state.cleanup.pipe(Effect.orDie, Effect.asVoid));
+}
+
+function openingRequest<Success>(
+  control: OpenControl,
+  operation: AcpOperation,
+  effect: Effect.Effect<Success, AcpError>,
+): Effect.Effect<Success, AcpError> {
+  return Effect.suspend(() => {
+    control.operation = operation;
+    if (!control.committed && control.signal?.aborted) {
+      return Effect.fail(cancelledFailure(operation));
+    }
+    return effect.pipe(Effect.tap(() => checkOpenCancellation(control)));
+  });
+}
+
+function checkOpenCancellation(control: OpenControl): Effect.Effect<void, AcpError> {
+  return !control.committed && control.signal?.aborted
+    ? Effect.fail(cancelledFailure(control.operation))
+    : Effect.void;
+}
+
+function failWhenOpenAborted(control: OpenControl): Effect.Effect<never, AcpError> {
+  const signal = control.signal!;
+  return Effect.callback<never, AcpError>(resume => {
+    const onAbort = (): void => {
+      if (!control.committed) resume(Effect.fail(cancelledFailure(control.operation)));
+    };
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    return Effect.sync(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+function awaitAbort(signal: AbortSignal): Effect.Effect<void> {
+  return Effect.callback<void>(resume => {
+    const onAbort = (): void => resume(Effect.void);
+    if (signal.aborted) onAbort();
+    else signal.addEventListener("abort", onAbort, { once: true });
+    return Effect.sync(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 function validateSessionOpenMode(
@@ -198,379 +729,301 @@ function validateSessionOpenMode(
   }
 }
 
-async function openSpawned(
-  input: OpenAcpSessionInput,
-  binding: Awaited<ReturnType<typeof resolveAgentSessionBinding>>,
-  saved: AcpSessionProjection | undefined,
-  child: ChildProcessWithoutNullStreams,
-  monitor: ProcessMonitor,
-  control: OpenControl,
-  registerCleanup: (cleanup: OpenConnectionCleanup) => void,
-  commit: () => void,
-): Promise<AcpSession> {
-  let sessionId: string | undefined;
-  let currentEventHandler: ((event: AcpEvent) => unknown) | undefined;
-  let currentClientIssue: ClientOperationIssue | undefined;
-  let active = false;
-  let projectTurnUpdates = false;
-  let activeTurn: Promise<void> | undefined;
-  let cancelActiveTurn: (() => void) | undefined;
-  let closed = false;
-  let closeResult: ResultAsync<void, AcpError> | undefined;
-  const projection: ProjectionHolder = { value: saved, projectUpdates: false };
-  const updates = createTurnUpdateFence(ndJsonStream(
-    Writable.toWeb(child.stdin) as WritableStream<Uint8Array>,
-    Readable.toWeb(child.stdout) as ReadableStream<Uint8Array>,
-  ));
+function validateInitialize(value: InitializeResponse): Effect.Effect<void, AcpError> {
+  return !value || value.protocolVersion !== 1
+    ? Effect.fail(failure(
+        "initialize",
+        "initialize",
+        `The ACP Agent selected unsupported protocol version ${String(value?.protocolVersion)}.`,
+        false,
+      ))
+    : Effect.void;
+}
 
-  const emit = (event: AcpEvent): void => {
-    if (projection.projectUpdates && projection.value !== undefined && projectTurnUpdates) {
-      projection.value = projectEvent(projection.value, event);
-    }
-    const handler = currentEventHandler;
-    if (handler === undefined) return;
-    try {
-      void Promise.resolve(handler(event)).catch(() => undefined);
-    } catch {
-      // Event observers never participate in protocol settlement.
-    }
-  };
-
-  const rememberClientIssue = async <T>(operation: () => Promise<T>): Promise<T> => {
-    try {
-      return await operation();
-    } catch (error) {
-      if (active && error instanceof ClientOperationIssue && error.reason !== "permission") {
-        currentClientIssue = error;
-      }
-      throw error;
-    }
-  };
-
-  const reverse = createReverseRpcHandlers({
-    getSessionId: () => sessionId,
-    cwd: input.cwd,
-    ...(input.env === undefined ? {} : { env: input.env }),
-    permissionMode: input.permissionMode,
-    onActivity: operation => {
-      emit({ type: "activity", operation });
-    },
-  });
-  const app = client({ name: "acpus" })
-    .onRequest(methods.client.session.requestPermission, handler =>
-      rememberClientIssue(() => reverse.requestPermission(handler.params, handler.signal)))
-    .onRequest(methods.client.fs.readTextFile, handler =>
-      rememberClientIssue(() => reverse.readTextFile(handler.params)))
-    .onRequest(methods.client.fs.writeTextFile, handler =>
-      rememberClientIssue(() => reverse.writeTextFile(handler.params)))
-    .onRequest(methods.client.terminal.create, handler =>
-      rememberClientIssue(() => reverse.createTerminal(handler.params)))
-    .onRequest(methods.client.terminal.output, handler =>
-      rememberClientIssue(() => reverse.terminalOutput(handler.params)))
-    .onRequest(methods.client.terminal.waitForExit, handler =>
-      rememberClientIssue(() => reverse.waitForTerminalExit(handler.params, handler.signal)))
-    .onRequest(methods.client.terminal.kill, handler =>
-      rememberClientIssue(() => reverse.killTerminal(handler.params)))
-    .onRequest(methods.client.terminal.release, handler =>
-      rememberClientIssue(() => reverse.releaseTerminal(handler.params)))
-    .onNotification(methods.client.session.update, handler => {
-      const ingress = updates.take();
-      try {
-        if (ingress?.epoch !== undefined && handler.params.sessionId === sessionId) {
-          emit(eventFromUpdate(handler.params.update));
-        }
-      } finally {
-        ingress?.settle();
-      }
-    });
-  const connection = app.connect(updates.stream);
-  const context = connection.agent;
-  registerCleanup(async (): Promise<unknown[]> => {
-    const errors: unknown[] = [];
-    try {
-      reverse.cancelPendingPermissions();
-    } catch (error) {
-      errors.push(error);
-    }
-    await reverse.closeAll().catch(error => { errors.push(error); });
-    try {
-      connection.close();
-    } catch (error) {
-      errors.push(error);
-    }
-    return errors;
-  });
-
-  const initialized = await openingAgentRequest(
-    options => context.request(methods.agent.initialize, {
-        protocolVersion: PROTOCOL_VERSION,
-        clientCapabilities: {
-          fs: { readTextFile: true, writeTextFile: true },
-          terminal: true,
-        },
-        clientInfo: { name: "acpus", version: "0.1.0" },
-      }, options),
-    monitor,
-    control,
-    "initialize",
-    "initialize",
-  );
-  validateInitialize(initialized);
-  const capabilities = capabilitiesFrom(initialized);
-  const reportedVersion = reportedAgentVersion(initialized);
-  const configuration: ConfigurationState = { options: undefined };
-
-  if (saved !== undefined && (capabilities.resume || capabilities.load)) {
-    sessionId = saved.backend.sessionId;
-    if (capabilities.resume) {
-      const response = await openingAgentRequest(
-        options => context.request(methods.agent.session.resume, {
-            sessionId: sessionId!,
-            cwd: input.cwd,
-            mcpServers: [],
-          }, options),
-        monitor,
-        control,
-        "resume_session",
-        "session",
-      );
-      configuration.options = response?.configOptions;
-    } else if (capabilities.load) {
-      const response = await openingAgentRequest(
-        options => context.request(methods.agent.session.load, {
-            sessionId: sessionId!,
-            cwd: input.cwd,
-            mcpServers: [],
-          }, options),
-        monitor,
-        control,
-        "load_session",
-        "session",
-      );
-      configuration.options = response?.configOptions;
-    }
-  } else if (saved !== undefined && input.sessionOpenMode === "existing_required") {
-    throw failure(
-      "capability",
-      "resume_session",
-      "The ACP Agent cannot resume or load the recorded session.",
-      false,
-      { capability: "resume" },
-    );
-  } else {
-    const response = await openingAgentRequest(
-      options => context.request(
-        methods.agent.session.new,
-        { cwd: input.cwd, mcpServers: [] },
-        options,
-      ),
-      monitor,
-      control,
-      "new_session",
-      "session",
-    );
-    if (!response || typeof response.sessionId !== "string" || response.sessionId.length === 0) {
-      throw failure("protocol", "new_session", "The ACP Agent returned an invalid session id.", false);
-    }
-    sessionId = response.sessionId;
-    configuration.options = response.configOptions;
-  }
-
-  const now = new Date().toISOString();
-  projection.value = {
-    ...(saved ?? {
-      schema: "acpus.acp-session.v3",
-      agentSessionId: input.agentSessionId,
-      binding,
-      backend: { sessionId, capabilities },
-      conversation: [],
-      createdAt: now,
-      updatedAt: now,
-    }),
-    backend: { sessionId, capabilities },
-    updatedAt: now,
-  };
-  configuration.options = await applyConfiguration(
-    context,
-    monitor,
-    sessionId,
-    effectiveTurnConfiguration(input.configuration),
-    configuration.options,
-    control,
-  );
-  control.operation = "open_session";
-  await saveAcpSessionProjection(input.stateDirectory, projection.value, {
-    beforeRename: () => throwIfOpenCancelled(control),
-    afterRename: commit,
-  });
-  projection.projectUpdates = true;
-
-  const runTurn = (turnInput: AcpTurnInput): ResultAsync<AcpTurnResult, AcpError> => {
-    if (closed) return errAsync(failure("session", "run_turn", "The ACP session is closed.", false));
-    if (active) return errAsync(failure("session", "run_turn", "The ACP session already has an active turn.", false));
-    const invalid = validateTurnInput(turnInput);
-    if (invalid) return errAsync(invalid);
-    active = true;
-    const task = runTurnTask(turnInput);
-    const settlement = task.then(() => undefined, () => undefined);
-    activeTurn = settlement;
-    void settlement.finally(() => {
-      if (activeTurn === settlement) activeTurn = undefined;
-    });
-    return ResultAsync.fromPromise(task, toAcpError("run_turn"));
-  };
-
-  const runTurnTask = async (turnInput: AcpTurnInput): Promise<AcpTurnResult> => {
-    let cancelPromise: Promise<void> | undefined;
-    let updateEpoch: TurnUpdateEpoch | undefined;
-    let cancelled = turnInput.signal?.aborted ?? false;
-    const cancel = (): void => {
-      if (cancelled && cancelPromise !== undefined) return;
-      cancelled = true;
-      reverse.cancelPendingPermissions();
-      cancelPromise = agentNotify(
-        context.notify(methods.agent.session.cancel, { sessionId: sessionId! }),
-        "cancel_turn",
-      );
-      void cancelPromise.catch(() => undefined);
-    };
-    cancelActiveTurn = cancel;
-    turnInput.signal?.addEventListener("abort", cancel, { once: true });
-    if (turnInput.signal?.aborted) cancel();
-    try {
-      currentEventHandler = turnInput.onEvent;
-      currentClientIssue = undefined;
-      const currentProjection = requireProjection(projection);
-      if (turnInput.configuration !== undefined
-        && !sameEffectiveConfiguration(input.configuration, turnInput.configuration)) {
-        throw failure(
-          "configuration",
-          "configure_session",
-          "Agent Session configuration is immutable after open.",
-          false,
-        );
-      }
-      projection.value = appendConversation({
-        ...currentProjection,
-        updatedAt: new Date().toISOString(),
-      }, {
-        type: "message",
-        role: "user",
-        content: turnInput.prompt,
-      });
-      await saveAcpSessionProjection(input.stateDirectory, projection.value);
-
-      if (turnInput.signal?.aborted) cancel();
-      if (cancelled) {
-        await cancelPromise;
-        projection.value = withStop(requireProjection(projection), "cancelled");
-        await saveAcpSessionProjection(input.stateDirectory, projection.value);
-        return { status: "cancelled", stopReason: "cancelled" };
-      }
-      projectTurnUpdates = true;
-      updateEpoch = updates.begin();
-      const response = await agentRequest(
-        context.request(methods.agent.session.prompt, {
-          sessionId: sessionId!,
-          prompt: [{ type: "text", text: turnInput.prompt }],
-        }),
-        monitor,
-        "run_turn",
-        "protocol",
-      );
-      turnInput.signal?.removeEventListener("abort", cancel);
-      await cancelPromise;
-      await updates.drain(updateEpoch);
-      projectTurnUpdates = false;
-      if (currentClientIssue !== undefined) throw currentClientIssue;
-      if (!response || typeof response.stopReason !== "string" || response.stopReason.length === 0) {
-        throw failure("protocol", "run_turn", "The ACP Agent returned an invalid prompt response.", false, {
-          origin: "provider",
-          providerEvidence: "inbound_activity",
-        });
-      }
-      const usage = tokenUsage(response.usage);
-      const status = cancelled || response.stopReason === "cancelled" ? "cancelled" : "completed";
-      projection.value = withStop(requireProjection(projection), response.stopReason, usage);
-      await saveAcpSessionProjection(input.stateDirectory, projection.value);
-      return {
-        status,
-        stopReason: response.stopReason,
-        ...(usage === undefined ? {} : { usage }),
-      };
-    } catch (error) {
-      if (cancelled && projection.value !== undefined) {
-        projection.value = withStop(projection.value, "cancelled");
-        await saveAcpSessionProjection(input.stateDirectory, projection.value);
-        return { status: "cancelled", stopReason: "cancelled" };
-      }
-      if (projection.value !== undefined) {
-        await saveAcpSessionProjection(input.stateDirectory, projection.value);
-      }
-      throw error;
-    } finally {
-      if (updateEpoch !== undefined) updates.end(updateEpoch);
-      projectTurnUpdates = false;
-      turnInput.signal?.removeEventListener("abort", cancel);
-      currentEventHandler = undefined;
-      currentClientIssue = undefined;
-      cancelActiveTurn = undefined;
-      active = false;
-    }
-  };
-
-  const close = (reason?: string): ResultAsync<void, AcpError> => {
-    if (closeResult !== undefined) return closeResult;
-    closed = true;
-    closeResult = ResultAsync.fromPromise(closeTask(reason), toAcpError("close_session"));
-    return closeResult;
-  };
-
-  const closeTask = async (reason?: string): Promise<void> => {
-    let primary: unknown;
-    try {
-      reverse.cancelPendingPermissions();
-      if (active) {
-        cancelActiveTurn?.();
-        await settleWithin(activeTurn, COOPERATIVE_CLOSE_GRACE_MS);
-      }
-      if (initialized.agentCapabilities?.sessionCapabilities?.close) {
-        const closeRequest = agentRequest(
-          context.request(methods.agent.session.close, { sessionId: sessionId! }),
-          monitor,
-          "close_session",
-          "session",
-        );
-        const outcome = await settleWithin(closeRequest, COOPERATIVE_CLOSE_GRACE_MS);
-        if (outcome.settled && outcome.error !== undefined) throw outcome.error;
-      }
-    } catch (error) {
-      primary = error;
-    } finally {
-      const cleanupErrors: unknown[] = [];
-      try {
-        connection.close(reason);
-      } catch (error) {
-        cleanupErrors.push(error);
-      }
-      await reverse.closeAll().catch(error => { cleanupErrors.push(error); });
-      await terminate(child).catch(error => { cleanupErrors.push(error); });
-      await activeTurn;
-      if (cleanupErrors.length > 0) {
-        throw cleanupFailure(primary ?? new Error("ACP session close cleanup failed."), "close_session", cleanupErrors);
-      }
-    }
-    if (primary !== undefined) throw primary;
-  };
-
+function capabilitiesFrom(value: InitializeResponse): { resume: boolean; load: boolean } {
   return {
-    agentSessionId: input.agentSessionId,
-    sessionId,
-    projectionPath: acpSessionProjectionPath(input.agentSessionId),
-    ...(reportedVersion === undefined ? {} : { reportedVersion }),
-    runTurn,
-    close,
+    resume: value.agentCapabilities?.sessionCapabilities?.resume != null,
+    load: value.agentCapabilities?.loadSession === true,
   };
+}
+
+function reportedAgentVersion(value: InitializeResponse): string | undefined {
+  const version = value.agentInfo?.version;
+  return typeof version === "string" && version.length > 0 && version.length <= 256
+    ? version
+    : undefined;
+}
+
+function effectiveTurnConfiguration(
+  value: OpenAcpSessionInput["configuration"],
+): AcpSessionConfiguration {
+  return {
+    ...(value.model === null ? {} : { model: value.model }),
+    ...(Object.keys(value.options).length === 0 ? {} : { options: value.options }),
+  };
+}
+
+function sameEffectiveConfiguration(
+  expected: OpenAcpSessionInput["configuration"],
+  supplied: AcpSessionConfiguration,
+): boolean {
+  const model = supplied.model ?? null;
+  const options = supplied.options ?? expected.options;
+  return model === expected.model
+    && JSON.stringify(Object.entries(options).sort()) === JSON.stringify(Object.entries(expected.options).sort());
+}
+
+function applyConfiguration(
+  connection: AcpTransportConnection,
+  sessionId: string,
+  desired: AcpSessionConfiguration,
+  advertised: SessionConfigOption[] | null | undefined,
+  control: OpenControl,
+): Effect.Effect<SessionConfigOption[] | null | undefined, AcpError> {
+  return Effect.gen(function*() {
+    let current = advertised;
+    if (desired.model !== undefined) {
+      const model = current?.find(option => option.category === "model" || option.id === "model");
+      if (model === undefined) {
+        return yield* Effect.fail(failure(
+          "capability",
+          "configure_session",
+          "The ACP session did not advertise a model configuration option.",
+          false,
+          { capability: "configuration" },
+        ));
+      }
+      const response = yield* openingRequest(
+        control,
+        "configure_session",
+        connection.setConfigOption(sessionId, model.id, desired.model),
+      );
+      current = response?.configOptions;
+    }
+    const entries = Object.entries(desired.options ?? {}).sort(([left], [right]) =>
+      left < right ? -1 : left > right ? 1 : 0);
+    for (const [configId, value] of entries) {
+      const response = yield* openingRequest(
+        control,
+        "configure_session",
+        connection.setConfigOption(sessionId, configId, value),
+      );
+      current = response?.configOptions;
+    }
+    return current;
+  });
+}
+
+function saveProjection(
+  input: OpenAcpSessionInput,
+  projection: AcpSessionProjection,
+  operation: AcpOperation,
+  options?: Parameters<typeof saveAcpSessionProjection>[2],
+): Effect.Effect<void, AcpError> {
+  return Effect.tryPromise({
+    try: () => saveAcpSessionProjection(input.stateDirectory, projection, options),
+    catch: toAcpError(operation),
+  });
+}
+
+const currentIso = Clock.currentTimeMillis.pipe(Effect.map(milliseconds =>
+  new Date(milliseconds).toISOString()));
+
+function requireSessionId(state: SessionState): string {
+  if (state.sessionId === undefined) throw new Error("ACP backend session id is unavailable.");
+  return state.sessionId;
+}
+
+function eventFromUpdate(update: SessionUpdate): AcpEvent {
+  switch (update.sessionUpdate) {
+    case "agent_message_chunk":
+    case "agent_thought_chunk":
+      return {
+        type: "message",
+        channel: update.sessionUpdate === "agent_message_chunk" ? "assistant" : "thought",
+        content: jsonValue(update.content),
+        ...(update.messageId ? { messageId: update.messageId } : {}),
+      };
+    case "tool_call":
+    case "tool_call_update":
+      return {
+        type: "tool",
+        action: update.sessionUpdate === "tool_call" ? "call" : "update",
+        toolCallId: update.toolCallId,
+        ...(update.title ? { title: update.title } : {}),
+        ...(update.name ? { name: update.name } : {}),
+        ...(update.kind ? { kind: update.kind } : {}),
+        ...(update.status ? { status: update.status } : {}),
+        ...(update.rawInput !== undefined ? { input: jsonValue(update.rawInput) } : {}),
+        ...(update.rawOutput !== undefined ? { output: jsonValue(update.rawOutput) } : {}),
+        ...(update.content != null ? { content: jsonValue(update.content) } : {}),
+        ...(update.locations != null ? { locations: jsonValue(update.locations) } : {}),
+      };
+    case "usage_update": {
+      const tokens = tokenUsage(metaUsage(update._meta));
+      return {
+        type: "usage",
+        context: { used: update.used, size: update.size },
+        ...(tokens ? { tokens } : {}),
+        ...(update.cost ? { cost: { amount: update.cost.amount, currency: update.cost.currency } } : {}),
+      };
+    }
+    case "plan":
+      return { type: "plan", value: jsonValue(update.entries) };
+    case "available_commands_update":
+      return { type: "session", update: "available_commands", value: jsonValue(update.availableCommands) };
+    case "current_mode_update":
+      return { type: "session", update: "current_mode", value: update.currentModeId };
+    case "config_option_update":
+      return { type: "session", update: "configuration", value: jsonValue(update.configOptions) };
+    case "session_info_update":
+      return { type: "session", update: "info", value: jsonValue(update) };
+    default:
+      return { type: "unknown", name: update.sessionUpdate, value: jsonValue(update) };
+  }
+}
+
+function projectEvent(
+  projection: AcpSessionProjection,
+  event: AcpEvent,
+  updatedAt: string,
+): AcpSessionProjection {
+  if (event.type === "message") {
+    const text = textContent(event.content);
+    if (text === undefined) return projection;
+    return appendOrMergeText(projection, event.channel, text, updatedAt);
+  }
+  if (event.type !== "tool") return projection;
+  const conversation = [...projection.conversation];
+  const callIndex = findToolCall(conversation, event.toolCallId);
+  const previous = callIndex < 0 ? undefined : conversation[callIndex];
+  const call: AcpProjectedConversationEntry = {
+    type: "tool-call",
+    toolCallId: event.toolCallId,
+    ...(event.title ?? (previous?.type === "tool-call" ? previous.title : undefined)
+      ? { title: event.title ?? (previous?.type === "tool-call" ? previous.title : undefined)! }
+      : {}),
+    ...(event.name ?? (previous?.type === "tool-call" ? previous.name : undefined)
+      ? { name: event.name ?? (previous?.type === "tool-call" ? previous.name : undefined)! }
+      : {}),
+    ...(event.kind ?? (previous?.type === "tool-call" ? previous.kind : undefined)
+      ? { kind: event.kind ?? (previous?.type === "tool-call" ? previous.kind : undefined)! }
+      : {}),
+    ...(event.status ?? (previous?.type === "tool-call" ? previous.status : undefined)
+      ? { status: event.status ?? (previous?.type === "tool-call" ? previous.status : undefined)! }
+      : {}),
+    ...(event.input ?? (previous?.type === "tool-call" ? previous.input : undefined)
+      ? { input: event.input ?? (previous?.type === "tool-call" ? previous.input : undefined)! }
+      : {}),
+  };
+  if (callIndex < 0) conversation.push(call);
+  else conversation[callIndex] = call;
+  if (event.content !== undefined) {
+    conversation.push({ type: "tool-result", toolCallId: event.toolCallId, content: event.content });
+  }
+  return withConversation(projection, conversation, updatedAt);
+}
+
+function appendOrMergeText(
+  projection: AcpSessionProjection,
+  channel: "assistant" | "thought",
+  text: string,
+  updatedAt: string,
+): AcpSessionProjection {
+  const conversation = [...projection.conversation];
+  const last = conversation.at(-1);
+  if (channel === "thought" && last?.type === "thought") {
+    conversation[conversation.length - 1] = { ...last, content: last.content + text };
+  } else if (channel === "assistant" && last?.type === "message" && last.role === "assistant") {
+    conversation[conversation.length - 1] = { ...last, content: last.content + text };
+  } else {
+    conversation.push(channel === "thought"
+      ? { type: "thought", content: text }
+      : { type: "message", role: "assistant", content: text });
+  }
+  return withConversation(projection, conversation, updatedAt);
+}
+
+function appendConversation(
+  projection: AcpSessionProjection,
+  entry: AcpProjectedConversationEntry,
+  updatedAt: string,
+): AcpSessionProjection {
+  return withConversation(projection, [...projection.conversation, entry], updatedAt);
+}
+
+function withConversation(
+  projection: AcpSessionProjection,
+  conversation: readonly AcpProjectedConversationEntry[],
+  updatedAt: string,
+): AcpSessionProjection {
+  return {
+    ...projection,
+    conversation: boundConversation(conversation),
+    updatedAt,
+  };
+}
+
+function withStop(
+  projection: AcpSessionProjection,
+  stopReason: string,
+  updatedAt: string,
+  usage?: AcpTokenUsage,
+): AcpSessionProjection {
+  return {
+    ...projection,
+    lastStop: { stopReason, ...(usage === undefined ? {} : { usage }) },
+    updatedAt,
+  };
+}
+
+function requireProjection(holder: ProjectionHolder): AcpSessionProjection {
+  if (holder.value === undefined) throw new Error("ACP session projection is unavailable.");
+  return holder.value;
+}
+
+function findToolCall(conversation: readonly AcpProjectedConversationEntry[], toolCallId: string): number {
+  for (let index = conversation.length - 1; index >= 0; index -= 1) {
+    const entry = conversation[index]!;
+    if (entry.type === "tool-call" && entry.toolCallId === toolCallId) return index;
+  }
+  return -1;
+}
+
+function textContent(value: AcpJsonValue): string | undefined {
+  if (!value || Array.isArray(value) || typeof value !== "object") return undefined;
+  return value.type === "text" && typeof value.text === "string" ? value.text : undefined;
+}
+
+function metaUsage(meta: unknown): unknown {
+  if (!meta || typeof meta !== "object") return undefined;
+  return (meta as Record<string, unknown>).usage;
+}
+
+function tokenUsage(value: unknown): AcpTokenUsage | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const source = value as Record<string, unknown>;
+  const result: Record<string, number> = {};
+  for (const key of [
+    "inputTokens", "outputTokens", "cachedReadTokens", "cachedWriteTokens",
+    "thoughtTokens", "totalTokens",
+  ] as const) {
+    if (typeof source[key] === "number" && Number.isInteger(source[key]) && source[key] >= 0) {
+      result[key] = source[key];
+    }
+  }
+  return Object.keys(result).length === 0 ? undefined : result;
+}
+
+function jsonValue(value: unknown, depth = 0): AcpJsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (depth >= 20) return null;
+  if (Array.isArray(value)) return value.slice(0, 1_000).map(item => jsonValue(item, depth + 1));
+  if (!value || typeof value !== "object") return null;
+  return Object.fromEntries(Object.entries(value).slice(0, 1_000).flatMap(([key, entry]) =>
+    entry === undefined ? [] : [[key, jsonValue(entry, depth + 1)]],
+  ));
 }
 
 function validateOpenInput(input: OpenAcpSessionInput): AcpError | undefined {
@@ -641,462 +1094,6 @@ function validateTurnInput(input: AcpTurnInput): AcpError | undefined {
   return undefined;
 }
 
-function record(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
-function abortSignal(value: unknown): value is AbortSignal {
-  return record(value)
-    && typeof value.aborted === "boolean"
-    && typeof value.addEventListener === "function"
-    && typeof value.removeEventListener === "function";
-}
-
-function launchAgent(input: OpenAcpSessionInput): ChildProcessWithoutNullStreams {
-  const inheritProcessGroup = process.env[INHERIT_PROCESS_GROUP_ENV] !== undefined
-    && input.env?.[INHERIT_PROCESS_GROUP_ENV] === process.env[INHERIT_PROCESS_GROUP_ENV];
-  const env = { ...process.env, ...input.env };
-  delete env[INHERIT_PROCESS_GROUP_ENV];
-  const detached = process.platform !== "win32" && !inheritProcessGroup;
-  const child = input.launch.kind === "argv"
-    ? spawn(input.launch.argv[0], [...input.launch.argv.slice(1)], {
-        cwd: input.cwd,
-        env,
-        stdio: "pipe",
-        detached,
-      })
-    : spawn(input.launch.command, {
-        cwd: input.cwd,
-        env,
-        stdio: "pipe",
-        shell: true,
-        detached,
-      });
-  if (detached) ownedProcessGroups.add(child);
-  return child;
-}
-
-function monitorProcess(child: ChildProcessWithoutNullStreams): ProcessMonitor {
-  let exitInfo: ExitInfo | undefined;
-  let spawned = false;
-  let resolveExit!: (info: ExitInfo) => void;
-  const exited = new Promise<ExitInfo>(resolve => { resolveExit = resolve; });
-  const spawnResult = new Promise<void>((resolve, reject) => {
-    child.once("spawn", () => {
-      spawned = true;
-      resolve();
-    });
-    child.once("error", error => {
-      if (!spawned) {
-        reject(failure("spawn", "open_session", error.message, false, {
-          ...(typeof (error as NodeJS.ErrnoException).code === "string"
-            ? { code: (error as NodeJS.ErrnoException).code }
-            : {}),
-        }));
-      } else if (exitInfo === undefined) {
-        exitInfo = { exitCode: null, signal: null };
-        resolveExit(exitInfo);
-      }
-    });
-  });
-  child.once("exit", (exitCode, signal) => {
-    if (exitInfo !== undefined) return;
-    exitInfo = { exitCode, signal };
-    resolveExit(exitInfo);
-  });
-  return {
-    spawned: spawnResult,
-    exitInfo: () => exitInfo,
-    async settleExit(): Promise<ExitInfo | undefined> {
-      if (exitInfo !== undefined) return exitInfo;
-      await Promise.race([exited, delay(100)]);
-      return exitInfo;
-    },
-    async race<T>(request: Promise<T>, operation: AcpOperation): Promise<T> {
-      if (exitInfo !== undefined) throw providerExitFailure(operation, exitInfo);
-      return await Promise.race([
-        request,
-        exited.then(info => { throw providerExitFailure(operation, info); }),
-      ]);
-    },
-  };
-}
-
-async function agentRequest<T>(
-  request: Promise<T>,
-  monitor: ProcessMonitor,
-  operation: AcpOperation,
-  failureType: "initialize" | "protocol" | "session" | "configuration",
-): Promise<T> {
-  try {
-    return await monitor.race(request, operation);
-  } catch (error) {
-    if (isAcpError(error)) throw error;
-    // A broken stdio connection can reject before Node publishes child exit.
-    // Give that bounded lifecycle observation priority over transport wording.
-    const exited = await monitor.settleExit();
-    if (exited !== undefined) throw providerExitFailure(operation, exited);
-    if (error instanceof RequestError) {
-      throw failure(failureType, operation, error.message, error.code === -32800, {
-        code: error.code,
-        origin: "provider",
-        providerEvidence: operation === "run_turn" ? "terminal_response" : "inbound_activity",
-      });
-    }
-    throw failure(failureType, operation, error instanceof Error ? error.message : String(error), true, {
-      origin: "transport",
-      providerEvidence: "none",
-    });
-  }
-}
-
-async function openingAgentRequest<T>(
-  request: (options: SendRequestOptions) => Promise<T>,
-  monitor: ProcessMonitor,
-  control: OpenControl,
-  operation: AcpOperation,
-  failureType: "initialize" | "protocol" | "session" | "configuration",
-): Promise<T> {
-  control.operation = operation;
-  throwIfOpenCancelled(control);
-  try {
-    const response = await agentRequest(
-      request({ ...(control.signal === undefined ? {} : { cancellationSignal: control.signal }) }),
-      monitor,
-      operation,
-      failureType,
-    );
-    throwIfOpenCancelled(control);
-    return response;
-  } catch (error) {
-    throwIfOpenCancelled(control);
-    throw error;
-  }
-}
-
-async function agentNotify(request: Promise<void>, operation: AcpOperation): Promise<void> {
-  try {
-    await request;
-  } catch (error) {
-    if (isAcpError(error)) throw error;
-    if (error instanceof RequestError) {
-      throw failure("protocol", operation, error.message, error.code === -32800, { code: error.code });
-    }
-    throw failure("protocol", operation, error instanceof Error ? error.message : String(error), true);
-  }
-}
-
-function providerExitFailure(
-  operation: AcpOperation,
-  info: ExitInfo,
-): Extract<AcpError, { type: "provider_exit" }> {
-  return failure("provider_exit", operation, "The ACP Agent exited during " + operation + ".", true, {
-    exitCode: info.exitCode,
-    signal: info.signal,
-  });
-}
-
-function validateInitialize(value: InitializeResponse): void {
-  if (!value || value.protocolVersion !== PROTOCOL_VERSION) {
-    throw failure(
-      "initialize",
-      "initialize",
-      `The ACP Agent selected unsupported protocol version ${String(value?.protocolVersion)}.`,
-      false,
-    );
-  }
-}
-
-function capabilitiesFrom(value: InitializeResponse): { resume: boolean; load: boolean } {
-  return {
-    resume: value.agentCapabilities?.sessionCapabilities?.resume != null,
-    load: value.agentCapabilities?.loadSession === true,
-  };
-}
-
-function reportedAgentVersion(value: InitializeResponse): string | undefined {
-  const version = value.agentInfo?.version;
-  return typeof version === "string" && version.length > 0 && version.length <= 256
-    ? version
-    : undefined;
-}
-
-function effectiveTurnConfiguration(
-  value: OpenAcpSessionInput["configuration"],
-): AcpSessionConfiguration {
-  return {
-    ...(value.model === null ? {} : { model: value.model }),
-    ...(Object.keys(value.options).length === 0 ? {} : { options: value.options }),
-  };
-}
-
-function sameEffectiveConfiguration(
-  expected: OpenAcpSessionInput["configuration"],
-  supplied: AcpSessionConfiguration,
-): boolean {
-  const model = supplied.model ?? null;
-  const options = supplied.options ?? expected.options;
-  return model === expected.model
-    && JSON.stringify(Object.entries(options).sort()) === JSON.stringify(Object.entries(expected.options).sort());
-}
-
-async function applyConfiguration(
-  context: ClientContext,
-  monitor: ProcessMonitor,
-  sessionId: string,
-  desired: AcpSessionConfiguration,
-  advertised: SessionConfigOption[] | null | undefined,
-  openControl?: OpenControl,
-  cancellationSignal?: AbortSignal,
-): Promise<SessionConfigOption[] | null | undefined> {
-  let current = advertised;
-  if (desired.model !== undefined) {
-    const model = current?.find(option => option.category === "model" || option.id === "model");
-    if (!model) {
-      throw failure(
-        "capability",
-        "configure_session",
-        "The ACP session did not advertise a model configuration option.",
-        false,
-        { capability: "configuration" },
-      );
-    }
-    const response = await configurationRequest(
-      context,
-      monitor,
-      sessionId,
-      model.id,
-      desired.model,
-      openControl,
-      cancellationSignal,
-    );
-    current = response?.configOptions;
-  }
-  const entries = Object.entries(desired.options ?? {}).sort(([left], [right]) =>
-    left < right ? -1 : left > right ? 1 : 0);
-  for (const [configId, value] of entries) {
-    const response = await configurationRequest(
-      context,
-      monitor,
-      sessionId,
-      configId,
-      value,
-      openControl,
-      cancellationSignal,
-    );
-    current = response?.configOptions;
-  }
-  return current;
-}
-
-function configurationRequest(
-  context: ClientContext,
-  monitor: ProcessMonitor,
-  sessionId: string,
-  configId: string,
-  value: string,
-  openControl: OpenControl | undefined,
-  cancellationSignal?: AbortSignal,
-) {
-  const request = (options?: SendRequestOptions) => context.request(
-    methods.agent.session.setConfigOption,
-    { sessionId, configId, value },
-    options,
-  );
-  return openControl === undefined
-    ? agentRequest(
-        request(cancellationSignal === undefined ? undefined : { cancellationSignal }),
-        monitor,
-        "configure_session",
-        "configuration",
-      )
-    : openingAgentRequest(request, monitor, openControl, "configure_session", "configuration");
-}
-
-function eventFromUpdate(update: SessionUpdate): AcpEvent {
-  switch (update.sessionUpdate) {
-    case "agent_message_chunk":
-    case "agent_thought_chunk":
-      return {
-        type: "message",
-        channel: update.sessionUpdate === "agent_message_chunk" ? "assistant" : "thought",
-        content: jsonValue(update.content),
-        ...(update.messageId ? { messageId: update.messageId } : {}),
-      };
-    case "tool_call":
-    case "tool_call_update":
-      return {
-        type: "tool",
-        action: update.sessionUpdate === "tool_call" ? "call" : "update",
-        toolCallId: update.toolCallId,
-        ...(update.title ? { title: update.title } : {}),
-        ...(update.name ? { name: update.name } : {}),
-        ...(update.kind ? { kind: update.kind } : {}),
-        ...(update.status ? { status: update.status } : {}),
-        ...(update.rawInput !== undefined ? { input: jsonValue(update.rawInput) } : {}),
-        ...(update.rawOutput !== undefined ? { output: jsonValue(update.rawOutput) } : {}),
-        ...(update.content != null ? { content: jsonValue(update.content) } : {}),
-        ...(update.locations != null ? { locations: jsonValue(update.locations) } : {}),
-      };
-    case "usage_update": {
-      const tokens = tokenUsage(metaUsage(update._meta));
-      return {
-        type: "usage",
-        context: { used: update.used, size: update.size },
-        ...(tokens ? { tokens } : {}),
-        ...(update.cost ? { cost: { amount: update.cost.amount, currency: update.cost.currency } } : {}),
-      };
-    }
-    case "plan":
-      return { type: "plan", value: jsonValue(update.entries) };
-    case "available_commands_update":
-      return { type: "session", update: "available_commands", value: jsonValue(update.availableCommands) };
-    case "current_mode_update":
-      return { type: "session", update: "current_mode", value: update.currentModeId };
-    case "config_option_update":
-      return { type: "session", update: "configuration", value: jsonValue(update.configOptions) };
-    case "session_info_update":
-      return { type: "session", update: "info", value: jsonValue(update) };
-    default:
-      return { type: "unknown", name: update.sessionUpdate, value: jsonValue(update) };
-  }
-}
-
-function projectEvent(projection: AcpSessionProjection, event: AcpEvent): AcpSessionProjection {
-  if (event.type === "message") {
-    const text = textContent(event.content);
-    if (text === undefined) return projection;
-    return appendOrMergeText(projection, event.channel, text);
-  }
-  if (event.type !== "tool") return projection;
-  const conversation = [...projection.conversation];
-  const callIndex = findToolCall(conversation, event.toolCallId);
-  const previous = callIndex < 0 ? undefined : conversation[callIndex];
-  const call: AcpProjectedConversationEntry = {
-    type: "tool-call",
-    toolCallId: event.toolCallId,
-    ...(event.title ?? (previous?.type === "tool-call" ? previous.title : undefined)
-      ? { title: event.title ?? (previous?.type === "tool-call" ? previous.title : undefined)! }
-      : {}),
-    ...(event.name ?? (previous?.type === "tool-call" ? previous.name : undefined)
-      ? { name: event.name ?? (previous?.type === "tool-call" ? previous.name : undefined)! }
-      : {}),
-    ...(event.kind ?? (previous?.type === "tool-call" ? previous.kind : undefined)
-      ? { kind: event.kind ?? (previous?.type === "tool-call" ? previous.kind : undefined)! }
-      : {}),
-    ...(event.status ?? (previous?.type === "tool-call" ? previous.status : undefined)
-      ? { status: event.status ?? (previous?.type === "tool-call" ? previous.status : undefined)! }
-      : {}),
-    ...(event.input ?? (previous?.type === "tool-call" ? previous.input : undefined)
-      ? { input: event.input ?? (previous?.type === "tool-call" ? previous.input : undefined)! }
-      : {}),
-  };
-  if (callIndex < 0) conversation.push(call);
-  else conversation[callIndex] = call;
-  if (event.content !== undefined) {
-    conversation.push({ type: "tool-result", toolCallId: event.toolCallId, content: event.content });
-  }
-  return withConversation(projection, conversation);
-}
-
-function appendOrMergeText(
-  projection: AcpSessionProjection,
-  channel: "assistant" | "thought",
-  text: string,
-): AcpSessionProjection {
-  const conversation = [...projection.conversation];
-  const last = conversation.at(-1);
-  if (channel === "thought" && last?.type === "thought") {
-    conversation[conversation.length - 1] = { ...last, content: last.content + text };
-  } else if (channel === "assistant" && last?.type === "message" && last.role === "assistant") {
-    conversation[conversation.length - 1] = { ...last, content: last.content + text };
-  } else {
-    conversation.push(channel === "thought"
-      ? { type: "thought", content: text }
-      : { type: "message", role: "assistant", content: text });
-  }
-  return withConversation(projection, conversation);
-}
-
-function appendConversation(
-  projection: AcpSessionProjection,
-  entry: AcpProjectedConversationEntry,
-): AcpSessionProjection {
-  return withConversation(projection, [...projection.conversation, entry]);
-}
-
-function withConversation(
-  projection: AcpSessionProjection,
-  conversation: readonly AcpProjectedConversationEntry[],
-): AcpSessionProjection {
-  return {
-    ...projection,
-    conversation: boundConversation(conversation),
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-function withStop(
-  projection: AcpSessionProjection,
-  stopReason: string,
-  usage?: AcpTokenUsage,
-): AcpSessionProjection {
-  return {
-    ...projection,
-    lastStop: { stopReason, ...(usage === undefined ? {} : { usage }) },
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-function requireProjection(holder: ProjectionHolder): AcpSessionProjection {
-  if (holder.value === undefined) throw new Error("ACP session projection is unavailable.");
-  return holder.value;
-}
-
-function findToolCall(conversation: readonly AcpProjectedConversationEntry[], toolCallId: string): number {
-  for (let index = conversation.length - 1; index >= 0; index -= 1) {
-    const entry = conversation[index]!;
-    if (entry.type === "tool-call" && entry.toolCallId === toolCallId) return index;
-  }
-  return -1;
-}
-
-function textContent(value: AcpJsonValue): string | undefined {
-  if (!value || Array.isArray(value) || typeof value !== "object") return undefined;
-  return value.type === "text" && typeof value.text === "string" ? value.text : undefined;
-}
-
-function metaUsage(meta: unknown): unknown {
-  if (!meta || typeof meta !== "object") return undefined;
-  return (meta as Record<string, unknown>).usage;
-}
-
-function tokenUsage(value: unknown): AcpTokenUsage | undefined {
-  if (!value || typeof value !== "object") return undefined;
-  const source = value as Record<string, unknown>;
-  const result: Record<string, number> = {};
-  for (const key of [
-    "inputTokens", "outputTokens", "cachedReadTokens", "cachedWriteTokens",
-    "thoughtTokens", "totalTokens",
-  ] as const) {
-    if (typeof source[key] === "number" && Number.isInteger(source[key]) && source[key] >= 0) {
-      result[key] = source[key];
-    }
-  }
-  return Object.keys(result).length === 0 ? undefined : result;
-}
-
-function jsonValue(value: unknown, depth = 0): AcpJsonValue {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (depth >= 20) return null;
-  if (Array.isArray(value)) return value.slice(0, 1_000).map(item => jsonValue(item, depth + 1));
-  if (!value || typeof value !== "object") return null;
-  return Object.fromEntries(Object.entries(value).slice(0, 1_000).flatMap(([key, entry]) =>
-    entry === undefined ? [] : [[key, jsonValue(entry, depth + 1)]],
-  ));
-}
-
 function effectiveConfiguration(value: unknown): value is OpenAcpSessionInput["configuration"] {
   return record(value)
     && exactKeys(value, ["model", "options"])
@@ -1108,6 +1105,24 @@ function effectiveConfiguration(value: unknown): value is OpenAcpSessionInput["c
 function exactKeys(value: Record<string, unknown>, required: readonly string[]): boolean {
   return Object.keys(value).length === required.length
     && required.every(key => Object.hasOwn(value, key));
+}
+
+function record(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function abortSignal(value: unknown): value is AbortSignal {
+  return record(value)
+    && typeof value.aborted === "boolean"
+    && typeof value.addEventListener === "function"
+    && typeof value.removeEventListener === "function";
+}
+
+function isThenable(value: unknown): value is PromiseLike<unknown> {
+  return value !== null
+    && (typeof value === "object" || typeof value === "function")
+    && "then" in value
+    && typeof value.then === "function";
 }
 
 function toAcpError(operation: AcpOperation): (error: unknown) => AcpError {
@@ -1127,21 +1142,14 @@ function toAcpError(operation: AcpOperation): (error: unknown) => AcpError {
       });
     }
     if (error instanceof ClientOperationIssue) {
-      return failure("client_operation", clientOperation(error), error.message, false, {
+      return failure("client_operation", error.operation, error.message, false, {
         code: error.reason,
         origin: "client",
         providerEvidence: "inbound_activity",
       });
     }
-    if (error instanceof RequestError) {
-      return failure("protocol", operation, error.message, error.code === -32800, { code: error.code });
-    }
     return failure("protocol", operation, error instanceof Error ? error.message : String(error), true);
   };
-}
-
-function clientOperation(error: ClientOperationIssue): AcpOperation {
-  return error.operation;
 }
 
 function isAcpError(value: unknown): value is AcpError {
@@ -1184,24 +1192,6 @@ function cancelledFailure(operation: AcpOperation): Extract<AcpError, { type: "c
   return failure("cancelled", operation, "Opening the ACP session was cancelled.", false);
 }
 
-function throwIfOpenCancelled(control: OpenControl): void {
-  if (!control.committed && control.signal?.aborted) throw cancelledFailure(control.operation);
-}
-
-async function cleanupOpenResources(
-  connectionCleanup: () => OpenConnectionCleanup | undefined,
-  child: ChildProcessWithoutNullStreams,
-  monitor: ProcessMonitor,
-): Promise<unknown[]> {
-  const cleanup = connectionCleanup();
-  const errors: unknown[] = cleanup === undefined
-    ? []
-    : await cleanup().catch((error: unknown) => [error]);
-  await monitor.spawned.catch(() => undefined);
-  await terminate(child).catch(error => { errors.push(error); });
-  return errors;
-}
-
 function cleanupFailure(
   primary: unknown,
   operation: AcpOperation,
@@ -1211,7 +1201,9 @@ function cleanupFailure(
     ? primary.message
     : primary instanceof Error ? primary.message : String(primary);
   const cleanupMessage = cleanupErrors
-    .map(error => error instanceof Error ? error.message : String(error))
+    .map(error => isAcpError(error)
+      ? error.message
+      : error instanceof Error ? error.message : String(error))
     .join("; ");
   return failure(
     "cleanup",
@@ -1219,184 +1211,4 @@ function cleanupFailure(
     `${primaryMessage} Cleanup failed: ${cleanupMessage}`,
     false,
   );
-}
-
-async function terminate(child: ChildProcessWithoutNullStreams): Promise<void> {
-  const pid = child.pid;
-  if (pid === undefined) return;
-  if (process.platform !== "win32" && ownedProcessGroups.has(child)) {
-    signalProcess(-pid, "SIGTERM");
-    await Promise.race([waitForExit(child), delay(500)]);
-    if (processExists(-pid)) {
-      signalProcess(-pid, "SIGKILL");
-      await Promise.race([waitForExit(child), delay(500)]);
-    }
-    if (processExists(-pid)) throw new Error("ACP Agent process group did not exit after SIGKILL.");
-    return;
-  }
-  if (child.exitCode !== null || child.signalCode !== null) return;
-  child.kill("SIGTERM");
-  await Promise.race([waitForExit(child), delay(500)]);
-  if (child.exitCode === null && child.signalCode === null) {
-    child.kill("SIGKILL");
-    await Promise.race([waitForExit(child), delay(500)]);
-  }
-  if (child.exitCode === null && child.signalCode === null) {
-    throw new Error("ACP Agent process did not exit after termination.");
-  }
-}
-
-function signalProcess(pid: number, signal: NodeJS.Signals): void {
-  try {
-    process.kill(pid, signal);
-  } catch (error) {
-    if (!(error instanceof Error) || (error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
-  }
-}
-
-function processExists(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function waitForExit(child: ChildProcessWithoutNullStreams): Promise<void> {
-  if (child.exitCode !== null || child.signalCode !== null) return Promise.resolve();
-  return new Promise(resolve => child.once("exit", () => resolve()));
-}
-
-function delay(milliseconds: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, milliseconds));
-}
-
-async function settleWithin(
-  promise: Promise<unknown> | undefined,
-  milliseconds: number,
-): Promise<{ settled: boolean; error?: unknown }> {
-  if (promise === undefined) return { settled: true };
-  return await Promise.race([
-    promise.then(
-      () => ({ settled: true }),
-      error => ({ settled: true, error }),
-    ),
-    delay(milliseconds).then(() => ({ settled: false })),
-  ]);
-}
-
-function createTurnUpdateFence(stream: Stream): {
-  stream: Stream;
-  begin(): TurnUpdateEpoch;
-  end(epoch: TurnUpdateEpoch): void;
-  take(): TurnUpdateIngress | undefined;
-  drain(epoch: TurnUpdateEpoch): Promise<void>;
-} {
-  let active: TurnUpdateEpoch | undefined;
-  let next: TurnUpdateEpoch | undefined;
-  const incoming: TurnUpdateIngress[] = [];
-  let previousDelivery = Promise.resolve();
-  const reader = stream.readable.getReader();
-  const readable = new ReadableStream<AnyMessage>({
-    async pull(controller) {
-      await previousDelivery;
-      const next = await reader.read();
-      if (next.done) {
-        controller.close();
-        return;
-      }
-      const message = next.value;
-      if (!("method" in message) && active?.promptRequestId === message.id) {
-        active.accepting = false;
-        active = undefined;
-      }
-      if ("method" in message
-        && message.method === methods.client.session.update
-        && !("id" in message)) {
-        let resolveHandled!: () => void;
-        let settled = false;
-        const settle = (): void => {
-          if (settled) return;
-          settled = true;
-          resolveHandled();
-        };
-        const handled = new Promise<void>(resolve => { resolveHandled = resolve; });
-        const ingress = { epoch: active?.accepting ? active : undefined, settle };
-        ingress.epoch?.pending.add(handled);
-        incoming.push(ingress);
-        previousDelivery = handled;
-        setImmediate(() => {
-          const index = incoming.indexOf(ingress);
-          if (index >= 0) incoming.splice(index, 1);
-          settle();
-        });
-      }
-      controller.enqueue(message);
-    },
-    async cancel(reason) {
-      await reader.cancel(reason);
-    },
-  });
-  const writable = new WritableStream<AnyMessage>({
-    async write(message) {
-      if ("method" in message
-        && "id" in message
-        && message.method === methods.agent.session.prompt
-        && next !== undefined) {
-        next.accepting = true;
-        next.promptRequestId = message.id;
-        active = next;
-        next = undefined;
-      }
-      const writer = stream.writable.getWriter();
-      try {
-        await writer.write(message);
-      } finally {
-        writer.releaseLock();
-      }
-    },
-    async close() {
-      const writer = stream.writable.getWriter();
-      try {
-        await writer.close();
-      } finally {
-        writer.releaseLock();
-      }
-    },
-    async abort(reason) {
-      const writer = stream.writable.getWriter();
-      try {
-        await writer.abort(reason);
-      } finally {
-        writer.releaseLock();
-      }
-    },
-  });
-  return {
-    stream: { writable, readable },
-    begin() {
-      const epoch = { accepting: false, pending: new Set<Promise<void>>() };
-      next = epoch;
-      return epoch;
-    },
-    end(epoch) {
-      epoch.accepting = false;
-      if (active === epoch) active = undefined;
-      if (next === epoch) next = undefined;
-    },
-    take: () => incoming.shift(),
-    async drain(epoch) {
-      epoch.accepting = false;
-      if (active === epoch) active = undefined;
-      if (next === epoch) next = undefined;
-      // Classify transport messages already ordered after the response before another prompt may become active.
-      await new Promise<void>(resolve => setImmediate(resolve));
-      while (epoch.pending.size > 0) {
-        const pending = [...epoch.pending];
-        await Promise.all(pending);
-        for (const handled of pending) epoch.pending.delete(handled);
-      }
-    },
-  };
 }

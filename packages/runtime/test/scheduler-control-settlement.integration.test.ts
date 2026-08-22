@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow } from "@acpus/core";
 import type { WorkflowIR } from "@acpus/core/ir";
@@ -6,9 +7,9 @@ import type { SchedulerEvent } from "../src/scheduler/events.js";
 import { applySchedulerControlIntent } from "../src/scheduler/control.js";
 import { settleFrozenRunTransitions } from "../src/scheduler/runtime-runner.js";
 import type { SchedulerProjection } from "../src/scheduler/types.js";
-import { throwSchedulerStoreResult } from "../src/scheduler/store-port.js";
-import { openRuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
+import { makeRuntimeStoreService } from "../src/store/service.js";
+import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-harness.js";
 
 const materializeMocks = vi.hoisted(() => ({
   continueRootEvents: vi.fn(),
@@ -30,7 +31,7 @@ describe("scheduler control settlement", () => {
 
       await withRuntimeWorkspace(`scheduler-control-${type}-before-derived`, async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, trivialWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         let claim: ReturnType<typeof store.scheduler.claimRun> = undefined;
         try {
           const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
@@ -38,11 +39,11 @@ describe("scheduler control settlement", () => {
           if (!claim) throw new Error("expected scheduler claim");
           const seeded = seedProgressingLoop(store, run.id, claim.ownerEpoch);
 
-          const applied = applySchedulerControlIntent(store, {
+          const applied = await Effect.runPromise(applySchedulerControlIntent(makeRuntimeStoreService(store), {
             requestId: `${type}:${run.id}`,
             runId: run.id,
             type,
-          }, claim.ownerEpoch)._unsafeUnwrap();
+          }, claim.ownerEpoch));
 
           expect(applied.snapshot.version).toBe(seeded.version + versionDelta);
           expect(applied.snapshot.projection.run.status).toBe(status);
@@ -61,7 +62,7 @@ describe("scheduler control settlement", () => {
 
     await withRuntimeWorkspace("scheduler-control-steer-zero-write-failure", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, trivialWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let claim: ReturnType<typeof store.scheduler.claimRun> = undefined;
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
@@ -69,15 +70,15 @@ describe("scheduler control settlement", () => {
         if (!claim) throw new Error("expected scheduler claim");
         const seeded = seedProgressingLoop(store, run.id, claim.ownerEpoch);
 
-        expect(applySchedulerControlIntent(store, {
+        await expect(Effect.runPromise(applySchedulerControlIntent(makeRuntimeStoreService(store), {
           requestId: `steer:${run.id}`,
           runId: run.id,
           type: "steer",
           target: "missing-agent",
           instruction: "Correct course.",
-        }, claim.ownerEpoch)._unsafeUnwrapErr()).toMatchObject({ type: "missing-steer-target" });
+        }, claim.ownerEpoch))).rejects.toMatchObject({ type: "missing-steer-target" });
 
-        expect(throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(run.id)).version).toBe(seeded.version);
+        expect(store.scheduler.tryLoadRunSnapshot(run.id).version).toBe(seeded.version);
         expect(materializeMocks.continueRootEvents).not.toHaveBeenCalled();
       } finally {
         if (claim) store.scheduler.releaseRun(claim);
@@ -91,14 +92,14 @@ describe("scheduler control settlement", () => {
 
     await withRuntimeWorkspace("scheduler-control-due-signal-large-progress", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, trivialWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let claim: ReturnType<typeof store.scheduler.claimRun> = undefined;
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         claim = store.scheduler.claimRun(run.id, "signal-timeout-owner", 60_000);
         if (!claim) throw new Error("expected scheduler claim");
         const seeded = seedProgressingLoop(store, run.id, claim.ownerEpoch);
-        const awaiting = throwSchedulerStoreResult(store.scheduler.tryAppendSchedulerEvents({
+        const awaiting = store.scheduler.tryAppendSchedulerEvents({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           expectedVersion: seeded.version,
@@ -121,16 +122,16 @@ describe("scheduler control settlement", () => {
               payload: { runId: run.id, nodeKey: "approve", nodeId: "approve", deadlineAt: "2026-07-01T00:00:00.000Z" },
             },
           ],
-        }));
+        });
 
-        expect(() => throwSchedulerStoreResult(store.scheduler.tryPauseRun({
+        expect(() => store.scheduler.tryPauseRun({
           runId: run.id,
           ownerEpoch: claim!.ownerEpoch,
           idempotencyKey: `test:pause-after-signal-timeout:${run.id}`,
           now: new Date("2026-07-01T00:00:01.000Z"),
-        }))).toThrow("Cannot pause failed run.");
+        })).toThrow("Cannot pause failed run.");
 
-        const settled = throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(run.id));
+        const settled = store.scheduler.tryLoadRunSnapshot(run.id);
         expect(settled.version).toBeGreaterThan(awaiting.version + 1_000);
         expect(settled.projection.signalWaits.approve).toMatchObject({ status: "timed_out", terminalReason: "signal_timeout" });
         expect(settled.projection.frames.loop).toMatchObject({ status: "failed", loop: { iter: 1_001 } });
@@ -147,7 +148,7 @@ describe("scheduler control settlement", () => {
 
     await withRuntimeWorkspace("scheduler-control-settlement-large-progress", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, trivialWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let claim: ReturnType<typeof store.scheduler.claimRun> = undefined;
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
@@ -155,7 +156,11 @@ describe("scheduler control settlement", () => {
         if (!claim) throw new Error("expected scheduler claim");
         const seeded = seedProgressingLoop(store, run.id, claim.ownerEpoch);
 
-        const settled = settleFrozenRunTransitions({ store, runId: run.id, ownerEpoch: claim.ownerEpoch });
+        const settled = await Effect.runPromise(settleFrozenRunTransitions({
+          store: makeRuntimeStoreService(store),
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+        }));
 
         expect(settled.version).toBe(seeded.version + 1_001);
         expect(settled.projection.frames.loop?.loop?.iter).toBe(1_001);
@@ -201,12 +206,12 @@ function mockProgressingLoop(options: { failRunAfterSignalTimeout?: boolean } = 
 }
 
 function seedProgressingLoop(
-  store: Awaited<ReturnType<typeof openRuntimeStore>>,
+  store: Awaited<ReturnType<typeof openRuntimeStoreAdapter>>,
   runId: string,
   ownerEpoch: number,
 ) {
-  const initial = throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(runId));
-  return throwSchedulerStoreResult(store.scheduler.tryAppendSchedulerEvents({
+  const initial = store.scheduler.tryLoadRunSnapshot(runId);
+  return store.scheduler.tryAppendSchedulerEvents({
     runId,
     ownerEpoch,
     expectedVersion: initial.version,
@@ -216,7 +221,7 @@ function seedProgressingLoop(
       { type: "frame.started", payload: { runId, frameKey: "loop", frameKind: "loop", parentFrameKey: "root" } },
       { type: "frame.loop_advanced", payload: { frameKey: "loop", iter: 0, state: 0, transition: { state: 1, stop: false } } },
     ],
-  }));
+  });
 }
 
 function trivialWorkflow() {

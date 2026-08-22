@@ -2,7 +2,17 @@ import { transform } from "esbuild";
 import { defineConfig } from "vitest/config";
 
 const unitTests = "packages/*/test/**/*.unit.test.ts";
+const isolatedUnitTests = [
+  "packages/acp/test/reverse-rpc.unit.test.ts",
+  "packages/core/test/schema.unit.test.ts",
+  "packages/dsh/test/preset.unit.test.ts",
+  "packages/dsh/test/supervisor-state.unit.test.ts",
+  "packages/expression/test/evaluator.unit.test.ts",
+  "packages/web/test/assets.unit.test.ts",
+  "packages/web/test/vite-config.unit.test.ts",
+];
 const contractTests = "packages/*/test/**/*.contract.test.ts";
+const isolatedContractTests = ["packages/web/test/api.contract.test.ts"];
 const integrationTests = "packages/*/test/**/*.integration.test.ts";
 const e2eTests = "packages/*/test/**/*.e2e.test.ts";
 const regressionTests = "packages/*/test/**/*.regression.test.ts";
@@ -47,7 +57,17 @@ export default defineConfig({
         plugins: [standardDecoratorPlugin()],
         test: {
           name: "unit",
-          include: [unitTests]
+          include: [unitTests],
+          exclude: isolatedUnitTests,
+          pool: "vmForks"
+        }
+      },
+      {
+        plugins: [standardDecoratorPlugin()],
+        test: {
+          name: "unit-isolated",
+          include: isolatedUnitTests,
+          pool: "forks"
         }
       },
       {
@@ -55,6 +75,17 @@ export default defineConfig({
         test: {
           name: "contract",
           include: [contractTests],
+          exclude: isolatedContractTests,
+          pool: "vmForks",
+          testTimeout: slowProjectTestTimeout
+        }
+      },
+      {
+        plugins: [standardDecoratorPlugin()],
+        test: {
+          name: "contract-isolated",
+          include: isolatedContractTests,
+          pool: "forks",
           testTimeout: slowProjectTestTimeout
         }
       },

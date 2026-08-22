@@ -1,7 +1,7 @@
 import { lstatSync, realpathSync, type BigIntStats } from "node:fs";
 import { mkdir, open, rm } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import {
   captureDirectoryIdentity,
   verifyDirectoryIdentity,
@@ -117,7 +117,7 @@ export function tryCaptureRunFile(
   run: RunDirectoryToken,
   path: string,
   label: string,
-): Result<RunFileToken, RunFileUnavailable> {
+): Result.Result<RunFileToken, RunFileUnavailable> {
   const absolute = resolve(path);
   assertLexicallyContained(run.runDirectory.path, absolute, label);
   verifyRunDirectoryToken(run);
@@ -126,17 +126,17 @@ export function tryCaptureRunFile(
     info = lstatSync(absolute, { bigint: true });
   } catch (error) {
     if (!isUnavailablePath(error)) throw error;
-    return err({ type: "run-file-unavailable", reason: "missing", cause: error });
+    return Result.fail({ type: "run-file-unavailable", reason: "missing", cause: error });
   }
   if (info.isSymbolicLink()) {
-    return err({ type: "run-file-unavailable", reason: "symbolic-link" });
+    return Result.fail({ type: "run-file-unavailable", reason: "symbolic-link" });
   }
   if (!info.isFile()) {
-    return err({ type: "run-file-unavailable", reason: "not-regular" });
+    return Result.fail({ type: "run-file-unavailable", reason: "not-regular" });
   }
   const token = tokenForFile(absolute, info, label);
   verifyRunFile(run, token, label);
-  return ok(token);
+  return Result.succeed(token);
 }
 
 export function verifyRunFile(

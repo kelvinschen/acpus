@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import { isSha256Digest, sha256Digest, type Sha256Digest } from "@acpus/core/content-identity";
 import type { JsonValue } from "@acpus/expression/ir";
 import { tryCreateDeadline } from "../deadline.js";
@@ -33,8 +33,6 @@ import {
   type PlanAgentAttemptAdmissionInput,
   type CommitAgentTurnDispatchInput,
   SchedulerStoreException,
-  schedulerStoreResult,
-  throwSchedulerStoreResult,
   type AttemptCommitInput,
   type AttemptStartInput,
   type AttemptStartResult,
@@ -59,7 +57,6 @@ import {
   type SchedulerSteerResult,
   type SchedulerStoreError,
   type SchedulerStorePort,
-  type SchedulerStoreResult,
   type SignalConsumeInput,
   type SettleFencedAgentSessionCheckpointInput,
 } from "../scheduler/store-port.js";
@@ -190,8 +187,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
-  tryLoadRunSnapshot(runId: string): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.loadRunSnapshot(runId));
+  tryLoadRunSnapshot(runId: string): SchedulerSnapshot {
+    return this.loadRunSnapshot(runId);
   }
 
   private loadRunSnapshot(runId: string): SchedulerSnapshot {
@@ -223,8 +220,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     return snapshot;
   }
 
-  tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.appendSchedulerEvents(commit));
+  tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerSnapshot {
+    return this.appendSchedulerEvents(commit);
   }
 
   private appendSchedulerEvents(
@@ -271,8 +268,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
-  tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<AttemptStartResult> {
-    return schedulerStoreResult(() => this.startAttempt(input));
+  tryStartAttempt(input: AttemptStartInput): AttemptStartResult {
+    return this.startAttempt(input);
   }
 
   listReplayCandidates(runId: string): ReplayCandidate[] {
@@ -288,8 +285,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     }));
   }
 
-  tryCommitReplay(input: ReplayCommitInput): SchedulerStoreResult<ReplayCommitResult> {
-    return schedulerStoreResult(() => this.commitReplay(input));
+  tryCommitReplay(input: ReplayCommitInput): ReplayCommitResult {
+    return this.commitReplay(input);
   }
 
   private commitReplay(input: ReplayCommitInput): ReplayCommitResult {
@@ -622,8 +619,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
-  tryCommitAttemptResult(input: AttemptCommitInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.commitAttemptResult(input));
+  tryCommitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot {
+    return this.commitAttemptResult(input);
   }
 
   private commitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot {
@@ -673,8 +670,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
-  tryConsumeSignal(input: SignalConsumeInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.consumeSignal(input));
+  tryConsumeSignal(input: SignalConsumeInput): SchedulerSnapshot {
+    return this.consumeSignal(input);
   }
 
   private consumeSignal(input: SignalConsumeInput): SchedulerSnapshot {
@@ -798,8 +795,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     );
   }
 
-  tryPauseRun(input: SchedulerPauseInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.pauseRun(input));
+  tryPauseRun(input: SchedulerPauseInput): SchedulerSnapshot {
+    return this.pauseRun(input);
   }
 
   private pauseRun(input: SchedulerPauseInput): SchedulerSnapshot {
@@ -856,8 +853,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     });
   }
 
-  tryResumeRun(input: SchedulerResumeInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.resumeRun(input));
+  tryResumeRun(input: SchedulerResumeInput): SchedulerSnapshot {
+    return this.resumeRun(input);
   }
 
   private resumeRun(input: SchedulerResumeInput): SchedulerSnapshot {
@@ -881,7 +878,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
       const timeoutRemainingMs = wait.timeoutRemainingMs;
       if (wait.status !== "awaiting" || timeoutRemainingMs === undefined) continue;
       const deadline = tryCreateDeadline(now, timeoutRemainingMs);
-      if (deadline.isErr()) {
+      if (Result.isFailure(deadline)) {
         throwSchedulerStoreError({
           type: "deadline-out-of-range",
           runId: input.runId,
@@ -893,7 +890,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
         type: "signal.timeout_resumed",
         payload: {
           nodeKey: wait.nodeKey,
-          deadlineAt: deadline.value.toISOString(),
+          deadlineAt: deadline.success.toISOString(),
         },
       });
     }
@@ -907,8 +904,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     });
   }
 
-  tryPlanRetry(input: Omit<SchedulerRetryInput, "ownerEpoch">): SchedulerStoreResult<SchedulerRetryPlan> {
-    return schedulerStoreResult(() => {
+  tryPlanRetry(input: Omit<SchedulerRetryInput, "ownerEpoch">): SchedulerRetryPlan {
       const intentDigest = schedulerIntentDigest({ type: "retry", target: input.target });
       const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey, intentDigest);
       if (duplicate) {
@@ -929,11 +925,10 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
         duplicate: false,
         sessions: plan.sessions.map(session => ({ runId: input.runId, agentSessionId: session.agent_session_id })),
       };
-    });
   }
 
-  tryCommitRetry(input: SchedulerRetryCommitInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.commitRetry(input));
+  tryCommitRetry(input: SchedulerRetryCommitInput): SchedulerSnapshot {
+    return this.commitRetry(input);
   }
 
   private commitRetry(input: SchedulerRetryCommitInput): SchedulerSnapshot {
@@ -1007,16 +1002,16 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     resolvedTarget: string;
     sessions: AgentSessionRow[];
   } {
-    validateRetryControlRun(snapshot, target).match(
-      () => undefined,
-      failure => throwSchedulerStoreError(failure),
-    );
+    Result.match(validateRetryControlRun(snapshot, target), {
+      onSuccess: () => undefined,
+      onFailure: failure => throwSchedulerStoreError(failure),
+    });
     const frozen = this.loadFrozenRun(snapshot.runId);
     const settled = settleRetryControlSnapshot({ frozen, snapshot, now });
-    const retry = planRetryControl(settled.snapshot, target).match(
-      value => value,
-      failure => throwSchedulerStoreError(failure),
-    );
+    const retry = Result.match(planRetryControl(settled.snapshot, target), {
+      onSuccess: value => value,
+      onFailure: failure => throwSchedulerStoreError(failure),
+    });
     const activeSessions = this.activeAgentSessions(snapshot.runId);
     const impact = planRetrySessionImpact({
       frozen,
@@ -1027,7 +1022,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
         return nodeKey === undefined ? [] : [{ agentSessionId: session.agent_session_id, nodeKey }];
       }),
     });
-    if (impact.isErr()) {
+    if (Result.isFailure(impact)) {
       throwSchedulerStoreError({
         type: "shared-session-retry-requires-fork",
         runId: snapshot.runId,
@@ -1035,7 +1030,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
         message: `Retry target '${target}' intersects an explicit shared Agent Session; use \`acpus runs fork ${snapshot.runId} --target ${target}\`.`,
       });
     }
-    const impactedIds = new Set(impact.value.agentSessionIds);
+    const impactedIds = new Set(impact.success.agentSessionIds);
     const sessions = activeSessions.filter(session => impactedIds.has(session.agent_session_id));
     return {
       events: [...settled.events, ...retry.events],
@@ -1044,17 +1039,20 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     };
   }
 
-  tryCancel(input: SchedulerCancelInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.cancel(input));
+  tryCancel(input: SchedulerCancelInput): SchedulerSnapshot {
+    return this.cancel(input);
   }
 
   private cancel(input: SchedulerCancelInput): SchedulerSnapshot {
     const intentDigest = schedulerIntentDigest({ type: "cancel", target: input.target ?? null });
     const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey, intentDigest);
     if (duplicate) return duplicate;
-    const cancelEvents = (snapshot: SchedulerSnapshot): SchedulerEvent[] => planCancelControl(snapshot, input.target).match(
-      value => value.events,
-      failure => throwSchedulerStoreError(failure),
+    const cancelEvents = (snapshot: SchedulerSnapshot): SchedulerEvent[] => Result.match(
+      planCancelControl(snapshot, input.target),
+      {
+        onSuccess: value => value.events,
+        onFailure: failure => throwSchedulerStoreError(failure),
+      },
     );
     const snapshot = this.loadRunSnapshot(input.runId);
     const events = cancelEvents(snapshot);
@@ -1071,28 +1069,26 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     );
   }
 
-  trySteerAgent(input: SchedulerSteerInput): SchedulerStoreResult<SchedulerSteerResult> {
-    return schedulerStoreResult(() => this.steerAgent(input));
+  trySteerAgent(input: SchedulerSteerInput): SchedulerSteerResult {
+    return this.steerAgent(input);
   }
 
-  tryPlanAgentSteer(runId: string, target: string): SchedulerStoreResult<SchedulerSteerTarget> {
-    return schedulerStoreResult(() => {
-      const current = this.loadRunSnapshot(runId);
-      return throwSchedulerStoreResult(planSteerControl(this.loadFrozenRun(runId), current, target)).target;
-    });
+  tryPlanAgentSteer(runId: string, target: string): SchedulerSteerTarget {
+    const current = this.loadRunSnapshot(runId);
+    return plannerValue(planSteerControl(this.loadFrozenRun(runId), current, target)).target;
   }
 
   tryBindAgentAttemptSession(
     input: BindAgentAttemptSessionInput,
-  ): SchedulerStoreResult<AgentAttemptSessionBinding> {
-    return schedulerStoreResult(() => this.bindAgentAttemptSession(input));
+  ): AgentAttemptSessionBinding {
+    return this.bindAgentAttemptSession(input);
   }
 
 
   tryRecordAgentSessionReady(
     input: RecordAgentSessionReadyInput,
-  ): SchedulerStoreResult<void> {
-    return schedulerStoreResult(() => this.recordAgentSessionReady(input));
+  ): void {
+    return this.recordAgentSessionReady(input);
   }
 
   private recordAgentSessionReady(input: RecordAgentSessionReadyInput): void {
@@ -1121,10 +1117,10 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
 
   planAgentAttemptAdmission(
     input: PlanAgentAttemptAdmissionInput,
-  ): Result<AgentAttemptOperationPlan, AgentOperationPlanError> {
+  ): Result.Result<AgentAttemptOperationPlan, AgentOperationPlanError> {
     this.requireStartedAttempt(input.runId, input.attemptId, input.ownerEpoch);
     const existing = this.agentAttemptBinding(input.attemptId);
-    if (existing) return ok(this.operationPlanFromBinding(existing));
+    if (existing) return Result.succeed(this.operationPlanFromBinding(existing));
     const start = this.attemptStart(input.runId, input.attemptId);
     const steerEventSequence = start.payload.steerEventSequence;
     const active = this.activeAgentSessionForScope(input.runId, input.scopeDigest);
@@ -1254,8 +1250,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
 
   tryAdvanceAgentSessionCheckpoint(
     input: AdvanceAgentSessionCheckpointInput,
-  ): SchedulerStoreResult<AgentSessionCheckpointValue> {
-    return schedulerStoreResult(() => this.advanceAgentSessionCheckpoint(input));
+  ): AgentSessionCheckpointValue {
+    return this.advanceAgentSessionCheckpoint(input);
   }
 
   private advanceAgentSessionCheckpoint(input: AdvanceAgentSessionCheckpointInput): AgentSessionCheckpointValue {
@@ -1289,8 +1285,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
 
   tryCommitAgentTurnDispatch(
     input: CommitAgentTurnDispatchInput,
-  ): SchedulerStoreResult<AgentSessionCheckpointValue> {
-    return schedulerStoreResult(() => this.commitAgentTurnDispatch(input));
+  ): AgentSessionCheckpointValue {
+    return this.commitAgentTurnDispatch(input);
   }
 
   private commitAgentTurnDispatch(input: CommitAgentTurnDispatchInput): AgentSessionCheckpointValue {
@@ -1333,12 +1329,11 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
 
   trySettleFencedAgentSessionCheckpoint(
     input: SettleFencedAgentSessionCheckpointInput,
-  ): SchedulerStoreResult<AgentSessionCheckpointValue> {
-    return schedulerStoreResult(() => this.settleFencedAgentSessionCheckpoint(input));
+  ): AgentSessionCheckpointValue {
+    return this.settleFencedAgentSessionCheckpoint(input);
   }
 
-  tryReconcileAgentSteers(input: ReconcileAgentSteersInput): SchedulerStoreResult<number> {
-    return schedulerStoreResult(() => {
+  tryReconcileAgentSteers(input: ReconcileAgentSteersInput): number {
       this.requireRuntimeAuthority(input.runtimeOwnerEpoch);
       const rows = this.db.prepare(`
         SELECT payload_json
@@ -1364,7 +1359,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
           : checkpoint.checkpoint === "provider_observed" || checkpoint.checkpoint === "terminal_unknown"
             ? "terminal_unknown"
             : "acceptance_unknown";
-        throwSchedulerStoreResult(this.trySettleFencedAgentSessionCheckpoint({
+        this.trySettleFencedAgentSessionCheckpoint({
           runId: input.runId,
           runtimeOwnerEpoch: input.runtimeOwnerEpoch,
           agentSessionId: binding.agentSessionId,
@@ -1375,11 +1370,10 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
           next,
           cause: next === "terminal_observed" ? "provider_terminal" : "loss_without_new_provider_evidence",
           observedAt: input.now ?? new Date(),
-        }));
+        });
         reconciled += 1;
       }
-      return reconciled;
-    });
+    return reconciled;
   }
 
   readAgentControlInspection(runId: string): RuntimeAgentControlInspection {
@@ -1435,8 +1429,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
         sequenced,
         session?.checkpoint.checkpoint,
       );
-      if (projected.isErr()) throw new Error(projected.error.message);
-      return { nodeKey: item.event.payload.nodeKey, projection: projected.value };
+      if (Result.isFailure(projected)) throw new Error(projected.failure.message);
+      return { nodeKey: item.event.payload.nodeKey, projection: projected.success };
     });
     const agentSessions = materialized.sort((left, right) => left.agentSessionId.localeCompare(right.agentSessionId));
     const turnProofs = replay.sessions.flatMap(session => {
@@ -2083,7 +2077,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
       this.requireOwnerEpoch(input.runId, input.ownerEpoch);
       const current = this.loadRunSnapshot(input.runId);
       const frozen = this.loadFrozenRun(input.runId);
-      const attempt = throwSchedulerStoreResult(planSteerControl(frozen, current, input.target)).target;
+      const attempt = plannerValue(planSteerControl(frozen, current, input.target)).target;
       const binding = this.agentAttemptBinding(attempt.attemptId);
       const session = binding ? this.agentSessionRow(binding.agentSessionId) : undefined;
       const checkpoint = session ? checkpointFromRow(session) : undefined;
@@ -2154,8 +2148,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
-  tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.markExpiredOwnerAttemptsSuperseded(input));
+  tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerSnapshot {
+    return this.markExpiredOwnerAttemptsSuperseded(input);
   }
 
   private markExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerSnapshot {
@@ -2287,18 +2281,18 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   private drainDueSignalTimeouts(runId: string, ownerEpoch: number, now: Date): SchedulerSnapshot {
-    const snapshot = throwSchedulerStoreResult(this.tryLoadRunSnapshot(runId));
+    const snapshot = this.tryLoadRunSnapshot(runId);
     const events = signalTimeoutEvents(snapshot.projection, now);
     if (events.length === 0) return snapshot;
     const frozen = this.loadFrozenRun(runId);
     const settled = settleFrozenProjection({ frozen, projection: snapshot.projection, initialEvents: events, now });
-    return throwSchedulerStoreResult(this.tryAppendSchedulerEvents({
+    return this.tryAppendSchedulerEvents({
       runId,
       ownerEpoch,
       expectedVersion: snapshot.version,
       idempotencyKey: `scheduler:signal-timeouts:${runId}:${snapshot.version}`,
       events: settled.events,
-    }));
+    });
   }
 
   private loadFrozenRun(runId: string): FrozenSchedulerRun {
@@ -3153,6 +3147,11 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 
 export function throwSchedulerStoreError(error: SchedulerStoreError): never {
   throw new SchedulerStoreException(error);
+}
+
+function plannerValue<Success>(result: Result.Result<Success, SchedulerStoreError>): Success {
+  if (Result.isFailure(result)) throwSchedulerStoreError(result.failure);
+  return result.success;
 }
 
 export function requireActiveOwnerEpoch(db: DatabaseSync, runId: string, ownerEpoch: number): void {

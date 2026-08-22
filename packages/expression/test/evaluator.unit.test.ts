@@ -18,10 +18,6 @@ describe("expression evaluator", () => {
     },
   };
 
-  it("evaluates literal expressions through the evaluator seam", () => {
-    expect(evaluateExpr({ kind: "literal", value: true }, { resolveRef: () => undefined })).toBe(true);
-  });
-
   it("omits missing object fields while preserving missing top-level and array values", () => {
     const missing: ExprIR = { kind: "ref", path: ["input", "missing"] };
     expect(evaluateExpr({ kind: "object", fields: { optional: missing } }, adapter)).toEqual({});

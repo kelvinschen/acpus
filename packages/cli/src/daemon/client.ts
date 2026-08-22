@@ -25,7 +25,10 @@ import {
   type RuntimeAuthorityIdentity,
 } from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 
 export type RuntimeAuthorityMode = "admission" | "control";
 
@@ -78,6 +81,12 @@ export type DaemonSubmitInput = {
   until: DaemonRunObservationUntil;
 };
 
+type SubmitAttemptFailure =
+  | { type: "stream"; failure: DaemonRunStreamClientFailure }
+  | { type: "retry" }
+  | { type: "retry-now" }
+  | { type: "failure"; failure: CliDaemonFailure };
+
 type SpawnState = {
   error?: unknown;
   exit?: { code: number | null; signal: NodeJS.Signals | null; observedAt: number };
@@ -90,281 +99,310 @@ export function ensureRuntimeAuthority(
   cwd: string,
   mode: RuntimeAuthorityMode,
   options: { signal?: AbortSignal } = {},
-): ResultAsync<RuntimeAuthorityIdentity, CliDaemonFailure> {
-  return new ResultAsync(ensureRuntimeAuthorityResult(cwd, mode, options.signal));
+): Effect.Effect<RuntimeAuthorityIdentity, CliDaemonFailure> {
+  const authority = ensureRuntimeAuthorityEffect(cwd, mode);
+  return options.signal === undefined
+    ? authority
+    : Effect.raceFirst(authority, abortFailure(options.signal));
 }
 
-async function ensureRuntimeAuthorityResult(
+function ensureRuntimeAuthorityEffect(
   cwd: string,
   mode: RuntimeAuthorityMode,
-  signal?: AbortSignal,
-): Promise<Result<RuntimeAuthorityIdentity, CliDaemonFailure>> {
-  const deadline = Date.now() + authorityStartTimeoutMs;
-  let child: ChildProcess | undefined;
-  let childState: SpawnState | undefined;
-  let storePrepared = false;
-  let predecessorShutdownAccepted = false;
-  let predecessorOffline = false;
+): Effect.Effect<RuntimeAuthorityIdentity, CliDaemonFailure> {
+  return Effect.gen(function* () {
+    const clock = yield* Clock.Clock;
+    const deadline = clock.currentTimeMillisUnsafe() + authorityStartTimeoutMs;
+    let child: ChildProcess | undefined;
+    let childState: SpawnState | undefined;
+    let storePrepared = false;
+    let predecessorShutdownAccepted = false;
+    let predecessorOffline = false;
 
-  while (Date.now() <= deadline && !signal?.aborted) {
-    const status = await requestDaemonStatusProbe(cwd);
-    if (status.isOk()) {
-      if (status.value.kind === "current") return ok(status.value.status.authority);
-      if (status.value.kind === "unknown") return err(runtimeUpdateBlocked(
-        status.value.protocolVersion === undefined
-          ? "The workspace daemon uses an unknown Runtime protocol. Use a matching or newer Acpus version."
-          : `The workspace daemon uses unsupported protocol v${status.value.protocolVersion}. Use a matching or newer Acpus version.`,
-      ));
-      if (!predecessorShutdownAccepted) {
-        const retired = await requestPredecessorDaemonShutdown(cwd);
-        if (retired.isErr()) {
-          return err(runtimeUpdateBlocked(
-            retired.error.type === "rejected" && retired.error.code === "CONTROL_CONFLICT"
-              ? "The previous Acpus daemon still has active work. Wait for it to finish, then retry."
-              : `The previous Acpus daemon could not be retired safely: ${retired.error.message}`,
-          ));
-        }
-        predecessorShutdownAccepted = true;
-      }
-      await delay(100, signal);
-      continue;
-    }
-
-    if (childState?.error !== undefined) {
-      return err({
-        type: "daemon-spawn-failed",
-        ...errnoField(childState.error),
-        message: errorMessage(childState.error, "Daemon process could not be spawned."),
-      });
-    }
-    if (childState?.exit !== undefined && Date.now() - childState.exit.observedAt >= competingDaemonGraceMs) {
-      return err({
-        type: "daemon-exited-before-ready",
-        exitCode: childState.exit.code,
-        signal: childState.exit.signal,
-        message: `Daemon exited before becoming ready${childState.exit.code === null ? "" : ` with code ${childState.exit.code}`}${childState.exit.signal === null ? "" : ` after ${childState.exit.signal}`}.`,
-      });
-    }
-    if (isInitializingFailure(status.error)) {
-      await delay(100, signal);
-      continue;
-    }
-    if (!isStartupConnectionFailure(status.error)) {
-      if (await probeDaemonEndpoint(cwd)) {
-        return err(runtimeUpdateBlocked(
-          `The workspace daemon could not be identified safely: ${status.error.message}`,
+    while (clock.currentTimeMillisUnsafe() < deadline) {
+      const status = yield* Effect.result(requestDaemonStatusProbe(cwd));
+      if (Result.isSuccess(status)) {
+        if (status.success.kind === "current") return status.success.status.authority;
+        if (status.success.kind === "unknown") return yield* Effect.fail(runtimeUpdateBlocked(
+          status.success.protocolVersion === undefined
+            ? "The workspace daemon uses an unknown Runtime protocol. Use a matching or newer Acpus version."
+            : `The workspace daemon uses unsupported protocol v${status.success.protocolVersion}. Use a matching or newer Acpus version.`,
         ));
+        if (!predecessorShutdownAccepted) {
+          const retired = yield* Effect.result(requestPredecessorDaemonShutdown(cwd));
+          if (Result.isFailure(retired)) {
+            return yield* Effect.fail(runtimeUpdateBlocked(
+              retired.failure.type === "rejected" && retired.failure.code === "CONTROL_CONFLICT"
+                ? "The previous Acpus daemon still has active work. Wait for it to finish, then retry."
+                : `The previous Acpus daemon could not be retired safely: ${retired.failure.message}`,
+            ));
+          }
+          predecessorShutdownAccepted = true;
+        }
+        yield* Effect.sleep(100);
+        continue;
       }
-      return err({ type: "daemon-status-failed", failure: status.error, message: status.error.message });
-    }
 
-    if (predecessorShutdownAccepted && await probeDaemonEndpoint(cwd)) {
-      await delay(100, signal);
-      continue;
-    }
-    if (predecessorShutdownAccepted && !predecessorOffline) {
-      const offline = await awaitRuntimeStoreOffline(cwd);
-      if (offline.isErr()) return err(runtimeUpdateBlocked(
-        `The previous Runtime authority has not released the store safely: ${offline.error.message}`,
-      ));
-      predecessorOffline = true;
-    }
-    if (!storePrepared) {
-      const prepared = await prepareRuntimeStore(cwd, mode);
-      if (prepared.isErr()) return err(prepared.error);
-      storePrepared = true;
-    }
-    if (child === undefined) {
-      const runtimeConfiguration = tryLoadRuntimeConfiguration(process.env);
-      if (runtimeConfiguration.isErr()) {
-        return err({ type: "runtime-configuration-invalid", message: runtimeConfiguration.error.message });
-      }
-      childState = {};
-      try {
-        child = spawn(process.execPath, daemonEntryArgs(cwd), { cwd, detached: true, stdio: "ignore" });
-      } catch (cause) {
-        return err({
-          type: "daemon-spawn-failed",
-          ...errnoField(cause),
-          message: errorMessage(cause, "Daemon process could not be spawned."),
+      if (childState?.error !== undefined) {
+        return yield* Effect.fail({
+          type: "daemon-spawn-failed" as const,
+          ...errnoField(childState.error),
+          message: errorMessage(childState.error, "Daemon process could not be spawned."),
         });
       }
-      child.once("error", cause => { childState!.error = cause; });
-      child.once("exit", (code, signal) => { childState!.exit = { code, signal, observedAt: Date.now() }; });
-      child.unref();
+      if (childState?.exit !== undefined
+        && clock.currentTimeMillisUnsafe() - childState.exit.observedAt >= competingDaemonGraceMs) {
+        return yield* Effect.fail({
+          type: "daemon-exited-before-ready" as const,
+          exitCode: childState.exit.code,
+          signal: childState.exit.signal,
+          message: `Daemon exited before becoming ready${childState.exit.code === null ? "" : ` with code ${childState.exit.code}`}${childState.exit.signal === null ? "" : ` after ${childState.exit.signal}`}.`,
+        });
+      }
+      if (isInitializingFailure(status.failure)) {
+        yield* Effect.sleep(100);
+        continue;
+      }
+      if (!isStartupConnectionFailure(status.failure)) {
+        if (yield* probeDaemonEndpoint(cwd)) {
+          return yield* Effect.fail(runtimeUpdateBlocked(
+            `The workspace daemon could not be identified safely: ${status.failure.message}`,
+          ));
+        }
+        return yield* Effect.fail({
+          type: "daemon-status-failed" as const,
+          failure: status.failure,
+          message: status.failure.message,
+        });
+      }
+
+      if (predecessorShutdownAccepted && (yield* probeDaemonEndpoint(cwd))) {
+        yield* Effect.sleep(100);
+        continue;
+      }
+      if (predecessorShutdownAccepted && !predecessorOffline) {
+        const offline = yield* Effect.result(awaitRuntimeStoreOffline(cwd));
+        if (Result.isFailure(offline)) return yield* Effect.fail(runtimeUpdateBlocked(
+          `The previous Runtime authority has not released the store safely: ${offline.failure.message}`,
+        ));
+        predecessorOffline = true;
+      }
+      if (!storePrepared) {
+        yield* prepareRuntimeStore(cwd, mode);
+        storePrepared = true;
+      }
+      if (child === undefined) {
+        const runtimeConfiguration = tryLoadRuntimeConfiguration(process.env);
+        if (Result.isFailure(runtimeConfiguration)) {
+          return yield* Effect.fail({
+            type: "runtime-configuration-invalid" as const,
+            message: runtimeConfiguration.failure.message,
+          });
+        }
+        childState = {};
+        child = yield* Effect.try({
+          try: () => spawn(process.execPath, daemonEntryArgs(cwd), { cwd, detached: true, stdio: "ignore" }),
+          catch: cause => ({
+            type: "daemon-spawn-failed" as const,
+            ...errnoField(cause),
+            message: errorMessage(cause, "Daemon process could not be spawned."),
+          }),
+        });
+        child.once("error", cause => { childState!.error = cause; });
+        child.once("exit", (code, signal) => {
+          childState!.exit = { code, signal, observedAt: clock.currentTimeMillisUnsafe() };
+        });
+        child.unref();
+      }
+      yield* Effect.sleep(100);
     }
-    await delay(100, signal);
-  }
-  if (signal?.aborted) return err({ type: "authority-wait-aborted", message: "Runtime authority wait was interrupted." });
-  if (predecessorShutdownAccepted) {
-    return err(runtimeUpdateBlocked(
-      "The previous Acpus daemon did not release its endpoint and Runtime store before the update deadline. Wait for existing work to finish, then retry.",
-    ));
-  }
-  return err({ type: "daemon-start-timeout", message: "Runtime authority did not become ready within 30 seconds." });
+    if (predecessorShutdownAccepted) {
+      return yield* Effect.fail(runtimeUpdateBlocked(
+        "The previous Acpus daemon did not release its endpoint and Runtime store before the update deadline. Wait for existing work to finish, then retry.",
+      ));
+    }
+    return yield* Effect.fail({
+      type: "daemon-start-timeout" as const,
+      message: "Runtime authority did not become ready within 30 seconds.",
+    });
+  });
 }
 
 export function sendDaemonControl(
   cwd: string,
   intent: DaemonControlIntent,
-): ResultAsync<DaemonControlResult, DaemonControlFailure> {
-  return new ResultAsync(sendDaemonControlResult(cwd, intent));
+): Effect.Effect<DaemonControlResult, DaemonControlFailure> {
+  return Effect.gen(function* () {
+    const ready = yield* Effect.result(ensureRuntimeAuthority(cwd, "control"));
+    if (Result.isFailure(ready)) {
+      return yield* Effect.fail(yield* controlFailure(
+        cwd,
+        intent,
+        publicFailureCode(ready.failure),
+        ready.failure,
+      ));
+    }
+    const controlled = yield* Effect.result(requestDaemonControl(cwd, intent));
+    if (Result.isSuccess(controlled)) return controlled.success;
+    const code = controlled.failure.type === "rejected" ? controlled.failure.code : "EXECUTION_UNAVAILABLE";
+    return yield* Effect.fail(yield* controlFailure(cwd, intent, code, controlled.failure));
+  });
 }
 
-async function sendDaemonControlResult(
-  cwd: string,
-  intent: DaemonControlIntent,
-): Promise<Result<DaemonControlResult, DaemonControlFailure>> {
-  const ready = await ensureRuntimeAuthority(cwd, "control");
-  if (ready.isErr()) {
-    return err(await controlFailure(cwd, intent, publicFailureCode(ready.error), ready.error));
-  }
-  const controlled = await requestDaemonControl(cwd, intent);
-  if (controlled.isOk()) return ok(controlled.value);
-  const code = controlled.error.type === "rejected" ? controlled.error.code : "EXECUTION_UNAVAILABLE";
-  return err(await controlFailure(cwd, intent, code, controlled.error));
-}
-
-export async function* sendDaemonSubmitAndObserve(
+export function sendDaemonSubmitAndObserve(
   cwd: string,
   input: DaemonSubmitInput,
   options: { signal?: AbortSignal } = {},
-): AsyncIterable<Result<DaemonRunStreamFrame, CliDaemonFailure>> {
-  while (!options.signal?.aborted) {
-    const authority = await ensureRuntimeAuthority(cwd, "admission", options);
-    if (options.signal?.aborted) return;
-    if (authority.isErr()) {
-      yield err(authority.error);
-      return;
-    }
+): AsyncIterable<Result.Result<DaemonRunStreamFrame, CliDaemonFailure>> {
+  const stream = options.signal === undefined
+    ? submitAndObserveStream(cwd, input)
+    : submitAndObserveStream(cwd, input).pipe(Stream.interruptWhen(awaitAbort(options.signal)));
+  return Stream.toAsyncIterable(Stream.result(stream));
+}
+
+function submitAndObserveStream(
+  cwd: string,
+  input: DaemonSubmitInput,
+): Stream.Stream<DaemonRunStreamFrame, CliDaemonFailure> {
+  return Stream.unwrap(Effect.gen(function* () {
+    const authority = yield* ensureRuntimeAuthority(cwd, "admission");
     let admittedRunId: string | undefined;
-    let retry = false;
     let terminal = false;
-    let frameFailure: Extract<CliDaemonFailure, { type: "request-failed" }> | undefined;
-    const stream = requestDaemonSubmitAndObserve(cwd, {
-      expectedAuthority: authority.value,
+    const stream: Stream.Stream<DaemonRunStreamFrame, SubmitAttemptFailure> = requestDaemonSubmitAndObserve(cwd, {
+      expectedAuthority: authority,
       requestId: input.requestId,
       prepared: input.prepared,
       input: input.input,
       ...(input.agentInjections === undefined ? {} : { agentInjections: input.agentInjections }),
       until: input.until,
-    }, options);
-    for await (const result of stream) {
-      if (result.isErr()) {
-        if (result.error.type === "transport") {
-          if (admittedRunId === undefined) {
-            retry = true;
-            break;
-          }
-          yield err(runtimeAuthorityLost(admittedRunId));
-          return;
+    }).pipe(
+      Stream.mapError(failure => ({ type: "stream" as const, failure })),
+      Stream.mapEffect((frame): Effect.Effect<DaemonRunStreamFrame, SubmitAttemptFailure> => {
+        if (frame.kind === "admitted") {
+          admittedRunId = frame.run.id;
+          terminal = input.until === "admitted";
+          return Effect.succeed(frame);
         }
-        if (result.error.reason === "truncated" && admittedRunId !== undefined) {
-          yield err(runtimeAuthorityLost(admittedRunId));
-          return;
+        if (frame.kind === "observation") {
+          terminal = frame.observation.kind === "closed";
+          return Effect.succeed(frame);
         }
-        yield err({
-          type: "daemon-stream-protocol-failed",
-          failure: result.error,
-          message: result.error.message,
+        terminal = true;
+        if (frame.phase === "authority"
+          && frame.outcome === "not-admitted"
+          && frame.error.code === "AUTHORITY_MISMATCH") {
+          return Effect.fail({ type: "retry" as const });
+        }
+        if (frame.outcome === "unknown") {
+          return Effect.fail({ type: "retry" as const });
+        }
+        const runId = frame.runId ?? admittedRunId;
+        return Effect.fail({
+          type: "failure" as const,
+          failure: {
+            type: "request-failed" as const,
+            method: "submitAndObserve" as const,
+            code: frame.error.code,
+            ...(runId === undefined ? {} : { runId }),
+            message: frame.error.message,
+          },
         });
-        return;
-      }
-      const frame = result.value;
-      if (frame.kind === "admitted") {
-        admittedRunId = frame.run.id;
-        terminal = input.until === "admitted";
-        yield ok(frame);
-        continue;
-      }
-      if (frame.kind === "observation") {
-        terminal = frame.observation.kind === "closed";
-        yield ok(frame);
-        continue;
-      }
-      terminal = true;
-      if (frame.phase === "authority"
-        && frame.outcome === "not-admitted"
-        && frame.error.code === "AUTHORITY_MISMATCH") {
-        retry = true;
-        continue;
-      }
-      if (frame.outcome === "unknown") {
-        retry = true;
-        continue;
-      }
-      const runId = frame.runId ?? admittedRunId;
-      frameFailure = {
-        type: "request-failed",
-        method: "submitAndObserve",
-        code: frame.error.code,
-        ...(runId === undefined ? {} : { runId }),
-        message: frame.error.message,
-      };
-    }
-    if (options.signal?.aborted) return;
-    if (frameFailure !== undefined) {
-      yield err(frameFailure);
-      return;
-    }
-    if (retry) {
-      await delay(100, options.signal);
-      continue;
-    }
-    if (terminal) return;
-    if (admittedRunId !== undefined) {
-      yield err(runtimeAuthorityLost(admittedRunId));
-      return;
-    }
-  }
+      }),
+    );
+    return stream.pipe(
+      Stream.concat(Stream.unwrap(Effect.sync((): Stream.Stream<never, SubmitAttemptFailure> => {
+        if (terminal) return Stream.empty;
+        if (admittedRunId !== undefined) {
+          return Stream.fail({
+            type: "failure" as const,
+            failure: runtimeAuthorityLost(admittedRunId),
+          });
+        }
+        return Stream.fail({ type: "retry-now" as const });
+      }))),
+      Stream.catch(reason => {
+        if (reason.type === "retry") return retrySubmitAndObserve(cwd, input);
+        if (reason.type === "retry-now") return retrySubmitAndObserve(cwd, input, false);
+        if (reason.type === "failure") return Stream.fail(reason.failure);
+        const failure = reason.failure;
+        if (failure.type === "transport") {
+          return admittedRunId === undefined
+            ? retrySubmitAndObserve(cwd, input)
+            : Stream.fail(runtimeAuthorityLost(admittedRunId));
+        }
+        if (failure.reason === "truncated" && admittedRunId !== undefined) {
+          return Stream.fail(runtimeAuthorityLost(admittedRunId));
+        }
+        return Stream.fail({
+          type: "daemon-stream-protocol-failed" as const,
+          failure,
+          message: failure.message,
+        });
+      }),
+    );
+  }));
 }
 
-async function prepareRuntimeStore(
+function retrySubmitAndObserve(
+  cwd: string,
+  input: DaemonSubmitInput,
+  delay = true,
+): Stream.Stream<DaemonRunStreamFrame, CliDaemonFailure> {
+  return delay
+    ? Stream.unwrap(Effect.sleep(100).pipe(Effect.as(submitAndObserveStream(cwd, input))))
+    : submitAndObserveStream(cwd, input);
+}
+
+function prepareRuntimeStore(
   cwd: string,
   mode: RuntimeAuthorityMode,
-): Promise<Result<void, CliDaemonFailure>> {
-  const inspected = await inspectRuntimeStore(cwd);
-  if (inspected.isErr()) {
-    return err(inspected.error.type === "busy"
-      ? runtimeUpdateBlocked("The Runtime store is currently in use. Wait for existing work to finish, then retry.")
-      : {
-          type: "runtime-store-unreadable",
-          message: "The Runtime store could not be read. Run 'acpus doctor'.",
-        });
-  }
-  if (inspected.value.state === "unsupported") {
-    return err({
-      type: "runtime-store-unsupported",
-      message: `${inspected.value.message} Run 'acpus doctor'.`,
+): Effect.Effect<void, CliDaemonFailure> {
+  return Effect.gen(function* () {
+    const inspected = yield* Effect.result(inspectRuntimeStore(cwd));
+    if (Result.isFailure(inspected)) {
+      return yield* Effect.fail(inspected.failure.type === "busy"
+        ? runtimeUpdateBlocked("The Runtime store is currently in use. Wait for existing work to finish, then retry.")
+        : {
+            type: "runtime-store-unreadable" as const,
+            message: "The Runtime store could not be read. Run 'acpus doctor'.",
+          });
+    }
+    if (inspected.success.state === "unsupported") {
+      return yield* Effect.fail({
+        type: "runtime-store-unsupported" as const,
+        message: `${inspected.success.message} Run 'acpus doctor'.`,
+      });
+    }
+    if (inspected.success.state !== "repairable") return;
+    if (mode === "control") {
+      return yield* Effect.fail({
+        type: "runtime-store-repair-required" as const,
+        message: `${inspected.success.message} Run 'acpus doctor --fix'.`,
+      });
+    }
+    const repaired = yield* Effect.result(repairRuntimeStore(cwd));
+    if (Result.isSuccess(repaired)) return;
+    if (repaired.failure.type === "unsupported") {
+      return yield* Effect.fail({
+        type: "runtime-store-unsupported" as const,
+        message: `${repaired.failure.message} Run 'acpus doctor'.`,
+      });
+    }
+    if (repaired.failure.type === "busy") {
+      return yield* Effect.fail(runtimeUpdateBlocked(
+        "The Runtime store still has active users. Wait for existing work to finish, then retry.",
+      ));
+    }
+    if (repaired.failure.type === "unreadable") {
+      return yield* Effect.fail({
+        type: "runtime-store-unreadable" as const,
+        message: `${repaired.failure.message} Run 'acpus doctor'.`,
+      });
+    }
+    return yield* Effect.fail({
+      type: "runtime-store-repair-failed" as const,
+      message: "The Runtime store update did not complete. Its transition intent and original data were preserved. Run 'acpus doctor --fix'.",
     });
-  }
-  if (inspected.value.state !== "repairable") return ok(undefined);
-  if (mode === "control") {
-    return err({
-      type: "runtime-store-repair-required",
-      message: `${inspected.value.message} Run 'acpus doctor --fix'.`,
-    });
-  }
-  const repaired = await repairRuntimeStore(cwd);
-  if (repaired.isOk()) return ok(undefined);
-  if (repaired.error.type === "unsupported") {
-    return err({
-      type: "runtime-store-unsupported",
-      message: `${repaired.error.message} Run 'acpus doctor'.`,
-    });
-  }
-  if (repaired.error.type === "busy") {
-    return err(runtimeUpdateBlocked("The Runtime store still has active users. Wait for existing work to finish, then retry."));
-  }
-  if (repaired.error.type === "unreadable") {
-    return err({
-      type: "runtime-store-unreadable",
-      message: `${repaired.error.message} Run 'acpus doctor'.`,
-    });
-  }
-  return err({
-    type: "runtime-store-repair-failed",
-    message: "The Runtime store update did not complete. Its transition intent and original data were preserved. Run 'acpus doctor --fix'.",
   });
 }
 
@@ -413,28 +451,24 @@ function publicFailureCode(failure: CliDaemonFailure): DaemonControlFailure["cod
   return "EXECUTION_UNAVAILABLE";
 }
 
-async function controlFailure(
+function controlFailure(
   cwd: string,
   intent: DaemonControlIntent,
   code: DaemonControlFailure["code"],
   cause: CliDaemonFailure | DaemonClientFailure,
-): Promise<DaemonControlFailure> {
-  let run: RunDetails | undefined;
-  try {
-    const read = await getRun(cwd, intent.runId);
-    run = read.isOk() ? read.value : undefined;
-  } catch {
-    run = undefined;
-  }
-  return {
-    type: "control-failed",
-    code,
-    controlType: intent.type,
-    runId: intent.runId,
-    run,
-    cause,
-    message: controlFailureMessage(code, intent.type, intent.runId, run, cause),
-  };
+): Effect.Effect<DaemonControlFailure> {
+  return getRun(cwd, intent.runId).pipe(
+    Effect.catchCause(() => Effect.succeed(undefined)),
+    Effect.map(run => ({
+      type: "control-failed" as const,
+      code,
+      controlType: intent.type,
+      runId: intent.runId,
+      run,
+      cause,
+      message: controlFailureMessage(code, intent.type, intent.runId, run, cause),
+    })),
+  );
 }
 
 function controlFailureMessage(
@@ -458,16 +492,29 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error && error.message.length > 0 ? error.message : fallback;
 }
 
-function delay(ms: number, signal?: AbortSignal): Promise<void> {
-  if (signal?.aborted) return Promise.resolve();
-  return new Promise(resolve => {
-    const timeout = setTimeout(finish, ms);
-    const onAbort = (): void => finish();
-    function finish(): void {
-      clearTimeout(timeout);
-      signal?.removeEventListener("abort", onAbort);
-      resolve();
+function abortFailure(signal: AbortSignal): Effect.Effect<never, CliDaemonFailure> {
+  return Effect.callback(resolve => {
+    const onAbort = (): void => resolve(Effect.fail({
+      type: "authority-wait-aborted",
+      message: "Runtime authority wait was interrupted.",
+    }));
+    if (signal.aborted) {
+      onAbort();
+      return;
     }
-    signal?.addEventListener("abort", onAbort, { once: true });
+    signal.addEventListener("abort", onAbort, { once: true });
+    return Effect.sync(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+function awaitAbort(signal: AbortSignal): Effect.Effect<void> {
+  return Effect.callback(resolve => {
+    const onAbort = (): void => resolve(Effect.void);
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    return Effect.sync(() => signal.removeEventListener("abort", onAbort));
   });
 }

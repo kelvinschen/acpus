@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { err, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import * as ts from "typescript/unstable/ast";
 import type { SourceFile } from "typescript/unstable/ast";
 import { nativeFailure, withNativeProject, type TypeScriptNativeFailure } from "../typescript/native.js";
@@ -34,15 +34,15 @@ type AnalyzeContext = {
 export async function analyzeWorkflowTasks(
   workflowFile: string,
   source: string,
-): Promise<Result<WorkflowTaskAnalysis, TypeScriptNativeFailure>> {
+): Promise<Result.Result<WorkflowTaskAnalysis, TypeScriptNativeFailure>> {
   let scratchDir: string;
   try {
     scratchDir = await mkdtemp(join(tmpdir(), "acpus-task-analysis-"));
   } catch (cause) {
-    return err(nativeFailure(cause));
+    return Result.fail(nativeFailure(cause));
   }
   const configPath = join(scratchDir, "tsconfig.json");
-  let result: Result<WorkflowTaskAnalysis, TypeScriptNativeFailure>;
+  let result: Result.Result<WorkflowTaskAnalysis, TypeScriptNativeFailure>;
   try {
     await writeFile(configPath, `${JSON.stringify({
       compilerOptions: {
@@ -61,12 +61,12 @@ export async function analyzeWorkflowTasks(
       ({ sourceFile }) => analyzeWorkflowTasksFromSourceFile(workflowFile, sourceFile),
     );
   } catch (cause) {
-    result = err(nativeFailure(cause));
+    result = Result.fail(nativeFailure(cause));
   }
   try {
     await rm(scratchDir, { recursive: true, force: true });
   } catch (cause) {
-    if (result.isOk()) return err(nativeFailure(cause));
+    if (Result.isSuccess(result)) return Result.fail(nativeFailure(cause));
   }
   return result;
 }

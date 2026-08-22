@@ -1,22 +1,26 @@
 import { isAbsolute, resolve } from "node:path";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
-import { isArtifactRefCandidate, tryBindArtifactRef } from "../artifacts/access.js";
+import type { ProcessHostShape } from "@acpus/owned-process";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import { isArtifactRefCandidate } from "../artifacts/access.js";
 import { tryParsePersistedDeadline } from "../deadline.js";
 import { tryNormalizeWorkflowData } from "../evaluation/admissible.js";
 import { tryEvaluateExpr, type EvaluationScope } from "../evaluation/evaluator.js";
 import { tryResolveDuration, tryResolveString, type ResolutionError } from "../evaluation/resolvable.js";
 import type { RunFileToken } from "../store/run-file.js";
-import type { RuntimeStore } from "../store/store.js";
-import { throwSchedulerStoreResult } from "../scheduler/store-port.js";
+import type { RuntimeStoreBusy, RuntimeStoreShape } from "../store/service.js";
+import type { SchedulerStoreError } from "../scheduler/store-port.js";
 import { runTaskAttempt, type TaskAttemptFailure } from "./task-process.js";
 
 export type TaskExecutorOptions = {
   cwd: string;
   sourceRoot?: string;
   runId: string;
-  store: Pick<RuntimeStore, "runsRoot" | "getRunDirectoryToken" | "writeExecutionMetadata" | "registerArtifact" | "getArtifact">;
+  store: Pick<RuntimeStoreShape, "getRunDirectoryToken" | "writeExecutionMetadata" | "registerArtifact" | "resolveArtifactRef">;
+  processes: ProcessHostShape;
   nodeKey?: string;
   attemptId: string;
   attemptNo: number;
@@ -31,34 +35,48 @@ export type TaskNodeFailure = TaskAttemptFailure | {
   message: string;
 };
 
-export function executeTaskNode(node: TaskNodeIR, scope: EvaluationScope, options: TaskExecutorOptions): ResultAsync<JsonValue | undefined, TaskNodeFailure> {
-  return new ResultAsync(executeTaskNodeResult(node, scope, options));
+type TaskExecutorStoreFailure = RuntimeStoreBusy | SchedulerStoreError;
+
+export function executeTaskNode(
+  node: TaskNodeIR,
+  scope: EvaluationScope,
+  options: TaskExecutorOptions,
+): Effect.Effect<Result.Result<JsonValue | undefined, TaskNodeFailure>, TaskExecutorStoreFailure> {
+  const execution = executeTaskNodeResult(node, scope, options);
+  return options.signal === undefined
+    ? execution
+    : Effect.raceFirst(execution, externalCancellation(options.signal, node.id));
 }
 
-async function executeTaskNodeResult(node: TaskNodeIR, scope: EvaluationScope, options: TaskExecutorOptions): Promise<Result<JsonValue | undefined, TaskNodeFailure>> {
-  const run = options.store.getRunDirectoryToken(options.runId);
+function executeTaskNodeResult(
+  node: TaskNodeIR,
+  scope: EvaluationScope,
+  options: TaskExecutorOptions,
+): Effect.Effect<Result.Result<JsonValue | undefined, TaskNodeFailure>, TaskExecutorStoreFailure> {
+  return Effect.gen(function* () {
+  const run = yield* options.store.getRunDirectoryToken(options.runId);
   if (!run) throw new Error(`Run '${options.runId}' has no run directory.`);
   const workspaceDir = resolve(options.cwd);
   const input = evaluateTaskInput(node, scope);
-  if (input.isErr()) return err(input.error);
-  const artifactPaths = resolveTaskArtifactPaths(input.value, node.id, options);
-  if (artifactPaths.isErr()) return resolutionFailure(artifactPaths.error);
+  if (Result.isFailure(input)) return Result.fail(input.failure);
+  const artifactPaths = yield* resolveTaskArtifactPaths(input.success, node.id, options);
+  if (Result.isFailure(artifactPaths)) return resolutionFailure(artifactPaths.failure);
   const nodeKey = options.nodeKey ?? node.id;
-  const authoredCwd = node.run.cwd ? tryResolveString(node.run.cwd, scope, `Task node '${node.id}' cwd`) : ok(workspaceDir);
-  if (authoredCwd.isErr()) return resolutionFailure(authoredCwd.error);
-  const cwd = isAbsolute(authoredCwd.value) ? authoredCwd.value : resolve(workspaceDir, authoredCwd.value);
+  const authoredCwd = node.run.cwd ? tryResolveString(node.run.cwd, scope, `Task node '${node.id}' cwd`) : Result.succeed(workspaceDir);
+  if (Result.isFailure(authoredCwd)) return resolutionFailure(authoredCwd.failure);
+  const cwd = isAbsolute(authoredCwd.success) ? authoredCwd.success : resolve(workspaceDir, authoredCwd.success);
   const evaluatedEnv = evaluateEnv(node.run.env, scope);
-  if (evaluatedEnv.isErr()) return resolutionFailure(evaluatedEnv.error);
-  const env: NodeJS.ProcessEnv = { ...process.env, ...evaluatedEnv.value };
+  if (Result.isFailure(evaluatedEnv)) return resolutionFailure(evaluatedEnv.failure);
+  const env: NodeJS.ProcessEnv = { ...process.env, ...evaluatedEnv.success };
   const defaultCommandTimeout = node.run.execution?.defaultCommandTimeout === undefined
-    ? ok(undefined)
+    ? Result.succeed(undefined)
     : tryResolveDuration(node.run.execution.defaultCommandTimeout, scope, `Task node '${node.id}' defaultCommandTimeout`);
-  if (defaultCommandTimeout.isErr()) return resolutionFailure(defaultCommandTimeout.error);
-  const execution = defaultCommandTimeout.value === undefined ? undefined : { defaultCommandTimeout: defaultCommandTimeout.value.value };
-  const timeoutMs = remainingTimeout(options.deadlineAt, node.id);
-  if (timeoutMs.isErr()) return err(timeoutMs.error);
+  if (Result.isFailure(defaultCommandTimeout)) return resolutionFailure(defaultCommandTimeout.failure);
+  const execution = defaultCommandTimeout.success === undefined ? undefined : { defaultCommandTimeout: defaultCommandTimeout.success.value };
+  const timeoutMs = remainingTimeout(options.deadlineAt, node.id, yield* Clock.currentTimeMillis);
+  if (Result.isFailure(timeoutMs)) return Result.fail(timeoutMs.failure);
   const visibleAttempt = options.attemptNo;
-  throwSchedulerStoreResult(options.store.writeExecutionMetadata({
+  yield* options.store.writeExecutionMetadata({
     runId: options.runId,
     attemptId: options.attemptId,
     ownerEpoch: options.ownerEpoch,
@@ -67,112 +85,136 @@ async function executeTaskNodeResult(node: TaskNodeIR, scope: EvaluationScope, o
       nodeId: node.id,
       nodeKey,
       attemptNo: visibleAttempt,
-      input: input.value,
+      input: input.success,
       cwd,
-      env: evaluatedEnv.value,
-      ...(timeoutMs.value === undefined ? {} : { timeoutMs: timeoutMs.value }),
-      ...(defaultCommandTimeout.value === undefined ? {} : { defaultCommandTimeout: defaultCommandTimeout.value.value }),
+      env: evaluatedEnv.success,
+      ...(timeoutMs.success === undefined ? {} : { timeoutMs: timeoutMs.success }),
+      ...(defaultCommandTimeout.success === undefined ? {} : { defaultCommandTimeout: defaultCommandTimeout.success.value }),
     },
-  }));
-  const runnerTimeoutMs = remainingTimeout(options.deadlineAt, node.id);
-  if (runnerTimeoutMs.isErr()) return err(runnerTimeoutMs.error);
+  });
+  const runnerTimeoutMs = remainingTimeout(options.deadlineAt, node.id, yield* Clock.currentTimeMillis);
+  if (Result.isFailure(runnerTimeoutMs)) return Result.fail(runnerTimeoutMs.failure);
 
-  return runTaskAttempt({
+  return yield* runTaskAttempt({
     nodeId: node.id,
     cwd,
     env,
     request: {
       target: node.run.target,
-      input: input.value,
+      input: input.success,
       workspaceDir,
       sourceRoot: options.sourceRoot ?? workspaceDir,
       ...(execution === undefined ? {} : { execution }),
-      artifact: { run, nodeKey, attemptId: options.attemptId, attempt: visibleAttempt, ownerEpoch: options.ownerEpoch, paths: artifactPaths.value },
+      artifact: { run, nodeKey, attemptId: options.attemptId, attempt: visibleAttempt, ownerEpoch: options.ownerEpoch, paths: artifactPaths.success },
     },
-    ...(runnerTimeoutMs.value === undefined ? {} : { timeoutMs: runnerTimeoutMs.value }),
-    ...(options.signal === undefined ? {} : { signal: options.signal }),
-    registerArtifact: artifact => throwSchedulerStoreResult(options.store.registerArtifact(artifact)),
+    ...(runnerTimeoutMs.success === undefined ? {} : { timeoutMs: runnerTimeoutMs.success }),
+    processes: options.processes,
+    store: options.store,
+  });
   });
 }
 
-function evaluateTaskInput(node: TaskNodeIR, scope: EvaluationScope): Result<JsonValue, TaskNodeFailure> {
+function evaluateTaskInput(node: TaskNodeIR, scope: EvaluationScope): Result.Result<JsonValue, TaskNodeFailure> {
   const field = `Task node '${node.id}' input`;
   const evaluated = tryEvaluateExpr(node.run.input, scope);
-  if (evaluated.isErr()) {
+  if (Result.isFailure(evaluated)) {
     return resolutionFailure({
       type: "evaluation",
       field,
-      message: evaluated.error.message,
+      message: evaluated.failure.message,
     });
   }
-  const normalized = tryNormalizeWorkflowData(evaluated.value, field);
-  return normalized.isErr()
-    ? resolutionFailure({ type: "evaluation", field, message: normalized.error.message })
-    : ok(normalized.value as JsonValue);
+  const normalized = tryNormalizeWorkflowData(evaluated.success, field);
+  return Result.isFailure(normalized)
+    ? resolutionFailure({ type: "evaluation", field, message: normalized.failure.message })
+    : Result.succeed(normalized.success as JsonValue);
 }
 
 function resolveTaskArtifactPaths(
   input: JsonValue,
   nodeId: string,
   options: TaskExecutorOptions,
-): Result<Record<string, RunFileToken>, ResolutionError> {
+): Effect.Effect<Result.Result<Record<string, RunFileToken>, ResolutionError>, RuntimeStoreBusy> {
   const paths: Record<string, RunFileToken> = {};
-  const visit = (value: unknown): Result<void, ResolutionError> => {
+  const visit = (value: unknown): Effect.Effect<Result.Result<void, ResolutionError>, RuntimeStoreBusy> => Effect.gen(function* () {
     if (isArtifactRefCandidate(value)) {
-      const resolved = tryBindArtifactRef(value, { runId: options.runId, store: options.store });
-      if (resolved.isErr()) {
-        return err({
+      const resolved = yield* Effect.result(options.store.resolveArtifactRef(value, options.runId));
+      if (Result.isFailure(resolved) && resolved.failure.type === "runtime-store-busy") {
+        return yield* Effect.fail(resolved.failure);
+      }
+      if (Result.isFailure(resolved)) {
+        return Result.fail({
           type: "evaluation",
           field: `Task node '${nodeId}' input`,
-          message: resolved.error.message,
+          message: resolved.failure.message,
         });
       }
-      paths[value.uri as string] = resolved.value;
-      return ok(undefined);
+      paths[value.uri as string] = resolved.success.file;
+      return Result.succeed(undefined);
     }
     if (Array.isArray(value)) {
       for (const item of value) {
-        const visited = visit(item);
-        if (visited.isErr()) return visited;
+        const visited = yield* visit(item);
+        if (Result.isFailure(visited)) return visited;
       }
-      return ok(undefined);
+      return Result.succeed(undefined);
     }
     if (value && typeof value === "object") {
       for (const item of Object.values(value)) {
-        const visited = visit(item);
-        if (visited.isErr()) return visited;
+        const visited = yield* visit(item);
+        if (Result.isFailure(visited)) return visited;
       }
     }
-    return ok(undefined);
-  };
-  const visited = visit(input);
-  return visited.isErr() ? err(visited.error) : ok(paths);
+    return Result.succeed(undefined);
+  });
+  return Effect.gen(function* () {
+    const visited = yield* visit(input);
+    return Result.isFailure(visited) ? Result.fail(visited.failure) : Result.succeed(paths);
+  });
 }
 
-function evaluateEnv(env: TaskNodeIR["run"]["env"], scope: EvaluationScope): Result<Record<string, string>, ResolutionError> {
-  if (!env) return ok({});
+function evaluateEnv(env: TaskNodeIR["run"]["env"], scope: EvaluationScope): Result.Result<Record<string, string>, ResolutionError> {
+  if (!env) return Result.succeed({});
   const resolved: Record<string, string> = {};
   for (const [key, value] of Object.entries(env)) {
     const item = tryResolveString(value, scope, `Task env '${key}'`);
-    if (item.isErr()) return err(item.error);
-    resolved[key] = item.value;
+    if (Result.isFailure(item)) return Result.fail(item.failure);
+    resolved[key] = item.success;
   }
-  return ok(resolved);
+  return Result.succeed(resolved);
 }
 
-function remainingTimeout(deadlineAt: string | undefined, nodeId: string): Result<number | undefined, TaskAttemptFailure> {
-  if (deadlineAt === undefined) return ok(undefined);
+function remainingTimeout(deadlineAt: string | undefined, nodeId: string, now: number): Result.Result<number | undefined, TaskAttemptFailure> {
+  if (deadlineAt === undefined) return Result.succeed(undefined);
   const deadline = tryParsePersistedDeadline(deadlineAt);
-  if (deadline.isErr()) {
+  if (Result.isFailure(deadline)) {
     throw new Error(`Task node '${nodeId}' has invalid persisted deadline ${JSON.stringify(deadlineAt)}.`);
   }
-  const remaining = deadline.value.getTime() - Date.now();
+  const remaining = deadline.success.getTime() - now;
   if (!Number.isSafeInteger(remaining)) throw new Error(`Task node '${nodeId}' has an invalid remaining timeout.`);
   return remaining <= 0
-    ? err({ type: "timed_out", message: `Task node '${nodeId}' exceeded its timeout.` })
-    : ok(remaining);
+    ? Result.fail({ type: "timed_out", message: `Task node '${nodeId}' exceeded its timeout.` })
+    : Result.succeed(remaining);
 }
 
-function resolutionFailure(error: ResolutionError): Result<never, TaskNodeFailure> {
-  return err({ type: "resolution", error, message: error.message });
+function resolutionFailure(error: ResolutionError): Result.Result<never, TaskNodeFailure> {
+  return Result.fail({ type: "resolution", error, message: error.message });
+}
+
+function externalCancellation(
+  signal: AbortSignal,
+  nodeId: string,
+): Effect.Effect<Result.Result<never, TaskNodeFailure>> {
+  return Effect.callback(resume => {
+    const cancel = () => resume(Effect.succeed(Result.fail({
+      type: "cancelled",
+      message: `Task node '${nodeId}' was cancelled.`,
+    })));
+    if (signal.aborted) {
+      cancel();
+      return;
+    }
+    signal.addEventListener("abort", cancel, { once: true });
+    return Effect.sync(() => signal.removeEventListener("abort", cancel));
+  });
 }

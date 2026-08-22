@@ -49,7 +49,7 @@
     "clean": "rm -rf dist tsconfig.build.tsbuildinfo"
   },
   "dependencies": {
-    "neverthrow": "^8.2.0"
+    "effect": "4.0.0-rc.111"
   },
   "repository": {
     "type": "git",

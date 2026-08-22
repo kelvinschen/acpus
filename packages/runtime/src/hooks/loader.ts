@@ -1,7 +1,8 @@
-import { err, ok, type Result } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import {
   globalAcpusConfigPath,
-  loadAcpusConfigScope,
+  loadAcpusConfigScopeResult,
   projectAcpusConfigPath,
 } from "../acpus-config.js";
 import { hookEvents, type HooksFile, type HookSource, type HookValidationError, type LoadedHookConfig } from "./config.js";
@@ -23,42 +24,63 @@ export function formatHookLoadError(error: HookLoadError): string {
   return `Invalid Acpus config at ${error.path}: ${error.message}`;
 }
 
-export async function loadHooksConfig(workspaceDir: string, options: { homeDir?: string } = {}): Promise<Result<LoadedHookConfig[], HookLoadError>> {
-  const scoped = await loadHooksConfigScopes(workspaceDir, options);
-  return scoped.map(scopes => scopes.flatMap(scope => scope.hooks));
+export function loadHooksConfig(workspaceDir: string, options: { homeDir?: string } = {}): Effect.Effect<LoadedHookConfig[], HookLoadError> {
+  return Effect.promise(() => loadHooksConfigResult(workspaceDir, options)).pipe(Effect.flatMap(Effect.fromResult));
 }
 
-export async function loadHooksConfigScopes(workspaceDir: string, options: { homeDir?: string } = {}): Promise<Result<HookConfigScope[], HookLoadError>> {
-  const project = await loadHooksConfigScope("project", { workspaceDir });
-  if (project.isErr()) return err(project.error);
-  const global = await loadHooksConfigScope("global", options);
-  if (global.isErr()) return err(global.error);
-  return ok([project.value, global.value]);
+export function loadHooksConfigScopes(workspaceDir: string, options: { homeDir?: string } = {}): Effect.Effect<HookConfigScope[], HookLoadError> {
+  return Effect.promise(() => loadHooksConfigScopesResult(workspaceDir, options)).pipe(Effect.flatMap(Effect.fromResult));
 }
 
-export async function loadHooksConfigScope(
+export function loadHooksConfigScope(
   source: HookSource,
   options: { workspaceDir?: string; homeDir?: string },
-): Promise<Result<HookConfigScope, HookLoadError>> {
+): Effect.Effect<HookConfigScope, HookLoadError> {
+  return Effect.promise(() => loadHooksConfigScopeResult(source, options)).pipe(Effect.flatMap(Effect.fromResult));
+}
+
+export async function loadHooksConfigResult(
+  workspaceDir: string,
+  options: { homeDir?: string } = {},
+): Promise<Result.Result<LoadedHookConfig[], HookLoadError>> {
+  return Result.map(await loadHooksConfigScopesResult(workspaceDir, options), scopes => scopes.flatMap(scope => scope.hooks));
+}
+
+async function loadHooksConfigScopesResult(
+  workspaceDir: string,
+  options: { homeDir?: string } = {},
+): Promise<Result.Result<HookConfigScope[], HookLoadError>> {
+  const project = await loadHooksConfigScopeResult("project", { workspaceDir });
+  if (Result.isFailure(project)) return Result.fail(project.failure);
+  const global = await loadHooksConfigScopeResult("global", options);
+  if (Result.isFailure(global)) return Result.fail(global.failure);
+  return Result.succeed([project.success, global.success]);
+}
+
+async function loadHooksConfigScopeResult(
+  source: HookSource,
+  options: { workspaceDir?: string; homeDir?: string },
+): Promise<Result.Result<HookConfigScope, HookLoadError>> {
   const path = source === "project"
     ? projectAcpusConfigPath(options.workspaceDir ?? "")
     : globalAcpusConfigPath(options.homeDir);
-  const loaded = await loadAcpusConfigScope({
+  const loaded = await loadAcpusConfigScopeResult({
     scope: source,
     ...(options.workspaceDir === undefined ? {} : { workspaceDir: options.workspaceDir }),
     ...(options.homeDir === undefined ? {} : { homeDir: options.homeDir }),
   });
-  if (loaded.isErr()) {
-    return err(loaded.error.type === "acpus-config-read-failed"
-      ? { type: "read-failed", source, path: loaded.error.path, message: loaded.error.message }
+  if (Result.isFailure(loaded)) {
+    const error = loaded.failure;
+    return Result.fail(error.type === "acpus-config-read-failed"
+      ? { type: "read-failed" as const, source, path: error.path, message: error.message }
       : {
-          type: "invalid-config",
+          type: "invalid-config" as const,
           source,
-          path: loaded.error.path,
-          errors: [{ path: "$", message: loaded.error.message }],
+          path: error.path,
+          errors: [{ path: "$", message: error.message }],
         });
   }
-  return ok({ source, path, hooks: flattenHooksFile(loaded.value.hooks, source, path) });
+  return Result.succeed({ source, path, hooks: flattenHooksFile(loaded.success.hooks, source, path) });
 }
 
 function flattenHooksFile(file: HooksFile, source: HookSource, sourcePath: string): LoadedHookConfig[] {

@@ -2,7 +2,8 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { AgentInjectionMap } from "@acpus/runtime";
 import { isJsonValue, type JsonValue } from "@acpus/expression/ir";
-import { err, errAsync, ok, okAsync, Result, ResultAsync, type Result as NeverthrowResult } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { usageError } from "./errors.js";
 
 type JsonOptionError =
@@ -12,11 +13,6 @@ type JsonOptionError =
 type JsonArgumentError = JsonOptionError
   | { type: "json-file-read"; option: string; path: string; message: string }
   | { type: "json-file-empty"; option: string; path: string };
-
-const parseJson = Result.fromThrowable(
-  (raw: string) => JSON.parse(raw) as unknown,
-  causeMessage,
-);
 
 export async function parseAgents(raw: string | undefined, cwd: string): Promise<AgentInjectionMap | undefined> {
   if (raw === undefined) return undefined;
@@ -29,11 +25,12 @@ export function parseInput(raw: string, cwd: string): Promise<JsonValue> {
   return parseJsonArgument(raw, cwd, "--input");
 }
 
-export function parseJsonArgument(raw: string, cwd: string, option: string): Promise<JsonValue> {
-  return tryParseJsonArgument(raw, cwd, option).match(
-    value => value,
-    error => { throw usageError(jsonArgumentErrorMessage(error)); },
-  );
+export async function parseJsonArgument(raw: string, cwd: string, option: string): Promise<JsonValue> {
+  const result = await Effect.runPromise(Effect.result(tryParseJsonArgument(raw, cwd, option)));
+  return Result.match(result, {
+    onSuccess: value => value,
+    onFailure: error => { throw usageError(jsonArgumentErrorMessage(error)); },
+  });
 }
 
 export function parseRequiredPayload(raw: string | undefined): JsonValue {
@@ -42,36 +39,47 @@ export function parseRequiredPayload(raw: string | undefined): JsonValue {
 }
 
 function parseJsonOption(raw: string, name: string): JsonValue {
-  return tryParseJsonOption(raw, { option: name }).match(
-    value => value,
-    error => { throw usageError(jsonArgumentErrorMessage(error)); },
-  );
+  return Result.match(tryParseJsonOption(raw, { option: name }), {
+    onSuccess: value => value,
+    onFailure: error => { throw usageError(jsonArgumentErrorMessage(error)); },
+  });
 }
 
-function tryParseJsonArgument(raw: string, cwd: string, option: string): ResultAsync<JsonValue, JsonArgumentError> {
+function tryParseJsonArgument(raw: string, cwd: string, option: string): Effect.Effect<JsonValue, JsonArgumentError> {
   if (!/\.json$/i.test(raw)) {
-    const parsed = tryParseJsonOption(raw, { option });
-    return parsed.isOk() ? okAsync(parsed.value) : errAsync(parsed.error);
+    return Effect.fromResult(tryParseJsonOption(raw, { option }));
   }
   const path = resolve(cwd, raw);
-  return ResultAsync.fromPromise(
-    readFile(path, "utf8"),
-    cause => ({ type: "json-file-read", option, path, message: causeMessage(cause) } as const),
-  ).andThen(content => {
-    if (/^[\t\n\r ]*$/.test(content)) return err({ type: "json-file-empty", option, path } as const);
-    return tryParseJsonOption(content, { option, filePath: path });
-  });
+  return Effect.tryPromise({
+    try: () => readFile(path, "utf8"),
+    catch: cause => ({
+      type: "json-file-read",
+      option,
+      path,
+      message: causeMessage(cause),
+    } satisfies JsonArgumentError),
+  }).pipe(Effect.flatMap(content => Effect.fromResult(parseJsonFileContent(content, option, path))));
+}
+
+function parseJsonFileContent(content: string, option: string, path: string): Result.Result<JsonValue, JsonArgumentError> {
+  return /^[\t\n\r ]*$/.test(content)
+    ? Result.fail({ type: "json-file-empty", option, path })
+    : tryParseJsonOption(content, { option, filePath: path });
 }
 
 function tryParseJsonOption(
   raw: string,
   source: { option: string; filePath?: string },
-): NeverthrowResult<JsonValue, JsonOptionError> {
-  return parseJson(raw)
-    .mapErr(message => ({ type: "invalid-json", ...source, message } as const))
-    .andThen(value => isJsonValue(value)
-      ? ok(value)
-      : err({ type: "non-json-value", ...source } as const));
+): Result.Result<JsonValue, JsonOptionError> {
+  return Result.flatMap(
+    Result.try({
+      try: () => JSON.parse(raw) as unknown,
+      catch: causeMessage,
+    }).pipe(Result.mapError(message => ({ type: "invalid-json", ...source, message } as const))),
+    value => isJsonValue(value)
+      ? Result.succeed(value)
+      : Result.fail({ type: "non-json-value", ...source } as const),
+  );
 }
 
 function jsonArgumentErrorMessage(error: JsonArgumentError): string {

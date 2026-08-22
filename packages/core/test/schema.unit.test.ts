@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { schemaToJsonSchema, toSchemaIR, tryToSchemaIR, z } from "../src/schema.js";
-import { err } from "neverthrow";
+import * as Result from "effect/Result";
 
 describe("schema boundary lowering", () => {
   it("lowers the supported Zod boundary subset to durable SchemaIR", () => {
@@ -63,7 +63,7 @@ describe("schema boundary lowering", () => {
       throw new Error("default factory failed");
     });
 
-    expect(tryToSchemaIR(schema)).toEqual(err({
+    expect(tryToSchemaIR(schema)).toEqual(Result.fail({
       type: "invalid-default",
       path: "$schema",
       valueType: "function",
@@ -231,7 +231,7 @@ describe("schema boundary lowering", () => {
   });
 
   it("preserves the failing index path inside a homogeneous tuple candidate", () => {
-    expect(tryToSchemaIR(z.object({ values: z.tuple([z.string(), z.date()]) }))).toEqual(err({
+    expect(tryToSchemaIR(z.object({ values: z.tuple([z.string(), z.date()]) }))).toEqual(Result.fail({
       type: "unsupported-schema",
       path: "$schema.values[1]",
       schemaKind: "date",
@@ -246,7 +246,7 @@ describe("schema boundary lowering", () => {
   });
 
   it("returns tagged lowering errors for unsupported schemas", () => {
-    expect(tryToSchemaIR(z.object({ createdAt: z.date() }))).toEqual(err({
+    expect(tryToSchemaIR(z.object({ createdAt: z.date() }))).toEqual(Result.fail({
       type: "unsupported-schema",
       path: "$schema.createdAt",
       schemaKind: "date",
@@ -255,7 +255,7 @@ describe("schema boundary lowering", () => {
   });
 
   it("returns tagged lowering errors for non-JSON literal values", () => {
-    expect(tryToSchemaIR(z.literal(Number.NaN))).toEqual(err({
+    expect(tryToSchemaIR(z.literal(Number.NaN))).toEqual(Result.fail({
       type: "invalid-literal",
       path: "$schema",
       valueType: "number",
@@ -264,7 +264,7 @@ describe("schema boundary lowering", () => {
   });
 
   it("returns tagged lowering errors for non-JSON default values", () => {
-    expect(tryToSchemaIR(z.any().default(Number.NaN))).toEqual(err({
+    expect(tryToSchemaIR(z.any().default(Number.NaN))).toEqual(Result.fail({
       type: "invalid-default",
       path: "$schema",
       valueType: "number",
@@ -276,7 +276,7 @@ describe("schema boundary lowering", () => {
     const value: Record<string, unknown> = {};
     value.self = value;
 
-    expect(tryToSchemaIR(z.unknown().default(() => value))).toEqual(err({
+    expect(tryToSchemaIR(z.unknown().default(() => value))).toEqual(Result.fail({
       type: "invalid-default",
       path: "$schema",
       valueType: "object",
@@ -287,7 +287,7 @@ describe("schema boundary lowering", () => {
   it("returns a tagged lowering error when a JSON-like default cannot be cloned", () => {
     const value = new Proxy({ label: "valid" }, {});
 
-    expect(tryToSchemaIR(z.unknown().default(() => value))).toEqual(err({
+    expect(tryToSchemaIR(z.unknown().default(() => value))).toEqual(Result.fail({
       type: "invalid-default",
       path: "$schema",
       valueType: "object",

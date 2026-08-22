@@ -1,19 +1,20 @@
+import * as Result from "effect/Result";
 import { defineWorkflow } from "@acpus/core";
 import { sha256Digest } from "@acpus/core/content-identity";
 import { describe, expect, it } from "vitest";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { agentSessionIdForScope, agentSessionScopeDigest } from "../src/execution/agent-session.js";
 import type { AgentSessionCheckpointValue } from "../src/execution/agent-operation-plan.js";
-import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter, type RuntimeStoreAdapter } from "../src/store/store.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
-import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
-import { throwingSchedulerStore } from "./support/scheduler-store.js";
+import { prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-harness.js";
+import { captureSchedulerCall, throwingSchedulerStore } from "./support/scheduler-store.js";
 
 describe("Scheduler generic Agent Retry", () => {
   it("neutralizes and abandons S1 atomically, then admits S2 with an authored Start", async () => {
     await withRuntimeWorkspace("scheduler-agent-retry-generation", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, agentWorkflow(false));
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -25,17 +26,17 @@ describe("Scheduler generic Agent Retry", () => {
           runId: run.id,
           target: "review~1",
           idempotencyKey: "retry:agent",
-        })._unsafeUnwrap();
+        });
         expect(plan.sessions).toEqual([{ runId: run.id, agentSessionId: first.agentSessionId }]);
 
-        expect(store.scheduler.tryCommitRetry({
+        expect(Result.getOrThrow(Result.flip(captureSchedulerCall(() => store.scheduler.tryCommitRetry({
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           expectedVersion: plan.snapshot.version,
           target: "review~1",
           idempotencyKey: "retry:agent",
           neutralizedAgentSessionIds: [],
-        })._unsafeUnwrapErr()).toMatchObject({ type: "retry-neutralization-mismatch" });
+        }))))).toMatchObject({ type: "retry-neutralization-mismatch" });
 
         const retried = store.scheduler.tryCommitRetry({
           runId: run.id,
@@ -44,7 +45,7 @@ describe("Scheduler generic Agent Retry", () => {
           target: "review~1",
           idempotencyKey: "retry:agent",
           neutralizedAgentSessionIds: [first.agentSessionId],
-        })._unsafeUnwrap();
+        });
         expect(retried.projection.instances["review~1"]).toMatchObject({ status: "ready" });
         expect(store.scheduler.readAgentControlInspection(run.id).agentSessions)
           .toEqual([expect.objectContaining({ agentSessionId: first.agentSessionId, generation: 1, lifecycle: "abandoned" })]);
@@ -57,7 +58,7 @@ describe("Scheduler generic Agent Retry", () => {
           idempotencyKey: "retry:agent:s2",
         });
         const authored = { promptOrigin: "authored" as const, inputDigest: sha256Digest("prompt:s2") };
-        const admission = store.scheduler.planAgentAttemptAdmission({
+        const admission = Result.getOrThrow(store.scheduler.planAgentAttemptAdmission({
           runId: run.id,
           attemptId: secondAttempt.attemptId,
           ownerEpoch: claim.ownerEpoch,
@@ -65,7 +66,7 @@ describe("Scheduler generic Agent Retry", () => {
           scopeDigest: first.scopeDigest,
           explicitShared: false,
           authored,
-        })._unsafeUnwrap();
+        }));
         expect(admission).toMatchObject({
           operation: "start",
           session: { generation: 2 },
@@ -86,7 +87,7 @@ describe("Scheduler generic Agent Retry", () => {
           promptOrigin: admission.promptOrigin,
           inputDigest: admission.inputDigest,
           ...(admission.admittedFromCheckpoint === undefined ? {} : { admittedFromCheckpoint: admission.admittedFromCheckpoint }),
-        })._unsafeUnwrap();
+        });
         expect(store.scheduler.readAgentControlInspection(run.id).agentSessions)
           .toEqual(expect.arrayContaining([
             expect.objectContaining({ generation: 1, lifecycle: "abandoned" }),
@@ -101,7 +102,7 @@ describe("Scheduler generic Agent Retry", () => {
   it("rejects explicit shared Session Retry without writing", async () => {
     await withRuntimeWorkspace("scheduler-shared-agent-retry", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, agentWorkflow(true));
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -109,11 +110,11 @@ describe("Scheduler generic Agent Retry", () => {
         const first = materializeAgent(store, run.id, claim, true);
         failAgent(store, run.id, claim, first);
         const before = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id);
-        const rejected = store.scheduler.tryPlanRetry({
+        const rejected = Result.getOrThrow(Result.flip(captureSchedulerCall(() => store.scheduler.tryPlanRetry({
           runId: run.id,
           target: "review~1",
           idempotencyKey: "retry:shared",
-        })._unsafeUnwrapErr();
+        }))));
         expect(rejected).toMatchObject({ type: "shared-session-retry-requires-fork" });
         expect(rejected.message).toContain(`acpus runs fork ${run.id} --target review~1`);
         expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).version).toBe(before.version);
@@ -126,7 +127,7 @@ describe("Scheduler generic Agent Retry", () => {
   it("creates S1 after a pre-identity failure", async () => {
     await withRuntimeWorkspace("scheduler-agent-retry-pre-identity", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, agentWorkflow(false));
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -145,7 +146,7 @@ describe("Scheduler generic Agent Retry", () => {
           result: { status: "failed", reason: "spawn failed" },
           idempotencyKey: "pre-identity:failed",
         });
-        const plan = store.scheduler.tryPlanRetry({ runId: run.id, target: "review~1", idempotencyKey: "pre-identity:retry" })._unsafeUnwrap();
+        const plan = store.scheduler.tryPlanRetry({ runId: run.id, target: "review~1", idempotencyKey: "pre-identity:retry" });
         expect(plan.sessions).toEqual([]);
         store.scheduler.tryCommitRetry({
           runId: run.id,
@@ -154,7 +155,7 @@ describe("Scheduler generic Agent Retry", () => {
           target: "review~1",
           idempotencyKey: "pre-identity:retry",
           neutralizedAgentSessionIds: [],
-        })._unsafeUnwrap();
+        });
         const next = throwingSchedulerStore(store.scheduler).startAttempt({
           runId: run.id,
           nodeKey: "review~1",
@@ -162,7 +163,7 @@ describe("Scheduler generic Agent Retry", () => {
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "pre-identity:s1",
         });
-        const admission = store.scheduler.planAgentAttemptAdmission({
+        const admission = Result.getOrThrow(store.scheduler.planAgentAttemptAdmission({
           runId: run.id,
           attemptId: next.attemptId,
           ownerEpoch: claim.ownerEpoch,
@@ -170,7 +171,7 @@ describe("Scheduler generic Agent Retry", () => {
           scopeDigest: agentSessionScopeDigest(run.id, "node", "review~1"),
           explicitShared: false,
           authored: { promptOrigin: "authored", inputDigest: sha256Digest("prompt") },
-        })._unsafeUnwrap();
+        }));
         expect(admission).toMatchObject({ operation: "start", session: { generation: 1 } });
       } finally {
         store.close();
@@ -186,7 +187,7 @@ type Materialized = {
   inputDigest: ReturnType<typeof sha256Digest>;
 };
 
-function readyAgent(store: RuntimeStore, runId: string, claim: RunOwnerClaim): void {
+function readyAgent(store: RuntimeStoreAdapter, runId: string, claim: RunOwnerClaim): void {
   const current = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
   throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,
@@ -200,7 +201,7 @@ function readyAgent(store: RuntimeStore, runId: string, claim: RunOwnerClaim): v
   });
 }
 
-function materializeAgent(store: RuntimeStore, runId: string, claim: RunOwnerClaim, shared: boolean): Materialized {
+function materializeAgent(store: RuntimeStoreAdapter, runId: string, claim: RunOwnerClaim, shared: boolean): Materialized {
   const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
     runId,
     nodeKey: "review~1",
@@ -223,17 +224,17 @@ function materializeAgent(store: RuntimeStore, runId: string, claim: RunOwnerCla
     sessionOpenMode: "new_or_empty",
     promptOrigin: "authored",
     inputDigest,
-  })._unsafeUnwrap();
+  });
   return { attemptId: attempt.attemptId, agentSessionId, scopeDigest, inputDigest };
 }
 
-function failAgent(store: RuntimeStore, runId: string, claim: RunOwnerClaim, session: Materialized): void {
+function failAgent(store: RuntimeStoreAdapter, runId: string, claim: RunOwnerClaim, session: Materialized): void {
   store.scheduler.tryRecordAgentSessionReady({
     runId,
     ownerEpoch: claim.ownerEpoch,
     attemptId: session.attemptId,
     agentSessionId: session.agentSessionId,
-  })._unsafeUnwrap();
+  });
   const intent = store.scheduler.tryCommitAgentTurnDispatch({
     runId,
     ownerEpoch: claim.ownerEpoch,
@@ -243,7 +244,7 @@ function failAgent(store: RuntimeStore, runId: string, claim: RunOwnerClaim, ses
     sessionLeaseId: "lease-1",
     expected: { checkpoint: "not_dispatched", attemptId: session.attemptId, promptOrigin: "authored", inputDigest: session.inputDigest },
     invocationMetadata: {},
-  })._unsafeUnwrap() as Exclude<AgentSessionCheckpointValue, { checkpoint: "not_dispatched" }>;
+  }) as Exclude<AgentSessionCheckpointValue, { checkpoint: "not_dispatched" }>;
   store.scheduler.tryAdvanceAgentSessionCheckpoint({
     runId,
     ownerEpoch: claim.ownerEpoch,
@@ -252,7 +253,7 @@ function failAgent(store: RuntimeStore, runId: string, claim: RunOwnerClaim, ses
     expected: intent,
     next: { ...intent, checkpoint: "terminal_observed" },
     cause: "provider_terminal",
-  })._unsafeUnwrap();
+  });
   throwingSchedulerStore(store.scheduler).commitAttemptResult({
     runId,
     attemptId: session.attemptId,

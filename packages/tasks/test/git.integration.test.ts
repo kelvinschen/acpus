@@ -10,6 +10,31 @@ import { createWorktree } from "@acpus/tasks/git";
 const exec = promisify(execFile);
 
 describe("createWorktree", () => {
+  it("resolves relative paths and checks out a non-HEAD ref", async () => {
+    const root = await mkdtemp(join(tmpdir(), "acpus-create-worktree-ref-"));
+    const previousCwd = process.cwd();
+    try {
+      const { repo, worktree, head } = await tinyRepo(root);
+      await git(repo, "tag", "fixture-base", head);
+      process.chdir(root);
+
+      await expect(runCreateWorktree(root, {
+        repo: "repo",
+        path: "worktree",
+        ref: "fixture-base",
+      })).resolves.toEqual({
+        repoPath: repo,
+        worktreePath: worktree,
+        ref: "fixture-base",
+        baseSha: head,
+      });
+      await expect(git(worktree, "rev-parse", "HEAD")).resolves.toMatchObject({ stdout: head + "\n" });
+    } finally {
+      process.chdir(previousCwd);
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("creates a detached worktree from a tiny local repository", async () => {
     const root = await mkdtemp(join(tmpdir(), "acpus-create-worktree-"));
     try {

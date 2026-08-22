@@ -1,3 +1,5 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { access, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -5,23 +7,23 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { deleteRun, getRun, listRuns } from "../src/index.js";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRunDir, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 describe("runtime run deletion", () => {
   it("treats a missing store or run as an ordinary no-op", async () => {
     await withRuntimeWorkspace("runs-delete-missing", async workspace => {
-      expect((await deleteRun(workspace, "missing"))._unsafeUnwrap()).toBeUndefined();
-      const store = await openRuntimeStore(workspace);
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(deleteRun(workspace, "missing")))))).toBeUndefined();
+      const store = await openRuntimeStoreAdapter(workspace);
       store.close();
-      expect((await deleteRun(workspace, "missing"))._unsafeUnwrap()).toBeUndefined();
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(deleteRun(workspace, "missing")))))).toBeUndefined();
     });
   });
 
   it("hard-deletes a run record, cascaded rows, and run directory", async () => {
     await withRuntimeWorkspace("runs-delete-hard", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let deletedId: string;
       let keptId: string;
       try {
@@ -36,11 +38,11 @@ describe("runtime run deletion", () => {
       const runDir = runtimeRunDir(workspace, deletedId);
       await expect(access(runDir)).resolves.toBeUndefined();
 
-      expect((await deleteRun(workspace, deletedId))._unsafeUnwrap()).toMatchObject({ id: deletedId });
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(deleteRun(workspace, deletedId)))))).toMatchObject({ id: deletedId });
 
       await expect(access(runDir)).rejects.toMatchObject({ code: "ENOENT" });
-      expect((await getRun(workspace, deletedId))._unsafeUnwrap()).toBeUndefined();
-      expect((await listRuns(workspace))._unsafeUnwrap()).toEqual([expect.objectContaining({ id: keptId })]);
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, deletedId)))))).toBeUndefined();
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(listRuns(workspace)))))).toEqual([expect.objectContaining({ id: keptId })]);
       expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_events WHERE run_id = ?", deletedId)).toBe(0);
       expect(dbScalar(workspace, "SELECT COUNT(*) FROM run_inputs WHERE run_id = ?", deletedId)).toBe(0);
     });
@@ -49,7 +51,7 @@ describe("runtime run deletion", () => {
   it("allows stale non-terminal run deletion", async () => {
     await withRuntimeWorkspace("runs-delete-stale", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let runId: string;
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
@@ -61,18 +63,18 @@ describe("runtime run deletion", () => {
       expireRunLease(workspace, runId);
       insertDaemonLease(workspace, new Date(Date.now() - 10_000).toISOString());
 
-      expect((await getRun(workspace, runId))._unsafeUnwrap()).toMatchObject({
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, runId)))))).toMatchObject({
         execution: { state: "stale" },
       });
-      expect((await deleteRun(workspace, runId))._unsafeUnwrap()).toMatchObject({ id: runId });
-      expect((await getRun(workspace, runId))._unsafeUnwrap()).toBeUndefined();
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(deleteRun(workspace, runId)))))).toMatchObject({ id: runId });
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, runId)))))).toBeUndefined();
     });
   });
 
   it("rejects active leases independently of the projected run status", async () => {
     await withRuntimeWorkspace("runs-delete-active-leases", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const runIds: string[] = [];
       try {
         for (const status of ["running", "completed"]) {
@@ -88,7 +90,7 @@ describe("runtime run deletion", () => {
       }
 
       for (const runId of runIds) {
-        expect((await deleteRun(workspace, runId))._unsafeUnwrapErr()).toMatchObject({
+        expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(deleteRun(workspace, runId))))))).toMatchObject({
           type: "run-delete-active",
           runId,
         });
@@ -101,7 +103,7 @@ describe("runtime run deletion", () => {
   it("restores the run capsule when the deletion transaction fails", async () => {
     await withRuntimeWorkspace("runs-delete-rollback", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let runId: string;
       try {
         runId = (await admitRunForTest(store, {
@@ -125,7 +127,7 @@ describe("runtime run deletion", () => {
         db.close();
       }
 
-      await expect(deleteRun(workspace, runId)).rejects.toBeInstanceOf(Error);
+      await expect(Effect.runPromise(Effect.result(deleteRun(workspace, runId)))).rejects.toBeInstanceOf(Error);
 
       await expect(access(runtimeRunDir(workspace, runId))).resolves.toBeUndefined();
       expect(dbScalar(workspace, "SELECT COUNT(*) FROM runs WHERE id = ?", runId)).toBe(1);
@@ -136,7 +138,7 @@ describe("runtime run deletion", () => {
   it("rejects a same-path trash-root replacement without moving or deleting the run", async () => {
     await withRuntimeWorkspace("runs-delete-trash-root-identity", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const trashRoot = resolveRuntimeTrash(workspace);
       const originalTrashRoot = `${trashRoot}.opened`;
       try {
@@ -167,7 +169,7 @@ describe("runtime run deletion", () => {
   it("reconciles interrupted deletion according to the committed database state", async () => {
     await withRuntimeWorkspace("runs-delete-reconcile", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let restoredRun: string;
       let deletedRun: string;
       try {
@@ -189,7 +191,7 @@ describe("runtime run deletion", () => {
       await rename(runtimeRunDir(workspace, deletedRun), join(trashRoot, `${deletedRun}-after-commit`));
       deleteRunRecord(workspace, deletedRun);
 
-      const reopened = await openRuntimeStore(workspace);
+      const reopened = await openRuntimeStoreAdapter(workspace);
       try {
         expect(reopened.getRun(restoredRun)).toMatchObject({ id: restoredRun });
         expect(reopened.getRun(deletedRun)).toBeUndefined();
@@ -206,7 +208,7 @@ describe("runtime run deletion", () => {
   it("preserves both capsules when trash recovery collides with an existing run directory", async () => {
     await withRuntimeWorkspace("runs-delete-reconcile-collision", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let runId: string;
       try {
         runId = (await admitRunForTest(store, {
@@ -221,7 +223,7 @@ describe("runtime run deletion", () => {
       await mkdir(trash);
       await writeFile(join(trash, "marker"), "trash");
 
-      await expect(openRuntimeStore(workspace)).rejects.toBeInstanceOf(Error);
+      await expect(openRuntimeStoreAdapter(workspace)).rejects.toBeInstanceOf(Error);
 
       await expect(access(runtimeRunDir(workspace, runId))).resolves.toBeUndefined();
       await expect(readFile(join(trash, "marker"), "utf8")).resolves.toBe("trash");
@@ -231,7 +233,7 @@ describe("runtime run deletion", () => {
   it.skipIf(process.platform === "win32")("rejects a symbolic-link trash capsule without following it", async () => {
     await withRuntimeWorkspace("runs-delete-reconcile-symlink", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let runId: string;
       try {
         runId = (await admitRunForTest(store, {
@@ -248,7 +250,7 @@ describe("runtime run deletion", () => {
       const trash = join(resolveRuntimeTrash(workspace), `${runId}-before-commit`);
       await symlink(outside, trash, "dir");
 
-      await expect(openRuntimeStore(workspace)).rejects.toBeInstanceOf(Error);
+      await expect(openRuntimeStoreAdapter(workspace)).rejects.toBeInstanceOf(Error);
 
       await expect(readFile(join(outside, "marker"), "utf8")).resolves.toBe("outside");
       await expect(access(trash)).resolves.toBeUndefined();

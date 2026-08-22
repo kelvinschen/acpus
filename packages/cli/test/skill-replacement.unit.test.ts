@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as Result from "effect/Result";
 import { replaceDirectory } from "../src/skill/installation.js";
+import { settle } from "./effect.js";
 
 const fsMock = vi.hoisted(() => ({ rename: vi.fn() }));
 vi.mock("node:fs/promises", async importOriginal => ({
@@ -23,11 +25,11 @@ describe("skill directory publication", () => {
     const target = join(root, "acpus");
     await writeFile(target, "sentinel");
 
-    const result = await replaceDirectory(join(root, "missing-source"), target, true);
+    const result = await settle(replaceDirectory(join(root, "missing-source"), target, true));
 
-    expect(result.isErr()).toBe(true);
-    if (result.isErr()) {
-      expect(result.error).toMatchObject({ type: "skill-replace-failed", stage: "stage", published: false });
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(result.failure).toMatchObject({ type: "skill-replace-failed", stage: "stage", published: false });
     }
     expect(await readFile(target, "utf8")).toBe("sentinel");
   });
@@ -47,13 +49,13 @@ describe("skill directory publication", () => {
       throw new Error(renameCall === 2 ? "publish denied" : "restore denied");
     });
 
-    const result = await replaceDirectory(source, target, true);
+    const result = await settle(replaceDirectory(source, target, true));
 
-    expect(result.isErr()).toBe(true);
-    if (result.isErr()) {
-      expect(result.error).toMatchObject({ type: "skill-replace-failed", stage: "restore", published: false });
-      expect(await readFile(join(result.error.recoveryPath, ".previous", "marker.txt"), "utf8")).toBe("previous");
-      await rm(result.error.recoveryPath, { recursive: true, force: true });
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isFailure(result)) {
+      expect(result.failure).toMatchObject({ type: "skill-replace-failed", stage: "restore", published: false });
+      expect(await readFile(join(result.failure.recoveryPath, ".previous", "marker.txt"), "utf8")).toBe("previous");
+      await rm(result.failure.recoveryPath, { recursive: true, force: true });
     }
   });
 });

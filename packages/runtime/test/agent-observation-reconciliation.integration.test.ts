@@ -1,12 +1,15 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
+import { settle } from "./effect.js";
 import {
   runtimeDatabasePath,
   runtimeRow,
   runtimeRows,
   withRuntimeWorkspace,
-} from "./support/runtime-fixtures.js";
+} from "./support/runtime-harness.js";
 
 const observedAt = "2026-07-26T00:00:00.000Z";
 const finishedAt = "2026-07-26T00:00:05.000Z";
@@ -14,7 +17,7 @@ const finishedAt = "2026-07-26T00:00:05.000Z";
 describe("Agent observation reconciliation", () => {
   it("closes terminal recording turns without touching a started attempt", async () => {
     await withRuntimeWorkspace("agent-observation-terminal-reconciliation", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const runId = "20260726000000AAAAAAAAAAAAAAAAAAAA";
       const completedAttemptId = "attempt_completed";
       const startedAttemptId = "attempt_started";
@@ -52,7 +55,7 @@ describe("Agent observation reconciliation", () => {
           attemptNo: 2,
         });
 
-        await store.observationLog.reconcileTerminalTurns();
+        await Effect.runPromise(store.observationLog.reconcileTerminalTurns());
 
         expect(runtimeRows(
           workspace,
@@ -109,7 +112,7 @@ describe("Agent observation reconciliation", () => {
           "SELECT observation_version FROM runs WHERE id = ?",
           runId,
         );
-        await store.observationLog.reconcileTerminalTurns();
+        await Effect.runPromise(store.observationLog.reconcileTerminalTurns());
         expect(runtimeRow(
           workspace,
           "SELECT observation_version FROM runs WHERE id = ?",
@@ -123,7 +126,7 @@ describe("Agent observation reconciliation", () => {
 
   it("reconciles a superseded turn with its durable steer control but not its instruction", async () => {
     await withRuntimeWorkspace("agent-observation-steer-reconciliation", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const runId = "20260726000000BBBBBBBBBBBBBBBBBBBB";
       const attemptId = "attempt_steered";
       try {
@@ -162,8 +165,8 @@ describe("Agent observation reconciliation", () => {
           db.close();
         }
 
-        const reconciled = await store.observationLog.reconcileInterruptedTurns(runId);
-        expect(reconciled.isOk()).toBe(true);
+        const reconciled = await settle(store.observationLog.reconcileInterruptedTurns(runId));
+        expect(Result.isSuccess(reconciled)).toBe(true);
         expect(runtimeRow(
           workspace,
           `SELECT state, degraded, gap_count, fence_event_sequence,
@@ -181,20 +184,20 @@ describe("Agent observation reconciliation", () => {
           fence_reason: "operator_steered",
           provider_status: null,
         });
-        const projection = await store.observationLog.readInspectionProjection({
+        const projection = await settle(store.observationLog.readInspectionProjection({
           runId,
           attemptIds: [attemptId],
           entryLimit: 10,
-        });
-        expect(projection.isOk()).toBe(true);
-        if (projection.isErr()) throw projection.error;
-        expect(projection.value.entries.map(entry => entry.kind)).toEqual(["activity", "gap"]);
-        expect(JSON.stringify(projection.value)).not.toContain("private steering instruction");
+        }));
+        expect(Result.isSuccess(projection)).toBe(true);
+        if (Result.isFailure(projection)) throw projection.failure;
+        expect(projection.success.entries.map(entry => entry.kind)).toEqual(["activity", "gap"]);
+        expect(JSON.stringify(projection.success)).not.toContain("private steering instruction");
 
-        const version = projection.value.version;
-        const repeated = await store.observationLog.reconcileInterruptedTurns(runId);
-        expect(repeated.isOk()).toBe(true);
-        expect((await store.observationLog.readInspectionProjection({ runId }))._unsafeUnwrap().version)
+        const version = projection.success.version;
+        const repeated = await settle(store.observationLog.reconcileInterruptedTurns(runId));
+        expect(Result.isSuccess(repeated)).toBe(true);
+        expect(Result.getOrThrow((await settle(store.observationLog.readInspectionProjection({ runId })))).version)
           .toBe(version);
       } finally {
         store.close();
@@ -204,7 +207,7 @@ describe("Agent observation reconciliation", () => {
 
   it("records one gap when a durable fence has no active writer", async () => {
     await withRuntimeWorkspace("agent-observation-unavailable-fence", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const runId = "20260726000000CCCCCCCCCCCCCCCCCCCC";
       const attemptId = "attempt_fenced";
       try {
@@ -232,8 +235,8 @@ describe("Agent observation reconciliation", () => {
           committedAt: finishedAt,
           reason: "operator_steered",
         };
-        await store.observationLog.markFenced(fence);
-        await store.observationLog.markFenced(fence);
+        await Effect.runPromise(store.observationLog.markFenced(fence));
+        await Effect.runPromise(store.observationLog.markFenced(fence));
 
         expect(runtimeRow(
           workspace,
@@ -270,10 +273,10 @@ describe("Agent observation reconciliation", () => {
             }),
           },
         ]);
-        await expect(store.observationLog.markFenced({
+        await expect(Effect.runPromise(store.observationLog.markFenced({
           ...fence,
           eventSequence: 10,
-        })).rejects.toThrow("different durable fence");
+        }))).rejects.toThrow("different durable fence");
       } finally {
         store.close();
       }
