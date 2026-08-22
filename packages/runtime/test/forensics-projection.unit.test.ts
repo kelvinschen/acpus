@@ -553,7 +553,7 @@ describe("Forensics projection", () => {
     passedAssertFrame.result = {};
     delete passedAssertFrame.error;
     expect(view(frozen, passedAssert, keys.assert!).invocation).toEqual({ status: "resolved", kind: "assert", condition: true });
-    expect(view(frozen, passedAssert, keys.assert!).result).toEqual({ status: "completed_without_output" });
+    expect(view(frozen, passedAssert, keys.assert!).result).toEqual({ status: "accepted", value: {} });
     expect(view(frozen, run, keys.if!).invocation).toEqual({ status: "resolved", kind: "if", selectedBranch: "then" });
     expect(view(frozen, run, keys.if!).result).toEqual({ status: "accepted", value: { selected: "then" } });
     expect(view(frozen, run, keys.switch!).invocation).toEqual({ status: "resolved", kind: "switch", selectedBranch: "default" });

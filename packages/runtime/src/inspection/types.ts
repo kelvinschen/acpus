@@ -827,10 +827,14 @@ export type ForensicsInvocation =
       transition?: JsonValue;
     });
 
-export type ForensicsResult =
+export type InspectionTargetResult =
   | { status: "accepted"; value: JsonValue }
   | { status: "completed_without_output" }
-  | { status: "pending" | "not_started" | "not_selected" | "cancelled" | "not_accepted" }
+  | { status: "not_accepted" };
+
+export type ForensicsResult =
+  | InspectionTargetResult
+  | { status: "pending" | "not_started" | "not_selected" | "cancelled" }
   | { status: "failed" | "timed_out"; code?: string; message: string };
 
 type InspectionTreeSubject = InspectionSubject;
@@ -992,6 +996,7 @@ export type InspectionView =
       run: InspectionRunRef;
       subject: InspectionSubject;
       state: InspectionVisibleState;
+      result?: InspectionTargetResult;
       pulse?: InspectionPulse;
       acp?: { silentForMs: number };
       attention?: InspectionAttention;

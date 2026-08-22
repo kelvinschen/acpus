@@ -109,7 +109,7 @@ describe("inspection target projections", () => {
     });
   });
 
-  it("projects terminal lifecycle consistently while the provider still records", () => {
+  it("keeps terminal Agent history in Timeline and reports no Summary pulse", () => {
     const details = agentDetails();
     details.summary.nodeStatus = "cancelled";
     details.attempts[0] = {
@@ -139,58 +139,79 @@ describe("inspection target projections", () => {
       observations: projection,
     });
 
-    expect(summary.pulse).toMatchObject({ phase: "settled", turn: 1 });
+    expect(summary).not.toHaveProperty("pulse");
+    expect(summary.result).toEqual({ status: "not_accepted" });
     expect(timeline.current).toEqual({ kind: "agent", phase: "settled", turn: 1 });
   });
 
-  it("prioritizes and labels settled intent with matching activity identity", () => {
-    const document = settledSummary(
-      [
-        activity(1, "\n\n**Planning JSON structure with diverse angles**", "reported-thought"),
-        activity(2, '{"query":"agent harness"}', "response"),
-      ],
-      [turn(1), turn(2, { state: "settled", providerStatus: "completed" })],
-    );
-
-    expect(document.pulse).toEqual({
-      phase: "settled",
-      headline: "Reported thought: **Planning JSON structure with diverse angles**",
-      turn: 1,
+  it.each(["agent", "task", "signal"] as const)("reports accepted %s output without a terminal pulse", kind => {
+    const details = completedLeafDetails(kind, { complete: true });
+    const summary = projectInspectionTargetSummaryView({
+      run: agentRun(),
+      details,
+      ...(kind === "agent" ? { observations: observations([turn(1, { state: "settled" })]) } : {}),
     });
+
+    expect(summary.result).toEqual({ status: "accepted", value: { complete: true } });
+    expect(summary).not.toHaveProperty("pulse");
   });
 
-  it("labels a settled response tail and marks its missing prefix", () => {
-    const response = `${"x".repeat(600)}镜头）","query":"agent harness"}`;
-    const document = settledSummary([activity(1, response, "response")]);
-
-    expect(document.pulse).toMatchObject({
-      phase: "settled",
-      turn: 1,
-    });
-    expect(document.pulse?.headline).toMatch(/^Response tail: …/);
-    expect(document.pulse?.headline).toMatch(/agent harness"\}$/);
-    expect(Array.from(document.pulse?.headline ?? "")).toHaveLength(240);
+  it("distinguishes outputless completion from accepted JSON null", () => {
+    expect(projectInspectionTargetSummaryView({
+      run: agentRun(),
+      details: completedLeafDetails("task", undefined),
+    }).result).toEqual({ status: "completed_without_output" });
+    expect(projectInspectionTargetSummaryView({
+      run: agentRun(),
+      details: completedLeafDetails("task", null),
+    }).result).toEqual({ status: "accepted", value: null });
   });
 
-  it("falls back from empty settled intent to an untruncated response", () => {
-    const document = settledSummary([
-      activity(1, "complete response", "response", "2026-07-25T00:00:01.000Z"),
-      activity(1, " \n\t", "plan", "2026-07-25T00:00:02.000Z"),
-    ]);
+  it("uses the completed run output for the root target", () => {
+    const run = { ...agentRun(), status: "completed" as const, output: { root: true } };
+    const details = completedFrameDetails("parallel", { frame: "must not win" });
+    details.target = { kind: "frame", id: "root" };
+    delete details.staticNode;
+    details.summary.targetId = "root";
+    details.frames[0] = { ...details.frames[0]!, frameKey: "root", frameKind: "root" };
 
-    expect(document.pulse).toEqual({
-      phase: "settled",
-      headline: "Response tail: complete response",
-      turn: 1,
-    });
+    expect(projectInspectionTargetSummaryView({ run, details }).result)
+      .toEqual({ status: "accepted", value: { root: true } });
   });
 
-  it("labels a settled plan and omits a headline for empty activity", () => {
-    const planned = settledSummary([activity(1, "Check exact output", "plan")]);
-    const empty = settledSummary([activity(1, " \n\t", "reported-thought")]);
+  it.each(["if", "switch", "parallel", "fanout", "loop", "assert"] as const)("reports accepted %s frame output", kind => {
+    const details = completedFrameDetails(kind, { branch: kind });
+    const summary = projectInspectionTargetSummaryView({ run: agentRun(), details });
 
-    expect(planned.pulse?.headline).toBe("Plan: Check exact output");
-    expect(empty.pulse).not.toHaveProperty("headline");
+    expect(summary.result).toEqual({ status: "accepted", value: { branch: kind } });
+    expect(summary).not.toHaveProperty("pulse");
+  });
+
+  it.each(["failed", "timed_out", "cancelled"] as const)("does not invent a result or pulse for %s targets", status => {
+    const details = agentDetails();
+    details.summary.nodeStatus = status;
+    details.attempts[0] = { ...details.attempts[0]!, status, result: { candidate: true } };
+    const summary = projectInspectionTargetSummaryView({
+      run: agentRun(),
+      details,
+      observations: observations([turn(1, { state: "settled" })]),
+    });
+
+    expect(summary).not.toHaveProperty("result");
+    expect(summary).not.toHaveProperty("pulse");
+  });
+
+  it("marks a completed historical attempt not accepted without leaking its candidate result", () => {
+    const details = completedLeafDetails("agent", { accepted: true });
+    details.target = { kind: "attempt", id: "attempt-1", ref: "@1a2b3c4d5e6f" };
+    details.summary.targetKind = "attempt";
+    details.summary.targetId = "attempt-1";
+    details.instances[0]!.acceptedAttemptId = "attempt-2";
+    details.attempts[0]!.result = { candidate: "must not leak" };
+    const summary = projectInspectionTargetSummaryView({ run: agentRun(), details });
+
+    expect(summary.result).toEqual({ status: "not_accepted" });
+    expect(JSON.stringify(summary)).not.toContain("must not leak");
   });
 
   it("labels a missing steered-attempt observation boundary without hiding it", () => {
@@ -604,17 +625,51 @@ function observations(
   };
 }
 
-function settledSummary(
-  entries: AgentObservationInspectionProjection["entries"],
-  turns = [turn(1, { state: "settled", providerStatus: "completed" })],
-) {
+function completedLeafDetails(kind: "agent" | "task" | "signal", output: unknown): ResolvedTargetState {
   const details = agentDetails();
+  details.target = { kind: "dynamic-node", id: "agent~1", ref: "@1a2b3c4d5e6f" };
+  details.staticNode = { ...details.staticNode!, kind };
+  details.summary.targetKind = "dynamic-node";
+  details.summary.targetId = "agent~1";
+  details.summary.staticKind = kind;
   details.summary.nodeStatus = "completed";
-  return projectInspectionTargetSummaryView({
-    run: agentRun(),
-    details,
-    observations: observations(turns, entries),
-  });
+  details.instances[0] = { ...details.instances[0]!, status: "completed", output, acceptedAttemptId: "attempt-1" };
+  details.attempts[0] = {
+    ...details.attempts[0]!,
+    status: "completed",
+    finishedAt: "2026-07-25T00:00:02.000Z",
+  };
+  return details;
+}
+
+function completedFrameDetails(
+  kind: "if" | "switch" | "parallel" | "fanout" | "loop" | "assert",
+  result: unknown,
+): ResolvedTargetState {
+  const details = agentDetails();
+  details.target = { kind: "frame", id: "frame-1", ref: "@1a2b3c4d5e6f" };
+  details.staticNode = { nodeId: kind, kind, order: 0, path: [kind] };
+  details.summary = {
+    ...details.summary,
+    targetKind: "frame",
+    targetId: "frame-1",
+    nodeId: kind,
+    frameKey: "frame-1",
+    nodeStatus: "completed",
+    staticKind: kind,
+  };
+  details.instances = [];
+  details.attempts = [];
+  details.frames = [{
+    frameKey: "frame-1",
+    nodeId: kind,
+    frameKind: "node",
+    status: "completed",
+    result,
+    createdAt: "2026-07-25T00:00:00.000Z",
+    updatedAt: "2026-07-25T00:00:02.000Z",
+  }];
+  return details;
 }
 
 function turn(

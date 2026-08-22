@@ -48,6 +48,27 @@ describe("daemon M6 control protocol", () => {
     })).toBe(false);
   });
 
+  it.each([
+    { status: "accepted", value: null },
+    { status: "accepted", value: { answer: [1, true, "complete"] } },
+    { status: "completed_without_output" },
+    { status: "not_accepted" },
+  ])("accepts the closed target result variant $status", result => {
+    expect(isDaemonInspectionResult({ ...activeTargetInspection(), result })).toBe(true);
+  });
+
+  it.each([
+    { status: "accepted" },
+    { status: "accepted", value: undefined },
+    { status: "accepted", value: Number.NaN },
+    { status: "accepted", value: null, extra: true },
+    { status: "completed_without_output", value: null },
+    { status: "not_accepted", extra: true },
+    { status: "unknown" },
+  ])("rejects malformed target result %#", result => {
+    expect(isDaemonInspectionResult({ ...activeTargetInspection(), result })).toBe(false);
+  });
+
   it("accepts current Session and control projections on observation frames", () => {
     const frame = {
       kind: "observation",

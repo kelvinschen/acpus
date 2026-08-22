@@ -491,6 +491,7 @@ function readCoherentView(
 
 function acpSilence(details: ResolvedTargetState): { silentForMs: number } | undefined {
   if (details.staticNode?.kind !== "agent") return undefined;
+  if (terminalInspectionState(inspectionTargetState(details).status)) return undefined;
   const attemptId = targetAttemptId(details);
   if (!attemptId) return undefined;
   const progress = details.progress

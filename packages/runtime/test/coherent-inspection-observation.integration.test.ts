@@ -123,6 +123,23 @@ describe("coherent inspection observation boundaries", () => {
           kind: "target", runId: started.runId, target: "root", detail: "summary",
         });
         expect(Result.isSuccess(root) ? root.success : undefined).not.toHaveProperty("acp");
+
+        throwingSchedulerStore(started.store.scheduler).commitAttemptResult({
+          runId: started.runId,
+          attemptId: attempt.attemptId,
+          ownerEpoch: started.claim.ownerEpoch,
+          result: { status: "completed", output: { accepted: true } },
+          idempotencyKey: "inspection-observation:acp-silence:complete",
+        });
+        const completed = await readInspection(workspace, {
+          kind: "target", runId: started.runId, target: selector, detail: "summary",
+        });
+        expect(Result.isSuccess(completed) ? completed.success : undefined).toMatchObject({
+          state: { status: "completed" },
+          result: { status: "accepted", value: { accepted: true } },
+        });
+        expect(Result.isSuccess(completed) ? completed.success : undefined).not.toHaveProperty("pulse");
+        expect(Result.isSuccess(completed) ? completed.success : undefined).not.toHaveProperty("acp");
       } finally {
         started.store.close();
       }

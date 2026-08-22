@@ -153,6 +153,49 @@ describe("resolved inspection target state", () => {
     });
   });
 
+  it("exposes narrow node output only from the scheduler-accepted durable result", () => {
+    const ir = taskWorkflow();
+    const run = singleNodeRun("work", "work~1");
+    run.dynamic!.nodeInstances[0] = {
+      ...run.dynamic!.nodeInstances[0]!,
+      status: "completed",
+      output: { authoritative: true },
+      acceptedAttemptId: "attempt-2",
+    };
+    run.dynamic!.attempts = [{
+      attemptId: "attempt-1",
+      nodeKey: "work~1",
+      nodeId: "work",
+      attemptNo: 1,
+      status: "completed",
+      result: { candidate: "historical" },
+      startedAt: "2026-07-29T00:00:01.000Z",
+      finishedAt: "2026-07-29T00:00:02.000Z",
+    }, {
+      attemptId: "attempt-2",
+      nodeKey: "work~1",
+      nodeId: "work",
+      attemptNo: 2,
+      status: "completed",
+      result: { candidate: "accepted but not authoritative" },
+      startedAt: "2026-07-29T00:00:03.000Z",
+      finishedAt: "2026-07-29T00:00:04.000Z",
+    }];
+    run.dynamic!.progress = [{
+      nodeKey: "work~1",
+      nodeId: "work",
+      attemptId: "attempt-2",
+      kind: "task",
+      status: "completed",
+      output: { tail: "progress candidate", totalBytes: 18, truncated: false },
+      updatedAt: "2026-07-29T00:00:05.000Z",
+    }];
+
+    expect(resolvedState(ir, run, "work~1").summary.output).toEqual({ authoritative: true });
+    expect(resolvedState(ir, run, "attempt-2").summary.output).toEqual({ authoritative: true });
+    expect(resolvedState(ir, run, "attempt-1").summary).not.toHaveProperty("output");
+  });
+
   it("projects the effective Agent model and terminal metadata fallback", () => {
     const ir = agentWorkflow();
     const run = singleNodeRun("review", "review~1");

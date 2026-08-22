@@ -24,6 +24,7 @@ import {
   createAgentToolActivityProjector,
 } from "./agent-activity-projection.js";
 import { signalBlocksInspectionTarget } from "./signal-boundary.js";
+import { projectInspectionTargetResult } from "./target-result.js";
 import type {
   AgentDecisionState,
   AgentInspectionState,
@@ -1172,7 +1173,7 @@ function projectTarget(
       : latestInstance?.statusReason ?? latestAttempt?.terminalReason ?? latestFrame?.terminalReason,
   );
   const items = targetInspectionItems(ir, run, indexes, instances, frames, resolvedStatic, staticById);
-  return {
+  const details: ResolvedTargetState = {
     run: runSummary(ir, run, true),
     target,
     ...(resolvedStatic ? { staticNode: resolvedStatic } : {}),
@@ -1188,15 +1189,6 @@ function projectTarget(
       nodeStatus: status,
       ...(staticAggregate ? { counts: inspectionStatusCounts(staticStatuses) } : {}),
       ...(!staticAggregate && runtimeInput !== undefined ? { input: { kind: "runtime", value: runtimeInput } } : !staticAggregate && authoredInput !== undefined ? { input: { kind: "authored", value: authoredInput } } : {}),
-      ...(!staticAggregate && target.kind === "attempt" && latestAttempt?.result !== undefined
-        ? { output: latestAttempt.result }
-        : !staticAggregate && target.kind !== "attempt" && latestInstance?.output !== undefined
-          ? { output: latestInstance.output }
-          : !staticAggregate && latestAttempt?.result !== undefined
-            ? { output: latestAttempt.result }
-            : !staticAggregate && latestFrame?.result !== undefined
-              ? { output: latestFrame.result }
-              : {}),
       ...(!staticAggregate && targetFailure ? { failure: targetFailure } : {}),
       ...(!staticAggregate && latestWait?.renderedPrompt ? { prompt: { kind: "signal", text: latestWait.renderedPrompt } }
         : !staticAggregate && turnArtifact ? { prompt: { kind: "artifact", artifactId: turnArtifact.id, path: turnArtifact.path, ...(turnArtifact.mediaType ? { mediaType: turnArtifact.mediaType } : {}), field: "prompt" } }
@@ -1218,6 +1210,16 @@ function projectTarget(
     artifacts: targetArtifacts,
     availableControls: [...availableControls],
   };
+  const result = staticAggregate
+    ? undefined
+    : projectInspectionTargetResult({
+        run,
+        details,
+        status: normalizeInspectionStatus(status),
+      });
+  return result?.status === "accepted"
+    ? { ...details, summary: { ...details.summary, output: result.value } }
+    : details;
 }
 
 function staticTargetStatuses(

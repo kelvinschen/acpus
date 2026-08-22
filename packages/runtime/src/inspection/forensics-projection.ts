@@ -2,14 +2,14 @@ import { walkNodes, type ExprIR, type NodeIR, type ScopeIR, type TemplateIR, typ
 import { isJsonValue, type JsonPrimitive } from "@acpus/expression/ir";
 import { appendNode, deriveInstanceKey } from "../scheduler/identity.js";
 import type { InstancePath, InstancePathSegment } from "../scheduler/types.js";
-import type {
-  RunDynamicAttempt,
-  RunDynamicFrame,
-  RunDynamicNodeInstance,
-} from "../store/inspection-read-model.js";
 import type { FrozenRun, RunDetails } from "../store/store.js";
 import { inspectionViewSubject } from "./decision-projection.js";
 import type { ResolvedTargetState } from "./resolved-target.js";
+import {
+  projectInspectionTargetResult,
+  selectInspectionTarget,
+  type SelectedInspectionTarget,
+} from "./target-result.js";
 import type {
   ForensicsDefinition,
   ForensicsExecutionContext,
@@ -26,7 +26,7 @@ export function projectInspectionForensicsView(input: {
   details: ResolvedTargetState;
 }): Extract<InspectionView, { kind: "target"; detail: "forensics" }> {
   const root = input.details.target.id === "root";
-  const selected = selectedTarget(input.details);
+  const selected = selectInspectionTarget(input.details);
   const node = root ? undefined : targetNode(input.frozen.ir, input.details);
   if (!root && !node) throw new Error("Forensics target is missing from frozen IR.");
   const context = executionContext(input.frozen.ir, input.run, selected.path);
@@ -44,46 +44,8 @@ export function projectInspectionForensicsView(input: {
     },
     definition: definition(input.frozen, node),
     invocation: invocation(input.frozen, input.run, input.details, node, selected, context, status),
-    result: result(input.run, input.details, selected, status, node),
+    result: result(input.run, input.details, selected, status),
   };
-}
-
-type SelectedTarget = {
-  attempt?: RunDynamicAttempt;
-  instance?: RunDynamicNodeInstance;
-  frame?: RunDynamicFrame;
-  path?: InstancePath;
-};
-
-function selectedTarget(details: ResolvedTargetState): SelectedTarget {
-  const attempt = details.target.kind === "attempt"
-    ? details.attempts.find(candidate => candidate.attemptId === details.target.id)
-    : latestAttempt(details.attempts);
-  const instance = details.target.kind === "dynamic-node"
-    ? details.instances.find(candidate => candidate.nodeKey === details.target.id)
-    : attempt
-      ? details.instances.find(candidate => candidate.nodeKey === attempt.nodeKey)
-      : details.summary.nodeKey
-        ? details.instances.find(candidate => candidate.nodeKey === details.summary.nodeKey)
-        : details.instances.length === 1 ? details.instances[0] : undefined;
-  const frame = details.target.kind === "frame"
-    ? details.frames.find(candidate => candidate.frameKey === details.target.id)
-    : details.summary.frameKey
-      ? details.frames.find(candidate => candidate.frameKey === details.summary.frameKey)
-      : details.frames.length === 1 ? details.frames[0] : undefined;
-  const path = instance?.instancePath ?? frame?.instancePath;
-  return {
-    ...(attempt === undefined ? {} : { attempt }),
-    ...(instance === undefined ? {} : { instance }),
-    ...(frame === undefined ? {} : { frame }),
-    ...(path === undefined ? {} : { path }),
-  };
-}
-
-function latestAttempt(attempts: readonly RunDynamicAttempt[]): RunDynamicAttempt | undefined {
-  return [...attempts].sort((left, right) => right.attemptNo - left.attemptNo
-    || right.startedAt.localeCompare(left.startedAt)
-    || right.attemptId.localeCompare(left.attemptId))[0];
 }
 
 function targetNode(ir: WorkflowIR, details: ResolvedTargetState): NodeIR | undefined {
@@ -223,7 +185,7 @@ function invocation(
   run: RunDetails,
   details: ResolvedTargetState,
   node: NodeIR | undefined,
-  selected: SelectedTarget,
+  selected: SelectedInspectionTarget,
   context: ForensicsExecutionContext[],
   status: RunInspectionStatus,
 ): ForensicsInvocation {
@@ -347,7 +309,7 @@ function withContext(
 
 function unavailableInvocation(
   details: ResolvedTargetState,
-  selected: SelectedTarget,
+  selected: SelectedInspectionTarget,
   context: ForensicsExecutionContext[],
   status: RunInspectionStatus,
 ): ForensicsInvocation {
@@ -363,7 +325,7 @@ function unavailableInvocation(
   return { status: "unavailable", reason, ...(context.length === 0 ? {} : { context }) };
 }
 
-function resolutionFailed(details: ResolvedTargetState, selected: SelectedTarget): boolean {
+function resolutionFailed(details: ResolvedTargetState, selected: SelectedInspectionTarget): boolean {
   const reasons = [
     selected.attempt?.terminalReason,
     selected.instance?.statusReason,
@@ -388,7 +350,7 @@ function executionMetadata(
   return record(metadata?.metadata);
 }
 
-function selectedBranch(run: RunDetails, selected: SelectedTarget): string | undefined {
+function selectedBranch(run: RunDetails, selected: SelectedInspectionTarget): string | undefined {
   const direct = lastSegment(selected.path);
   if (direct?.kind === "branch") return direct.branchId;
   if (!selected.frame) return undefined;
@@ -402,44 +364,20 @@ function selectedBranch(run: RunDetails, selected: SelectedTarget): string | und
 function result(
   run: RunDetails,
   details: ResolvedTargetState,
-  selected: SelectedTarget,
+  selected: SelectedInspectionTarget,
   status: RunInspectionStatus,
-  node: NodeIR | undefined,
 ): ForensicsResult {
-  if (details.target.id === "root") {
-    if (run.status === "completed") return acceptedOutput(run.output);
-    if (run.status === "failed") return { status: "failed", ...failure(details, selected) };
-    if (run.status === "canceled") return { status: "cancelled" };
-    return { status: run.status === "pending" ? "not_started" : "pending" };
-  }
-  if (details.target.kind === "attempt" && selected.attempt) {
-    if (selected.attempt.status === "superseded") return { status: "not_accepted" };
-    if (selected.attempt.status === "failed") return { status: "failed", ...failure(details, selected) };
-    if (selected.attempt.status === "timed_out") return { status: "timed_out", ...failure(details, selected) };
-    if (selected.attempt.status === "cancelled") return { status: "cancelled" };
-    if (selected.attempt.status !== "completed") return { status: "pending" };
-    if (selected.instance?.acceptedAttemptId !== selected.attempt.attemptId) return { status: "not_accepted" };
-    return acceptedOutput(selected.instance.output);
-  }
+  const accepted = projectInspectionTargetResult({ run, details, selected, status });
+  if (accepted) return accepted;
   if (status === "not_started") return { status: "not_started" };
   if (status === "not_selected") return { status: "not_selected" };
   if (status === "failed") return { status: "failed", ...failure(details, selected) };
   if (status === "timed_out") return { status: "timed_out", ...failure(details, selected) };
   if (status === "cancelled") return { status: "cancelled" };
-  if (status !== "completed") return { status: "pending" };
-  if (node?.kind === "assert") return { status: "completed_without_output" };
-  if (selected.instance) return acceptedOutput(selected.instance.output);
-  if (selected.frame) return acceptedOutput(selected.frame.result);
-  return { status: "completed_without_output" };
+  return { status: "pending" };
 }
 
-function acceptedOutput(value: unknown): ForensicsResult {
-  if (value === undefined) return { status: "completed_without_output" };
-  if (!isJsonValue(value)) throw new Error("Accepted inspection output is not JSON-compatible.");
-  return { status: "accepted", value };
-}
-
-function failure(details: ResolvedTargetState, selected: SelectedTarget): { code?: string; message: string } {
+function failure(details: ResolvedTargetState, selected: SelectedInspectionTarget): { code?: string; message: string } {
   if (details.summary.failure) {
     return {
       ...(details.summary.failure.code === undefined ? {} : { code: details.summary.failure.code }),
@@ -456,7 +394,7 @@ function targetStatus(
   ir: WorkflowIR,
   run: RunDetails,
   details: ResolvedTargetState,
-  selected: SelectedTarget,
+  selected: SelectedInspectionTarget,
   node: NodeIR | undefined,
 ): RunInspectionStatus {
   if (details.target.id === "root") {
@@ -514,7 +452,7 @@ function normalizeStatus(status: string): RunInspectionStatus {
   return known.includes(status as RunInspectionStatus) ? status as RunInspectionStatus : "mixed";
 }
 
-function targetDurationMs(run: RunDetails, selected: SelectedTarget, root: boolean): number | undefined {
+function targetDurationMs(run: RunDetails, selected: SelectedInspectionTarget, root: boolean): number | undefined {
   if (selected.attempt?.finishedAt) return elapsed(selected.attempt.startedAt, selected.attempt.finishedAt);
   if (selected.frame && terminalStatus(selected.frame.status)) return elapsed(selected.frame.createdAt, selected.frame.updatedAt);
   if (selected.instance && terminalStatus(selected.instance.status)) return elapsed(selected.instance.createdAt, selected.instance.updatedAt);

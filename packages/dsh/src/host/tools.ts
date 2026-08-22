@@ -4,6 +4,7 @@ import type {
   AgentPresetChange,
   AgentPresetSpec,
   InspectionRead,
+  InspectionTargetResult,
   WritableAgentPresetScope,
 } from "@acpus/runtime";
 import type { RuntimeControlIntent } from "@acpus/runtime/host";
@@ -719,11 +720,18 @@ function compactInspection(
   return {
     task: { ...selector, status: value.run.status },
     subject,
+    ...(value.result === undefined ? {} : { result: boundedTargetResult(value.result) }),
     ...(value.state.failure === undefined ? {} : { failure: value.state.failure }),
     ...(value.pulse === undefined ? {} : { summary: value.pulse }),
     ...(value.attention === undefined ? {} : { attention: value.attention }),
     ...(value.visibility === undefined ? {} : { visibility: value.visibility }),
   };
+}
+
+function boundedTargetResult(result: InspectionTargetResult): InspectionTargetResult {
+  return result.status === "accepted"
+    ? { status: "accepted", value: boundedJson(result.value) }
+    : result;
 }
 
 function collectTargets(tree: InspectionTreeEntry[]): {

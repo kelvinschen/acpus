@@ -77,6 +77,27 @@ describe("Acpus Supervisor tool contract", () => {
     });
   });
 
+  it("preserves target result tags and bounds only accepted values", async () => {
+    const inspect = vi.fn()
+      .mockReturnValueOnce(success(targetSummary({ status: "accepted", value: "x".repeat(64 * 1024 + 1) })))
+      .mockReturnValueOnce(success(targetSummary({ status: "completed_without_output" })))
+      .mockReturnValueOnce(success(targetSummary({ status: "not_accepted" })));
+    const { tools } = registerTools({
+      resolveTask: vi.fn(async () => selected({ inspect })),
+    });
+    const runtimeInspect = tool(tools, "acpus_inspect");
+
+    const accepted = await runtimeInspect.execute({ target: "@target" }, execution());
+    const outputless = await runtimeInspect.execute({ target: "@target" }, execution());
+    const notAccepted = await runtimeInspect.execute({ target: "@target" }, execution());
+
+    expect(accepted).toMatchObject({
+      result: { status: "accepted", value: { text: expect.any(String), truncated: true } },
+    });
+    expect(outputless).toMatchObject({ result: { status: "completed_without_output" } });
+    expect(notAccepted).toMatchObject({ result: { status: "not_accepted" } });
+  });
+
   it("passes explicit input and Preset Agent injection separately from workflow source", async () => {
     const run = vi.fn(async () => ({
       status: "admitted" as const,
@@ -245,6 +266,17 @@ function selected(runtime: Record<string, unknown>) {
     generation: 1,
     selector: { name: "workflow", occurrence: 1 },
     link: { id: "link" },
+  };
+}
+
+function targetSummary(result: unknown) {
+  return {
+    kind: "target",
+    detail: "summary",
+    run: { id: "run-1", status: "completed" },
+    subject: { label: "work", kind: "task", selector: "@target" },
+    state: { status: "completed" },
+    result,
   };
 }
 

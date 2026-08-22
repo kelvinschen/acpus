@@ -55,7 +55,7 @@ Options:
 1. Read Summary once. select a candidate `@ref` only when one occurrence matters.
 2. If work remains non-terminal without attention, use `--await-decision` on the decision-controlling target. Re-inspect only after it returns, hard attention, or new operator/external input. **Silence means wait.**
 3. Use `--follow` only when terminal completion itself is the goal.
-4. At terminal state, verify output and artifacts. Read structured artifact files with a bounded, type-appropriate tool.
+4. At terminal state, Summary gives the accepted output directly. List and read registered artifacts separately with a bounded, type-appropriate tool.
 
 
 ## Artifacts

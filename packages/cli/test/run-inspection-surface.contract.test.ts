@@ -91,29 +91,57 @@ describe("inspection text surface", () => {
     expect(repaired).not.toContain("settled");
   });
 
-  it("labels useful terminal Agent activity as Last", () => {
-    const normal = formatInspectionView({
+  it("renders authoritative target results after State and suppresses terminal Pulse", () => {
+    const value = { complete: true, full: "x".repeat(4_000) };
+    const accepted = formatInspectionView({
       kind: "target",
       detail: "summary",
       run: { id: "run_1", status: "completed" },
       subject: { label: "research", kind: "agent", selector: "@1a2b3c4d5e6f#1" },
       state: { status: "completed" },
-      pulse: { phase: "settled", turn: 1, headline: "Plan: Verify the report." },
+      result: { status: "accepted", value },
+      pulse: { phase: "settled", turn: 1, headline: "stale activity" },
+      acp: { silentForMs: 840_000 },
     } satisfies InspectionView);
-    const empty = formatInspectionView({
+    const outputless = formatInspectionView({
       kind: "target",
       detail: "summary",
       run: { id: "run_1", status: "completed" },
       subject: { label: "research", kind: "agent", selector: "@1a2b3c4d5e6f#1" },
       state: { status: "completed" },
-      pulse: { phase: "settled", turn: 1 },
+      result: { status: "completed_without_output" },
+    } satisfies InspectionView);
+    const notAccepted = formatInspectionView({
+      kind: "target",
+      detail: "summary",
+      run: { id: "run_1", status: "completed" },
+      subject: { label: "research", kind: "agent", selector: "@1a2b3c4d5e6f#1" },
+      state: { status: "completed" },
+      result: { status: "not_accepted" },
     } satisfies InspectionView);
 
-    expect(normal).toContain("Last Plan: Verify the report.");
-    expect(normal).not.toContain("turn 1");
-    expect(normal).not.toContain("settled");
-    expect(empty).not.toContain("Pulse ");
-    expect(empty).not.toContain("Last ");
+    expect(accepted.indexOf("State completed")).toBeLessThan(accepted.indexOf("Output:"));
+    expect(accepted).toContain(JSON.stringify(value.full));
+    expect(accepted).not.toContain("Pulse ");
+    expect(accepted).not.toContain("Last ");
+    expect(accepted).not.toContain("stale activity");
+    expect(accepted).not.toContain("ACP silent");
+    expect(outputless).toContain("Result completed without output");
+    expect(notAccepted).toContain("Result not accepted");
+  });
+
+  it("keeps a running target Pulse unchanged", () => {
+    const text = formatInspectionView({
+      kind: "target",
+      detail: "summary",
+      run: { id: "run_1", status: "running" },
+      subject: { label: "research", kind: "agent", selector: "@1a2b3c4d5e6f#1" },
+      state: { status: "running" },
+      pulse: { phase: "tool", turn: 2, headline: "Bash" },
+    } satisfies InspectionView);
+
+    expect(text).toContain("Pulse turn 2 · using tool: Bash");
+    expect(text).not.toContain("Output:");
   });
 
   it("keeps a repaired turn but omits settled from a terminal Tree pulse", () => {

@@ -147,6 +147,7 @@ export type {
   InspectionAgentTelemetry,
   InspectionTreeAgent,
   InspectionToolActivity,
+  InspectionTargetResult,
   InspectionVisibility,
   InspectionView,
   InspectionForensicsView,

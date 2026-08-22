@@ -153,19 +153,28 @@ function formatRunView(view: RunView, showAwait: boolean): string {
 }
 
 function formatTargetSummary(view: TargetSummaryView, showAwait: boolean): string {
-  const pulse = view.pulse === undefined ? undefined : formatSummaryPulse(view.state.status, view.pulse);
+  const pulse = terminal(view.state.status) || view.pulse === undefined
+    ? undefined
+    : formatSummaryPulse(view.state.status, view.pulse);
   const lines = [
     `Run ${view.run.id}  ${view.run.status}`,
     `Target ${subjectText(view.subject.label, view.subject.selector)} · ${view.subject.kind}`,
     `State ${formatState(view.state)}`,
+    ...formatTargetResult(view.result),
     ...(pulse === undefined ? [] : [pulse]),
-    ...(view.acp === undefined ? [] : [`ACP silent for ${formatDurationMs(view.acp.silentForMs)}`]),
+    ...(terminal(view.state.status) || view.acp === undefined ? [] : [`ACP silent for ${formatDurationMs(view.acp.silentForMs)}`]),
     ...(view.attention === undefined ? [] : formatAttention(view.attention, view.run.id, view.state.failure?.message)),
     ...(view.visibility === undefined ? [] : [formatVisibility(view.visibility.reason)]),
     ...(view.occurrences === undefined ? [] : [`Occurrences total=${view.occurrences.total}${formatCounts(view.occurrences)}`]),
     ...formatTargetNavigation(view, showAwait),
   ];
   return `${lines.join("\n")}\n`;
+}
+
+function formatTargetResult(result: TargetSummaryView["result"]): string[] {
+  if (result?.status === "accepted") return ["Output:", ...formatJson(result.value, "  ")];
+  if (result?.status === "completed_without_output") return ["Result completed without output"];
+  return result?.status === "not_accepted" ? ["Result not accepted"] : [];
 }
 
 function formatTargetTimeline(view: TargetTimelineView, showAwait: boolean): string {

@@ -88,6 +88,37 @@ describe("inspection observation transcript", () => {
     expect(stdout.text).not.toContain("Updates · run");
   });
 
+  it("prints an accepted target result exactly once in the closed Summary", async () => {
+    runtime.observeInspection.mockImplementation(() => emissions([
+      ok({ kind: "attached", view: targetSummary() }),
+      ok({
+        kind: "closed",
+        reason: "subject-terminal",
+        view: {
+          ...targetSummary(),
+          run: { id: "run_1", status: "completed" },
+          state: { status: "completed" },
+          result: { status: "accepted", value: { accepted: true } },
+        },
+      }),
+    ]));
+    const stdout = new CaptureStream();
+
+    await followRun("/workspace", {
+      kind: "target",
+      runId: "run_1",
+      target: "@1a2b3c4d5e6f#2",
+      detail: "summary",
+    }, {
+      until: "subject-terminal",
+      stdout,
+      stderr: new CaptureStream(),
+    });
+
+    expect(stdout.text.match(/Output:/g)).toHaveLength(1);
+    expect(stdout.text.match(/"accepted": true/g)).toHaveLength(1);
+  });
+
   it("prints durable Timeline evidence without an empty state update", async () => {
     runtime.observeInspection.mockImplementation(() => emissions([
       ok({ kind: "attached", view: targetTimeline() }),
@@ -398,6 +429,17 @@ function targetTimeline(): Extract<InspectionView, { kind: "target"; detail: "ti
     subject: { label: "review", kind: "agent", selector: "@1a2b3c4d5e6f#2" },
     state: { status: "running" },
     recent: [],
+  };
+}
+
+function targetSummary(): Extract<InspectionView, { kind: "target"; detail: "summary" }> {
+  return {
+    kind: "target",
+    detail: "summary",
+    run: { id: "run_1", status: "running" },
+    subject: { label: "review", kind: "agent", selector: "@1a2b3c4d5e6f#2" },
+    state: { status: "running" },
+    pulse: { phase: "reported-thought", headline: "Reviewing" },
   };
 }
 

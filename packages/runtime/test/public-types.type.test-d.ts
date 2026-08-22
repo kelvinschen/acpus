@@ -74,6 +74,7 @@ import type {
   InspectionObservation,
   InspectionRead,
   InspectionToolActivity,
+  InspectionTargetResult,
   InspectionAgentTelemetry,
   InspectionTreeAgent,
   InspectionView,
@@ -199,6 +200,11 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
     target: string;
     entries: Array<{ selector: string; status: RunInspectionStatus; breadcrumb: string }>;
   }>();
+  expectTypeOf<InspectionTargetResult>().toEqualTypeOf<
+    | { status: "accepted"; value: JsonValue }
+    | { status: "completed_without_output" }
+    | { status: "not_accepted" }
+  >();
   expectTypeOf<Extract<InspectionView, { kind: "run" }>>().toMatchTypeOf<{
     run: { id: string; status: string };
     counts: { total: number };

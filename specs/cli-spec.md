@@ -174,6 +174,8 @@ The `acpus` package owns command parsing and natural-language presentation for a
 - Navigation MUST be derived only from visible facts: Await, Timeline, required Signal, and Select. It MUST preserve Timeline or Forensics detail for candidate selection and never recommend retry, fork, cancel, or steer.
 - Inspection text MUST distinguish activity labels from their detail and omit default or duplicate metadata that does not change the visible subject, lifecycle, or next executable action.
 - Inspection text MUST present current Agent phases as ongoing actions: `reported-thought` as `thinking`, `tool` as `using tool`, `output-repair` as `repairing output`, and `settling` as `finishing`.
+- Target Summary text MUST render an accepted Result immediately after State as a complete, untruncated `Output:` JSON block, `completed_without_output` as `Result completed without output`, and `not_accepted` as `Result not accepted`.
+- Terminal target Summary text MUST omit Pulse and ACP silence. One-shot and blocking closure MUST use the same Summary presenter so a terminal target Result appears exactly once; terminal activity remains available through Timeline.
 - Forensics text MUST render stable `Definition`, `Invocation`, and `Result` sections in stable field order using indented JSON plus literal blocks for multiline strings without truncating Runtime values.
 - Forensics text MUST render terminal and bidirectional control characters as visible escapes rather than writing them raw.
 - Summary and Timeline text MUST NOT add Forensics navigation.
@@ -276,7 +278,7 @@ The `acpus` package owns command parsing and natural-language presentation for a
 - Inspection MUST render Runtime-owned views and candidates append-only in both TTY and non-TTY output. It MUST retain only public selectors and public Runtime error context; copyable commands MUST execute in a POSIX shell.
 - Blocking inspection MUST label attachment and omit its recursive Await command.
 - Update output MUST expose its triggering Runtime delta, omit empty Updates blocks, qualify run headings with elapsed time, and leave target and Timeline headings unqualified.
-- A run's terminal output MUST appear once, while target views omit unrelated output. A blocking failure after attachment MUST include a one-shot recovery command preserving target and Timeline detail.
+- A run's terminal output and a target Summary's own terminal Result MUST each appear once, while target views omit unrelated output. A blocking failure after attachment MUST include a one-shot recovery command preserving target and Timeline detail.
 - Diagnostic text MUST show source location when available, indent paths/hints, and relativize sources inside CLI cwd.
 - Text catalog listings MUST group workflows by scope and show each real name, status, and compact ambiguity or invalid state without package or entry paths.
 - Text named catalog output MUST omit a generic success message and use `Workflow`, `Scope`, `Status`, `Package`, and `Entry` labels. It MUST add semantic ANSI styling only when stdout is a TTY and `NO_COLOR` is unset; non-TTY output MUST remain free of ANSI styling.

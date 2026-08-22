@@ -520,11 +520,12 @@ function isObservableInspectionView(value: unknown): value is InspectionView {
     return hasExactKeys(
       value,
       ["kind", "detail", "run", "subject", "state"],
-      ["pulse", "acp", "attention", "visibility", "occurrences", "agentSession", "steer", "availableControls"],
+      ["result", "pulse", "acp", "attention", "visibility", "occurrences", "agentSession", "steer", "availableControls"],
     )
       && isInspectionRunRef(value.run)
       && isInspectionSubject(value.subject)
       && isInspectionVisibleState(value.state)
+      && (value.result === undefined || isInspectionTargetResult(value.result))
       && (value.pulse === undefined || isInspectionPulse(value.pulse))
       && (value.acp === undefined || isAcpSilence(value.acp))
       && (value.attention === undefined || isInspectionAttention(value.attention))
@@ -688,6 +689,15 @@ function isInspectionVisibleState(value: unknown): boolean {
     && isInspectionStatus(value.status)
     && (value.durationMs === undefined || isNonNegativeNumber(value.durationMs))
     && (value.failure === undefined || isInspectionFailure(value.failure));
+}
+
+function isInspectionTargetResult(value: unknown): boolean {
+  if (!isPlainRecord(value) || typeof value.status !== "string") return false;
+  if (value.status === "accepted") {
+    return hasExactKeys(value, ["status", "value"]) && isJsonValue(value.value);
+  }
+  return (value.status === "completed_without_output" || value.status === "not_accepted")
+    && hasExactKeys(value, ["status"]);
 }
 
 function isInspectionFailure(value: unknown): boolean {

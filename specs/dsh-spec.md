@@ -127,7 +127,11 @@ and exposes bounded live projections to its Client contribution.
   failure or attention, and at most 50 flat `targets`. Targets MUST include
   only selectable `running`, `awaiting`, `failed`, or `timed_out` nodes and
   contain `{ target, label, kind, status, summary? }`; overflow MUST set
-  `targetsTruncated`. A target inspection MUST return a compact node summary.
+  `targetsTruncated`. A target inspection MUST return a compact node summary
+  and preserve Runtime's optional `accepted`, `completed_without_output`, or
+  `not_accepted` Result shape. Only an accepted value MUST pass through the
+  existing bounded-JSON projection; outputless and not-accepted tags remain
+  unchanged. The default task-level bounded result remains unchanged.
   Ambiguity MUST be a normal result containing copyable `{ target, status,
   breadcrumb }` candidates. `timeline` MUST directly request 1–20 recent
   target events and MUST be invalid without target. Runtime's materialized
