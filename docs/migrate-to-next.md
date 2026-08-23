@@ -4,8 +4,9 @@
 > Acpus 0.6 is a TypeScript-first foundation rewrite. It is not a compatibility release
 > for the 0.5 YAML Workflow-Spec product. Migrate one workflow at a time,
 > keep the 0.5 workflow available until the replacement has been checked and
-> exercised, and verify current behavior against [`specs/`](../specs/INDEX.md),
-> `acpus --help`, and `acpus workflow check`.
+> exercised, and verify the stable product contract against
+> [`specs/`](../specs/INDEX.md) and current executable behavior through
+> `acpus --help` and `acpus workflow check`.
 
 Acpus 0.6 keeps the durable-workflow goal, but changes the authoring model. A
 0.5 workflow cannot be made into a 0.6 workflow by changing the extension

@@ -308,7 +308,8 @@ Acpus 0.5 使用 YAML Workflow Spec，并采用不同的节点模型和 CLI。
 - [CLI Spec](specs/cli-spec.md)
 - [WebUI Spec](specs/webui-spec.md)
 
-当前行为以 `specs/` 为准。
+当前实现机制以代码、导出类型和可执行帮助为准；跨实现保持的稳定产品合同见
+`specs/`。
 未来工作放在 `docs/roadmap/`。
 旧版本保留在 Git Tag 历史中。
 
