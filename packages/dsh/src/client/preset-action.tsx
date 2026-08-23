@@ -1,14 +1,13 @@
 import type { PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
-import { IconUserOutline16 } from "@deepseek-ai/dsh-client-ui-primitives";
 import {
   useCallback,
   useEffect,
   useRef,
   useState,
-  type KeyboardEvent,
 } from "react";
 import type { AgentPresetView } from "../remote/types.js";
 import acpusDshLogo from "../../assets/logo-with-dsh.svg";
+import { agentIcon } from "./agent-icons.js";
 import type { AcpusClientState } from "./state.js";
 
 type PresetCatalogReader = Pick<AcpusClientState, "readAgentPresets">;
@@ -54,6 +53,7 @@ export function AcpusPresetAction({
   const [read, setRead] = useState<PresetReadState>({ status: "idle" });
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
   const request = useRef(0);
 
   const load = useCallback(() => {
@@ -77,13 +77,23 @@ export function AcpusPresetAction({
 
   useEffect(() => {
     if (!open) return;
+    dialogRef.current?.focus({ preventScroll: true });
     const closeOutside = (event: PointerEvent) => {
       if (event.target instanceof Node && !rootRef.current?.contains(event.target)) {
         close();
       }
     };
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      close(true);
+    };
     document.addEventListener("pointerdown", closeOutside);
-    return () => document.removeEventListener("pointerdown", closeOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
   }, [close, open]);
 
   useEffect(() => {
@@ -96,17 +106,10 @@ export function AcpusPresetAction({
 
   if (!enabled) return null;
 
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "Escape" || !open) return;
-    event.preventDefault();
-    close(true);
-  };
-
   return (
     <div
       ref={rootRef}
       className="acpus-preset-action"
-      onKeyDown={onKeyDown}
     >
       <button
         ref={triggerRef}
@@ -123,14 +126,16 @@ export function AcpusPresetAction({
           load();
         }}
       >
-        <IconUserOutline16 size={14} />
+        <RobotIcon />
         <span>Agent Presets</span>
       </button>
       {open && (
         <div
+          ref={dialogRef}
           className="acpus-preset-popover"
           role="dialog"
           aria-label="Agent Presets"
+          tabIndex={-1}
         >
           {read.status === "loading" && (
             <div className="acpus-preset-read-state" role="status">
@@ -156,16 +161,75 @@ export function AcpusPresetAction({
   );
 }
 
+function RobotIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      width="14"
+      height="14"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.75"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="M12 8V4H8" />
+      <rect width="16" height="12" x="4" y="8" rx="2" />
+      <path d="M2 14h2M20 14h2M15 13v2M9 13v2" />
+    </svg>
+  );
+}
+
 function PresetRow({ preset }: { preset: AgentPresetView }) {
+  const identity = "use" in preset.agent
+    ? { label: "Agent", value: preset.agent.use, icon: agentIcon(preset.agent.use) }
+    : { label: "Command", value: preset.agent.command, icon: agentIcon(undefined) };
+  const iconName = "use" in preset.agent ? identity.icon.name : "Custom command";
   return (
     <li className="acpus-preset-row">
+      <span
+        className="acpus-preset-agent-icon"
+        aria-hidden="true"
+        title={iconName}
+      >
+        <img src={identity.icon.source} alt="" />
+      </span>
       <span className="acpus-preset-content">
         <span className="acpus-preset-heading">
           <code>{preset.id}</code>
-          {preset.scope === "host" && <span className="acpus-preset-builtin">内置</span>}
+          <span className="acpus-preset-scope">
+            {preset.scope === "host" ? "内置" : preset.scope === "global" ? "全局" : "项目"}
+          </span>
+        </span>
+        <span className="acpus-preset-meta">
+          <span>
+            <b>{identity.label}</b>
+            <code>{identity.value}</code>
+          </span>
+          <span>
+            <b>Model</b>
+            {preset.agent.model === undefined
+              ? <span>—</span>
+              : <code>{preset.agent.model}</code>}
+          </span>
+          <span>
+            <b>Config</b>
+            {preset.agent.config === undefined
+              ? <span>—</span>
+              : <code>{formatConfig(preset.agent.config)}</code>}
+          </span>
         </span>
         <span className="acpus-preset-guidance">{preset.guidance}</span>
       </span>
     </li>
   );
+}
+
+function formatConfig(
+  config: NonNullable<AgentPresetView["agent"]["config"]>,
+): string {
+  return `{${config.map(entry =>
+    `${JSON.stringify(entry.key)}:${JSON.stringify(entry.value)}`
+  ).join(",")}}`;
 }

@@ -9,7 +9,6 @@ describe("acpus_presets tool contract", () => {
     const agentPresetChoices = vi.fn(async () => [{
       id: "dsh",
       guidance: "Built-in DSH.",
-      scope: "host" as const,
     }]);
     const applyAgentPresets = vi.fn(async () => ({ status: "applied" as const }));
     registerSupervisorTools(context(definitions, { agentPresetChoices, applyAgentPresets }));
@@ -45,7 +44,7 @@ describe("acpus_presets tool contract", () => {
 
     await expect(presetTool.execute({ operation: "list" }, execution()))
       .resolves.toEqual({
-        presets: [{ id: "dsh", guidance: "Built-in DSH.", scope: "host" }],
+        presets: [{ id: "dsh", guidance: "Built-in DSH." }],
       });
     expect(agentPresetChoices).toHaveBeenCalledWith("/workspace");
 

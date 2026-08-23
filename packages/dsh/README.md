@@ -26,12 +26,12 @@ Acpus 模式把 DSH 设为 Supervisor。Supervisor 负责理解目标、设计 W
 
 ## 安装
 
-`@acpus/dsh` 要求兼容的 DSH `^0.1.0-rc.6` 宿主。把插件安装到要使用的 DSH profile (由于 pnpm 的限制，所以需要增加额外参数)：
+`@acpus/dsh` 要求 DSH `0.1.1-rc.2` 宿主。把插件安装到要使用的 DSH profile (由于 pnpm 的限制，所以需要增加额外参数)：
 
 如果你用的是 pnpm 10+:
 
 ```sh
-dsh plugin --profile web add --allow-build=esbuild @acpus/dsh
+dsh plugin --profile web add --allow-build=esbuild --allow-build=msgpackr-extract @acpus/dsh
 ```
 
 否则:
@@ -86,7 +86,7 @@ Acpus 模式始终提供内建 DSH Agent。该配置不可修改或删除。它�
 
 也可以在对话中按用途更新或删除配置。
 
-会话标题栏中的 **Agent Presets** 入口显示内建和全局配置。项目 Preset 只在 Supervisor 为当前工作目录按需查询时出现，避免把仓库提供的用途文本自动提升到 System Prompt。请通过对话修改配置；持久化变更需要明确说明项目或全局作用域，并且只影响后续任务准入。
+会话标题栏中的 **Agent Presets** 入口面向用户显示内建和全局 Preset 的具体 Agent、模型与 `config`；Agent 图标按 `use` 自动匹配。Supervisor 的自动目录和 `acpus_presets` 查询只返回 ID 与用途说明，不读取这些具体配置。项目 Preset 只在 Supervisor 为当前工作目录按需查询时出现，避免把仓库提供的用途文本自动提升到 System Prompt。请通过对话修改配置；持久化变更需要明确说明项目或全局作用域，并且只影响后续任务准入。
 
 具名 Agent、Preset 和项目/全局作用域统一按 [Acpus 配置](../cli/skills/acpus/references/configuration.md) 管理；配置后告诉 DSH 对应名称和用途。
 

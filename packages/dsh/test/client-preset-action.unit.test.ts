@@ -5,11 +5,6 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@deepseek-ai/dsh-client-ui-primitives", () => ({
-  IconUserOutline16: ({ size = 16 }: { size?: number }) =>
-    React.createElement("svg", { height: size, width: size }),
-}));
-
 import {
   AcpusBrandLabel,
   AcpusPresetAction,
@@ -82,6 +77,24 @@ describe("Acpus Agent Presets header action", () => {
     expect(dialog?.textContent).toContain("内置");
     expect(dialog?.textContent).toContain("codex-review");
     expect(dialog?.textContent).toContain("Review implementation details.");
+    expect(dialog?.textContent).toContain("codex");
+    expect(dialog?.textContent).toContain("gpt-test");
+    expect(dialog?.textContent).toContain('"reasoning_effort":"high"');
+    const dshRow = [...dialog?.querySelectorAll<HTMLElement>(".acpus-preset-row") ?? []]
+      .find(row => row.textContent?.includes("Built-in DSH fallback."));
+    const modelRow = [...dshRow?.querySelectorAll<HTMLElement>(".acpus-preset-meta > span") ?? []]
+      .find(row => row.querySelector("b")?.textContent === "Model");
+    expect(modelRow?.textContent).toBe("Model—");
+    expect(document.activeElement).toBe(dialog);
+    const dshIcon = dialog?.querySelector<HTMLImageElement>(
+      '.acpus-preset-agent-icon[title="dsh"] img',
+    );
+    const codexIcon = dialog?.querySelector<HTMLImageElement>(
+      '.acpus-preset-agent-icon[title="codex"] img',
+    );
+    expect(dshIcon).not.toBeNull();
+    expect(codexIcon).not.toBeNull();
+    expect(codexIcon?.src).not.toBe(dshIcon?.src);
     expect(dialog?.querySelectorAll("button")).toHaveLength(0);
   });
 
@@ -171,10 +184,16 @@ function presets(): AgentPresetView[] {
     id: "dsh",
     guidance: "Built-in DSH fallback.",
     scope: "host",
+    agent: { use: "dsh" },
   }, {
     id: "codex-review",
     guidance: "Review implementation details.",
     scope: "global",
+    agent: {
+      use: "codex",
+      model: "gpt-test",
+      config: [{ key: "reasoning_effort", value: "high" }],
+    },
   }];
 }
 

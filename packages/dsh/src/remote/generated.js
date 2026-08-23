@@ -346,6 +346,21 @@ const _acpus_dsh_acpus_readAgentPresets_result$schema = z.object({
   'id': z.string(),
   'guidance': z.string(),
   'scope': z.union([z.literal("host"), z.literal("project"), z.literal("global")]),
+  'agent': z.union([z.object({
+  'use': z.string(),
+  'model': z.string().optional(),
+  'config': z.array(z.object({
+  'key': z.string(),
+  'value': z.string(),
+})).optional(),
+}), z.object({
+  'command': z.string(),
+  'model': z.string().optional(),
+  'config': z.array(z.object({
+  'key': z.string(),
+  'value': z.string(),
+})).optional(),
+})]),
 })),
 })
 const _acpus_dsh_acpus_readSessionActivity_parameter_0$schema = z.object({
@@ -483,7 +498,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#AwaitSessionActivityRevisionResult',
         schema: _acpus_dsh_acpus_awaitSessionActivityRevision_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":498,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":501,"column":3},
     },
     {
       id: '@acpus/dsh#acpus/cancelSessionTask',
@@ -508,7 +523,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#CancelSessionTaskResult',
         schema: _acpus_dsh_acpus_cancelSessionTask_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":509,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":512,"column":3},
     },
     {
       id: '@acpus/dsh#acpus/readActivityDetail',
@@ -533,7 +548,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#ReadActivityDetailResult',
         schema: _acpus_dsh_acpus_readActivityDetail_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":450,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":453,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readAgentPresets',
@@ -558,7 +573,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#ReadAgentPresetsResult',
         schema: _acpus_dsh_acpus_readAgentPresets_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":436,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":438,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readSessionActivity',
@@ -583,7 +598,7 @@ export const TYPERT_REMOTE = {
         typeSymbol: '@acpus/dsh/projection#SessionActivityProjection',
         schema: _acpus_dsh_acpus_readSessionActivity_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":443,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":446,"column":3},
     },
   ],
 }

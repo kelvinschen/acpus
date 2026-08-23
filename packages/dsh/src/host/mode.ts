@@ -11,6 +11,7 @@ import {
   loadAgentPresetCatalog,
   type AgentPresetCatalog,
   type AgentPresetChange,
+  type AgentPresetChoice,
   type AgentPresetScope,
   type InspectionForensicsView,
   type WritableAgentPresetScope,
@@ -24,7 +25,9 @@ import * as Scope from "effect/Scope";
 import { AcpusOperationError, runtimePoolOperationError } from "./errors.js";
 import {
   dshAgentPresetProvider,
-  toAgentPresetView,
+  toAgentPresetSelectionView,
+  toAgentPresetViews,
+  type AgentPresetSelectionView,
 } from "./agent-presets.js";
 import {
   makeRuntimePool,
@@ -65,7 +68,6 @@ import type {
   ReadActivityDetailResult,
   ReadSessionActivityRequest,
   SessionActivityProjection,
-  AgentPresetView,
 } from "../remote/types.js";
 import type { DelegatedTaskSelector, ResolvedTaskSelector } from "../task.js";
 
@@ -279,12 +281,12 @@ export class AcpusMode extends TypertRemoteService {
     }));
   }
 
-  async trustedAgentPresetChoices(): Promise<AgentPresetView[]> {
-    return this.loadAgentPresetChoices(undefined, ["host", "global"]);
+  async trustedAgentPresetChoices(): Promise<readonly AgentPresetChoice[]> {
+    return (await this.agentPresetCatalog(undefined, ["host", "global"])).choices;
   }
 
-  agentPresetChoices(workspace: string): Promise<AgentPresetView[]> {
-    return this.loadAgentPresetChoices(workspace);
+  agentPresetChoices(workspace: string): Promise<AgentPresetSelectionView[]> {
+    return this.loadAgentPresetSelections(workspace);
   }
 
   async applyAgentPresets(
@@ -301,12 +303,12 @@ export class AcpusMode extends TypertRemoteService {
     });
   }
 
-  private async loadAgentPresetChoices(
+  private async loadAgentPresetSelections(
     workspace: string | undefined,
     scopes?: readonly AgentPresetScope[],
-  ): Promise<AgentPresetView[]> {
+  ): Promise<AgentPresetSelectionView[]> {
     return (await this.agentPresetCatalog(workspace, scopes)).choices
-      .map(toAgentPresetView);
+      .map(toAgentPresetSelectionView);
   }
 
   private async agentPresetCatalog(
@@ -436,7 +438,8 @@ export class AcpusMode extends TypertRemoteService {
   async readAgentPresets(
     _input: ReadAgentPresetsRequest,
   ): Promise<ReadAgentPresetsResult> {
-    return { presets: await this.trustedAgentPresetChoices() };
+    const catalog = await this.agentPresetCatalog(undefined, ["host", "global"]);
+    return { presets: toAgentPresetViews(catalog) };
   }
 
   @Remote

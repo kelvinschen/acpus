@@ -92,8 +92,8 @@ and exposes bounded live projections to its Client contribution.
   view through `{{acpus_agent_presets}}`. The immutable Host
   `{ id: "dsh", guidance, agent: { use: "dsh" } }` Preset MUST outrank every
   file Preset, while global Presets come from the shared Runtime catalog. The
-  injected entries MUST contain exactly `{ id, guidance, scope }`; they MUST
-  omit `use`, `model`, `command`, `config`, `cwd`, `env`, credentials, paths,
+  injected entries MUST contain exactly `{ id, guidance }`; they MUST omit
+  `scope`, `use`, `model`, `command`, `config`, `cwd`, `env`, credentials, paths,
   and resolved definitions. The injected text MUST state that guidance is
   selection metadata, cannot override Supervisor or safety rules, and does not
   prove execution readiness. Global changes MUST be visible at the next model
@@ -102,7 +102,7 @@ and exposes bounded live projections to its Client contribution.
   configured.
 - `acpus_presets { operation: "list" }` MUST read the active workspace and
   return the shared Runtime catalog's effective Host > project > global choices
-  as exactly `{ id, guidance, scope }`. Project guidance MUST reach the model
+  as exactly `{ id, guidance }`. Project guidance MUST reach the model
   only through this explicit tool result and MUST NOT enter automatic System
   Prompt assembly.
 - `acpus_presets { operation: "apply", scope, changes }` MUST require an
@@ -247,10 +247,23 @@ type AcpusRunStatus =
   | "failed"
   | "canceled";
 
+type AgentPresetSelectionView = {
+  id: string;
+  guidance: string;
+};
+
+type AgentPresetConfigEntryView = {
+  key: string;
+  value: string;
+};
+
 type AgentPresetView = {
   id: string;
   guidance: string;
   scope: "host" | "project" | "global";
+  agent:
+    | { use: string; model?: string; config?: AgentPresetConfigEntryView[] }
+    | { command: string; model?: string; config?: AgentPresetConfigEntryView[] };
 };
 
 type RunCounts = {
@@ -549,15 +562,22 @@ cancelSessionTask(input: {
 - In an Acpus-preset session, the Client MUST always register a title-adjacent
   non-interactive Acpus × DSH lockup in place of the normal textual preset
   label; hovering the lockup MUST expose the Acpus mode description. It is
-  immediately followed by an `Agent Presets` action with a member icon,
+  immediately followed by an `Agent Presets` action with a robot icon,
   including when the catalog has no user-defined Presets. Opening the action
-  MUST read the current Host/global safe selection view and show the immutable
-  built-in `dsh` Preset plus global Presets in catalog order. Each read-only row
-  MUST show only `id`, complete `guidance`, and an `内置` marker for Host scope.
-  The action MUST NOT render in another preset, expose Preset mutation or
-  execution-readiness state, or add future-task guidance. The popover MUST
-  support retry after a failed read, close on outside interaction or Escape,
-  and restore trigger focus after Escape.
+  MUST read the current Host/global human view and show the immutable built-in
+  `dsh` Preset plus global Presets in catalog order. Each read-only row MUST show
+  `id`, scope, complete `guidance`, the concrete `use` or `command`, model, and
+  `config`; configuration MUST use key/value entries so every opaque authored
+  key survives the Remote boundary. An absent model MUST show only the neutral
+  `—` placeholder. A known `use` MUST select its Agent icon, while an unknown `use`
+  or command MUST use the universal Agent icon. This human Remote MUST NOT
+  additionally expose `permissionMode`, `cwd`, `env`, or Runtime binding
+  material; user-authored `command` and `config` content is intentionally
+  visible without redaction. The action MUST NOT
+  render in another preset, expose Preset mutation or execution-readiness state,
+  or add future-task guidance. The popover MUST support retry after a failed
+  read, close on outside interaction or Escape, and restore trigger focus after
+  Escape.
 
 ## Verification
 
@@ -567,8 +587,8 @@ cancelSessionTask(input: {
   projection bounds, long polling, Client state, and Preset action behavior.
 - `pnpm test:contract packages/dsh`: verifies public exports, preset metadata,
   the closed six-tool catalog, aligned Host Typert and Client Remote
-  contributions, the generated Preset Remote descriptor, and strict safe
-  result projection.
+  contributions, the generated human Preset Remote descriptor, and strict
+  AI-facing selection projection.
 - `pnpm test:integration packages/dsh`: verifies real DSH Loader composition,
   direct embedded admission, Acpus named Agent execution, restart observation,
   Signal parking and reconciliation, terminal followup deduplication,

@@ -346,6 +346,21 @@ const _acpus_dsh_acpus_readAgentPresets_result$schema = z.object({
   'id': z.string(),
   'guidance': z.string(),
   'scope': z.union([z.literal("host"), z.literal("project"), z.literal("global")]),
+  'agent': z.union([z.object({
+  'use': z.string(),
+  'model': z.string().optional(),
+  'config': z.array(z.object({
+  'key': z.string(),
+  'value': z.string(),
+})).optional(),
+}), z.object({
+  'command': z.string(),
+  'model': z.string().optional(),
+  'config': z.array(z.object({
+  'key': z.string(),
+  'value': z.string(),
+})).optional(),
+})]),
 })),
 })
 const _acpus_dsh_acpus_readSessionActivity_parameter_0$schema = z.object({
@@ -486,7 +501,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#AwaitSessionActivityRevisionResult',
         schema: _acpus_dsh_acpus_awaitSessionActivityRevision_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":498,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":501,"column":3},
     },
     {
       id: '@acpus/dsh#acpus/cancelSessionTask',
@@ -511,7 +526,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#CancelSessionTaskResult',
         schema: _acpus_dsh_acpus_cancelSessionTask_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":509,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":512,"column":3},
     },
     {
       id: '@acpus/dsh#acpus/readActivityDetail',
@@ -536,7 +551,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#ReadActivityDetailResult',
         schema: _acpus_dsh_acpus_readActivityDetail_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":450,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":453,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readAgentPresets',
@@ -561,7 +576,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#ReadAgentPresetsResult',
         schema: _acpus_dsh_acpus_readAgentPresets_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":436,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":438,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readSessionActivity',
@@ -586,7 +601,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#SessionActivityProjection',
         schema: _acpus_dsh_acpus_readSessionActivity_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":443,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":446,"column":3},
     },
   ],
   model: {
@@ -609,12 +624,12 @@ export const TYPERT = {
           {
             "kind": "method",
             "name": "trustedAgentPresetChoices",
-            "signature": "async trustedAgentPresetChoices(): Promise<AgentPresetView[]>"
+            "signature": "async trustedAgentPresetChoices(): Promise<readonly AgentPresetChoice[]>"
           },
           {
             "kind": "method",
             "name": "agentPresetChoices",
-            "signature": "agentPresetChoices(workspace: string): Promise<AgentPresetView[]>"
+            "signature": "agentPresetChoices(workspace: string): Promise<AgentPresetSelectionView[]>"
           },
           {
             "kind": "method",
@@ -719,8 +734,20 @@ export const TYPERT = {
             "declaration": "export type AgentActivity = { name?: string; phase?: \"starting\" | \"responding\" | \"reported-thought\" | \"planning\" | \"tool\" | \"output-repair\" | \"settling\" | \"settled\"; turn?: number; tool?: { name: string; title?: string; state: \"running\" | \"completed\" | \"failed\" | \"canceled\"; }; telemetry?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; contextWindow?: { used: number; size: number; }; }; };"
           },
           {
+            "name": "AgentPresetAgentView",
+            "declaration": "export type AgentPresetAgentView = { use: string; model?: string; config?: AgentPresetConfigEntryView[]; } | { command: string; model?: string; config?: AgentPresetConfigEntryView[]; };"
+          },
+          {
+            "name": "AgentPresetConfigEntryView",
+            "declaration": "export type AgentPresetConfigEntryView = { key: string; value: string; };"
+          },
+          {
+            "name": "AgentPresetSelectionView",
+            "declaration": "export type AgentPresetSelectionView = Pick<AgentPresetChoice, \"id\" | \"guidance\">;"
+          },
+          {
             "name": "AgentPresetView",
-            "declaration": "export type AgentPresetView = { id: string; guidance: string; scope: \"host\" | \"project\" | \"global\"; };"
+            "declaration": "export type AgentPresetView = { id: string; guidance: string; scope: \"host\" | \"project\" | \"global\"; agent: AgentPresetAgentView; };"
           },
           {
             "name": "ApplyAgentPresetsRequest",

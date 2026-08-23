@@ -2,10 +2,6 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("@deepseek-ai/dsh-client-ui-primitives", () => ({
-  IconUserOutline16: () => null,
-}));
-
 import Loader from "@deepseek-ai/cordis-plugin-loader";
 import { scanRoot } from "@deepseek-ai/dsh-agent-presets";
 import AcpusMode, {
@@ -144,26 +140,24 @@ describe("@acpus/dsh public contract", () => {
       "@acpus/expression": "workspace:*",
       "@acpus/runtime": "workspace:*",
       "@acpus/workflow-compiler": "workspace:*",
-      "@deepseek-ai/dsh-acp": "0.1.0-rc.6",
+      "@deepseek-ai/dsh-acp": "0.1.1-rc.2",
       effect: "4.0.0-rc.111",
       zod: "^4.4.3",
     });
     expect(manifest.peerDependencies).toMatchObject({
-      "@deepseek-ai/dsh-agent-presets": "^0.1.0-rc.6",
-      "@deepseek-ai/dsh-app-boot": "^0.1.0-rc.6",
-      "@deepseek-ai/dsh-base": "^0.1.0-rc.6",
-      "@deepseek-ai/dsh-client-ui-primitives": "^0.1.0-rc.6",
-      "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
-      "@deepseek-ai/dsh-typert-protocol": "^0.1.0-rc.6",
+      "@deepseek-ai/dsh-agent-presets": "0.1.1-rc.2",
+      "@deepseek-ai/dsh-app-boot": "0.1.1-rc.2",
+      "@deepseek-ai/dsh-base": "0.1.1-rc.2",
+      "@deepseek-ai/dsh-session": "0.1.1-rc.2",
+      "@deepseek-ai/dsh-typert-protocol": "0.1.1-rc.2",
       react: "^18.2.0",
       "react-dom": "^18.2.0",
     });
     expect(manifest.devDependencies).toMatchObject({
-      "@deepseek-ai/dsh-agent-presets": "0.1.0-rc.6",
-      "@deepseek-ai/dsh-app-boot": "0.1.0-rc.6",
-      "@deepseek-ai/dsh-base": "0.1.0-rc.6",
-      "@deepseek-ai/dsh-client-ui-primitives": "0.1.0-rc.6",
-      "@deepseek-ai/dsh-typert-protocol": "0.1.0-rc.6",
+      "@deepseek-ai/dsh-agent-presets": "0.1.1-rc.2",
+      "@deepseek-ai/dsh-app-boot": "0.1.1-rc.2",
+      "@deepseek-ai/dsh-base": "0.1.1-rc.2",
+      "@deepseek-ai/dsh-typert-protocol": "0.1.1-rc.2",
       react: "18.3.1",
       "react-dom": "18.3.1",
     });
@@ -273,7 +267,7 @@ describe("@acpus/dsh public contract", () => {
     expect(remoteDispose).toHaveBeenCalledOnce();
   });
 
-  it("publishes only the safe Agent Preset catalog fields", () => {
+  it("publishes concrete Agent Preset details only through the human Remote", () => {
     const descriptor = remote.descriptors.find(candidate =>
       candidate.method === "readAgentPresets"
     );
@@ -289,10 +283,15 @@ describe("@acpus/dsh public contract", () => {
         id: "dsh",
         guidance: "Built-in DSH.",
         scope: "host",
-        use: "dsh",
-        model: "private-model",
-        command: "private-command",
-        env: { SECRET: "value" },
+        agent: {
+          use: "dsh",
+          model: "visible-model",
+          config: [
+            { key: "reasoning_effort", value: "high" },
+            { key: "__proto__", value: "kept" },
+          ],
+          env: { SECRET: "hidden" },
+        },
       }],
       revision: 4,
       stateDir: "/private/state",
@@ -303,6 +302,14 @@ describe("@acpus/dsh public contract", () => {
         id: "dsh",
         guidance: "Built-in DSH.",
         scope: "host",
+        agent: {
+          use: "dsh",
+          model: "visible-model",
+          config: [
+            { key: "reasoning_effort", value: "high" },
+            { key: "__proto__", value: "kept" },
+          ],
+        },
       }],
     });
   });

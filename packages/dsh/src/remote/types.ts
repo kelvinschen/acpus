@@ -5,10 +5,28 @@ export type { DelegatedTaskSelector, ResolvedTaskSelector } from "../task.js";
 export const TASK_HISTORY_LIMIT = 50;
 export const LONG_POLL_MS = 200_000;
 
+export type AgentPresetConfigEntryView = {
+  key: string;
+  value: string;
+};
+
+export type AgentPresetAgentView =
+  | {
+      use: string;
+      model?: string;
+      config?: AgentPresetConfigEntryView[];
+    }
+  | {
+      command: string;
+      model?: string;
+      config?: AgentPresetConfigEntryView[];
+    };
+
 export type AgentPresetView = {
   id: string;
   guidance: string;
   scope: "host" | "project" | "global";
+  agent: AgentPresetAgentView;
 };
 
 export type ReadAgentPresetsRequest = {};

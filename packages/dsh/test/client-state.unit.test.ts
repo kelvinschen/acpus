@@ -8,6 +8,7 @@ describe("Acpus Client task projection ownership", () => {
       id: "dsh",
       guidance: "Coordinate delegated work.",
       scope: "host" as const,
+      agent: { use: "dsh" },
     }];
     const readAgentPresets = vi.fn(async () => ({
       ok: true as const,
