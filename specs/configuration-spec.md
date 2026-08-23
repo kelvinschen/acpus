@@ -1,58 +1,19 @@
-# Configuration Spec
+# Configuration SPEC
 
-## Purpose
+## 目的
 
-`@acpus/runtime` owns the single project/global Acpus configuration boundary
-used by named Agents, Agent Presets, and Runtime Hooks. Domain packages consume
-validated sections through Runtime APIs rather than reading configuration files.
+[Runtime](runtime-spec.md) 为命名 Agent、Agent Preset 与 [Runtime Hooks](hooks-spec.md) 提供统一的项目与全局配置接口。使用方直接接收校验后的配置对象，无需自行解析底层存储。
 
-## Requirements
+## 要求
 
-- Project configuration MUST live at `<workspace>/.acpus/config.json`; global
-  configuration MUST live at `$HOME/.acpus/config.json`.
-- The configuration file MUST be a closed JSON object with only optional
-  `agents`, `presets`, and `hooks` fields. A missing file or omitted field MUST
-  contribute an empty section.
-- `agents` MUST be a closed map from normalized non-empty names to non-empty
-  shell command strings. `presets` MUST be a closed map of valid Runtime-owned
-  Agent Preset definitions. `hooks` MUST be a supported-event map of valid
-  command-hook arrays.
-- Invalid JSON, an unknown top-level field, or invalid content in any section
-  MUST invalidate the complete file for every consumer.
-- Project configuration MUST be rooted at Runtime's canonical workspace and
-  MUST NOT follow an Agent's effective `cwd`. Global configuration MUST use the
-  Runtime/Host process home and MUST NOT follow workflow `env.HOME`.
-- Named Agent composition MUST be Host, project, global, then built-in. Alias
-  lookup MUST NOT allow a global exact name to outrank a project canonical
-  name.
-- Agent Preset composition MUST be Host, project, then global for an exact id.
-- Hook composition MUST be the direct union of project and global entries;
-  every matching entry from both scopes MUST execute.
-- Runtime MUST own path resolution, complete-schema validation, safe reads,
-  locking, atomic replacement, and file permissions for this boundary.
-- Reads and writes MUST reject symbolic-link or non-regular substitution of
-  the scope `.acpus` directory or configuration file, prove canonical direct
-  containment and opened-directory identity, and never chmod or write through
-  an external link.
-- Writes MUST serialize through an owner-private sibling lock containing PID,
-  available process-start token, and random owner token. Contention MAY reclaim
-  and retry once only after process identity proves the owner dead or reused;
-  malformed or unprovable ownership MUST remain busy without mtime inference.
-- A successful write MUST atomically replace a `0600` file and make a global
-  `.acpus` directory `0700` on POSIX.
-- A section mutation MUST preserve the other validated sections semantically.
-  Serialized output MUST order top-level fields as `agents`, `presets`, then
-  `hooks`, omit empty sections, sort Agent and Preset keys, and preserve Hook
-  array declaration order.
-- Hooks MUST load only when Runtime/daemon starts. Named Agent configuration
-  MUST be re-read for each new Session lease. Presets MUST be re-read during
-  discovery and admission.
+- 项目配置的根路径 MUST 是 Runtime 的规范工作区；全局配置的根路径 MUST 是 Host 进程的主目录。这两个根路径 MUST NOT 随 Workflow 环境变量或 Agent 的实际工作目录改变。
+- Runtime MUST 将每个配置文件作为一个整体校验。任何分区中出现无效值或未声明字段时，整个文件 MUST 对所有使用方报错，MUST NOT 返回部分解析结果。
+- 解析命名 Agent 时，Runtime MUST 按 Host、项目、全局、内置的顺序选择首个匹配定义。解析相同 ID 的 Agent Preset 时，Runtime MUST 按 Host、项目、全局的顺序选择首个匹配定义。项目与全局作用域的 Hook 条目 MUST 取并集；来自两个作用域的所有匹配 Hook MUST 全部执行，任一方都 MUST NOT 覆盖或抑制另一方。
+- Runtime MUST 统一负责配置校验、作用域组合与配置更新。更新任一分区时，MUST 完整保留其他已校验分区的现有语义。
+- Runtime MUST 私密保存各作用域的配置，并使每次修改原子生效。修改一个作用域时，Runtime MUST NOT 影响其他作用域，也 MUST NOT 覆盖或丢失其他已接受的并发更新。无法保证这一点时，Runtime MUST 拒绝该修改，MUST NOT 基于陈旧状态写入。
+- 配置变更 MUST 按明确的生命周期生效：Hook 在 Runtime 启动时加载并固定，命名 Agent 在新建 Session 时解析，Preset 在发现与准入时解析。Runtime MUST NOT 因后续配置变更而修改已准入的 Run。
 
-## Verification
+## 验证
 
-- `pnpm test:unit packages/runtime`: verifies strict parsing, composition,
-  secure persistence, locking, permissions, and section-preserving mutation.
-- `pnpm test:integration packages/runtime packages/agent-executor`: verifies
-  Runtime-rooted Agent resolution, reload cadence, Preset admission, and Hooks.
-- `pnpm test:contract packages/cli packages/dsh`: verifies configuration-facing
-  CLI and Host behavior.
+- `pnpm test:unit packages/runtime`：验证完整校验、优先级合并、作用域隔离以及分区更新时的无损保留。
+- `pnpm test:integration packages/runtime packages/agent-executor`：验证 Runtime 边界上的作用域配置生效规则与可见性。

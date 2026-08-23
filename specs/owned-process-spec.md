@@ -1,45 +1,20 @@
-# Owned Process Capability Spec
+# Owned Process SPEC
 
-## Purpose
+## 目的
 
-`@acpus/owned-process` owns child processes started or recovered by Acpus. It
-confines spawn, stream, IPC, signal, liveness, and process-identity mechanics
-beneath an Effect-native, Scope-owned interface. Hook, Task, Agent Executor,
-compiler, and ACP packages retain their application policies and consume this
-interface.
+`@acpus/owned-process` 是 Acpus 唯一的子进程安全边界。它将操作系统底层进程封装为具有明确归属、支持类型化退出状态、安全信号发送、存活性检测与身份校验的受管资源。应用层的超时期限、通信协议、命令清单与任务调度策略完全由上层消费方负责。
 
-## Requirements
+## 要求
 
-- `ProcessHost.spawn` MUST require `Scope`, register one fallback finalizer
-  before returning, and MUST NOT expose Node `ChildProcess` or event emitters.
-- Spawn failure before readiness MUST use the typed `OwnedProcessError` channel.
-  Successful spawn MUST expose one typed close/exit Effect, single-consumer
-  stdout/stderr and IPC streams, standard Web stdin where requested, and typed
-  IPC send.
-- Node exit, error, interruption, and finalization races MUST settle each
-  adapter resource once. Scope interruption after raw spawn MUST NOT orphan the
-  owned child.
-- Process targeting MUST preserve the distinction between a PID and an owned
-  process group. POSIX groups and Windows `taskkill` are adapter mechanics.
-- Signalling an already-dead target MUST succeed. Liveness MUST preserve
-  `live`, `dead`, and `unverified`; the adapter MUST NOT promote unknown
-  evidence to proven death.
-- Linux process-start tokens MAY be returned for ownership fencing. Absence or
-  unsupported platforms MUST remain `undefined`, not an invented identity.
-- `captureProcessIdentity`, `probeProcessTarget`, and `probeProcessIdentity`
-  MUST expose the same liveness and start-token evidence used by `ProcessHost`;
-  callers MUST NOT duplicate raw PID or `/proc` probing.
-- Node APIs and official Effect platform modules are implementation choices.
-  They MUST preserve this interface's exit, IPC, targeting, identity, and Scope
-  semantics and MUST NOT create a second lifecycle backend in one composition.
-- The module MUST NOT own Hook/Task/capsule/ACP grace periods, protocol close,
-  RuntimeStore commits, manifests, or scheduler policy.
+- 子进程成功启动后，MUST 在对调用方可见之前先完成所有权绑定与登记；无论启动失败、调用方取消、进程并发退出，还是所有者开始清理资源，系统 MUST NOT 遗留未受管理的孤儿进程。
+- 公开接口 MUST 只提供本包定义的受管资源与类型化结果，MUST NOT 暴露能够绕过所有权和进程身份保护的底层控制接口；子进程在启动、I/O、IPC 通信、退出、信号发送及存活性检测中发生的任何故障，MUST 统一以能明确指出失败操作的类型化错误返回。
+- 无论进程自然退出、外部信号、调用方中断与资源清理如何竞争，每个进程资源都 MUST 只完成一次收尾（settlement），并向调用方提供唯一、确定的退出结果。
+- 对目标进程寻址时，MUST 严格区分仅操作单个进程还是操作由其衍生的整棵进程树；向已经确认彻底退出的目标进程发送信号时，MUST 保证幂等执行并直接返回成功。
+- 存活性检测无法确定进程状态时，结果 MUST 保持为无法确认；若缺少检测证据或底层平台不支持相关证据，系统 MUST NOT 擅自将其判定为进程已确认消亡。
+- 系统 MUST 校验进程身份凭证，防止操作系统复用 PID（进程标识符）后将信号误发给无关的新进程；当无法核实进程身份时，MUST 将结果明确标记为无法验证，MUST NOT 将其报告为身份匹配。
+- 上层使用方 MUST 使用本包提供的证据模型来定位进程、判断存活性并核验进程身份；当旧所有权记录中的 PID 已被系统复用时，MUST 阻止该记录继续操作新的无关进程（ownership fencing）。各使用方自身的超时、协议、持久化与调度策略 MUST 保持在 `@acpus/owned-process` 之外。
 
-## Verification
+## 验证
 
-- `pnpm --filter @acpus/owned-process typecheck`: verifies the public Effect
-  interface and Node implementation types.
-- `pnpm exec vitest run packages/owned-process/test`: verifies spawn, stream, IPC,
-  Scope cleanup, signal/liveness, and process-identity evidence.
-- `pnpm check`: verifies dependency direction, implementation independence,
-  public package/toolchain registration, and dead-code policy.
+- `pnpm --filter @acpus/owned-process typecheck`：验证公开归属资源与类型化证据的接口边界。
+- `pnpm exec vitest run packages/owned-process/test`：验证子进程启动所有权绑定、退出竞态、I/O 与 IPC 通信、信号发送、存活性检测及进程身份校验。

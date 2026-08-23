@@ -1,96 +1,30 @@
-# Expression Spec
+# Expression SPEC
 
-## Purpose
+## 目的
 
-`@acpus/expression` owns the Acpus expression language: typed authoring helpers, serializable `ExprIR` and `TemplateIR`, expression validation, and generic expression/template evaluation. The [Core](core-spec.md) and [Workflow Compiler](workflow-compiler-spec.md) consume this language; they do not own expression semantics.
+`@acpus/expression` 负责在 Workflow Run 期间对动态值进行类型化计算与模板渲染。它为 [Core](core-spec.md) 与 Runtime 等使用方提供统一的持久化表达式契约，无需将轻量计算拆分为独立的 Workflow 节点。
 
-## Requirements
+## 要求
 
-### Public API
+### 编写语义
 
-- The root `@acpus/expression` entrypoint authoring value surface MUST be `lift`, `eq`, `ne`, `lt`, `lte`, `gt`, `gte`, `not`, `and`, `or`, `template`, and `md`.
-- The root `@acpus/expression` entrypoint public authoring types MUST be `Expr`, `ExprValue`, `WorkflowData`, and `Resolvable`.
-- The root `@acpus/expression` entrypoint MUST NOT export raw construction helpers such as `expr`, `isExpr`, `refExpr`, or `valueToExprIR`.
-- `@acpus/expression/ir` MUST expose serializable IR and JSON types plus advanced construction helpers needed by package internals and tests, including `expr`, `isExpr`, `isJsonValue`, `refExpr`, `tryValueToExprIR`, `valueToExprIR`, `staticExprShape`, and shared expression operator and arity-aware callback-layout metadata.
-- `@acpus/expression/evaluator` MUST expose generic expression and template evaluators plus `loadSerializedFunction(source)`.
-- `@acpus/expression/validator` MUST expose `validateExprIR`.
+- 在构建图期间，表达式 MUST 保持为未求值的运行时占位值。编写者 MUST NOT 对表达式直接使用 JavaScript 的真值判断（truthiness）、原生运算符、条件控制流、模板字符串插值或集合遍历方法。
+- 直接读取对象的属性或数组下标 MAY 生成新的子表达式。所有其他数据转换或比较操作 MUST 通过表达式辅助函数显式声明其运行时依赖。
+- 通过 `lift(...)` 声明的计算 MUST 同步执行，仅依赖显式声明的参数和标准运行时全局对象计算结果，并返回可持久化的 Workflow 数据；MUST NOT 创建 Workflow 节点、执行异步操作，或通过闭包引用 Workflow 作用域或模块作用域中的外部变量。
+- 表达式计算过程 MUST NOT 被视为安全沙箱。不可信的代码或包含副作用的操作 MUST 放在 Task 执行边界内运行。
+- 精确字符串模板 MUST 完整保留声明中的所有空白字符。Markdown 模板 MUST 自动剥离首尾空行并去除各行共有的缩进，同时保持其中的插值表达式内容不变。
 
-### IR And Type Model
+### 持久化求值
 
-- `ExprIR` MUST be JSON-serializable and MUST NOT contain functions, Zod objects, processes, symbols, or runtime-only handles.
-- `ExprIR` MUST support `literal`, `ref`, `call`, `array`, `object`, and `template` nodes.
-- `ExprIR` MUST NOT support `lambda` or `var` nodes.
-- `StaticExprShape` MUST be `{ kind: "object"; possibleKeys: string[] } | { kind: "array" } | { kind: "scalar" } | { kind: "dynamic" }`.
-- `staticExprShape(expr)` MUST classify object and array syntax directly, classify literal and template syntax as scalar, and classify ref and call syntax as dynamic. Object `possibleKeys` MUST be sorted authored keys and MUST NOT claim that a key is required at run time.
-- Literal expression nodes MUST contain a `JsonPrimitive`; arrays and objects MUST use structural `array` and `object` nodes.
-- `TemplateIR` MUST use the canonical `{ kind: "template", parts: TemplatePartIR[] }` shape and MUST contain text parts and expression parts only.
-- `WorkflowData` MUST be JSON-compatible data: string, finite number, boolean, null, arrays, and plain objects with WorkflowData values.
-- `WorkflowData` MUST NOT include `undefined`, functions, promises, dates, maps, sets, class instances, symbols, bigint, sparse arrays, cycles, or non-finite numbers.
-- `isJsonValue(value)` MUST implement the preceding `WorkflowData` boundary, including plain objects with a null prototype and shared non-cyclic subgraphs.
-- `isJsonValue(value)` MUST return `false` rather than throw when a value is unsupported or cannot be inspected.
+- 字面量输入以及表达式计算成功的结果 MUST 保持为兼容 JSON 的可持久化数据。遇到不支持的类型、循环引用、稀疏数组或非有限数值时，求值 MUST 直接失败，MUST NOT 隐式转换或修复。
+- 读取不存在的属性或索引时 MUST 返回临时的 `undefined`。该临时值 MAY 作为 `lift(...)` 的输入传给计算回调，或在外层对象中直接省略；但若将其作为数组元素、模板插值内容或最终的持久化结果输出时，求值 MUST 直接失败。
+- 模板插值 MUST 原样渲染字符串，将标量值转为文本格式，并将结构化数据渲染为 JSON 字符串；若插值遇到未定义的值或不可持久化的数据，模板渲染 MUST 直接失败。
+- 求值过程 MUST 保护调用方传入的持久化输入数据，防止被计算回调函数意外修改；若回调返回 Promise、抛出异常、无法加载依赖或返回不可持久化的数据，表达式求值 MUST 直接失败。
+- 表达式 IR MUST 保持自包含且完全可序列化。校验与求值逻辑 MUST 拒绝格式错误或未知操作，MUST NOT 猜测或推断执行意图。
+- Core、Workflow Compiler 与 Runtime 等所有使用方 MUST 采用相同的表达式与模板求值语义。
 
-### Authoring And Lowering
+## 验证
 
-- `Resolvable<T>` MUST be the sole authoring type for values resolved from workflow scope at run time.
-- `Resolvable<T>` MUST accept expression tokens, JSON-compatible literals, arrays, and plain objects recursively. Raw literal `undefined` MUST still fail lowering; expression tokens whose value type includes `undefined` are allowed as projection values.
-- Runtime lowering MUST reject unsupported raw values such as `undefined`, sparse arrays, non-plain objects, functions, symbols, bigint, and non-finite numbers.
-- `tryValueToExprIR(value)` MUST return a native Effect v4 `Result.Result<ExprIR, ExprLoweringError>` for recoverable expression lowering failures.
-- `ExprLoweringError` MUST be a serializable tagged union with stable path fields.
-- Cyclic values MUST return `cyclic-value`, and object reflection failures MUST return `uninspectable-value`; neither case may leak a recursion or Proxy trap exception.
-- Lowering and object evaluation MUST preserve ordinary own data fields named `__proto__`.
-- `valueToExprIR(value)` MAY remain a throwing adapter over `tryValueToExprIR(value)` for authoring helpers.
-- Accessors MUST keep `__ir` and `__type` reserved for expression internals.
-- Accessors over refs MUST lower property access to extended `ref` paths.
-- Accessors over non-ref expressions MUST lower property access to the internal `access` operator.
-- Object field access and array index access are projection surface. Array index projection MUST be typed as possibly `undefined`.
-- User object fields named `ir` MUST remain reachable as normal output accessors.
-- `lift(value, fn)`, `lift(a, b, fn)`, and `lift(a, b, c, fn)` MUST accept one, two, or three `Resolvable` dependencies respectively and MUST infer each callback parameter from its corresponding resolved dependency.
-- A resolved dependency type MUST unwrap an `Expr<T>` to `T` and MUST recursively resolve array, tuple, and plain-object members. This type transform MUST remain internal to the package.
-- A named dependency object MUST be treated as one structured dependency. Arrays and tuples MUST likewise be accepted as one structured dependency.
-- More than three positional dependencies MUST be rejected by the public type contract; authors MUST use a named object for larger dependency sets.
-- Every `lift` overload MUST lower to operator id `lift`, explicit dependencies as leading args in authored order, and `fn.toString()` as the final string-literal arg. Canonical `lift` call arity MUST therefore be 2, 3, or 4.
-- `eq(a, b)` and `ne(a, b)` MUST accept only string, number, boolean, or null values and MUST lower through `lift` callbacks using JavaScript strict equality and inequality.
-- `lt(a, b)`, `lte(a, b)`, `gt(a, b)`, and `gte(a, b)` MUST accept only number values and MUST lower through `lift` callbacks using the corresponding JavaScript numeric comparison.
-- `not(value)` MUST lower through unary `lift`. `and(...values)` and `or(...values)` MUST require at least two boolean operands and lower through unary `lift` over the operand array using eager `every` and `some` evaluation.
-- Callback helpers MUST infer `R` before applying an internal recursive durable-result check and MUST return `ExprValue<R>`.
-- The callback result check MUST accept finite plain/interface-shaped durable object types, including optional properties, without requiring a string index signature. It MUST preserve exact inferred fields and nested shapes.
-- Lift dependencies and callback results MUST reject unconstrained `object` and ordinary object types with symbol keys because those types do not prove a lowerable plain-object shape; an explicitly empty `{}` shape remains valid.
-- Callback results MUST reduce `any` to `never` and reject `unknown`, unconstrained `object`, symbol-keyed objects, expressions, raw or required-property `undefined`, array-element `undefined`, functions, promises, dates, maps, sets, symbols, bigint, and other non-durable values.
-- Callback helpers MUST accept inline synchronous arrow functions with either expression bodies or block bodies; source-level callback complexity and lexical capture policy belong to the workflow compiler authoring rules.
-- Callback helpers MUST NOT create workflow nodes, task attempts, task contexts, artifact access, cwd/env boundaries, timeout policies, retry policies, or async execution boundaries.
-- `template` MUST accept `Resolvable` interpolations and lower tagged template strings to a flat `ExprIR.kind: "template"` node with `parts` while preserving authored whitespace exactly.
-- `md` MUST lower tagged template strings to normal `TemplateIR` after removing surrounding blank lines and common indentation from literal text parts. Expression interpolations MUST remain unchanged.
-- Authors SHOULD use `md` for multiline Markdown prompts and messages; they MAY use `template` instead when exact authored whitespace is required.
-
-### Operators
-
-- The only supported call operators MUST be `lift` and internal `access`; predicate helpers MUST lower to those existing operators rather than introduce new call operators.
-- Shared operator metadata MUST declare `lift` arity as 2, 3, or 4 and MUST provide an arity-aware callback layout whose callback-source index and callback parameter count equal `argCount - 1` and whose dependency indexes cover every preceding arg.
-- `access` MUST project object fields and canonical array indices from evaluated dependency values.
-- Missing object fields and out-of-bounds array indices MUST evaluate as `undefined` when used as projections.
-- Object expression evaluation MUST omit a field whose expression resolves as missing. Top-level missing expressions MUST evaluate as `undefined`, while array expression elements MUST reject missing values.
-- Unknown operators MUST fail validation and evaluation.
-
-### Evaluation And Validation
-
-- The generic evaluator MUST evaluate literals, refs through an adapter, arrays, objects, templates, and supported calls.
-- Template rendering MUST render strings directly, scalar non-strings with `String(value)`, and arrays/objects with `JSON.stringify` semantics.
-- Template rendering MUST fail on missing, `undefined`, or non-JSON-compatible values.
-- `lift` evaluation MUST evaluate only its one to three explicit dependency args, load the trailing callback source, invoke it synchronously with the dependencies as positional arguments, and return only JSON-compatible output.
-- Callback dependency input MAY contain `undefined` from missing projections, including nested object fields. Callback output MUST NOT contain `undefined`.
-- Callback evaluation MUST fail with `ExpressionEvaluationError` when the callback source is missing, not a string literal, cannot be loaded, does not evaluate to a function, throws, returns a thenable, or returns non-WorkflowData output.
-- Callback load and execution diagnostics MUST safely render thrown non-`Error` values.
-- Callback evaluation MUST pass JSON-compatible cloned dependency values, plus transient projection `undefined`, into callbacks so callback mutation does not mutate the original runtime scope. Cloning MUST preserve identity between shared non-cyclic subgraphs.
-- Callback evaluation MAY access normal runtime globals such as `Math`, `JSON`, and `Date`; expression evaluation is not a sandbox boundary.
-- Serialized function loading MUST evaluate one function source in strict mode.
-- Serialized function loading MUST reject a source whose evaluated value is not a function.
-- Serialized function loading MUST provide `__name` as an identity compatibility binding for compiler-emitted name preservation.
-- `lift` callbacks and frozen inline Task functions MUST execute through this same serialized-function loading environment.
-- The validator MUST reject malformed expression shapes, unknown fields, unknown operators, invalid arity, invalid paths, sparse IR arrays, and non-primitive literal values.
-- The validator MUST reject malformed callback helper calls whose callback source argument is not a string literal expression.
-- Validator/evaluator callback-source checks MUST remain IR backstops for synchronous arrow source shape and arity; source-level callback complexity and lexical capture diagnostics belong to the [Workflow Compiler](workflow-compiler-spec.md).
-
-## Verification
-
-- Contract and type tests cover public exports, `lift` inference/rejection, structured dependencies, predicates, templates, and accessors.
-- JSON guard, lowering, evaluator, and validator tests cover the WorkflowData boundary, every IR kind and operator, serialized-function compatibility bindings, callback arity/source rules, projection absence, clone isolation, and malformed input diagnostics.
+- `pnpm --filter @acpus/expression typecheck` 与 `pnpm test:type packages/expression`：验证类型化表达式编写边界。
+- `pnpm test:contract packages/expression`：验证公共持久化 IR、校验与求值边界。
+- `pnpm test:unit packages/expression`：验证属性读取、计算、模板与失败语义。

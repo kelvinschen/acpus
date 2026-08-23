@@ -1,61 +1,22 @@
-# Runtime Hooks Spec
+# Runtime Hooks SPEC
 
-## Purpose
+## 目的
 
-Runtime hooks let users run configured shell commands when durable [Runtime](runtime-spec.md) events are committed. Hooks observe progress and write execution history without changing workflow state or outputs; the [CLI](cli-spec.md) only adapts configuration and inspection commands.
+`@acpus/runtime` 通过 Runtime Hook 边界，在 [Runtime](runtime-spec.md) 持久化提交事件后运行已配置的外部观测命令。Hook 用于记录或转发执行活动，但不参与 Workflow 的调度决策、状态变更或输出生成。
 
-## Requirements
+## 要求
 
-- Hook configuration MUST use the `hooks` section of the project/global files
-  owned by the [Configuration](configuration-spec.md) contract. Its keys MUST
-  be supported hook events and its values MUST be arrays of command hooks.
-- Supported hook events MUST be `run.started`, `run.completed`, `run.failed`, `run.canceled`, `run.awaiting`, `node.started`, `node.completed`, and `node.failed`.
-- Hook entries MUST contain a non-empty `command` string without NUL bytes and MAY contain `id`, `timeout`, and `match`.
-- Hook `id` MUST be display and journal metadata only; duplicate ids MUST NOT override or suppress any hook entry.
-- A hook without an explicit id MUST use the readable effective id `source:event:index`.
-- Project and global hook entries MUST be merged by direct union and MUST both run when both match.
-- Hook `match` fields MUST be JavaScript regular expression strings. Multiple match fields MUST be combined with AND semantics.
-- Hook `match.workflow` MUST match the frozen workflow name. Hook `match.nodeId`, `match.nodeKey`, and `match.kind` MUST apply only to `node.*` events and `run.awaiting`.
-- Runtime hooks MUST trigger only for newly committed `run_events` rows and MUST NOT trigger from snapshot loads, projection rebuilds, read APIs, inspect commands, or duplicate idempotency returns that commit no new row.
-- Hook observation MUST use `hook_dispatch_cursors(run_id, event_sequence)` as a durable per-run cursor with cascading run ownership.
-- Admission and fork MUST create hook cursor `0` in their run transaction.
-- Writable store initialization MUST backfill a missing cursor for an existing run to that run's current maximum event sequence; read-only opens MUST NOT backfill.
-- Daemon work discovery MUST include every run whose hook cursor trails its committed event sequence, including terminal, paused, and awaiting runs.
-- Hook dispatch MUST process contiguous committed rows in ascending sequence, reject a cursor ahead of the event log or a gap before the next row, and stop a batch on its first retryable or corrupt row.
-- An unmapped row MUST advance the cursor with compare-and-set without invoking a hook.
-- A mapped row MUST prepare its complete context before advancing the cursor with compare-and-set, then synchronously hand the observation to the hook runner.
-- Hook dispatch semantics MUST be durable at-most-once observation/hand-off; a crash after cursor advancement and before process startup can lose the command and MUST NOT replay it.
-- Empty hook configuration MUST still advance the durable cursor so later configuration changes do not replay earlier events.
-- Any hook cursor backlog MUST prevent daemon idle-stop until its cursor advances; an in-memory hook incident fence suppresses repeated dispatch attempts without hiding that durable backlog.
-- SQLite busy/locked hook dispatch failures MUST return a retry tagged with `read-cursor`, `read-events`, `load-projection`, `load-metadata`, or `advance-cursor`; the failed row MUST remain pending.
-- Other hook projection, metadata, registry, filesystem, digest, or JSON failures MUST quarantine only hook dispatch for the unchanged durable event version, determined without loading the full scheduler projection, and MUST NOT block scheduler execution for that run.
-- Runtime hooks MUST receive a JSON context on stdin and MUST NOT receive workflow state through environment variables.
-- Hook execution MUST be non-interfering: hook failure, timeout, output, or journal write failure MUST NOT change workflow status, workflow output, IR, runtime scope, or public run event payloads.
-- Hook runner, observer, or journal failure after cursor advancement MUST NOT roll the cursor back or replay the observation.
-- Invalid Acpus configuration MUST fail daemon startup instead of silently disabling hooks.
-- The hook runner MUST be constructed as an Effect in an externally owned Scope, MUST receive the shared `@acpus/owned-process` capability, and MUST NOT own raw Node child-process mechanics or execute a private Effect Runtime.
-- The hook runner MUST admit matching command hooks synchronously, execute admitted hooks asynchronously without a concurrency limit, expose active count synchronously, and expose drain as an Effect operation.
-- Every admitted hook MUST run in the hook Scope with a nested invocation Scope that owns its process, stdin writer, output streams, deadline sleep, and termination escalation. Workspace shutdown MUST drain admitted hooks, close the hook Scope, and only then release Runtime authority and storage.
-- The hook runner MUST execute command hooks through shell spawning with a default timeout of 30 seconds.
-- Hook timeout strings MUST use the `@acpus/core/ir` duration grammar, MUST resolve to safe-integer milliseconds, and MUST interpret an omitted unit as milliseconds.
-- Hook timeout scheduling MUST use the Effect Clock. It MUST preserve accepted durations above Node's single-timer limit, and normal process settlement or Scope closure MUST interrupt the outstanding sleep.
-- A hook timeout budget MUST begin before process acquisition. Process close and lifecycle-failure settlement MUST recheck Effect monotonic elapsed time so a delayed sleep callback cannot accept an overdue hook result.
-- Timeout policy MUST signal the process tree with `SIGTERM`, wait an Effect Clock grace period of 2 seconds, then signal `SIGKILL` and await process settlement. The owned-process Scope finalizer remains the orphan-prevention fallback.
-- A hook process acquisition failure MUST produce one terminal `failed` journal entry, or `timed_out` when acquisition already exhausted the timeout; it MUST NOT disappear through the runner's non-interference boundary.
-- The hook journal MUST be stored outside the scheduler event stream in a `hook_journal` SQLite table.
-- The hook journal MUST write only terminal hook records with status `completed`, `failed`, or `timed_out`.
-- Hook journal rows MUST include `eventSequence` and `triggerOrder`, and that pair MUST be unique within one run. Hook-history reads MUST order rows by `eventSequence`, then `triggerOrder`, then journal row id.
-- Hook context `run.status` and `node.status` MUST describe the hook event time, not a later scheduler projection state.
-- Hook node prompt/input fields MUST use persisted effective attempt values and MUST NOT re-evaluate authored expressions. When an attempt has no effective value because configuration resolution failed, the hook MUST still run with that optional field omitted.
-- Attempt-backed node events MUST identify `attemptId`, and hook context MUST load metadata for that exact attempt rather than the latest attempt sharing a node key.
-- A registered Agent turn artifact used for hook context MUST be a contained regular file matching its recorded size and digest; missing content, content that does not match its recorded identity, or invalid JSON is durable corruption and MUST NOT advance the cursor.
-- The hook journal MUST NOT create a `running` row and MUST NOT synthesize a failure row after a hook process or daemon crash.
-- Hook stdout and stderr stored in the journal MUST be bounded.
-- Hook journal retention MUST default to 7 days. Read-only APIs MUST NOT prune hook journal rows.
-- Runtime read APIs MUST expose hook history only for terminal runs.
-- Hook configuration reads MUST expose project/global groups and their configuration paths; validation MUST return configuration errors.
+- Runtime MUST 按 [Configuration](configuration-spec.md) 定义的规则，同时加载项目级与全局级 Hook。具体支持的事件类型与配置格式由 Runtime 类型定义和配置帮助文档声明。
+- Hook MUST 只由新的持久化提交事件触发。重建或读取只读视图（projection）、返回幂等重放结果或在事后追加 Hook 配置，都 MUST NOT 重新触发历史活动。
+- Runtime MUST 按提交顺序将每项观测至多交给外部 Hook 一次，并持久化记录交接进度（at-most-once handoff）。一旦 Runtime 将某项观测标记为已交接，如果在外部命令实际启动前崩溃，该次 Hook 可能无法执行；恢复时 MUST NOT 为了达成精确一次投递而重放它。
+- 已提交但尚未交接的观测项 MUST 作为未决工作持久化保留。Runtime 正常关闭或崩溃重启时，MUST 保留并继续处理这些观测项，直到每项完成交接、被明确延期或因不可恢复而被隔离。
+- 每个 Hook 接收的事件负载 MUST 是大小受限且固定在发生时刻的只读事件快照。Hook MUST NOT 接收可变的 Workflow 状态，MUST NOT 重新计算声明的表达式，也 MUST NOT 用后续更新的 Attempt 替代事件发生时的原始 Attempt。
+- Hook 规则匹配与用于展示或记录的元数据 MUST NOT 改变事件的唯一标识，也 MUST NOT 抑制同时匹配的其他项目级或全局级 Hook。
+- Hook 执行失败 MUST NOT 改变或阻塞 Workflow 的调度推进、内部状态、节点输出、Artifact 或对外公开的 Run 事件。遇到可重试的分发故障时，Runtime MAY 延后该观测项的交接；遇到不可恢复的故障时，Runtime MUST 只隔离该观测项，MUST NOT 中断或挂起 Run。
+- Hook 的执行时间与资源消耗 MUST 受到限制。Hook MUST NOT 比触发它的 Runtime 存活更久；Runtime 失去当前工作区的执行权时，Hook MUST 结束。
+- Hook 状态检查 MUST 只暴露数量与大小均受限的终态结果。进程崩溃后丢失的 Hook 历史 MUST NOT 被伪造成失败或运行中记录。
 
-## Verification
+## 验证
 
-- Runtime tests cover configuration, event mapping, context, matching, deadlines, bounded output, journaling, retention, and non-interference.
-- Integration and CLI tests cover daemon-owned dispatch, durable at-most-once committed-row hand-off, restart cursor recovery, validation/list commands, and terminal inspection history.
+- `pnpm test:unit packages/runtime`：验证大小受限的观测负载、匹配逻辑、生命周期限制、真实状态检查以及 Hook 不干扰 Workflow 的契约。
+- `pnpm test:integration packages/runtime`：验证已提交事件的有序分发、持久化至多一次交接、重启恢复与有序关闭。
