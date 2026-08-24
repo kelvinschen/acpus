@@ -1,14 +1,13 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import { availableParallelism } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projects = [
   { name: "integration", args: ["--project", "integration", "--maxConcurrency=2"], maxWorkers: "40%" },
-  { name: "unit", args: ["--project", "unit"], maxWorkers: "18%" },
-  { name: "unit-isolated", args: ["--project", "unit-isolated"], maxWorkers: "4%" },
-  { name: "contract", args: ["--project", "contract"], maxWorkers: "9%" },
-  { name: "contract-isolated", args: ["--project", "contract-isolated"], maxWorkers: "2%" },
+  { name: "unit", args: ["--project", "unit"], maxWorkers: "22%" },
+  { name: "contract", args: ["--project", "contract"], maxWorkers: "11%" },
   { name: "type-contract", args: ["--typecheck.only", "--project", "type-contract"], maxWorkers: "2%" },
   { name: "e2e+regression", args: ["--project", "e2e", "--project", "regression"], maxWorkers: "5%" },
 ];
@@ -32,10 +31,18 @@ async function main() {
       for (const child of activeChildren) killProcessTree(child, signal);
     });
   }
-  const results = await Promise.all(projects.map(project => runProject(vitestCli, project)));
+  let nextProject = 0;
+  const results = await Promise.all(Array.from(
+    { length: Math.min(projects.length, availableParallelism()) },
+    async () => {
+      const codes = [];
+      while (nextProject < projects.length) codes.push(await runProject(vitestCli, projects[nextProject++]));
+      return codes;
+    },
+  ));
 
   if (interrupted) return interrupted === "SIGINT" ? 130 : 143;
-  return results.some(code => code !== 0) ? 1 : 0;
+  return results.flat().some(code => code !== 0) ? 1 : 0;
 }
 
 function runProject(vitestCli, project) {
