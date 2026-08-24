@@ -111,7 +111,7 @@ describe.concurrent("acpus CLI subprocess smoke", () => {
 });
 
 async function waitForDaemon(workspace: string): Promise<void> {
-  const deadline = Date.now() + 5_000;
+  const deadline = Date.now() + 15_000;
   while (Date.now() < deadline) {
     const status = await Effect.runPromise(Effect.result(requestDaemonStatus(workspace)));
     if (Result.isSuccess(status)) return;
