@@ -1,5 +1,14 @@
 # @acpus/tasks
 
+## 0.1.9
+
+### Patch Changes
+
+- 525ef0d: Complete the workspace-wide Effect v4 migration with typed failures, Scope-owned resources, structured concurrency, deterministic time, and explicit Promise adapters. Add `@acpus/owned-process` as the shared child-process ownership and recovery boundary, and expose scoped ACP transport and cancellation capabilities.
+- Updated dependencies [f921e64]
+- Updated dependencies [525ef0d]
+  - @acpus/core@0.13.0
+
 ## 0.1.8
 
 ### Patch Changes

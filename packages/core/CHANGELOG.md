@@ -1,5 +1,17 @@
 # @acpus/core
 
+## 0.13.0
+
+### Minor Changes
+
+- f921e64: Add reusable Agent Presets, unbound workflow Agent Slots, and invocation-time Agent binding that Runtime expands into compact source-plus-injection bindings for durable execution and Forks. Unify named Agents, Agent Presets, and Hooks in project/global `.acpus/config.json`, expose default listing plus scoped add/remove through `acpus agent presets`, and let Runtime provide per-Session configured Agent resolution to Agent Executor.
+- 525ef0d: Complete the workspace-wide Effect v4 migration with typed failures, Scope-owned resources, structured concurrency, deterministic time, and explicit Promise adapters. Add `@acpus/owned-process` as the shared child-process ownership and recovery boundary, and expose scoped ACP transport and cancellation capabilities.
+
+### Patch Changes
+
+- Updated dependencies [525ef0d]
+  - @acpus/expression@0.3.0
+
 ## 0.12.0
 
 ### Minor Changes
