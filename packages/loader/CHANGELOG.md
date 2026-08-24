@@ -1,5 +1,15 @@
 # @acpus/loader
 
+## 0.2.4
+
+### Patch Changes
+
+- Updated dependencies [f921e64]
+- Updated dependencies [525ef0d]
+  - @acpus/core@0.13.0
+  - @acpus/expression@0.3.0
+  - @acpus/tasks@0.1.9
+
 ## 0.2.3
 
 ### Patch Changes
