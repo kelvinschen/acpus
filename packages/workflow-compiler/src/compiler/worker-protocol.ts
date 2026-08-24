@@ -1,6 +1,6 @@
 import { validateWorkflowIR, type DiagnosticIR, type WorkflowIR } from "@acpus/core/ir";
 import { isSha256Digest, type Sha256Digest } from "@acpus/core/content-identity";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import type { CompiledWorkflowModule, CompileWorkflowModuleError } from "./module.js";
 import type { ProcessResult } from "./process.js";
 
@@ -23,32 +23,32 @@ export function interpretCompileWorkerOutput(
   processResult: CompletedProcess,
   raw: string,
   expectedSourceDigest: Sha256Digest,
-): Result<CompiledWorkflowModule, CompileWorkflowModuleError | WorkerSystemFailure | WorkerProtocolFailure> {
+): Result.Result<CompiledWorkflowModule, CompileWorkflowModuleError | WorkerSystemFailure | WorkerProtocolFailure> {
   const envelope = parseCompileWorkerEnvelope(raw, processResult.stdoutTail, processResult.stderrTail);
-  if (envelope.isErr()) return err(envelope.error);
-  if (processResult.exitCode === 0 && !envelope.value.ok) {
-    return err(invalidResult("Workflow compile worker exited successfully with an error result.", processResult));
+  if (Result.isFailure(envelope)) return Result.fail(envelope.failure);
+  if (processResult.exitCode === 0 && !envelope.success.ok) {
+    return Result.fail(invalidResult("Workflow compile worker exited successfully with an error result.", processResult));
   }
-  if (processResult.exitCode !== 0 && envelope.value.ok) {
-    return err(invalidResult("Workflow compile worker exited unsuccessfully with a success result.", processResult));
+  if (processResult.exitCode !== 0 && envelope.success.ok) {
+    return Result.fail(invalidResult("Workflow compile worker exited unsuccessfully with a success result.", processResult));
   }
-  if (envelope.value.ok && envelope.value.result.sourceDigest !== expectedSourceDigest) {
-    return err(invalidResult("Workflow compile worker source digest did not match the checked source digest.", processResult));
+  if (envelope.success.ok && envelope.success.result.sourceDigest !== expectedSourceDigest) {
+    return Result.fail(invalidResult("Workflow compile worker source digest did not match the checked source digest.", processResult));
   }
-  return envelope.value.ok ? ok(envelope.value.result) : err(envelope.value.error);
+  return envelope.success.ok ? Result.succeed(envelope.success.result) : Result.fail(envelope.success.error);
 }
 
 export function parseCompileWorkerEnvelope(
   raw: string,
   stdoutTail = "",
   stderrTail = "",
-): Result<CompileWorkerEnvelope, WorkerProtocolFailure> {
+): Result.Result<CompileWorkerEnvelope, WorkerProtocolFailure> {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
   } catch (error) {
     if (!(error instanceof SyntaxError)) throw error;
-    return err({
+    return Result.fail({
       type: "worker-result-invalid-json",
       message: `Workflow compile worker result is not valid JSON: ${error.message}`,
       stdoutTail,
@@ -57,18 +57,18 @@ export function parseCompileWorkerEnvelope(
   }
 
   if (!isRecord(parsed) || parsed.schemaVersion !== 1 || typeof parsed.ok !== "boolean") {
-    return err(invalidEnvelope("expected schemaVersion 1 and a boolean ok field", stdoutTail, stderrTail));
+    return Result.fail(invalidEnvelope("expected schemaVersion 1 and a boolean ok field", stdoutTail, stderrTail));
   }
   if (parsed.ok) {
     if (!hasExactKeys(parsed, ["schemaVersion", "ok", "result"]) || !isCompiledWorkflowModule(parsed.result)) {
-      return err(invalidEnvelope("success result has an invalid shape or digest", stdoutTail, stderrTail));
+      return Result.fail(invalidEnvelope("success result has an invalid shape or digest", stdoutTail, stderrTail));
     }
-    return ok(parsed as CompileWorkerEnvelope);
+    return Result.succeed(parsed as CompileWorkerEnvelope);
   }
   if (!hasExactKeys(parsed, ["schemaVersion", "ok", "error"]) || !isWorkerEnvelopeError(parsed.error)) {
-    return err(invalidEnvelope("error result has an invalid shape or tag", stdoutTail, stderrTail));
+    return Result.fail(invalidEnvelope("error result has an invalid shape or tag", stdoutTail, stderrTail));
   }
-  return ok(parsed as CompileWorkerEnvelope);
+  return Result.succeed(parsed as CompileWorkerEnvelope);
 }
 
 function isCompiledWorkflowModule(value: unknown): value is CompiledWorkflowModule {
@@ -81,7 +81,7 @@ function isCompiledWorkflowModule(value: unknown): value is CompiledWorkflowModu
 function isWorkflowIR(value: unknown): value is WorkflowIR {
   if (!(isRecord(value)
     && hasExactKeys(value, ["irVersion", "name", "agents", "root", "diagnostics"], ["description", "inputSchema"])
-    && value.irVersion === 7
+    && value.irVersion === 8
     && typeof value.name === "string"
     && (value.description === undefined || typeof value.description === "string")
     && isRecord(value.agents)

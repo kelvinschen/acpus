@@ -17,7 +17,7 @@ import type { SkillInstallation, SkillRemoval, SkillScope, SkillTarget } from ".
 import { renderShellCommand } from "./shell-command.js";
 import { ansi, supportsColor } from "./terminal-style.js";
 
-export type ResultPhase = "usage" | "source" | "check" | "compile" | "lock" | "validate" | "import" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill";
+export type ResultPhase = "usage" | "source" | "check" | "compile" | "lock" | "validate" | "import" | "run" | "inspect" | "control" | "delete" | "doctor" | "viz" | "skill" | "agent";
 
 export type WorkflowSummary = {
   name: string;
@@ -35,7 +35,8 @@ export type WorkflowSummary = {
 
 export type CliAppliedControl =
   | { type: "pause" | "resume"; state: "applied"; runId: string }
-  | { type: "retry" | "cancel"; state: "applied"; runId: string; target?: string }
+  | { type: "retry"; state: "applied"; runId: string; target: string }
+  | { type: "cancel"; state: "applied"; runId: string; target?: string }
   | { type: "fork"; state: "applied"; sourceRunId: string }
   | {
       type: "steer";
@@ -43,6 +44,7 @@ export type CliAppliedControl =
       runId: string;
       steerId: string;
       target: string;
+      delivery: "interrupt_continue";
       continuation: "queued";
     }
   | {
@@ -60,6 +62,7 @@ type CliResultFields = {
   message?: string;
   persistence?: RuntimePersistence;
   workflow?: WorkflowSummary;
+  unboundAgents?: string[];
   diagnostics?: DiagnosticIR[];
   sourceGraphDigest?: string;
   run?: RunRecord;
@@ -139,7 +142,7 @@ type ControlSuccessCliResult = NonForkControlSuccessCliResult | ForkControlSucce
 
 export type CliResult =
   | ResultRecord<"usage", false, "message", "message">
-  | ResultRecord<"check", true, "message" | "workflow" | "diagnostics" | "catalog", "message" | "workflow">
+  | ResultRecord<"check", true, "message" | "workflow" | "unboundAgents" | "diagnostics" | "catalog", "message" | "workflow">
   | ResultRecord<"check", false, "message" | "diagnostics", "message">
   | ResultRecord<"source" | "compile" | "lock", false, "message", "message">
   | ResultRecord<"validate", true, "message", "message">
@@ -162,7 +165,8 @@ export type CliResult =
   | ResultRecord<"viz", true, "message" | "workflow" | "diagnostics" | "catalog" | "outputPath", "message" | "workflow" | "outputPath">
   | ResultRecord<"viz", false, "message", "message">
   | ResultRecord<"skill", true, "message" | "skill", "message" | "skill">
-  | ResultRecord<"skill", false, "message" | "skill" | "errorCode", "message">;
+  | ResultRecord<"skill", false, "message" | "skill" | "errorCode", "message">
+  | ResultRecord<"agent", false, "message", "message">;
 
 export type HookListResult = Partial<Record<HookConfigScope["source"], { path: string; hooks: LoadedHookConfig[] }>>;
 
@@ -307,6 +311,7 @@ function writeWorkflowPreparationSummary(result: CliResult, stream: Writable, cw
       writeCheckStage(stream, "passed", "typescript", "0 errors");
       writeCheckStage(stream, "passed", "authoring rules", "0 errors");
       writeCheckStage(stream, "passed", "WorkflowIR", `0 errors · ${formatStaticNodeCount(result.workflow.nodeCount)}`);
+      if (result.unboundAgents?.length) stream.write(`Unbound Agent slots: ${result.unboundAgents.join(", ")}\n`);
       writeDiagnostics(stream, result.diagnostics, cwd);
       return true;
     }
@@ -478,7 +483,8 @@ function writeCatalogEntry(stream: Writable, entry: WorkflowCatalogEntry, concis
     writeNamedCatalogEntry(stream, entry);
     return;
   }
-  stream.write(`Catalog: ${entry.scope}/${entry.name ?? "-"}\n`);
+  stream.write(`Catalog workflow: ${entry.name ?? "-"}\n`);
+  stream.write(`Catalog scope: ${entry.scope}\n`);
   stream.write(`Catalog status: ${entry.status}${entry.requiresScope ? " (requires --project or --global when unscoped)" : ""}\n`);
   stream.write(`Catalog package: ${entry.packagePath}\n`);
   stream.write(`Catalog entry: ${entry.entryPath}\n`);
@@ -491,7 +497,8 @@ function writeNamedCatalogEntry(stream: Writable, entry: WorkflowCatalogEntry): 
   const scopeHint = entry.requiresScope
     ? ansi(" (requires --project or --global when unscoped)", 33, color)
     : "";
-  stream.write(`${label("Catalog")} ${ansi(`${entry.scope}/${entry.name ?? "-"}`, 1, color)}\n`);
+  stream.write(`${label("Workflow")} ${ansi(entry.name ?? "-", 1, color)}\n`);
+  stream.write(`${label("Scope")} ${ansi(entry.scope, 1, color)}\n`);
   stream.write(`${label("Status")} ${ansi(entry.status, entry.status === "available" ? 32 : 31, color)}${scopeHint}\n`);
   stream.write(`${label("Package")} ${entry.packagePath}\n`);
   stream.write(`${label("Entry")} ${entry.entryPath}\n`);
@@ -505,24 +512,27 @@ function writeCatalogEntries(stream: Writable, entries: WorkflowCatalogEntry[]):
     stream.write("No cataloged workflows.\n");
     return;
   }
-  const rows = entries.map(entry => ({
-    scope: entry.scope,
-    status: entry.status,
-    name: entry.name ?? basename(entry.packagePath),
-    detail: entry.status === "available"
-      ? entry.requiresScope ? "requires --project or --global" : undefined
-      : entry.errorCode,
-  }));
-  const scopeWidth = rows.reduce((width, row) => Math.max(width, row.scope.length), 0);
-  const statusWidth = rows.reduce((width, row) => Math.max(width, row.status.length), 0);
-  const nameWidth = rows.reduce((width, row) => Math.max(width, row.name.length), 0);
-  for (const row of rows) {
-    stream.write(`${row.scope.padEnd(scopeWidth)}  ${row.status.padEnd(statusWidth)}  ${row.detail ? row.name.padEnd(nameWidth) : row.name}${row.detail ? `  ${row.detail}` : ""}\n`);
+  let wroteScope = false;
+  for (const scope of ["project", "global"] as const) {
+    const rows = entries
+      .filter(entry => entry.scope === scope)
+      .map(entry => ({
+        status: entry.status,
+        name: entry.name ?? basename(entry.packagePath),
+        detail: entry.status === "available"
+          ? entry.requiresScope ? "requires --project or --global" : undefined
+          : entry.errorCode,
+      }));
+    if (rows.length === 0) continue;
+    if (wroteScope) stream.write("\n");
+    stream.write(`${scope === "project" ? "Project" : "Global"} workflows:\n`);
+    const nameWidth = rows.reduce((width, row) => Math.max(width, row.name.length), 0);
+    const statusWidth = rows.reduce((width, row) => Math.max(width, row.status.length), 0);
+    for (const row of rows) {
+      stream.write(`  ${row.name.padEnd(nameWidth)}  ${row.status.padEnd(statusWidth)}${row.detail ? `  ${row.detail}` : ""}\n`);
+    }
+    wroteScope = true;
   }
-}
-
-export function writeJsonLine(stream: Writable, value: unknown): void {
-  stream.write(`${JSON.stringify(value)}\n`);
 }
 
 export function summarizeWorkflow(ir: WorkflowIR): WorkflowSummary {

@@ -29,7 +29,7 @@ describe("App workspace navigation", () => {
       run: { ...remoteRun, input: {} },
       workflow: { name: remoteRun.name, agents: {} },
       graph: undefined,
-      controls: { canCancelRun: false, retryTargets: [] },
+      controls: { canCancelRun: false, retryTargets: [], agentControls: [] },
     });
 
     await renderApp();
@@ -50,7 +50,7 @@ describe("App workspace navigation", () => {
         run: { ...run, input: {} },
         workflow: { name: run.name, agents: {} },
         graph: undefined,
-        controls: { canCancelRun: false, retryTargets: [] },
+        controls: { canCancelRun: false, retryTargets: [], agentControls: [] },
       };
     });
 
@@ -88,7 +88,7 @@ describe("App workspace navigation", () => {
       run: { ...remoteRun, input: {} },
       workflow: { name: remoteRun.name, agents: {} },
       graph: undefined,
-      controls: { canCancelRun: true, retryTargets: [] },
+      controls: { canCancelRun: true, retryTargets: [], agentControls: [] },
     });
 
     await renderApp();

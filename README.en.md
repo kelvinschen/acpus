@@ -227,66 +227,18 @@ Use Hooks to run local commands at specific points in the Workflow lifecycle. Fo
 
 A Hook command that fails or times out does not change the Workflow state or output.
 
-Write project Hooks to `.acpus/hooks.json`. Write Hooks that apply to every project to `~/.acpus/hooks.json`. The following configuration runs a project notification script when a Run is waiting for input:
-
-```json
-{
-  "run.awaiting": [
-    {
-      "id": "notify-me",
-      "command": "./scripts/notify-acpus.sh",
-      "timeout": "10s"
-    }
-  ]
-}
-```
-
-The command runs in the Workflow workspace and receives the event as JSON on stdin. Hook event data can include Agent prompts, Task inputs, and outputs.
-
-Validate and inspect the saved configuration:
-
-```sh
-acpus hooks validate
-acpus hooks list
-```
-
-Acpus reads the Hook configuration when it starts. Changes take effect the next time it starts. See [Runtime Hooks Configuration](packages/cli/skills/acpus/references/hooks-json.md) for the complete event list, matching rules, and input format.
+Acpus manages Hooks through its unified configuration. See [Acpus Configuration](packages/cli/skills/acpus/references/configuration.md#runtime-hooks) for locations, the complete shape, events, matching, validation commands, input, and loading behavior.
 
 You can also ask your Agent to configure a Hook.
 
 ## Configure Agents
 
-Acpus uses the pinned version of `acpx` to resolve named Agents.
-Before each named Agent Attempt starts, Acpus reads two configuration files:
+Acpus uses the stable ACP v1 session interface from `@acpus/acp`. See [Acpus Configuration](packages/cli/skills/acpus/references/configuration.md) for named Agents, Presets, project/global scopes, launch precedence, and loading behavior. An explicit `{ command: "..." }` bypasses named lookup.
 
-- Global configuration: `~/.acpx/config.json`
-- Project configuration: `.acpxrc.json`
-
-Acpus resolves the final `agents` map using the current Attempt's working directory and environment.
-
-```json
-{
-  "agents": {
-    "my-agent": { "argv": ["node", "./scripts/agent-acp-bridge.mjs"] }
-  }
-}
-```
-
-Reference the name in a Workflow with `{ use: "my-agent" }`.
-Project configuration overrides global configuration.
-Configured names can override built-in Agents.
-An explicit `{ command: "..." }` bypasses Acpx configuration.
-
-For more configuration options, see the pinned Acpx documentation for the
-[`agents` map](https://github.com/openclaw/acpx/blob/v0.13.0/docs/config.md#the-agents-map)
-and [config-defined agents](https://github.com/openclaw/acpx/blob/v0.13.0/docs/custom-agents.md#3-config-defined-agents).
-
-Acpus only reads the launch command for named Agents from Acpx.
-It does not apply Acpx `mcpServers`, `auth`, permission defaults, `defaultAgent`, TTL, timeout, or format.
-
-Agent login state, provider environment variables, and `ACPX_AUTH_*` variables are inherited from the Agent environment.
-Acpx validates the complete configuration first.
-If any field is invalid, the named Agent Attempt may fail to start.
+An Agent profile may also declare `model` and string-valued ACP `config`
+options, for example
+`{ use: "my-agent", model: "model-id", config: { reasoning_effort: "high" } }`.
+Acpus applies them when opening the ACP Session and replays them when resuming it.
 
 ## Additional Skill Installation Notes
 

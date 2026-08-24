@@ -95,7 +95,7 @@ export function isUpdateAwarenessEligible({
   return topLevelCommand !== undefined
     && (stdout as Writable & { isTTY?: boolean }).isTTY === true
     && (stderr as Writable & { isTTY?: boolean }).isTTY === true
-    && !argv.some(argument => argument === "--json" || argument === "--help" || argument === "-h")
+    && !argv.some(argument => argument === "--help" || argument === "-h")
     && env.CI === undefined
     && env.NODE_ENV !== "test"
     && env.npm_lifecycle_event === undefined

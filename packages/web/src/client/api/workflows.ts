@@ -64,7 +64,7 @@ function isWorkflowVisualizationResult(value: unknown): value is WorkflowVisuali
     && hasOnlyKeys(value.workflow, ["name", "description", "agents", "irVersion", "nodeCount"])
     && typeof value.workflow.name === "string"
     && isOptionalString(value.workflow.description)
-    && isAgentDefinitions(value.workflow.agents)
+    && isAgentDeclarations(value.workflow.agents)
     && isFiniteNumber(value.workflow.irVersion)
     && isFiniteNumber(value.workflow.nodeCount)
     && isWorkflowContract(value.contract)
@@ -81,6 +81,10 @@ export function isWorkflowContext(value: unknown): value is WorkflowContext {
 
 function isAgentDefinitions(value: unknown): value is WorkflowContext["agents"] {
   return isRecord(value) && Object.values(value).every(isAgentDefinition);
+}
+
+function isAgentDeclarations(value: unknown): boolean {
+  return isRecord(value) && Object.values(value).every(value => isAgentDefinition(value) || isAgentSlot(value));
 }
 
 function isAgentDefinition(value: unknown): boolean {
@@ -101,6 +105,20 @@ function isAgentDefinition(value: unknown): boolean {
   return value.kind === "agent_command"
     && hasOnlyKeys(value, ["kind", "command", "model", "config", "permissionMode", "cwd", "env"])
     && typeof value.command === "string";
+}
+
+function isAgentSlot(value: unknown): boolean {
+  return isRecord(value)
+    && value.kind === "agent_slot"
+    && hasOnlyKeys(value, ["kind", "model", "config", "permissionMode", "cwd", "env"])
+    && isOptionalString(value.model)
+    && (value.config === undefined || isStringRecord(value.config))
+    && (value.permissionMode === undefined
+      || value.permissionMode === "approve-reads"
+      || value.permissionMode === "approve-all"
+      || value.permissionMode === "deny-all")
+    && isOptionalString(value.cwd)
+    && (value.env === undefined || isStringRecord(value.env));
 }
 
 function isStringRecord(value: unknown): value is Record<string, string> {

@@ -26,12 +26,12 @@ Acpus 模式把 DSH 设为 Supervisor。Supervisor 负责理解目标、设计 W
 
 ## 安装
 
-`@acpus/dsh` 要求兼容的 DSH `^0.1.0-rc.6` 宿主。把插件安装到要使用的 DSH profile (由于 pnpm 的限制，所以需要增加额外参数)：
+`@acpus/dsh` 要求 DSH `0.1.1-rc.2` 宿主。把插件安装到要使用的 DSH profile (由于 pnpm 的限制，所以需要增加额外参数)：
 
 如果你用的是 pnpm 10+:
 
 ```sh
-dsh plugin --profile web add --allow-build=esbuild @acpus/dsh
+dsh plugin --profile web add --allow-build=esbuild --allow-build=msgpackr-extract @acpus/dsh
 ```
 
 否则:
@@ -71,9 +71,9 @@ dsh web
 
 Supervisor 根据任务规模创建 Workflow。界面显示 Workflow 拓扑和运行状态。常规进度不会重复写入对话。
 
-## 配置 Agent Profile
+## 配置 Agent Preset
 
-Agent Profile 告诉 Supervisor 应为某类任务选择哪个 Agent。配置时只需说明 Agent、可选模型和主要用途。Supervisor 负责生成内部名称和选择规则。
+Agent Preset 把用途说明和一份可复用的 Agent 配置绑定起来。Supervisor 按用途选择 Preset，Acpus Runtime 在任务准入时展开并冻结实际 Agent 配置，Workflow 本身不必绑定某个具体后端。
 
 Acpus 模式始终提供内建 DSH Agent。该配置不可修改或删除。它使用当前 DSH home 的模型设置和凭据，无需额外配置。
 
@@ -84,24 +84,15 @@ Acpus 模式始终提供内建 DSH Agent。该配置不可修改或删除。它�
 主要用于高度复杂的开发任务。
 ```
 
-也可以通过用途更新或删除配置：
+也可以在对话中按用途更新或删除配置。
 
-```text
-把用于复杂开发任务的 Codex Agent 改为主要用于架构设计和大型代码实现。
-删除用于复杂开发任务的 Codex Agent 配置。
-```
+会话标题栏中的 **Agent Presets** 入口面向用户显示内建和全局 Preset 的具体 Agent、模型与 `config`；Agent 图标按 `use` 自动匹配。Supervisor 的自动目录和 `acpus_presets` 查询只返回 ID 与用途说明，不读取这些具体配置。项目 Preset 只在 Supervisor 为当前工作目录按需查询时出现，避免把仓库提供的用途文本自动提升到 System Prompt。请通过对话修改配置；持久化变更需要明确说明项目或全局作用域，并且只影响后续任务准入。
 
-会话标题栏中的 **Agent Profiles** 入口只显示当前配置。请通过对话修改配置。修改只影响后续 Workflow。
+具名 Agent、Preset 和项目/全局作用域统一按 [Acpus 配置](../cli/skills/acpus/references/configuration.md) 管理；配置后告诉 DSH 对应名称和用途。
 
-可配置的 Agent 及其安装要求见 [ACPX Agent 目录](https://github.com/openclaw/acpx/tree/main/agents)。也可以使用 `~/.acpx/config.json`  类新增具名 Agent。 配置后告诉 DSH 该 Agent 的名称和用途即可。
+在使用 Preset 前，先安装对应 Agent，并完成该 Agent 的登录或凭据配置。保存 Preset 时不会检测可执行文件、网络、凭据或模型是否可用。
 
-在使用 Profile 前，先安装对应 Agent，并完成该 Agent 的登录或凭据配置。保存 Profile 时不会检测可执行文件、网络、凭据或模型是否可用。
-
-用户 Profile 默认保存在：
-
-```text
-${DSH_HOME:-$HOME/.dsh}/.acpus-dsh/agent-profiles.json
-```
+Host 内建 `dsh` 始终优先且不可修改。
 
 ## 开发
 
@@ -128,13 +119,13 @@ dsh plugin --profile web remove @acpus/dsh
 
 将 `web` 替换为安装插件时使用的 profile。preset 清理只删除带有 `@acpus/dsh` 所有权标记的文件。
 
-卸载不会删除 `${DSH_HOME:-$HOME/.dsh}/.acpus-dsh` 中的运行历史和用户 Profile。
+卸载不会删除 `${DSH_HOME:-$HOME/.dsh}/.acpus-dsh` 中的运行历史，也不会删除 `~/.acpus` 或项目中的 Agent Preset。
 
 ## 技术边界
 
 - Acpus 模式使用完整的 Supervisor Persona。DSH 的常规 Persona 不会叠加。
 - Acpus 模式下，模型只配置了 acpus 相关的工具，不会获得常规 DSH 工具如 `bash` `read` `write` 等。
 - 每个工作目录使用独立的 Workspace Runtime。默认状态位于 `${DSH_HOME:-$HOME/.dsh}/.acpus-dsh/runtime`，与 `$HOME/.acpus` 中的 CLI 状态隔离。
-- `use: "dsh"` 启动插件自带的 DSH ACP Server。该 Server 使用标准 `dsh-base` 和当前 DSH home，不加载当前 profile，也不递归加载 Acpus 模式。
-- 其他命名 Agent 由 ACPX 解析。
+- `use: "dsh"` 精确命中 Host 内建 DSH ACP Server，优先于两级配置和内建目录。该 Server 使用标准 `dsh-base` 和当前 DSH home，不加载当前 profile，也不递归加载 Acpus 模式。
+- 其他 `use` 按项目、全局、内建目录解析；显式 `command` 跳过具名解析。
 - Acpus Workflow 的执行独立于当前 DSH 回复。停止回复不会取消 Workflow, 取消操作必须明确作用于对应 Workflow。

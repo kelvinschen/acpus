@@ -2,7 +2,7 @@
   "name": "@acpus/agent-executor",
   "version": "0.6.0",
   "type": "module",
-  "description": "Acpus acpx-backed ACP agent turn execution.",
+  "description": "Acpus ACP agent turn execution.",
   "license": "MIT",
   "engines": {
     "node": "^22.18.0 || >=24.0.0"
@@ -28,12 +28,14 @@
     "clean": "rm -rf dist tsconfig.build.tsbuildinfo"
   },
   "devDependencies": {
-    "@types/node": "^22.20.1",
-    "tsx": "^4.23.0"
+    "@types/node": "^22.20.1"
   },
   "dependencies": {
-    "acpx": "0.13.0",
-    "neverthrow": "^8.2.0"
+    "@acpus/acp": "workspace:*",
+    "@acpus/owned-process": "workspace:*",
+    "@effect/platform-node": "4.0.0-rc.111",
+    "effect": "4.0.0-rc.111",
+    "tsx": "^4.23.0"
   },
   "repository": {
     "type": "git",

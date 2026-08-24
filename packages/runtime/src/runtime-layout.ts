@@ -3,7 +3,8 @@ import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { chmod, lstat, mkdir, readFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { RUNTIME_STORAGE_VERSION } from "./storage/database.js";
 import { writeGenerationMetadata } from "./storage/generation-metadata.js";
 import { writePrivateJsonAtomically } from "./storage/private-json.js";
@@ -194,22 +195,11 @@ export function isGenerationId(value: string): boolean {
 export function ensureRuntimeLayout(
   cwd: string,
   options: RuntimeLayoutOptions = {},
-): ResultAsync<RuntimeLayout, RuntimeLayoutFailure> {
-  return ResultAsync.fromPromise(
-    ensureRuntimeLayoutValue(cwd, options),
-    error => runtimeLayoutFailure(error, cwd),
-  );
-}
-
-export function ensureRuntimeLayoutAtWorkspace(
-  workspace: RuntimeLayout,
-  options: RuntimeLayoutOptions = {},
-): ResultAsync<RuntimeLayout, RuntimeLayoutFailure> {
-  const { runtimeHome: _runtimeHome, ...overrides } = options;
-  return ResultAsync.fromPromise(
-    ensureRuntimeLayoutAtWorkspaceValue(workspace, { ...defaultDependencies, ...overrides }),
-    error => runtimeLayoutFailure(error, workspace.canonicalPath),
-  );
+): Effect.Effect<RuntimeLayout, RuntimeLayoutFailure> {
+  return Effect.tryPromise({
+    try: () => ensureRuntimeLayoutValue(cwd, options),
+    catch: error => runtimeLayoutFailure(error, cwd),
+  });
 }
 
 export async function validateRuntimeLayoutBoundary(layout: RuntimeLayout): Promise<void> {
@@ -232,9 +222,9 @@ export async function validateRuntimeLayoutBoundary(layout: RuntimeLayout): Prom
 export function validateWorkspaceManifest(
   value: unknown,
   layout: RuntimeLayout,
-): Result<AnyWorkspaceManifest, WorkspaceManifestFailure> {
+): Result.Result<AnyWorkspaceManifest, WorkspaceManifestFailure> {
   if (!isWorkspaceManifest(value)) {
-    return err({
+    return Result.fail({
       type: "manifest-invalid",
       path: layout.manifestPath,
       message: `Workspace manifest '${layout.manifestPath}' does not match the current format.`,
@@ -247,13 +237,13 @@ export function validateWorkspaceManifest(
     { field: "platform" as const, expected: layout.platform, actual: manifest.platform },
   ].find(candidate => candidate.expected !== candidate.actual);
   return mismatch
-    ? err({
+    ? Result.fail({
       type: "manifest-mismatch",
       path: layout.manifestPath,
       ...mismatch,
       message: `Workspace manifest '${layout.manifestPath}' has ${mismatch.field} '${mismatch.actual}', expected '${mismatch.expected}'.`,
     })
-    : ok(manifest);
+    : Result.succeed(manifest);
 }
 
 export function isWorkspaceManifest(value: unknown): value is AnyWorkspaceManifest {
@@ -292,7 +282,7 @@ export function runAcpStateRoot(layout: RuntimeLayout, runId: string): string {
   return join(layout.runsRoot, runId, "acp");
 }
 
-async function ensureRuntimeLayoutValue(
+export async function ensureRuntimeLayoutValue(
   cwd: string,
   options: RuntimeLayoutOptions,
 ): Promise<RuntimeLayout> {
@@ -303,10 +293,18 @@ async function ensureRuntimeLayoutValue(
   } catch (error) {
     throw operationFailure("resolve-workspace", resolve(cwd), error);
   }
-  return ensureRuntimeLayoutAtWorkspaceValue(workspace, { ...defaultDependencies, ...overrides });
+  return ensureRuntimeLayoutAtWorkspaceWithDependencies(workspace, { ...defaultDependencies, ...overrides });
 }
 
-async function ensureRuntimeLayoutAtWorkspaceValue(
+export async function ensureRuntimeLayoutAtWorkspaceValue(
+  workspace: RuntimeLayout,
+  options: RuntimeLayoutOptions = {},
+): Promise<RuntimeLayout> {
+  const { runtimeHome: _runtimeHome, ...overrides } = options;
+  return ensureRuntimeLayoutAtWorkspaceWithDependencies(workspace, { ...defaultDependencies, ...overrides });
+}
+
+async function ensureRuntimeLayoutAtWorkspaceWithDependencies(
   workspace: RuntimeLayout,
   dependencies: RuntimeLayoutDependencies,
 ): Promise<RuntimeLayout> {
@@ -319,8 +317,8 @@ async function ensureRuntimeLayoutAtWorkspaceValue(
     layout = await initializeFreshLayout(workspace, dependencies);
   } else {
     const validated = validateWorkspaceManifest(read, workspace);
-    if (validated.isErr()) throw manifestFailure(validated.error);
-    if (validated.value.manifestVersion === 1) {
+    if (Result.isFailure(validated)) throw manifestFailure(validated.failure);
+    if (validated.success.manifestVersion === 1) {
       throw layoutFailure({
         type: "layout-update-required",
         path: workspace.manifestPath,
@@ -329,7 +327,7 @@ async function ensureRuntimeLayoutAtWorkspaceValue(
         message: `Runtime store layout v1 requires repair to layout v${RUNTIME_LAYOUT_VERSION}.`,
       });
     }
-    layout = runtimeLayoutForGeneration(workspace, validated.value.activeGenerationId);
+    layout = runtimeLayoutForGeneration(workspace, validated.success.activeGenerationId);
   }
   await ensureGenerationDirectories(layout);
   return layout;

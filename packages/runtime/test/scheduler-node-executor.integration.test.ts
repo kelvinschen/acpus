@@ -1,13 +1,18 @@
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import { makeNodeProcessHost } from "@acpus/owned-process";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow, z } from "@acpus/core";
+import type { WorkflowIR } from "@acpus/core/ir";
 import { lift } from "@acpus/expression";
-import { errAsync } from "neverthrow";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createRuntimeNodeExecutor as createRuntimeNodeExecutorProduction, type RuntimeNodeExecutorInput } from "../src/scheduler/node-executor.js";
-import { advanceFrozenRun } from "../src/scheduler/runtime-runner.js";
-import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
+import { advanceFrozenRun } from "./support/effect-scheduler.js";
+import { openRuntimeStoreAdapter, type RuntimeStoreAdapter } from "../src/store/store.js";
 import { createInlineTaskAttemptHarness, type TaskAttemptRunner } from "./support/task-attempt-harness.js";
-import { prepareSyntheticWorkflow, runtimeRow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { prepareSyntheticWorkflow, runtimeRow, withRuntimeWorkspace } from "./support/runtime-harness.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { rootFrameStarted } from "./support/scheduler.js";
 import { type AgentHostPolicy } from "../src/configuration.js";
@@ -24,23 +29,33 @@ beforeEach(() => {
   taskAttemptHarness = createInlineTaskAttemptHarness();
   taskMocks.runTaskAttempt.mockReset().mockImplementation(input => taskAttemptHarness.runAttempt(input));
 });
-type TestRuntimeNodeExecutorInput = Omit<RuntimeNodeExecutorInput, "agentHostPolicy"> & { taskAttemptRunner?: TaskAttemptRunner };
+type TestRuntimeNodeExecutorInput = Omit<RuntimeNodeExecutorInput, "agentHostPolicy" | "ir" | "processes">
+  & Partial<Pick<RuntimeNodeExecutorInput, "processes">>
+  & { ir: WorkflowIR; taskAttemptRunner?: TaskAttemptRunner };
 const taskOnlyAgentHostPolicy: AgentHostPolicy = { responseRepair: { type: "valid", max: 0 } };
 function createRuntimeNodeExecutor(input: TestRuntimeNodeExecutorInput) {
   const { taskAttemptRunner, ...productionInput } = input;
   if (taskAttemptRunner) taskMocks.runTaskAttempt.mockImplementation(taskAttemptRunner);
-  const executor = createRuntimeNodeExecutorProduction({ ...productionInput, agentHostPolicy: taskOnlyAgentHostPolicy });
+  const executor = createRuntimeNodeExecutorProduction({
+    ...productionInput,
+    processes: productionInput.processes ?? makeNodeProcessHost(),
+    agentHostPolicy: taskOnlyAgentHostPolicy,
+  } as RuntimeNodeExecutorInput);
   return {
-    execute(context: Parameters<typeof executor.execute>[0]) {
+    executeEffect(context: Parameters<typeof executor.execute>[0]) {
       ensureTestInstance(input.store, context.runId, context.nodeKey, context.nodeId);
       return executor.execute(context);
+    },
+    execute(context: Parameters<typeof executor.execute>[0]) {
+      ensureTestInstance(input.store, context.runId, context.nodeKey, context.nodeId);
+      return Effect.runPromise(executor.execute(context));
     },
   };
 }
 
-const testRunClaims = new WeakMap<RuntimeStore, Map<string, NonNullable<ReturnType<RuntimeStore["scheduler"]["claimRun"]>>>>();
+const testRunClaims = new WeakMap<RuntimeStoreAdapter, Map<string, NonNullable<ReturnType<RuntimeStoreAdapter["scheduler"]["claimRun"]>>>>();
 
-function ensureTestInstance(store: RuntimeStore, runId: string, nodeKey: string, nodeId: string): void {
+function ensureTestInstance(store: RuntimeStoreAdapter, runId: string, nodeKey: string, nodeId: string): void {
   const scheduler = throwingSchedulerStore(store.scheduler);
   let snapshot = scheduler.loadRunSnapshot(runId);
   if (snapshot.projection.instances[nodeKey] && snapshot.projection.frames.root) return;
@@ -85,11 +100,25 @@ function ensureTestInstance(store: RuntimeStore, runId: string, nodeKey: string,
   }
 }
 
+function startTestAttempt(store: RuntimeStoreAdapter, runId: string, nodeKey: string, nodeId: string) {
+  ensureTestInstance(store, runId, nodeKey, nodeId);
+  const claim = testRunClaims.get(store)?.get(runId);
+  if (!claim) throw new Error(`Expected test claim for run '${runId}'.`);
+  const attempt = throwingSchedulerStore(store.scheduler).startAttempt({
+    runId,
+    nodeKey,
+    nodeId,
+    ownerEpoch: claim.ownerEpoch,
+    idempotencyKey: `task-test:${runId}:${nodeKey}:attempt`,
+  });
+  return { ...attempt, ownerEpoch: claim.ownerEpoch };
+}
+
 describe("scheduler task and signal leaf executor", () => {
   it("runs one task invocation per scheduler-visible attempt", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-single-attempt", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, failingInvocationTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           const executor = createRuntimeNodeExecutor({
@@ -98,15 +127,15 @@ describe("scheduler task and signal leaf executor", () => {
             scope: {},
             store,
           });
+          const attempt = startTestAttempt(store, run.id, "retry_task.dynamic", "retry_task");
 
           await expect(executor.execute({
             runId: run.id,
             nodeId: "retry_task",
             nodeKey: "retry_task.dynamic",
-            attemptId: "attempt_1",
-            attemptNo: 1,
-            ownerEpoch: 1,
-            signal: new AbortController().signal,
+            attemptId: attempt.attemptId,
+            attemptNo: attempt.attemptNo,
+            ownerEpoch: attempt.ownerEpoch,
           })).resolves.toEqual({ status: "failed", reason: "first invocation fails" });
           expect(taskAttemptHarness.calls).toHaveLength(1);
           expect(taskAttemptHarness.calls[0]).toMatchObject({
@@ -125,7 +154,7 @@ describe("scheduler task and signal leaf executor", () => {
   it("persists task configuration type failures through scheduler and public run details", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-task-resolution-type", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, wrongTypeTaskConfigWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { cwd: "workspace" }, cwd: workspace });
           await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({
@@ -156,7 +185,7 @@ describe("scheduler task and signal leaf executor", () => {
   it("persists signal evaluation failures without creating an attempt", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-signal-resolution-evaluation", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, failingSignalPromptWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { prompt: "approve" }, cwd: workspace });
           await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({ status: "failed" });
@@ -184,7 +213,7 @@ describe("scheduler task and signal leaf executor", () => {
   it("persists task timeout as a scheduler attempt deadline", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-attempt-deadline", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, timeoutTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { timeout: "5s" }, cwd: workspace });
           const now = new Date();
@@ -210,7 +239,7 @@ describe("scheduler task and signal leaf executor", () => {
   it("commits an unrepresentable task deadline as a constraint failure", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-task-deadline-range", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, timeoutTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { timeout: String(Number.MAX_SAFE_INTEGER) }, cwd: workspace });
           vi.useFakeTimers({ toFake: ["Date"] });
@@ -244,7 +273,7 @@ describe("scheduler task and signal leaf executor", () => {
   it("classifies an already-expired task deadline as timed_out", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-expired-task-deadline", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, timeoutTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const run = await admitRunForTest(store, { prepared, input: { timeout: "0ms" }, cwd: workspace });
           await expect(advanceFrozenRun({ cwd: workspace, runId: run.id, ownerId: "owner-a", store })).resolves.toMatchObject({
@@ -262,62 +291,47 @@ describe("scheduler task and signal leaf executor", () => {
       });
     });
 
-  it("maps a timed out task attempt result into the scheduler result", async () => {
-      await withRuntimeWorkspace("scheduler-node-executor-task-timed-out-result", async workspace => {
-        const prepared = await prepareSyntheticWorkflow(workspace, timeoutTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
+  it("interrupts a Task attempt through its Node Effect Fiber", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-pre-aborted", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, abortStatusTaskWorkflow());
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
-          const run = await admitRunForTest(store, { prepared, input: { timeout: "5s" }, cwd: workspace });
+          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
+          let interrupted = false;
           const executor = createRuntimeNodeExecutor({
             cwd: workspace,
             ir: prepared.ir,
             scope: {},
             store,
-            taskAttemptRunner: () => errAsync({ type: "timed_out", message: "task attempt deadline elapsed" }),
+            taskAttemptRunner: () => Effect.never.pipe(
+              Effect.onInterrupt(() => Effect.sync(() => { interrupted = true; })),
+            ),
           });
+          const attempt = startTestAttempt(store, run.id, "abort_task.dynamic", "abort_task");
 
-          await expect(executor.execute({
-            runId: run.id,
-            nodeId: "timeout_task",
-            nodeKey: "timeout_task.dynamic",
-            attemptId: "attempt_timeout",
-            attemptNo: 2,
-            ownerEpoch: 1,
-            signal: new AbortController().signal,
-          })).resolves.toEqual({ status: "timed_out", reason: "task attempt deadline elapsed" });
-        } finally {
-          store.close();
-        }
-      });
-    });
-
-  it("cancels a task attempt when the scheduler signal is already aborted", async () => {
-      await withRuntimeWorkspace("scheduler-node-executor-pre-aborted", async workspace => {
-        const prepared = await prepareSyntheticWorkflow(workspace, abortStatusTaskWorkflow());
-        const store = await openRuntimeStore(workspace);
-        try {
-          const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
-          const executor = createRuntimeNodeExecutor({ cwd: workspace, ir: prepared.ir, scope: {}, store });
-          const controller = new AbortController();
-          controller.abort();
-
-          await expect(executor.execute({
+          const fiber = Effect.runFork(executor.executeEffect({
             runId: run.id,
             nodeId: "abort_task",
             nodeKey: "abort_task.dynamic",
-            attemptId: "attempt_abort",
-            attemptNo: 3,
-            ownerEpoch: 1,
-            signal: controller.signal,
-          })).resolves.toEqual({ status: "cancelled", reason: "paused" });
-          expect(taskAttemptHarness.calls).toHaveLength(1);
-          expect(taskAttemptHarness.calls[0]).toMatchObject({
+            attemptId: attempt.attemptId,
+            attemptNo: attempt.attemptNo,
+            ownerEpoch: attempt.ownerEpoch,
+          }));
+          await vi.waitFor(() => expect(taskMocks.runTaskAttempt).toHaveBeenCalledOnce());
+          await Effect.runPromise(Fiber.interrupt(fiber));
+          const exit = await Effect.runPromise(Fiber.await(fiber));
+          expect(Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause)).toBe(true);
+          expect(interrupted).toBe(true);
+          expect(taskMocks.runTaskAttempt.mock.calls[0]?.[0]).toMatchObject({
             nodeId: "abort_task",
-            nodeKey: "abort_task.dynamic",
-            attempt: 3,
-            input: null,
             cwd: workspace,
-            signal: controller.signal,
+            request: {
+              input: null,
+              artifact: {
+                nodeKey: "abort_task.dynamic",
+                attempt: attempt.attemptNo,
+              },
+            },
           });
         } finally {
           store.close();

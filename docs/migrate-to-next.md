@@ -4,8 +4,9 @@
 > Acpus 0.6 is a TypeScript-first foundation rewrite. It is not a compatibility release
 > for the 0.5 YAML Workflow-Spec product. Migrate one workflow at a time,
 > keep the 0.5 workflow available until the replacement has been checked and
-> exercised, and verify current behavior against [`specs/`](../specs/INDEX.md),
-> `acpus --help`, and `acpus workflow check`.
+> exercised, and verify the stable product contract against
+> [`specs/`](../specs/INDEX.md) and current executable behavior through
+> `acpus --help` and `acpus workflow check`.
 
 Acpus 0.6 keeps the durable-workflow goal, but changes the authoring model. A
 0.5 workflow cannot be made into a 0.6 workflow by changing the extension
@@ -285,11 +286,12 @@ without canceling the run.
 
 ### Hooks
 
-Do not copy `.acpus/hooks.yaml` to `.acpus/hooks.json`. Rebuild the integration
-from its purpose:
+Do not copy `.acpus/hooks.yaml` forward. Rebuild the integration from its
+purpose in the unified Acpus configuration:
 
-- 0.6 reads `<workspace>/.acpus/hooks.json` and `$HOME/.acpus/hooks.json`.
-- The JSON top level is an event map; there is no `hooks` wrapper.
+- Acpus reads `<workspace>/.acpus/config.json` and `$HOME/.acpus/config.json`.
+- Hooks live in the top-level `hooks` section alongside optional `agents` and
+  `presets` sections.
 - Supported events are `run.started`, `run.completed`, `run.failed`,
   `run.canceled`, `run.awaiting`, `node.started`, `node.completed`, and
   `node.failed`.

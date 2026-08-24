@@ -17,13 +17,14 @@ acpus runs inspect <run-id> --target <nodeId|@ref|@ref#attemptNo>
 acpus runs inspect <run-id> --target <resolved-target> --timeline
 ```
 
-For exact settled-turn prompt/response data and the run-local acpx session projection, see [Agent Records](agent-records.md). Summary and Timeline expose bounded semantic activity and visible observation gaps.
+For exact settled-turn prompt/response data and the run-local ACP session projection, see [Agent Records](agent-records.md). Summary and Timeline expose bounded semantic activity and visible observation gaps.
 
 Only when diagnosis requires comparing the frozen definition, actual invocation, and accepted result, read [Forensics](advanced-cli-operations.md#forensics). Do not use it for ordinary monitoring or proof of activity.
 
-Agent failures preserve Acpus origin/code separately from their upstream acpx cause. Do not infer an authentication, model, or quota category from error wording.
+Agent failures preserve Acpus origin/code separately from their upstream Agent or provider cause. Do not infer an authentication, model, or quota category from error wording.
 
-For `RUNTIME_UPDATE_BLOCKED`, leave the old daemon and its runs untouched, wait for current work to finish, then retry. For `RUNTIME_AUTHORITY_LOST`, the admitted run remains durable; continue with `acpus runs inspect <run-id> --follow`.
+- `RUNTIME_UPDATE_BLOCKED`: Leave the old daemon and runs untouched; wait for current work to finish, then retry.
+- `RUNTIME_AUTHORITY_LOST`: The run remains durable; continue with `acpus runs inspect <run-id> --follow`.
 
 For `ACPUS_WORKSPACE_UNAVAILABLE`, restore the exact original workspace path, then repeat the same operation. Do not rebind the task or submit a replacement.
 
@@ -36,7 +37,7 @@ For `ACPUS_WORKSPACE_UNAVAILABLE`, restore the exact original workspace path, th
 | TypeScript diagnostics, Expr in JS truthiness, task capture, output admissibility | `check` | Revise the workflow source, then repeat the command that produced this phase. |
 | module import failed, default export invalid, build callback throws | `compile` | Fix module exports/imports or build-time code. |
 | unknown IR fields, malformed task target, invalid schema/expression IR | `validate` | Fix authoring shape or Acpus package mismatch. |
-| task command failed, agent failed, signal timed out, assert false | `run` | Inspect artifacts; retry or fork depending on cause. |
+| task command failed, agent failed, signal timed out, assert false | `run` | Inspect artifacts; choose Retry or Fork according to the durable state. |
 | control target not found, run terminal, conflict | `control` | Re-inspect and use the public authored id or exact `@ref` that currently exists. |
 
 ## Recovery decision
@@ -44,15 +45,24 @@ For `ACPUS_WORKSPACE_UNAVAILABLE`, restore the exact original workspace path, th
 | Choose | Use when | Effect |
 | --- | --- | --- |
 | Wait | No recovery condition or new information exists. | Leaves correct active work uninterrupted. |
-| Steer | The admitted task remains correct, but a started Agent needs an admitted in-scope information update. | Fences that attempt and queues the update in the same run and Agent session. |
-| Retry | Failed or timed-out work can repeat under unchanged admitted state. | Continues the same run and preserves completed work. |
-| Fork | The workflow, input, Agent mapping, or task definition must change. | Creates a new run and reuses compatible completed work when safe. |
+| Steer | The admitted task remains correct, but an exactly active Agent Turn needs an in-scope information update. | Interrupts and drains that Turn, then runs a replacement Attempt in the same Agent Session. |
+| Retry | A failed or timed-out Task, Agent, or frame can repeat under unchanged admitted state. | Reopens the complete required range; affected local Agent Sessions are replaced by a new generation. |
+| Fork | The workflow, input, Agent binding, or task definition must change. | Creates a new run and reuses compatible completed work when safe. |
 
 Prefer the smallest action that preserves correct admitted state:
 
-- Steer one exact started Agent only when new context or a compatible constraint belongs to the same task. **NEVER steer for elapsed time, silence, or convergence pressure**; fork if admitted state or task scope must change.
-- Retry one failed target when the failure is local and transient; retry the run when several failures share the same unchanged admitted state. Retry a timed-out Signal rather than signaling its closed wait.
-- Fork when recovery requires changing authored behavior, input, Agent mapping, or task definition. Reuse earlier results only when their outputs and side effects remain valid.
+- **Steer**
+  - Use for one exact active Agent when new context or a compatible constraint belongs to the same task.
+  - Delivery is Interrupt & Continue; completed side effects are not rolled back.
+  - It may be rejected after proof of the exact active Turn disappears.
+  - **NEVER Steer for elapsed time, silence, or convergence pressure.** Fork when task scope or admitted state must change.
+- **Retry**
+  - Use for one failed or timed-out Task, Agent, or frame when workflow and inputs remain correct.
+  - Retry a timed-out Signal target; do not signal its closed wait.
+- **Fork**
+  - Use when authored behavior, input, Agent binding, or Task definition must change.
+  - Use instead of Retry when the range intersects an explicit shared Agent Session. Run the exact Fork command supplied by Acpus.
+  - Reuse earlier results only when their outputs and side effects remain valid.
 
 Read [Advanced CLI Operations](advanced-cli-operations.md#runtime-control-details) for command syntax, target resolution, fencing, retry reopening, fork inheritance, receipts, and other control mechanics.
 
@@ -60,14 +70,16 @@ Read [Advanced CLI Operations](advanced-cli-operations.md#runtime-control-detail
 
 - `runs inspect` may report non-terminal execution as stale based on daemon heartbeat or lease evidence. DO NOT mutate state just because a run is stale.
 
-- An attached `--follow` or `--await-decision` view remains read-only through a stale state; stale alone is not a decision boundary. Run `acpus doctor`, and choose a control only when the user asks to recover or continue.
+- `--follow` and `--await-decision` remain read-only through stale state; stale alone is not a decision boundary.
+- Run `acpus doctor`; choose a control only when the user asks to recover or continue.
 
-- Runtime automatically settles derivable work after cancellation or owner loss, even when another branch awaits an untimed Signal.  DO NOT intervene solely because a run is temporarily non-terminal; re-inspect after settlement, then retry or fork if needed.
+- Acpus settles derivable work after cancellation or owner loss, even while another branch awaits an untimed Signal.
+- **DO NOT intervene solely because a run is temporarily non-terminal.** Re-inspect after settlement, then Retry or Fork if needed.
 
 - For artifact lookup, read [CLI Operations](cli-operations.md#artifacts); use target inspection when paths need surrounding recovery state. DO NOT guess at run-local paths.
 
 ## ACP worker silence and residual ownership
 
 - `ACP silent for <duration>` is an observation, not proof of failure. Do not act on silence alone.
-- To fail a long-silent Agent automatically, set `ACPUS_AGENT_ACP_INACTIVITY_FAIL_AFTER_MS` before starting the daemon. Then use the normal retry, steer, or fork decision.
+- To fail a long-silent Agent automatically, set `ACPUS_AGENT_ACP_INACTIVITY_FAIL_AFTER_MS` before starting the daemon. Then inspect its checkpoint and choose Retry, Steer, or Fork.
 - Pause, failure, completion, and cancel release the worker. `acpus doctor` warns only when cleanup leaves an unresolved worker.

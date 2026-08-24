@@ -1,11 +1,13 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import { makeNodeProcessHost } from "@acpus/owned-process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TaskNodeIR } from "@acpus/core/ir";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ok, okAsync } from "neverthrow";
 import type { TaskExecutorOptions } from "../src/execution/task-executor.js";
-import { executeTaskNode } from "../src/execution/task-executor.js";
+import { executeTaskNode as executeTaskNodeProduction } from "../src/execution/task-executor.js";
 import { resolveRuntimeLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
 import type { ArtifactRecord, RegisterArtifactInput } from "../src/artifacts/types.js";
 import { captureDirectoryIdentity } from "../src/store/path-fence.js";
@@ -15,6 +17,10 @@ import type { TaskAttemptRunner } from "./support/task-attempt-harness.js";
 const taskProcessMocks = vi.hoisted(() => ({
   runTaskAttempt: vi.fn<TaskAttemptRunner>(),
 }));
+
+function executeTaskNode(...args: Parameters<typeof executeTaskNodeProduction>) {
+  return Effect.runPromise(executeTaskNodeProduction(...args));
+}
 let taskRuntimeRoot: string;
 
 vi.mock("../src/execution/task-process.js", async importOriginal => ({
@@ -34,7 +40,7 @@ afterEach(() => {
 
 describe("task executor rules", () => {
   it("preserves an own __proto__ Task input field without changing its prototype", async () => {
-    taskProcessMocks.runTaskAttempt.mockReturnValue(okAsync({ ok: true }));
+    taskProcessMocks.runTaskAttempt.mockReturnValue(Effect.succeed(Result.succeed({ ok: true })));
     const authoredInput: TaskNodeIR["run"]["input"] = {
       kind: "object",
       fields: Object.fromEntries([
@@ -53,7 +59,7 @@ describe("task executor rules", () => {
       taskOptions("run_proto_input"),
     );
 
-    expect(result.isOk()).toBe(true);
+    expect(Result.isSuccess(result)).toBe(true);
     const input = taskProcessMocks.runTaskAttempt.mock.calls[0]?.[0].request.input;
     expect(input).toBeDefined();
     if (input === undefined || input === null || typeof input !== "object" || Array.isArray(input)) {
@@ -69,10 +75,12 @@ describe("task executor rules", () => {
     ["null", { kind: "literal", value: null } satisfies TaskNodeIR["run"]["input"], null],
     ["array", { kind: "array", items: [{ kind: "literal", value: "raw" }, { kind: "literal", value: 2 }] } satisfies TaskNodeIR["run"]["input"], ["raw", 2]],
   ])("passes exact %s Task input through metadata and the Task attempt request", async (_name, authoredInput, expected) => {
-    taskProcessMocks.runTaskAttempt.mockReturnValue(okAsync({ ok: true }));
+    taskProcessMocks.runTaskAttempt.mockReturnValue(Effect.succeed(Result.succeed({ ok: true })));
     const metadata: unknown[] = [];
     const options = taskOptions(`run_${_name}`);
-    options.store.writeExecutionMetadata = entry => metadata.push(entry);
+    options.store.writeExecutionMetadata = entry => Effect.sync(() => {
+      metadata.push(entry);
+    });
 
     const result = await executeTaskNode(
       inlineTask("exact_input", "async () => ({ ok: true })", { input: authoredInput }),
@@ -80,7 +88,7 @@ describe("task executor rules", () => {
       options,
     );
 
-    expect(result.isOk()).toBe(true);
+    expect(Result.isSuccess(result)).toBe(true);
     expect(taskProcessMocks.runTaskAttempt.mock.calls[0]?.[0].request.input).toEqual(expected);
     expect(metadata).toEqual([
       expect.objectContaining({
@@ -90,7 +98,7 @@ describe("task executor rules", () => {
   });
 
   it.each(["root", "array"] as const)("binds an ArtifactRef from %s Task input before starting the process", async shape => {
-    taskProcessMocks.runTaskAttempt.mockReturnValue(okAsync({ ok: true }));
+    taskProcessMocks.runTaskAttempt.mockReturnValue(Effect.succeed(Result.succeed({ ok: true })));
     const runId = `run_${shape}_artifact`;
     const artifactId = "artifact_input";
     const uri = `artifact://${runId}/${artifactId}`;
@@ -122,7 +130,12 @@ describe("task executor rules", () => {
         ? artifactExpr
         : { kind: "array" as const, items: [artifactExpr] };
       const options = taskOptions(runId, workspace, runsRoot);
-      options.store.getArtifact = (_runId, id) => id === artifactId ? artifact : undefined;
+      const run = {
+        runId,
+        runsRoot: captureDirectoryIdentity(runsRoot, "Runtime runs root"),
+        runDirectory: captureDirectoryIdentity(join(runsRoot, runId), `Run directory '${runId}'`),
+      };
+      options.store.resolveArtifactRef = () => Effect.succeed({ artifact, run, file: { path, filesystemIdentity: "test" } });
 
       const result = await executeTaskNode(
         inlineTask(`${shape}_artifact`, "async () => ({ ok: true })", { input }),
@@ -130,7 +143,7 @@ describe("task executor rules", () => {
         options,
       );
 
-      expect(result.isOk()).toBe(true);
+      expect(Result.isSuccess(result)).toBe(true);
       expect(taskProcessMocks.runTaskAttempt).toHaveBeenCalledOnce();
       expect(taskProcessMocks.runTaskAttempt.mock.calls[0]?.[0].request.artifact.paths[uri])
         .toMatchObject({ path });
@@ -140,7 +153,7 @@ describe("task executor rules", () => {
   });
 
   it("evaluates the complete Task input expression exactly once", async () => {
-    taskProcessMocks.runTaskAttempt.mockReturnValue(okAsync({ ok: true }));
+    taskProcessMocks.runTaskAttempt.mockReturnValue(Effect.succeed(Result.succeed({ ok: true })));
     let reads = 0;
     const runtimeInput = {};
     Object.defineProperty(runtimeInput, "value", {
@@ -159,7 +172,7 @@ describe("task executor rules", () => {
       taskOptions("run_single_evaluation"),
     );
 
-    expect(result.isOk()).toBe(true);
+    expect(Result.isSuccess(result)).toBe(true);
     expect(reads).toBe(1);
     expect(taskProcessMocks.runTaskAttempt.mock.calls[0]?.[0].request.input).toBe("resolved");
   });
@@ -177,7 +190,7 @@ describe("task executor rules", () => {
       options,
     );
 
-    expect(result.isErr() && result.error).toMatchObject({
+    expect(Result.isFailure(result) && result.failure).toMatchObject({
       type: "resolution",
       error: {
         type: "evaluation",
@@ -201,7 +214,7 @@ describe("task executor rules", () => {
       options,
     );
 
-    expect(result.isErr() && result.error).toMatchObject({
+    expect(Result.isFailure(result) && result.failure).toMatchObject({
       type: "resolution",
       error: {
         type: "evaluation",
@@ -218,7 +231,7 @@ describe("task executor rules", () => {
       cwd: { kind: "literal", value: 42 },
     }), {}, taskOptions("run_bad_cwd"));
 
-    expect(result.isErr() && result.error).toMatchObject({
+    expect(Result.isFailure(result) && result.failure).toMatchObject({
       type: "resolution",
       error: {
         type: "type",
@@ -232,7 +245,7 @@ describe("task executor rules", () => {
 
   it("passes a distant deadline to the Task attempt without timer overflow", async () => {
     const deadlineAt = new Date(Date.now() + 2_147_483_647 + 60_000).toISOString();
-    taskProcessMocks.runTaskAttempt.mockReturnValue(okAsync({ ok: true }));
+    taskProcessMocks.runTaskAttempt.mockReturnValue(Effect.succeed(Result.succeed({ ok: true })));
 
     const result = await executeTaskNode(
       inlineTask("distant", "async () => ({ ok: true })"),
@@ -240,7 +253,7 @@ describe("task executor rules", () => {
       { ...taskOptions("run_distant"), deadlineAt },
     );
 
-    expect(result.isOk() ? result.value : undefined).toEqual({ ok: true });
+    expect(Result.isSuccess(result) ? result.success : undefined).toEqual({ ok: true });
     expect(taskProcessMocks.runTaskAttempt).toHaveBeenCalledOnce();
     expect(taskProcessMocks.runTaskAttempt.mock.calls[0]?.[0].timeoutMs)
       .toBeGreaterThan(2_147_483_647);
@@ -251,9 +264,9 @@ describe("task executor rules", () => {
     let now = startedAt;
     vi.spyOn(Date, "now").mockImplementation(() => now);
     const options = taskOptions("run_setup_timeout");
-    options.store.writeExecutionMetadata = () => {
+    options.store.writeExecutionMetadata = () => Effect.sync(() => {
       now += 100;
-    };
+    });
 
     const result = await executeTaskNode(
       inlineTask("setup_timeout", "async () => ({ ok: true })"),
@@ -261,7 +274,7 @@ describe("task executor rules", () => {
       { ...options, deadlineAt: new Date(startedAt + 50).toISOString() },
     );
 
-    expect(result.isErr() && result.error).toMatchObject({ type: "timed_out" });
+    expect(Result.isFailure(result) && result.failure).toMatchObject({ type: "timed_out" });
     expect(taskProcessMocks.runTaskAttempt).not.toHaveBeenCalled();
   });
 
@@ -289,16 +302,16 @@ function taskOptions(
     attemptId: `attempt_${runId}`,
     attemptNo: 1,
     ownerEpoch: 1,
+    processes: makeNodeProcessHost(),
     store: {
-      runsRoot,
-      getRunDirectoryToken: () => ({
+      getRunDirectoryToken: () => Effect.succeed({
         runId,
         runsRoot: captureDirectoryIdentity(runsRoot, "Runtime runs root"),
         runDirectory: captureDirectoryIdentity(runDir, `Run directory '${runId}'`),
       }),
-      getArtifact: () => undefined,
-      registerArtifact: (_input: RegisterArtifactInput) => ok(undefined),
-      writeExecutionMetadata: () => {},
+      registerArtifact: (_input: RegisterArtifactInput) => Effect.void,
+      writeExecutionMetadata: () => Effect.void,
+      resolveArtifactRef: () => Effect.die(new Error("Unexpected ArtifactRef resolution.")),
     },
   };
 }

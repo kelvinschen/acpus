@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
-import { err, ok, type Result } from "neverthrow";
 import { isJsonValue } from "@acpus/expression/ir";
+import * as Result from "effect/Result";
 import type { JsonPrimitive, JsonValue, SchemaIR } from "../ir/types.js";
 import type { Schema } from "./zod.js";
 
@@ -18,12 +18,12 @@ function typeOf(schema: Schema<any>): string {
 }
 
 export function toSchemaIR(schema: Schema<any>, path = "$schema"): SchemaIR {
-  return tryToSchemaIR(schema, path).match(
-    ir => ir,
-    error => {
+  return Result.match(tryToSchemaIR(schema, path), {
+    onSuccess: ir => ir,
+    onFailure: error => {
       throw new Error(error.message);
     },
-  );
+  });
 }
 
 function withSchemaMetadata(schema: Schema<any>, ir: SchemaIR): SchemaIR {
@@ -75,34 +75,34 @@ function numericConstraintSummary(schema: Schema<any>): string | undefined {
   return summary.length === 0 ? undefined : summary.join("; ");
 }
 
-export function tryToSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, SchemaLoweringError> {
-  return lowerSchemaIR(schema, path).map(ir => withSchemaMetadata(schema, ir));
+export function tryToSchemaIR(schema: Schema<any>, path = "$schema"): Result.Result<SchemaIR, SchemaLoweringError> {
+  return Result.map(lowerSchemaIR(schema, path), ir => withSchemaMetadata(schema, ir));
 }
 
-function lowerSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, SchemaLoweringError> {
+function lowerSchemaIR(schema: Schema<any>, path = "$schema"): Result.Result<SchemaIR, SchemaLoweringError> {
   const def = defOf(schema);
   const kind = typeOf(schema);
   switch (kind) {
-    case "string": return ok({ kind: "string" });
-    case "number": return ok({ kind: "number" });
-    case "boolean": return ok({ kind: "boolean" });
-    case "null": return ok({ kind: "null" });
+    case "string": return Result.succeed({ kind: "string" });
+    case "number": return Result.succeed({ kind: "number" });
+    case "boolean": return Result.succeed({ kind: "boolean" });
+    case "null": return Result.succeed({ kind: "null" });
     case "unknown":
-    case "any": return ok({ kind: "unknown" });
+    case "any": return Result.succeed({ kind: "unknown" });
     case "literal": {
       const values = Array.isArray(def.values) ? def.values : [def.value];
       if (values.length === 1) {
         const only = values[0];
-        if (only === undefined) return err({ type: "invalid-literal", path, valueType: "undefined", message: `${path}: literal value is missing` });
-        return tryNormalizeLiteral(only, path).map(value => ({ kind: "literal", value }));
+        if (only === undefined) return Result.fail({ type: "invalid-literal", path, valueType: "undefined", message: `${path}: literal value is missing` });
+        return Result.map(tryNormalizeLiteral(only, path), value => ({ kind: "literal", value }));
       }
       const normalized: JsonPrimitive[] = [];
       for (const value of values) {
         const literal = tryNormalizeLiteral(value, path);
-        if (literal.isErr()) return err(literal.error);
-        normalized.push(literal.value);
+        if (Result.isFailure(literal)) return Result.fail(literal.failure);
+        normalized.push(literal.success);
       }
-      return ok({ kind: "enum", values: normalized });
+      return Result.succeed({ kind: "enum", values: normalized });
     }
     case "enum": {
       const entries = def.entries ?? {};
@@ -111,12 +111,12 @@ function lowerSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, 
       for (const [key, value] of Object.entries(entries)) {
         if (numericValues.indexOf(+key) !== -1) continue;
         const literal = tryNormalizeLiteral(value, path);
-        if (literal.isErr()) return err(literal.error);
-        values.push(literal.value);
+        if (Result.isFailure(literal)) return Result.fail(literal.failure);
+        values.push(literal.success);
       }
-      return ok({ kind: "enum", values });
+      return Result.succeed({ kind: "enum", values });
     }
-    case "array": return tryToSchemaIR(def.element, `${path}[]`).map(item => ({ kind: "array", item }));
+    case "array": return Result.map(tryToSchemaIR(def.element, `${path}[]`), item => ({ kind: "array", item }));
     case "tuple": {
       if (def.rest) return unsupported(path, kind, "Zod tuple rest items are not supported as an Acpus graph-boundary schema");
       const items = Array.isArray(def.items) ? def.items as Schema<any>[] : [];
@@ -124,43 +124,43 @@ function lowerSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, 
       const lowered: SchemaIR[] = [];
       for (const [index, item] of items.entries()) {
         const itemIR = tryToSchemaIR(item, `${path}[${index}]`);
-        if (itemIR.isErr()) return itemIR;
-        lowered.push(itemIR.value);
+        if (Result.isFailure(itemIR)) return itemIR;
+        lowered.push(itemIR.success);
       }
       const item = lowered[0]!;
       if (lowered.some(candidate => !isDeepStrictEqual(candidate, item))) {
         return unsupported(path, kind, "Zod tuple items must lower to the same Acpus array item schema");
       }
-      return ok({ kind: "array", item });
+      return Result.succeed({ kind: "array", item });
     }
     case "object": return objectToSchemaIR(schema, path);
-    case "record": return tryToSchemaIR(def.valueType, `${path}.<value>`).map(value => ({ kind: "record", value }));
+    case "record": return Result.map(tryToSchemaIR(def.valueType, `${path}.<value>`), value => ({ kind: "record", value }));
     case "union": {
       const variants: SchemaIR[] = [];
       for (const [index, option] of (def.options ?? []).entries()) {
         const variant = tryToSchemaIR(option as Schema<any>, `${path}.union[${index}]`);
-        if (variant.isErr()) return variant;
-        variants.push(variant.value);
+        if (Result.isFailure(variant)) return variant;
+        variants.push(variant.success);
       }
-      return ok({ kind: "union", variants });
+      return Result.succeed({ kind: "union", variants });
     }
-    case "optional": return tryToSchemaIR(def.innerType, path).map(inner => ({ ...inner, optional: true }));
-    case "nullable": return tryToSchemaIR(def.innerType, path).map(inner => ({ ...inner, nullable: true }));
+    case "optional": return Result.map(tryToSchemaIR(def.innerType, path), inner => ({ ...inner, optional: true }));
+    case "nullable": return Result.map(tryToSchemaIR(def.innerType, path), inner => ({ ...inner, nullable: true }));
     case "default": {
       const inner = tryToSchemaIR(def.innerType, path);
-      if (inner.isErr()) return inner;
+      if (Result.isFailure(inner)) return inner;
       let raw: unknown;
       try {
         raw = def.defaultValue;
       } catch {
-        return err({ type: "invalid-default", path, valueType: "function", message: `${path}: default value factory could not be evaluated` });
+        return Result.fail({ type: "invalid-default", path, valueType: "function", message: `${path}: default value factory could not be evaluated` });
       }
-      const next: SchemaIR = { ...inner.value, optional: true };
-      if (raw === undefined) return ok(next);
+      const next: SchemaIR = { ...inner.success, optional: true };
+      if (raw === undefined) return Result.succeed(next);
       const json = normalizeJsonValue(raw);
-      if (json === undefined) return err({ type: "invalid-default", path, valueType: typeof raw, message: `${path}: default value is not JSON-serializable` });
+      if (json === undefined) return Result.fail({ type: "invalid-default", path, valueType: typeof raw, message: `${path}: default value is not JSON-serializable` });
       next.default = json;
-      return ok(next);
+      return Result.succeed(next);
     }
     case "readonly":
     case "nonoptional": return tryToSchemaIR(def.innerType, path);
@@ -181,34 +181,34 @@ function lowerSchemaIR(schema: Schema<any>, path = "$schema"): Result<SchemaIR, 
   }
 }
 
-function objectToSchemaIR(schema: Schema<any>, path: string): Result<SchemaIR, SchemaLoweringError> {
+function objectToSchemaIR(schema: Schema<any>, path: string): Result.Result<SchemaIR, SchemaLoweringError> {
   const def = defOf(schema);
   const shape = typeof def.shape === "function" ? def.shape() : def.shape;
   const fields: Record<string, SchemaIR> = {};
   const required: string[] = [];
   for (const [key, child] of Object.entries(shape ?? {})) {
     const childIR = tryToSchemaIR(child as Schema<any>, `${path}.${key}`);
-    if (childIR.isErr()) return childIR;
-    setOwnProperty(fields, key, childIR.value);
-    if (!childIR.value.optional && childIR.value.default === undefined) required.push(key);
+    if (Result.isFailure(childIR)) return childIR;
+    setOwnProperty(fields, key, childIR.success);
+    if (!childIR.success.optional && childIR.success.default === undefined) required.push(key);
   }
   const catchall = def.catchall;
   const catchallType = catchall ? typeOf(catchall as Schema<any>) : undefined;
-  return ok({ kind: "object", fields, required, additionalProperties: Boolean(catchall && catchallType !== "never") });
+  return Result.succeed({ kind: "object", fields, required, additionalProperties: Boolean(catchall && catchallType !== "never") });
 }
 
-function tryNormalizeLiteral(value: unknown, path: string): Result<JsonPrimitive, SchemaLoweringError> {
-  if (typeof value === "string" || typeof value === "boolean" || value === null) return ok(value);
-  if (typeof value === "number" && Number.isFinite(value)) return ok(value);
+function tryNormalizeLiteral(value: unknown, path: string): Result.Result<JsonPrimitive, SchemaLoweringError> {
+  if (typeof value === "string" || typeof value === "boolean" || value === null) return Result.succeed(value);
+  if (typeof value === "number" && Number.isFinite(value)) return Result.succeed(value);
   return invalidLiteral(path, typeof value, `${path}: literal/enum value ${String(value)} is not JSON-serializable`);
 }
 
-function invalidLiteral(path: string, valueType: string, message: string): Result<JsonPrimitive, SchemaLoweringError> {
-  return err({ type: "invalid-literal", path, valueType, message });
+function invalidLiteral(path: string, valueType: string, message: string): Result.Result<JsonPrimitive, SchemaLoweringError> {
+  return Result.fail({ type: "invalid-literal", path, valueType, message });
 }
 
-function unsupported(path: string, schemaKind: string, message: string): Result<SchemaIR, SchemaLoweringError> {
-  return err({ type: "unsupported-schema", path, schemaKind, message: `${path}: ${message}` });
+function unsupported(path: string, schemaKind: string, message: string): Result.Result<SchemaIR, SchemaLoweringError> {
+  return Result.fail({ type: "unsupported-schema", path, schemaKind, message: `${path}: ${message}` });
 }
 
 function normalizeJsonValue(value: unknown): JsonValue | undefined {

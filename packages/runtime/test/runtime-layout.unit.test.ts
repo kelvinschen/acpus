@@ -1,3 +1,5 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -50,7 +52,7 @@ describe("runtime layout", () => {
     const restore = setRuntimeHomeForTest(workspace, home);
     try {
       const layout = resolveRuntimeLayout(workspace);
-      expect(validateWorkspaceManifest({}, layout).isErr()).toBe(true);
+      expect(Result.isFailure(validateWorkspaceManifest({}, layout))).toBe(true);
       await expect(access(home)).rejects.toMatchObject({ code: "ENOENT" });
     } finally {
       restore();
@@ -63,9 +65,9 @@ describe("runtime layout", () => {
     await mkdir(workspace);
     const restore = setRuntimeHomeForTest(workspace, join(root, "home"));
     try {
-      const created = await ensureRuntimeLayout(workspace, { now: () => new Date("2026-07-24T00:00:00.000Z") });
-      if (created.isErr()) throw new Error(created.error.message);
-      const layout = created.value;
+      const created = await Effect.runPromise(Effect.result(ensureRuntimeLayout(workspace, { now: () => new Date("2026-07-24T00:00:00.000Z") })));
+      if (Result.isFailure(created)) throw new Error(created.failure.message);
+      const layout = created.success;
       const manifest = JSON.parse(await readFile(layout.manifestPath, "utf8")) as WorkspaceManifest;
       expect(manifest).toEqual({
         manifestVersion: 2,
@@ -78,7 +80,7 @@ describe("runtime layout", () => {
       expect(JSON.parse(await readFile(layout.generationMetadataPath, "utf8"))).toEqual({
         schemaVersion: 1,
         id: layout.generationId,
-        storageVersion: 10,
+        storageVersion: 19,
         createdAt: "2026-07-24T00:00:00.000Z",
       });
       expect(resolveRuntimeLayout(workspace)).toEqual(layout);
@@ -100,10 +102,10 @@ describe("runtime layout", () => {
     await mkdir(workspace);
     const restore = setRuntimeHomeForTest(workspace, join(root, "home"));
     try {
-      const first = await ensureRuntimeLayout(workspace);
-      const second = await ensureRuntimeLayout(workspace);
-      if (first.isErr() || second.isErr()) throw new Error("Expected Runtime layout.");
-      expect(second.value).toEqual(first.value);
+      const first = await Effect.runPromise(Effect.result(ensureRuntimeLayout(workspace)));
+      const second = await Effect.runPromise(Effect.result(ensureRuntimeLayout(workspace)));
+      if (Result.isFailure(first) || Result.isFailure(second)) throw new Error("Expected Runtime layout.");
+      expect(second.success).toEqual(first.success);
     } finally {
       restore();
     }
@@ -124,8 +126,8 @@ describe("runtime layout", () => {
         platform: layout.platform,
         createdAt: "2026-07-24T00:00:00.000Z",
       })}\n`);
-      const result = await ensureRuntimeLayout(workspace);
-      expect(result.isErr() && result.error).toMatchObject({ type: "layout-update-required" });
+      const result = await Effect.runPromise(Effect.result(ensureRuntimeLayout(workspace)));
+      expect(Result.isFailure(result) && result.failure).toMatchObject({ type: "layout-update-required" });
     } finally {
       restore();
     }
@@ -141,7 +143,7 @@ describe("runtime layout", () => {
       createdAt: "2026-07-24T00:00:00.000Z",
       activeGenerationId: generationId,
     }, layout);
-    expect(result.isErr() && result.error).toMatchObject({ type: "manifest-mismatch", field: "canonicalPath" });
+    expect(Result.isFailure(result) && result.failure).toMatchObject({ type: "manifest-mismatch", field: "canonicalPath" });
   });
 });
 

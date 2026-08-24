@@ -1,12 +1,18 @@
-import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtemp } from "node:fs/promises";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { validateHooksFile } from "../src/hooks/config.js";
 import { loadHooksConfig, loadHooksConfigScopes } from "../src/hooks/loader.js";
-import { stableJson } from "../src/stable-json.js";
+
+const temporaryDirectories: string[] = [];
+
+afterEach(async () => {
+  await Promise.all(temporaryDirectories.splice(0).map(path => rm(path, { recursive: true, force: true })));
+});
 
 describe("hooks config", () => {
   it("accepts event-map command hooks", () => {
@@ -15,8 +21,8 @@ describe("hooks config", () => {
       "node.failed": [{ match: { nodeId: "^(build|test)$", nodeKey: "build~", kind: "task|agent" }, command: "./alert.sh" }],
     });
 
-    expect(result.isOk()).toBe(true);
-    expect(result._unsafeUnwrap()).toMatchObject({
+    expect(Result.isSuccess(result)).toBe(true);
+    expect(Result.getOrThrow(result)).toMatchObject({
       "run.completed": [{ id: "notify", command: "./notify.sh" }],
       "node.failed": [{ command: "./alert.sh" }],
     });
@@ -28,8 +34,8 @@ describe("hooks config", () => {
       "run.completed": [{ command: "echo ok", match: { nodeId: "build", workflow: "[" } }],
     });
 
-    expect(result.isErr()).toBe(true);
-    expect(result._unsafeUnwrapErr()).toEqual(expect.arrayContaining([
+    expect(Result.isFailure(result)).toBe(true);
+    expect(Result.getOrThrow(Result.flip(result))).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: "$.hooks" }),
       expect.objectContaining({ path: "$.run.completed[0].match.nodeId" }),
       expect.objectContaining({ path: "$.run.completed[0].match.workflow" }),
@@ -39,8 +45,8 @@ describe("hooks config", () => {
   it("rejects non-array event values", () => {
     const result = validateHooksFile({ "run.completed": { command: "echo ok" } });
 
-    expect(result.isErr()).toBe(true);
-    expect(result._unsafeUnwrapErr()).toEqual([expect.objectContaining({ path: "$.run.completed" })]);
+    expect(Result.isFailure(result)).toBe(true);
+    expect(Result.getOrThrow(Result.flip(result))).toEqual([expect.objectContaining({ path: "$.run.completed" })]);
   });
 
   it("rejects unknown hook and match fields", () => {
@@ -48,8 +54,8 @@ describe("hooks config", () => {
       "node.completed": [{ command: "echo ok", unknown: true, match: { extra: ".*" } }],
     });
 
-    expect(result.isErr()).toBe(true);
-    expect(result._unsafeUnwrapErr()).toEqual(expect.arrayContaining([
+    expect(Result.isFailure(result)).toBe(true);
+    expect(Result.getOrThrow(Result.flip(result))).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: "$.node.completed[0].unknown" }),
       expect.objectContaining({ path: "$.node.completed[0].match.extra" }),
     ]));
@@ -60,8 +66,8 @@ describe("hooks config", () => {
       "run.completed": [{ id: "", command: "", timeout: "soon" }],
     });
 
-    expect(result.isErr()).toBe(true);
-    expect(result._unsafeUnwrapErr()).toEqual(expect.arrayContaining([
+    expect(Result.isFailure(result)).toBe(true);
+    expect(Result.getOrThrow(Result.flip(result))).toEqual(expect.arrayContaining([
       expect.objectContaining({ path: "$.run.completed[0].id" }),
       expect.objectContaining({ path: "$.run.completed[0].command" }),
       expect.objectContaining({ path: "$.run.completed[0].timeout" }),
@@ -69,23 +75,23 @@ describe("hooks config", () => {
   });
 
   it("accepts safe integer timeouts and rejects millisecond overflow", () => {
-    expect(validateHooksFile({
+    expect(Result.isSuccess(validateHooksFile({
       "run.completed": [{ command: "echo ok", timeout: String(Number.MAX_SAFE_INTEGER) }],
-    }).isOk()).toBe(true);
+    }))).toBe(true);
 
     const result = validateHooksFile({
       "run.completed": [{ command: "echo ok", timeout: "9007199254740992ms" }],
     });
 
-    expect(result._unsafeUnwrapErr()).toEqual([
+    expect(Result.getOrThrow(Result.flip(result))).toEqual([
       expect.objectContaining({ path: "$.run.completed[0].timeout" }),
     ]);
   });
 
   it("rejects hook commands containing NUL bytes", () => {
-    expect(validateHooksFile({
+    expect(Result.getOrThrow(Result.flip(validateHooksFile({
       "run.completed": [{ command: "echo\0broken" }],
-    })._unsafeUnwrapErr()).toEqual([
+    })))).toEqual([
       expect.objectContaining({ path: "$.run.completed[0].command" }),
     ]);
   });
@@ -94,24 +100,39 @@ describe("hooks config", () => {
     const workspace = await tempDir("hooks-empty-object-");
     const home = await tempDir("hooks-empty-object-home-");
     await mkdir(join(workspace, ".acpus"), { recursive: true });
-    await writeFile(join(workspace, ".acpus", "hooks.json"), "{}");
+    await writeFile(join(workspace, ".acpus", "config.json"), "{}");
 
-    const loaded = await loadHooksConfig(workspace, { homeDir: home });
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
 
-    expect(loaded.isOk()).toBe(true);
-    expect(loaded._unsafeUnwrap()).toEqual([]);
+    expect(Result.isSuccess(loaded)).toBe(true);
+    expect(Result.getOrThrow(loaded)).toEqual([]);
   });
 
   it("reports validation failures as invalid-config load errors", async () => {
     const workspace = await tempDir("hooks-invalid-config-");
     const home = await tempDir("hooks-invalid-config-home-");
     await mkdir(join(workspace, ".acpus"), { recursive: true });
-    await writeFile(join(workspace, ".acpus", "hooks.json"), JSON.stringify({ "run.completed": [{ command: "" }] }));
+    await writeFile(join(workspace, ".acpus", "config.json"), JSON.stringify({ hooks: { "run.completed": [{ command: "" }] } }));
 
-    const loaded = await loadHooksConfig(workspace, { homeDir: home });
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
 
-    expect(loaded.isErr()).toBe(true);
-    expect(loaded._unsafeUnwrapErr()).toMatchObject({ type: "invalid-config", source: "project" });
+    expect(Result.isFailure(loaded)).toBe(true);
+    expect(Result.getOrThrow(Result.flip(loaded))).toMatchObject({ type: "invalid-config", source: "project" });
+  });
+
+  it("rejects Hooks consumption when another config section is invalid", async () => {
+    const workspace = await tempDir("hooks-invalid-agent-section-");
+    const home = await tempDir("hooks-invalid-agent-home-");
+    await mkdir(join(workspace, ".acpus"), { recursive: true });
+    await writeFile(join(workspace, ".acpus", "config.json"), JSON.stringify({
+      agents: { broken: "" },
+      hooks: { "run.completed": [{ command: "echo must-not-load" }] },
+    }));
+
+    expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home }))))))).toMatchObject({
+      type: "invalid-config",
+      source: "project",
+    });
   });
 
   it("allows signal identity matchers on run.awaiting", () => {
@@ -119,7 +140,7 @@ describe("hooks config", () => {
       "run.awaiting": [{ command: "echo ok", match: { nodeId: "approve", nodeKey: "approve~", kind: "signal" } }],
     });
 
-    expect(result.isOk()).toBe(true);
+    expect(Result.isSuccess(result)).toBe(true);
   });
 
   it("loads project and global hooks by direct union without id override", async () => {
@@ -127,45 +148,52 @@ describe("hooks config", () => {
     const home = await tempDir("hooks-home-");
     await mkdir(join(workspace, ".acpus"), { recursive: true });
     await mkdir(join(home, ".acpus"), { recursive: true });
-    await writeFile(join(workspace, ".acpus", "hooks.json"), JSON.stringify({
+    await writeFile(join(workspace, ".acpus", "config.json"), JSON.stringify({ hooks: {
       "run.completed": [
         { id: "same", command: "echo project" },
         { id: "same", command: "echo project again" },
       ],
-    }));
-    await writeFile(join(home, ".acpus", "hooks.json"), JSON.stringify({
+    } }));
+    await writeFile(join(home, ".acpus", "config.json"), JSON.stringify({ hooks: {
       "run.completed": [{ id: "same", command: "echo global" }],
-    }));
+    } }));
 
-    const loaded = await loadHooksConfig(workspace, { homeDir: home });
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
 
-    expect(loaded.isOk()).toBe(true);
-    expect(loaded._unsafeUnwrap()).toMatchObject([
+    expect(Result.isSuccess(loaded)).toBe(true);
+    expect(Result.getOrThrow(loaded)).toMatchObject([
       { source: "project", id: "same", command: "echo project", definitionIndex: 0 },
       { source: "project", id: "same", command: "echo project again", definitionIndex: 1 },
       { source: "global", id: "same", command: "echo global", definitionIndex: 0 },
     ]);
-    const hooks = loaded._unsafeUnwrap();
-    expect(new Set(hooks.map(hook => hook.definitionHash)).size).toBe(3);
-    expect(hooks[0]?.definitionHash).toBe(createHash("sha256").update(stableJson({
-      source: "project",
-      sourcePath: join(workspace, ".acpus", "hooks.json"),
-      event: "run.completed",
-      definitionIndex: 0,
-      config: { id: "same", command: "echo project" },
-    })).digest("hex"));
+  });
+
+  it("assigns readable default ids from source, event, and index", async () => {
+    const workspace = await tempDir("hooks-default-id-");
+    const home = await tempDir("hooks-default-id-home-");
+    await mkdir(join(workspace, ".acpus"), { recursive: true });
+    await writeFile(join(workspace, ".acpus", "config.json"), JSON.stringify({ hooks: {
+      "node.failed": [{ command: "echo first" }, { command: "echo second" }],
+    } }));
+
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
+
+    expect(Result.getOrThrow(loaded).map(hook => hook.effectiveId)).toEqual([
+      "project:node.failed:0",
+      "project:node.failed:1",
+    ]);
   });
 
   it("returns empty scoped configs for missing files", async () => {
     const workspace = await tempDir("hooks-empty-workspace-");
     const home = await tempDir("hooks-empty-home-");
 
-    const loaded = await loadHooksConfigScopes(workspace, { homeDir: home });
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfigScopes(workspace, { homeDir: home })));
 
-    expect(loaded.isOk()).toBe(true);
-    expect(loaded._unsafeUnwrap()).toEqual([
-      { source: "project", path: join(workspace, ".acpus", "hooks.json"), hooks: [] },
-      { source: "global", path: join(home, ".acpus", "hooks.json"), hooks: [] },
+    expect(Result.isSuccess(loaded)).toBe(true);
+    expect(Result.getOrThrow(loaded)).toEqual([
+      { source: "project", path: join(workspace, ".acpus", "config.json"), hooks: [] },
+      { source: "global", path: join(home, ".acpus", "config.json"), hooks: [] },
     ]);
   });
 
@@ -173,15 +201,17 @@ describe("hooks config", () => {
     const workspace = await tempDir("hooks-invalid-json-");
     const home = await tempDir("hooks-invalid-home-");
     await mkdir(join(workspace, ".acpus"), { recursive: true });
-    await writeFile(join(workspace, ".acpus", "hooks.json"), "{");
+    await writeFile(join(workspace, ".acpus", "config.json"), "{");
 
-    const loaded = await loadHooksConfig(workspace, { homeDir: home });
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
 
-    expect(loaded.isErr()).toBe(true);
-    expect(loaded._unsafeUnwrapErr()).toMatchObject({ type: "invalid-json", source: "project" });
+    expect(Result.isFailure(loaded)).toBe(true);
+    expect(Result.getOrThrow(Result.flip(loaded))).toMatchObject({ type: "invalid-config", source: "project" });
   });
 });
 
 async function tempDir(prefix: string): Promise<string> {
-  return await mkdtemp(join(tmpdir(), prefix));
+  const path = await mkdtemp(join(tmpdir(), prefix));
+  temporaryDirectories.push(path);
+  return path;
 }

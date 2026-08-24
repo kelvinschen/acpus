@@ -13,3 +13,4 @@ legacy/
 .pnpm-store
 .vscode
 benchmarks
+/repos/

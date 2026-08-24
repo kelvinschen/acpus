@@ -1,10 +1,10 @@
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
-import type { RuntimeStore } from "../../src/store/store.js";
+import type { RuntimeStoreAdapter } from "../../src/store/store.js";
 import type { RunOwnerClaim } from "../../src/scheduler/store-port.js";
-import { runtimeDatabasePath } from "./runtime-fixtures.js";
+import { runtimeDatabasePath } from "./runtime-harness.js";
 import { throwingSchedulerStore } from "./scheduler-store.js";
 
-export function readyNode(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string): void {
+export function readyNode(store: RuntimeStoreAdapter, runId: string, claim: RunOwnerClaim, idempotencyKey: string): void {
   const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
   throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,
@@ -17,7 +17,7 @@ export function readyNode(store: RuntimeStore, runId: string, claim: RunOwnerCla
   });
 }
 
-export function awaitingSignal(store: RuntimeStore, runId: string, claim: RunOwnerClaim, idempotencyKey: string, signal: { deadlineAt?: string; timeoutMessage?: string } = {}): void {
+export function awaitingSignal(store: RuntimeStoreAdapter, runId: string, claim: RunOwnerClaim, idempotencyKey: string, signal: { deadlineAt?: string; timeoutMessage?: string } = {}): void {
   const snapshot = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
   throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,

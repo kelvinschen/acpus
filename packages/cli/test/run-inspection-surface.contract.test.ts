@@ -17,7 +17,7 @@ describe("inspection text surface", () => {
     expect(text).toContain("Run run_1  design  running  1m36s");
     expect(text).toContain("Counts total=3  not-started=1  running=1  completed=1");
     expect(text).toContain("┌─ ✓ seed_blackboard · task · completed");
-    expect(text).toContain("├─ ⠋ design_cycle · loop · @e6bacaf847b3 · running · 1/2 · tool: Searching the Web");
+    expect(text).toContain("├─ ⠋ design_cycle · loop · @e6bacaf847b3 · running · 1/2 · using tool: Searching the Web");
     expect(text).toContain("└─ ○ publish_blackboard · task · not started");
     expect(text).not.toContain("publish_blackboard · task · publish_blackboard");
     expect(text).toContain("└┄ … round 1–4 ×4 · ⠋ · running");
@@ -29,15 +29,23 @@ describe("inspection text surface", () => {
     expect(text).not.toContain("attempt_internal");
   });
 
-  it("distinguishes a true Agent start from the interval between activities", () => {
+  it("presents current Agent phases as ongoing actions", () => {
     const starting = formatInspectionView(agentActivityView({ phase: "starting", turn: 1 }));
+    const thinking = formatInspectionView(agentActivityView({ phase: "reported-thought", turn: 1 }));
+    const unnamedTool = formatInspectionView(agentActivityView({ phase: "tool", turn: 1 }));
+    const namedTool = formatInspectionView(agentActivityView({ phase: "tool", turn: 1, headline: "Bash" }));
     const repairing = formatInspectionView(agentActivityView({ phase: "output-repair", turn: 2, headline: "output repair" }));
+    const finishing = formatInspectionView(agentActivityView({ phase: "settling", turn: 2 }));
     const between = formatInspectionView(agentActivityView());
 
     expect(starting).toContain("┌─ ⠋ write_report · agent · @3f19e12fc389#1 · running · starting");
     expect(starting).not.toContain("turn 1");
-    expect(repairing).toContain("┌─ ⠋ write_report · agent · @3f19e12fc389#1 · running · turn 2 · output repair");
-    expect(repairing).not.toContain("output repair: output repair");
+    expect(thinking).toContain("· running · thinking");
+    expect(unnamedTool).toContain("· running · using tool");
+    expect(namedTool).toContain("· running · using tool: Bash");
+    expect(repairing).toContain("┌─ ⠋ write_report · agent · @3f19e12fc389#1 · running · turn 2 · repairing output");
+    expect(repairing).not.toContain("repairing output: output repair");
+    expect(finishing).toContain("· running · turn 2 · finishing");
     expect(between).toContain("┌─ ⠋ write_report · agent · @3f19e12fc389#1 · running\n");
     expect(between).not.toContain("starting");
   });
@@ -53,7 +61,7 @@ describe("inspection text surface", () => {
       recent: [],
     } satisfies InspectionView);
 
-    expect(text).toContain("Current:\n  tool: Searching the Web");
+    expect(text).toContain("Current:\n  using tool: Searching the Web");
     expect(text).not.toContain("turn 1");
     expect(text).not.toContain("Current:\n  agent");
   });
@@ -83,29 +91,57 @@ describe("inspection text surface", () => {
     expect(repaired).not.toContain("settled");
   });
 
-  it("labels useful terminal Agent activity as Last", () => {
-    const normal = formatInspectionView({
+  it("renders authoritative target results after State and suppresses terminal Pulse", () => {
+    const value = { complete: true, full: "x".repeat(4_000) };
+    const accepted = formatInspectionView({
       kind: "target",
       detail: "summary",
       run: { id: "run_1", status: "completed" },
       subject: { label: "research", kind: "agent", selector: "@1a2b3c4d5e6f#1" },
       state: { status: "completed" },
-      pulse: { phase: "settled", turn: 1, headline: "Plan: Verify the report." },
+      result: { status: "accepted", value },
+      pulse: { phase: "settled", turn: 1, headline: "stale activity" },
+      acp: { silentForMs: 840_000 },
     } satisfies InspectionView);
-    const empty = formatInspectionView({
+    const outputless = formatInspectionView({
       kind: "target",
       detail: "summary",
       run: { id: "run_1", status: "completed" },
       subject: { label: "research", kind: "agent", selector: "@1a2b3c4d5e6f#1" },
       state: { status: "completed" },
-      pulse: { phase: "settled", turn: 1 },
+      result: { status: "completed_without_output" },
+    } satisfies InspectionView);
+    const notAccepted = formatInspectionView({
+      kind: "target",
+      detail: "summary",
+      run: { id: "run_1", status: "completed" },
+      subject: { label: "research", kind: "agent", selector: "@1a2b3c4d5e6f#1" },
+      state: { status: "completed" },
+      result: { status: "not_accepted" },
     } satisfies InspectionView);
 
-    expect(normal).toContain("Last Plan: Verify the report.");
-    expect(normal).not.toContain("turn 1");
-    expect(normal).not.toContain("settled");
-    expect(empty).not.toContain("Pulse ");
-    expect(empty).not.toContain("Last ");
+    expect(accepted.indexOf("State completed")).toBeLessThan(accepted.indexOf("Output:"));
+    expect(accepted).toContain(JSON.stringify(value.full));
+    expect(accepted).not.toContain("Pulse ");
+    expect(accepted).not.toContain("Last ");
+    expect(accepted).not.toContain("stale activity");
+    expect(accepted).not.toContain("ACP silent");
+    expect(outputless).toContain("Result completed without output");
+    expect(notAccepted).toContain("Result not accepted");
+  });
+
+  it("keeps a running target Pulse unchanged", () => {
+    const text = formatInspectionView({
+      kind: "target",
+      detail: "summary",
+      run: { id: "run_1", status: "running" },
+      subject: { label: "research", kind: "agent", selector: "@1a2b3c4d5e6f#1" },
+      state: { status: "running" },
+      pulse: { phase: "tool", turn: 2, headline: "Bash" },
+    } satisfies InspectionView);
+
+    expect(text).toContain("Pulse turn 2 · using tool: Bash");
+    expect(text).not.toContain("Output:");
   });
 
   it("keeps a repaired turn but omits settled from a terminal Tree pulse", () => {
@@ -260,13 +296,15 @@ describe("inspection text surface", () => {
     }
   });
 
-  it("makes every ambiguous candidate selection executable and preserves Timeline detail", () => {
-    const text = formatInspectionCandidates(candidates(), "timeline");
+  it("renders ambiguous candidates as compact selector rows without embedded commands", () => {
+    const text = formatInspectionCandidates(candidates());
 
     expect(text).toContain("Target review  matches=13");
-    expect(text).toContain("Select: acpus runs inspect run_1 --target @000000000001 --timeline");
-    expect(text).toContain("Select: acpus runs inspect run_1 --target @000000000007 --timeline");
-    expect(text).toContain("Select: acpus runs inspect run_1 --target @00000000000d --timeline");
+    expect(text).toContain("@000000000001");
+    expect(text).toContain("@000000000007");
+    expect(text).toContain("@00000000000d");
+    expect(text).not.toContain("Select:");
+    expect(text).not.toContain("--timeline");
     expect(text).not.toContain("Next:");
     expect(text).not.toContain("page=");
     expect(text).not.toContain("--follow");
@@ -285,7 +323,8 @@ describe("inspection text surface", () => {
       definition: {
         kind: "agent",
         agent: "reviewer",
-        profile: { kind: "agent_definition", use: "codex" },
+        source: { kind: "workflow" },
+        effective: { kind: "agent_definition", use: "codex" },
         prompt: "input.prompt",
       },
       invocation: {
@@ -300,19 +339,25 @@ describe("inspection text surface", () => {
       },
       result: { status: "accepted", value: { value } },
     } satisfies InspectionView);
-    const candidatesText = formatInspectionCandidates(candidates(), "forensics");
+    const candidatesText = formatInspectionCandidates(candidates());
 
     expect(text).toContain("Forensics review  @1a2b3c4d5e6f#2 · agent");
     expect(text).toContain("Definition:\n");
     expect(text).toContain("Invocation:\n");
     expect(text).toContain("Result:\n");
+    expect(text).toContain('"source": {');
+    expect(text).toContain('"effective": {');
     expect(text).toContain('"prompt": "<multiline:prompt>"');
     expect(text).toContain("prompt: |\n    Review all facts.\n    Return the final answer.");
     expect(text).toContain(value);
     expect(text).not.toContain("Timeline:");
     expect(text).not.toContain("Await:");
-    expect(candidatesText).toContain("Select: acpus runs inspect run_1 --target @000000000001 --forensics");
-    expect(candidatesText).toContain("Select: acpus runs inspect run_1 --target @00000000000d --forensics");
+    expect(text).not.toContain('"profile"');
+    expect(text).not.toContain('"binding"');
+    expect(text).not.toContain('"injection"');
+    expect(candidatesText).toContain("@000000000001");
+    expect(candidatesText).toContain("@00000000000d");
+    expect(candidatesText).not.toContain("Select:");
     expect(candidatesText).not.toContain("Next:");
   });
 
@@ -327,7 +372,8 @@ describe("inspection text surface", () => {
       definition: {
         kind: "agent",
         agent: "reviewer",
-        profile: { kind: "agent_definition", use: "codex" },
+        source: { kind: "workflow" },
+        effective: { kind: "agent_definition", use: "codex" },
         prompt: "\"review\"",
       },
       invocation: {

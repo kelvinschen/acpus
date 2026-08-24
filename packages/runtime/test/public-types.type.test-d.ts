@@ -32,15 +32,19 @@ import {
   tryLoadRuntimeConfiguration,
   tryNormalizeForkInput,
   tryNormalizeWorkflowInput,
-  tryValidateAgentOverrides,
+  tryParseAgentInjectionMap,
 } from "@acpus/runtime";
 import type {
   AdmitRunFailure,
   AgentHostPolicy,
   AgentHostPolicyFailure,
   AgentOutputProcessing,
-  AgentOverrideMap,
-  AgentOverrideValidationFailure,
+  AgentInjectionMap,
+  AgentInjectionValidationFailure,
+  AgentBindingFailure,
+  AgentBindingSource,
+  AgentDirectInjectionSpec,
+  AgentPresetCatalogFailure,
   AgentTurnArtifact,
   ArtifactResolutionFailure,
   ArtifactRecord,
@@ -65,10 +69,12 @@ import type {
   InspectionChange,
   InspectionCounts,
   InspectionError,
+  ForensicsAgentResolution,
   InspectionForensicsView,
   InspectionObservation,
   InspectionRead,
   InspectionToolActivity,
+  InspectionTargetResult,
   InspectionAgentTelemetry,
   InspectionTreeAgent,
   InspectionView,
@@ -102,7 +108,6 @@ import type {
   RunRecord,
   RunStatus,
   RunVisualizationSnapshot,
-  RunWorkflowLockArtifact,
   RuntimeConfiguration,
   RuntimeConfigurationFailure,
   RuntimeHealthCheck,
@@ -112,19 +117,20 @@ import type {
   RuntimeAuthorityIdentity,
   RuntimeStoreFailure,
   RuntimeStoreStatus,
+  ResolvedAgentPreset,
   ResolvedArtifact,
   SchemaNormalizationFailure,
-  Sha256Digest,
-  WorkflowSourceBundle,
-  WorkflowSourceFile,
-  WorkflowSourceRef,
   WorkflowVisualizationGroup,
   WorkflowVisualizationNode,
   WorkflowVisualizationOverlay,
   WorkspaceResolutionFailure,
+  FrozenAgentBinding,
 } from "@acpus/runtime";
 import {
   openWorkspaceRuntime,
+  type AgentPresetProvider,
+  type AgentPresetProviderFailure,
+  type HostAgentPreset,
   type NamedAcpAgentLaunchRegistry,
   type NamedAcpAgentLaunchResolver,
   type WorkspaceRuntime,
@@ -132,34 +138,30 @@ import {
   type WorkspaceRuntimeLocation,
   type WorkspaceRuntimeOpenFailure,
 } from "@acpus/runtime/host";
-import type { WorkflowIR } from "@acpus/core/ir";
+import type { AgentDefinitionIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTurnSummary } from "@acpus/agent-executor";
+import type * as Effect from "effect/Effect";
+import type * as Result from "effect/Result";
+import type * as Stream from "effect/Stream";
 import type {
   PreparedWorkflow as CompilerPreparedWorkflow,
-  Sha256Digest as CompilerSha256Digest,
-  WorkflowPreparationLock as CompilerWorkflowPreparationLock,
-  WorkflowSourceBundle as CompilerWorkflowSourceBundle,
-  WorkflowSourceFile as CompilerWorkflowSourceFile,
-  WorkflowSourceRef as CompilerWorkflowSourceRef,
 } from "@acpus/workflow-compiler";
-import type { Result, ResultAsync } from "neverthrow";
-
 test("@acpus/runtime exposes one coherent inspection surface and narrow web reads", () => {
   expectTypeOf(readInspection).toEqualTypeOf<
-    (cwd: string, view: InspectionViewQuery) => ResultAsync<InspectionRead, InspectionError>
+    (cwd: string, view: InspectionViewQuery) => Effect.Effect<InspectionRead, InspectionError>
   >();
   expectTypeOf(observeInspection).toEqualTypeOf<
-    (cwd: string, query: ObserveInspectionQuery) => AsyncIterable<Result<InspectionObservation, InspectionError>>
+    (cwd: string, query: ObserveInspectionQuery) => Stream.Stream<InspectionObservation, InspectionError>
   >();
   expectTypeOf(inspectNode).toEqualTypeOf<
-    (cwd: string, query: InspectNodeQuery) => ResultAsync<RunInspectionNodeDocument, RunInspectionError>
+    (cwd: string, query: InspectNodeQuery) => Effect.Effect<RunInspectionNodeDocument, RunInspectionError>
   >();
   expectTypeOf(inspectAgentExecution).toEqualTypeOf<
-    (cwd: string, query: InspectAgentExecutionQuery) => ResultAsync<RunInspectionAgentExecutionDocument, RunInspectionError>
+    (cwd: string, query: InspectAgentExecutionQuery) => Effect.Effect<RunInspectionAgentExecutionDocument, RunInspectionError>
   >();
   expectTypeOf(inspectTargetArtifacts).toEqualTypeOf<
-    (cwd: string, query: InspectTargetArtifactsQuery) => ResultAsync<RunInspectionTargetArtifactsDocument, RunInspectionError>
+    (cwd: string, query: InspectTargetArtifactsQuery) => Effect.Effect<RunInspectionTargetArtifactsDocument, RunInspectionError>
   >();
 
   expectTypeOf<InspectionViewQuery>().toEqualTypeOf<
@@ -198,6 +200,11 @@ test("@acpus/runtime exposes one coherent inspection surface and narrow web read
     target: string;
     entries: Array<{ selector: string; status: RunInspectionStatus; breadcrumb: string }>;
   }>();
+  expectTypeOf<InspectionTargetResult>().toEqualTypeOf<
+    | { status: "accepted"; value: JsonValue }
+    | { status: "completed_without_output" }
+    | { status: "not_accepted" }
+  >();
   expectTypeOf<Extract<InspectionView, { kind: "run" }>>().toMatchTypeOf<{
     run: { id: string; status: string };
     counts: { total: number };
@@ -266,7 +273,7 @@ test("@acpus/runtime/host exposes the embeddable Runtime interface", () => {
     (
       location: WorkspaceRuntimeLocation,
       dependencies?: WorkspaceRuntimeHostDependencies,
-    ) => ResultAsync<WorkspaceRuntime, WorkspaceRuntimeOpenFailure>
+    ) => Effect.Effect<WorkspaceRuntime, WorkspaceRuntimeOpenFailure>
   >();
   expectTypeOf<WorkspaceRuntimeLocation>().toEqualTypeOf<Readonly<{
     workspace: string;
@@ -274,7 +281,11 @@ test("@acpus/runtime/host exposes the embeddable Runtime interface", () => {
   }>>();
   expectTypeOf<WorkspaceRuntimeHostDependencies>().toEqualTypeOf<Readonly<{
     namedAgentLaunches?: NamedAcpAgentLaunchRegistry;
+    agentPresetProvider?: AgentPresetProvider;
   }>>();
+  expectTypeOf<AgentPresetProvider>().returns.toEqualTypeOf<
+    Effect.Effect<readonly HostAgentPreset[], AgentPresetProviderFailure>
+  >();
   expectTypeOf<WorkspaceRuntimeOpenFailure>().toEqualTypeOf<
     | { type: "runtime-store-unsupported" | "runtime-store-unavailable"; message: string }
     | { type: "runtime-authority-busy"; pid?: number; message: string }
@@ -284,14 +295,14 @@ test("@acpus/runtime/host exposes the embeddable Runtime interface", () => {
     (input: Readonly<{ model?: string }>) => readonly string[]
   >();
   expectTypeOf<WorkspaceRuntime["findAdmission"]>().toEqualTypeOf<
-    (requestId: string) => ResultAsync<RunDetails | undefined, RuntimeReadFailure>
+    (requestId: string) => Effect.Effect<RunDetails | undefined, RuntimeReadFailure>
   >();
 });
 
 test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
-  expectTypeOf(listKnownWorkspaces).toEqualTypeOf<(cwd: string) => Promise<KnownWorkspaceListing>>();
+  expectTypeOf(listKnownWorkspaces).toEqualTypeOf<(cwd: string) => Effect.Effect<KnownWorkspaceListing>>();
   expectTypeOf(resolveKnownWorkspace).toEqualTypeOf<
-    (cwd: string, workspaceKey: string) => ResultAsync<
+    (cwd: string, workspaceKey: string) => Effect.Effect<
       { workspaceKey: string; canonicalPath: string },
       WorkspaceResolutionFailure
     >
@@ -320,21 +331,21 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     | { type: "runtime-store-unsupported"; message: string }
     | { type: "runtime-store-unavailable"; message: string }
   >();
-  expectTypeOf(listRuns).toEqualTypeOf<(cwd: string) => ResultAsync<RunRecord[], RuntimeReadFailure>>();
+  expectTypeOf(listRuns).toEqualTypeOf<(cwd: string) => Effect.Effect<RunRecord[], RuntimeReadFailure>>();
   expectTypeOf(listArtifacts).toEqualTypeOf<
-    (cwd: string, runId: string) => ResultAsync<ArtifactRecord[] | undefined, RuntimeReadFailure>
+    (cwd: string, runId: string) => Effect.Effect<ArtifactRecord[] | undefined, RuntimeReadFailure>
   >();
   expectTypeOf(getArtifact).toEqualTypeOf<
-    (cwd: string, runId: string, artifactId: string) => ResultAsync<ArtifactRecord | undefined, RuntimeReadFailure>
+    (cwd: string, runId: string, artifactId: string) => Effect.Effect<ArtifactRecord | undefined, RuntimeReadFailure>
   >();
   expectTypeOf(readArtifact).toEqualTypeOf<
-    (cwd: string, runId: string, artifactId: string) => ResultAsync<
+    (cwd: string, runId: string, artifactId: string) => Effect.Effect<
       { artifact: ArtifactRecord; bytes: Buffer } | undefined,
       RuntimeReadFailure
     >
   >();
   expectTypeOf(resolveArtifact).toEqualTypeOf<
-    (cwd: string, artifactRef: string) => ResultAsync<ResolvedArtifact, ArtifactResolutionFailure | RuntimeReadFailure>
+    (cwd: string, artifactRef: string) => Effect.Effect<ResolvedArtifact, ArtifactResolutionFailure | RuntimeReadFailure>
   >();
   expectTypeOf<ResolvedArtifact>().toEqualTypeOf<ArtifactRecord & { uri: string }>();
   expectTypeOf<ArtifactResolutionFailure>().toEqualTypeOf<
@@ -343,31 +354,50 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     | { type: "artifact-path-invalid"; runId: string; artifactId: string; message: string }
   >();
   expectTypeOf(getRun).toEqualTypeOf<
-    (cwd: string, runId: string) => ResultAsync<RunDetails | undefined, RuntimeReadFailure>
+    (cwd: string, runId: string) => Effect.Effect<RunDetails | undefined, RuntimeReadFailure>
   >();
-  expectTypeOf(getRuntimeHealth).toEqualTypeOf<(cwd: string) => Promise<RuntimeHealthReport>>();
+  expectTypeOf(getRuntimeHealth).toEqualTypeOf<(cwd: string) => Effect.Effect<RuntimeHealthReport>>();
   expectTypeOf(getRunVisualizationSnapshot).toEqualTypeOf<
-    (cwd: string, runId: string) => ResultAsync<RunVisualizationSnapshot | undefined, RuntimeReadFailure>
+    (cwd: string, runId: string) => Effect.Effect<RunVisualizationSnapshot | undefined, RuntimeReadFailure>
   >();
   expectTypeOf(tryNormalizeForkInput).toEqualTypeOf<
-    (cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow) => ResultAsync<
+    (cwd: string, runId: string, input: JsonValue | undefined, prepared?: PreparedRunWorkflow) => Effect.Effect<
       JsonValue | undefined,
       ForkInputNormalizationFailure | RuntimeReadFailure
     >
   >();
   expectTypeOf(tryNormalizeWorkflowInput).toEqualTypeOf<
-    (ir: WorkflowIR, input: JsonValue, label?: string) => Result<JsonValue, SchemaNormalizationFailure>
+    (ir: WorkflowIR, input: JsonValue, label?: string) => Result.Result<JsonValue, SchemaNormalizationFailure>
   >();
-  expectTypeOf(tryValidateAgentOverrides).toEqualTypeOf<
-    (ir: WorkflowIR, input: AgentOverrideMap | undefined) => Result<AgentOverrideMap, AgentOverrideValidationFailure>
+  expectTypeOf(tryParseAgentInjectionMap).toEqualTypeOf<
+    (value: unknown, declarations?: Record<string, unknown>) => Result.Result<AgentInjectionMap, AgentInjectionValidationFailure>
   >();
+  expectTypeOf<AgentBindingSource>().toEqualTypeOf<
+    | { kind: "workflow" }
+    | { kind: "direct" }
+    | { kind: "preset"; id: string; scope: "host" | "project" | "global" }
+  >();
+  expectTypeOf<FrozenAgentBinding>().toEqualTypeOf<{
+    source: AgentBindingSource;
+    injection?: AgentDirectInjectionSpec;
+  }>();
+  expectTypeOf<ResolvedAgentPreset>().toEqualTypeOf<{
+    id: string;
+    scope: "host" | "project" | "global";
+    definition: AgentDefinitionIR;
+  }>();
+  expectTypeOf<ForensicsAgentResolution>().toEqualTypeOf<{
+    source: AgentBindingSource;
+    effective: AgentDefinitionIR;
+  }>();
   expectTypeOf<AdmitRunFailure>().toEqualTypeOf<
     | PreparedRunValidationFailure
     | SchemaNormalizationFailure
-    | AgentOverrideValidationFailure
+    | AgentBindingFailure
+    | AgentPresetCatalogFailure
     | { type: "admission-request-conflict"; requestId: string; message: string }
   >();
-  expectTypeOf(deleteRun).toEqualTypeOf<(cwd: string, runId: string) => ResultAsync<RunRecord | undefined, RunDeleteFailure>>();
+  expectTypeOf(deleteRun).toEqualTypeOf<(cwd: string, runId: string) => Effect.Effect<RunRecord | undefined, RunDeleteFailure>>();
 
   expectTypeOf<DaemonLoopOptions>().toEqualTypeOf<{
     heartbeatMs?: number;
@@ -376,9 +406,12 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     onShutdown?: () => void;
     onRunIncident?: (incident: RunIncident) => void;
   }>();
-  expectTypeOf(startDaemonLoop).toEqualTypeOf<(cwd: string, options: DaemonLoopOptions) => Promise<DaemonLoopHandle>>();
+  expectTypeOf(startDaemonLoop).toEqualTypeOf<
+    (cwd: string, options: DaemonLoopOptions) => Effect.Effect<DaemonLoopHandle, unknown>
+  >();
+  expectTypeOf<ReturnType<DaemonLoopHandle["shutdown"]>>().toEqualTypeOf<Effect.Effect<void>>();
   expectTypeOf(tryLoadRuntimeConfiguration).toEqualTypeOf<
-    (env: NodeJS.ProcessEnv) => Result<RuntimeConfiguration, RuntimeConfigurationFailure>
+    (env: NodeJS.ProcessEnv) => Result.Result<RuntimeConfiguration, RuntimeConfigurationFailure>
   >();
   expectTypeOf<RuntimeConfiguration>().toEqualTypeOf<{
     runMaxLeafConcurrency: number;
@@ -390,34 +423,34 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   >();
   expectTypeOf<AgentHostPolicy["inactivityFailAfterMs"]>().toEqualTypeOf<number | undefined>();
 
-  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<4>();
-  expectTypeOf<typeof RUNTIME_ABI_VERSION>().toEqualTypeOf<1>();
+  expectTypeOf<typeof DAEMON_PROTOCOL_VERSION>().toEqualTypeOf<10>();
+  expectTypeOf<typeof RUNTIME_ABI_VERSION>().toEqualTypeOf<5>();
   expectTypeOf(daemonEndpoint).toEqualTypeOf<(cwd: string) => string>();
-  expectTypeOf(requestDaemonStatus).toEqualTypeOf<(cwd: string) => ResultAsync<DaemonStatus, DaemonClientFailure>>();
+  expectTypeOf(requestDaemonStatus).toEqualTypeOf<(cwd: string) => Effect.Effect<DaemonStatus, DaemonClientFailure>>();
   expectTypeOf(requestDaemonStatusProbe).toEqualTypeOf<
-    (cwd: string) => ResultAsync<DaemonStatusProbe, DaemonClientFailure>
+    (cwd: string) => Effect.Effect<DaemonStatusProbe, DaemonClientFailure>
   >();
   expectTypeOf(requestDaemonSubmitAndObserve).toEqualTypeOf<
     (
       cwd: string,
       input: DaemonSubmitAndObserveInput,
       options?: { signal?: AbortSignal },
-    ) => AsyncIterable<Result<DaemonRunStreamFrame, DaemonRunStreamClientFailure>>
+    ) => Stream.Stream<DaemonRunStreamFrame, DaemonRunStreamClientFailure>
   >();
   expectTypeOf(requestDaemonControl).toEqualTypeOf<
-    (cwd: string, control: DaemonControlIntent) => ResultAsync<DaemonControlResult, DaemonClientFailure>
+    (cwd: string, control: DaemonControlIntent) => Effect.Effect<DaemonControlResult, DaemonClientFailure>
   >();
   expectTypeOf(requestDaemonShutdown).toEqualTypeOf<
-    (cwd: string) => ResultAsync<DaemonShutdownResult, DaemonClientFailure>
+    (cwd: string) => Effect.Effect<DaemonShutdownResult, DaemonClientFailure>
   >();
   expectTypeOf(requestPredecessorDaemonShutdown).toEqualTypeOf<
-    (cwd: string) => ResultAsync<DaemonShutdownResult, DaemonClientFailure>
+    (cwd: string) => Effect.Effect<DaemonShutdownResult, DaemonClientFailure>
   >();
   expectTypeOf<DaemonStatus>().toEqualTypeOf<{
     status: "ok";
     pid: number;
     leaseGeneration: number;
-    protocolVersion: 4;
+    protocolVersion: 10;
     packageVersion: string;
     authority: RuntimeAuthorityIdentity;
   }>();
@@ -431,40 +464,17 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf<DaemonRunObservationUntil>().toEqualTypeOf<"admitted" | "subject-terminal" | "decision-boundary">();
   expectTypeOf<RuntimeAuthorityIdentity>().toEqualTypeOf<{
     workspaceKey: string;
-    runtimeAbi: 1;
+    runtimeAbi: 5;
     layoutVersion: 2;
-    storageVersion: 10;
+    storageVersion: 19;
     authorityId: string;
-    storeBinding: `sha256:${string}`;
     leaseGeneration: number;
   }>();
   expectTypeOf(createWorkflowVisualizationOverlay).toMatchTypeOf<
     (ir: WorkflowIR, dynamic?: RunDynamicDetails, options?: { runId?: string; status?: string }) => WorkflowVisualizationOverlay
   >();
 
-  expectTypeOf<PreparedRunWorkflow["lock"]>().toEqualTypeOf<RunWorkflowLockArtifact>();
-  expectTypeOf<WorkflowSourceFile>().toEqualTypeOf<{ path: string; content: string }>();
-  expectTypeOf<WorkflowSourceBundle>().toEqualTypeOf<{
-    kind: "acpus_workflow_source_bundle";
-    version: 1;
-    files: readonly WorkflowSourceFile[];
-  }>();
-  expectTypeOf<WorkflowSourceRef>().toEqualTypeOf<
-    | { kind: "workspace"; entry: string }
-    | { kind: "snapshot"; entry: string; digest: Sha256Digest }
-  >();
-  expectTypeOf<Extract<PreparedRunWorkflow, { source: { kind: "workspace" } }>["sourceBundle"]>().toEqualTypeOf<undefined>();
-  expectTypeOf<Extract<PreparedRunWorkflow, { source: { kind: "snapshot" } }>["sourceBundle"]>().toEqualTypeOf<WorkflowSourceBundle>();
   expectTypeOf<CompilerPreparedWorkflow>().toEqualTypeOf<PreparedRunWorkflow>();
-  expectTypeOf<CompilerWorkflowPreparationLock>().toEqualTypeOf<RunWorkflowLockArtifact>();
-  expectTypeOf<CompilerWorkflowSourceRef>().toMatchTypeOf<WorkflowSourceRef>();
-  expectTypeOf<WorkflowSourceRef>().toMatchTypeOf<CompilerWorkflowSourceRef>();
-  expectTypeOf<CompilerWorkflowSourceBundle>().toMatchTypeOf<WorkflowSourceBundle>();
-  expectTypeOf<WorkflowSourceBundle>().toMatchTypeOf<CompilerWorkflowSourceBundle>();
-  expectTypeOf<CompilerWorkflowSourceFile>().toMatchTypeOf<WorkflowSourceFile>();
-  expectTypeOf<WorkflowSourceFile>().toMatchTypeOf<CompilerWorkflowSourceFile>();
-  expectTypeOf<CompilerSha256Digest>().toMatchTypeOf<Sha256Digest>();
-  expectTypeOf<Sha256Digest>().toMatchTypeOf<CompilerSha256Digest>();
 
   expectTypeOf<RunDetails>().toMatchTypeOf<RunRecord>();
   expectTypeOf<RunDetails["fork"]>().toEqualTypeOf<RunForkInfo | undefined>();
@@ -510,11 +520,11 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     type: "pause" | "resume";
     runId: string;
   }>();
-  expectTypeOf<Extract<DaemonControlIntent, { type: "retry" | "cancel" }>>().toEqualTypeOf<{
+  expectTypeOf<Extract<DaemonControlIntent, { type: "retry" }>>().toEqualTypeOf<{
     requestId: string;
-    type: "retry" | "cancel";
+    type: "retry";
     runId: string;
-    target?: string;
+    target: string;
   }>();
   expectTypeOf<Extract<DaemonControlIntent, { type: "steer" }>>().toEqualTypeOf<{
     requestId: string;
@@ -540,7 +550,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf<DaemonControlResult>().toEqualTypeOf<
     | { type: "pause"; state: "applied"; run: RunDetails }
     | { type: "resume"; state: "applied"; run: RunDetails }
-    | { type: "retry"; state: "applied"; run: RunDetails; target?: string }
+    | { type: "retry"; state: "applied"; run: RunDetails; target: string }
     | { type: "cancel"; state: "applied"; run: RunDetails; target?: string }
     | {
       type: "steer";
@@ -549,6 +559,7 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
       steerId: string;
       requestedTarget: string;
       target: string;
+      delivery: "interrupt_continue";
       fencedAttemptId: string;
       continuation: "queued";
     }
@@ -583,30 +594,36 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
     attemptNo: number;
     turn: number;
     agentKey: string;
-    sessionName: string;
-    sessionProjectionPath?: string;
+    agentSessionId: string;
     timing: import("@acpus/agent-executor").AgentTurnTiming;
     prompt: string;
     responses: string[];
     summary: AgentTurnSummary;
   } & (
     | { status: "completed"; finalResponse: string }
-    | { status: "failed"; failure: import("@acpus/agent-executor").AgentBackendFailure }
+    | { status: "failed"; failure: {
+        kind: "config" | "session_binding_mismatch" | "spawn" | "provider_exit" | "timeout" | "worker_lost" | "inactivity_stale";
+        origin?: "provider" | "runtime";
+        retryable?: boolean;
+        message: string;
+        evidence?: { failAfterMs: number; silentForMs: number; silenceStartedAt: string };
+        upstream?: { source: "acp"; operation: "open_session" | "configure_session" | "run_turn"; code?: string | number; origin?: string; data?: JsonValue };
+      } }
     | { status: "cancelled"; message: string }
   )>();
   expectTypeOf<RunInspectionDetailedFailure>().toMatchTypeOf<{
     origin: string;
     message: string;
-    upstream?: { source: "acpx"; data?: JsonValue };
+    upstream?: { source: "acp"; data?: JsonValue };
   }>();
 });
 
 test("@acpus/runtime exposes a minimal Runtime store repair interface", () => {
   expectTypeOf(inspectRuntimeStore).toEqualTypeOf<
-    (cwd: string) => ResultAsync<RuntimeStoreStatus, RuntimeStoreFailure>
+    (cwd: string) => Effect.Effect<RuntimeStoreStatus, RuntimeStoreFailure>
   >();
   expectTypeOf(repairRuntimeStore).toEqualTypeOf<
-    (cwd: string) => ResultAsync<{ changed: boolean }, RuntimeStoreFailure>
+    (cwd: string) => Effect.Effect<{ changed: boolean }, RuntimeStoreFailure>
   >();
   expectTypeOf<RuntimeStoreStatus>().toEqualTypeOf<
     | { state: "ready" }

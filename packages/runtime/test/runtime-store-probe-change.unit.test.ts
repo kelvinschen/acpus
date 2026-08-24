@@ -1,3 +1,5 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { access, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { DatabaseSync } from "node:sqlite";
@@ -31,7 +33,7 @@ import {
   repairRuntimeStore,
 } from "../src/runtime-store-lifecycle.js";
 import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout } from "../src/runtime-layout.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
 import { withStorageWorkspace } from "./support/storage-workspace.js";
 
 describe("Runtime database probe changes", () => {
@@ -40,18 +42,18 @@ describe("Runtime database probe changes", () => {
     probeChanges.calls = 0;
     probeChanges.failOnCall = undefined;
     await withStorageWorkspace("runtime-probe-change", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       store.close();
 
-      expect((await inspectRuntimeStoreInternal(workspace))._unsafeUnwrapErr()).toMatchObject({
+      expect(Result.getOrThrow(Result.flip((await Effect.runPromise(inspectRuntimeStoreInternal(workspace)))))).toMatchObject({
         type: "inspect-failed",
         reason: "busy",
       });
-      expect((await inspectRuntimeStore(workspace))._unsafeUnwrapErr()).toEqual({
+      expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(inspectRuntimeStore(workspace))))))).toEqual({
         type: "busy",
         message: expect.stringContaining("changed while"),
       });
-      expect((await repairRuntimeStore(workspace))._unsafeUnwrapErr()).toEqual({
+      expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(repairRuntimeStore(workspace))))))).toEqual({
         type: "busy",
         message: expect.stringContaining("changed while"),
       });
@@ -66,7 +68,7 @@ describe("Runtime database probe changes", () => {
       probeChanges.calls = 0;
       probeChanges.failOnCall = undefined;
       try {
-        expect((await repairRuntimeStore(workspace))._unsafeUnwrap()).toEqual({ changed: true });
+        expect(Result.getOrThrow((await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)))))).toEqual({ changed: true });
         expect(predecessor.shutdownRequests()).toBe(1);
       } finally {
         await predecessor.close();
@@ -82,20 +84,20 @@ describe("Runtime database probe changes", () => {
       probeChanges.calls = 0;
       probeChanges.failOnCall = 5;
 
-      expect((await repairRuntimeStore(workspace))._unsafeUnwrapErr()).toMatchObject({ type: "failed" });
+      expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(repairRuntimeStore(workspace))))))).toMatchObject({ type: "failed" });
       await expect(access(layout.transitionJournalPath)).resolves.toBeUndefined();
       expect(JSON.parse(await readFile(layout.manifestPath, "utf8"))).toMatchObject({ manifestVersion: 2 });
 
       probeChanges.calls = 0;
       probeChanges.failOnCall = undefined;
-      expect((await repairRuntimeStore(workspace))._unsafeUnwrap()).toEqual({ changed: true });
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)))))).toEqual({ changed: true });
       await expect(access(layout.transitionJournalPath)).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
 });
 
 async function createLegacyStore(workspace: string, storageVersion: number): Promise<void> {
-  const store = await openRuntimeStore(workspace);
+  const store = await openRuntimeStoreAdapter(workspace);
   store.close();
   const current = resolveRuntimeLayout(workspace);
   const database = new DatabaseSync(current.databasePath);

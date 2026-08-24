@@ -1,14 +1,15 @@
 import { resolve } from "node:path";
 import type { AgentNodeIR, NodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
-import { err, ok, type Result } from "neverthrow";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { readVerifiedArtifact } from "../artifacts/access.js";
 import { indexNodes } from "../scheduler/ir-walk.js";
-import { throwSchedulerStoreResult } from "../scheduler/store-port.js";
 import type { SchedulerProjection } from "../scheduler/types.js";
 import { isRuntimeStoreBusyError } from "../storage/database.js";
 import type { CommittedRuntimeEventRow } from "../store/committed-event.js";
 import type { RunExecutionMetadata } from "../store/inspection-read-model.js";
-import type { FrozenRun, RuntimeStore } from "../store/store.js";
+import type { FrozenRun, RuntimeStoreAdapter } from "../store/store.js";
 import type { HookEvent } from "./config.js";
 
 export type HookContext = {
@@ -61,7 +62,7 @@ type HookDispatchTarget = {
 type HookDispatchInput = {
   cwd: string;
   runId: string;
-  store: RuntimeStore;
+  store: RuntimeStoreAdapter;
   hookRunner?: HookDispatchTarget;
   frozen: FrozenRun;
 };
@@ -69,55 +70,56 @@ type HookDispatchInput = {
 export function dispatchCommittedHooksForRun(input: {
   cwd: string;
   runId: string;
-  store: RuntimeStore;
+  store: RuntimeStoreAdapter;
   hookRunner?: HookDispatchTarget;
-}): Result<HookDispatchProgress, HookDispatchRetry> {
+}): Result.Result<HookDispatchProgress, HookDispatchRetry> {
   const frozen = hookDispatchStage(input.runId, "load-projection", () => input.store.getFrozenRun(input.runId));
-  if (frozen.isErr()) return err(frozen.error);
-  if (!frozen.value) throw new Error(`Run '${input.runId}' has no frozen workflow.`);
-  return dispatchCommittedHooks({ ...input, frozen: frozen.value });
+  if (Result.isFailure(frozen)) return Result.fail(frozen.failure);
+  if (!frozen.success) throw new Error(`Run '${input.runId}' has no frozen workflow.`);
+  return dispatchCommittedHooks({ ...input, frozen: frozen.success });
 }
 
 export function dispatchHooksAtCheckpoint(input: HookDispatchInput & {
   shouldDispatchHooks?: (runId: string) => boolean;
   onHookIncident?: (runId: string, error: unknown) => void;
-}): void {
-  if (input.shouldDispatchHooks?.(input.runId) === false) return;
-  try {
+}): Effect.Effect<void> {
+  if (input.shouldDispatchHooks?.(input.runId) === false) return Effect.void;
+  return Effect.sync(() => {
     dispatchCommittedHooks(input);
-  } catch (error) {
-    if (!input.onHookIncident) throw error;
-    input.onHookIncident(input.runId, error);
-  }
+  }).pipe(
+    Effect.catchCause(cause => input.onHookIncident
+      ? Effect.sync(() => input.onHookIncident!(input.runId, Cause.squash(cause)))
+      : Effect.failCause(cause)),
+  );
 }
 
-function dispatchCommittedHooks(input: HookDispatchInput): Result<HookDispatchProgress, HookDispatchRetry> {
+function dispatchCommittedHooks(input: HookDispatchInput): Result.Result<HookDispatchProgress, HookDispatchRetry> {
   let dispatched = 0;
   for (;;) {
     const cursor = hookDispatchStage(input.runId, "read-cursor", () => input.store.getHookDispatchCursor(input.runId));
-    if (cursor.isErr()) return err(cursor.error);
-    const read = hookDispatchStage(input.runId, "read-events", () => input.store.readHookDispatchEvents(input.runId, cursor.value));
-    if (read.isErr()) return err(read.error);
-    if (cursor.value > read.value.lastSequence) {
-      throw new Error(`Run '${input.runId}' hook dispatch cursor ${cursor.value} exceeds committed event sequence ${read.value.lastSequence}.`);
+    if (Result.isFailure(cursor)) return Result.fail(cursor.failure);
+    const read = hookDispatchStage(input.runId, "read-events", () => input.store.readHookDispatchEvents(input.runId, cursor.success));
+    if (Result.isFailure(read)) return Result.fail(read.failure);
+    if (cursor.success > read.success.lastSequence) {
+      throw new Error(`Run '${input.runId}' hook dispatch cursor ${cursor.success} exceeds committed event sequence ${read.success.lastSequence}.`);
     }
-    const row = read.value.events[0];
+    const row = read.success.events[0];
     if (!row) {
-      if (cursor.value !== read.value.lastSequence) {
-        throw new Error(`Run '${input.runId}' hook dispatch cursor ${cursor.value} has no next committed event before sequence ${read.value.lastSequence}.`);
+      if (cursor.success !== read.success.lastSequence) {
+        throw new Error(`Run '${input.runId}' hook dispatch cursor ${cursor.success} has no next committed event before sequence ${read.success.lastSequence}.`);
       }
-      return ok({ runId: input.runId, eventSequence: cursor.value, dispatched });
+      return Result.succeed({ runId: input.runId, eventSequence: cursor.success, dispatched });
     }
-    if (row.sequence !== cursor.value + 1) {
-      throw new Error(`Run '${input.runId}' hook dispatch event sequence jumps from ${cursor.value} to ${row.sequence}.`);
+    if (row.sequence !== cursor.success + 1) {
+      throw new Error(`Run '${input.runId}' hook dispatch event sequence jumps from ${cursor.success} to ${row.sequence}.`);
     }
 
     const hookEvent = mapRuntimeEventToHookEvent(row);
     let prepared: { event: NonNullable<typeof hookEvent>; context: HookContext } | undefined;
     if (hookEvent && input.hookRunner) {
       const projection = hookDispatchStage(input.runId, "load-projection", () =>
-        throwSchedulerStoreResult(input.store.scheduler.tryLoadRunSnapshot(input.runId)).projection);
-      if (projection.isErr()) return err(projection.error);
+        input.store.scheduler.tryLoadRunSnapshot(input.runId).projection);
+      if (Result.isFailure(projection)) return Result.fail(projection.failure);
       const context = hookDispatchStage(input.runId, "load-metadata", () => {
         const metadata = input.store.getExecutionMetadata(input.runId);
         const payload = objectValue(row.payload);
@@ -126,7 +128,7 @@ function dispatchCommittedHooks(input: HookDispatchInput): Result<HookDispatchPr
         return buildHookContext({
           row,
           hookEvent,
-          projection: projection.value,
+          projection: projection.success,
           ir: input.frozen.ir,
           workspaceDir: input.frozen.meta.workspaceDir ?? input.cwd,
           workflowPath: resolve(input.cwd, input.frozen.meta.workflowPath ?? ""),
@@ -134,14 +136,14 @@ function dispatchCommittedHooks(input: HookDispatchInput): Result<HookDispatchPr
           agentPrompts,
         });
       });
-      if (context.isErr()) return err(context.error);
-      prepared = { event: hookEvent, context: context.value };
+      if (Result.isFailure(context)) return Result.fail(context.failure);
+      prepared = { event: hookEvent, context: context.success };
     }
 
     const advanced = hookDispatchStage(input.runId, "advance-cursor", () =>
-      input.store.compareAndSetHookDispatchCursor(input.runId, cursor.value, row.sequence));
-    if (advanced.isErr()) return err(advanced.error);
-    if (!advanced.value) continue;
+      input.store.compareAndSetHookDispatchCursor(input.runId, cursor.success, row.sequence));
+    if (Result.isFailure(advanced)) return Result.fail(advanced.failure);
+    if (!advanced.success) continue;
     if (prepared) {
       try {
         input.hookRunner!.trigger(prepared.event, prepared.context);
@@ -278,9 +280,9 @@ function nodeResultFields(
 }
 
 function loadAgentPrompts(
-  store: RuntimeStore,
+  store: RuntimeStoreAdapter,
   runId: string,
-  rows: ReturnType<RuntimeStore["getExecutionMetadata"]>,
+  rows: ReturnType<RuntimeStoreAdapter["getExecutionMetadata"]>,
   attemptId: string | undefined,
 ): Map<string, string> {
   const prompts = new Map<string, string>();
@@ -308,12 +310,12 @@ function hookDispatchStage<T>(
   runId: string,
   stage: HookDispatchRetry["stage"],
   read: () => T,
-): Result<T, HookDispatchRetry> {
+): Result.Result<T, HookDispatchRetry> {
   try {
-    return ok(read());
+    return Result.succeed(read());
   } catch (error) {
     if (isRuntimeStoreBusyError(error)) {
-      return err({
+      return Result.fail({
         type: "hook-dispatch-retry",
         runId,
         stage,

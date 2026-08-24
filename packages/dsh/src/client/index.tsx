@@ -6,10 +6,10 @@ import {
   AcpusActivityTray,
   AcpusInternalToolView,
 } from "./activity-tray.js";
-import { AcpusBrandLabel, AcpusProfileAction } from "./profile-action.js";
+import { AcpusBrandLabel, AcpusPresetAction } from "./preset-action.js";
 import { AcpusClientState, type AcpusRemote } from "./state.js";
 import activityTrayStyles from "./activity-tray.css";
-import profileActionStyles from "./profile-action.css";
+import presetActionStyles from "./preset-action.css";
 
 export const inject = ["slots", "remote"];
 
@@ -41,11 +41,11 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
       ctx.slots.inject("conversation.session.header.actions", () => ctx.slots.register(
         {
           name: "conversation.session.header.actions",
-          id: "acpus-agent-profiles",
+          id: "acpus-agent-presets",
           order: 0,
           inject: () => ({ acpus }),
         },
-        AcpusProfileAction,
+        AcpusPresetAction,
       )),
       ctx.slots.inject("conversation.input.dock", () => ctx.slots.register(
         {
@@ -76,7 +76,7 @@ function installStyles(): () => void {
   if (existing) return () => {};
   const style = clientDocument.createElement("style");
   style.dataset.acpusActivityStyles = "";
-  style.textContent = `${activityTrayStyles}\n${profileActionStyles}`;
+  style.textContent = `${activityTrayStyles}\n${presetActionStyles}`;
   clientDocument.head.append(style);
   return () => style.remove();
 }
@@ -94,7 +94,7 @@ type ClientDocument = {
 };
 
 const ACPUS_TOOL_NAMES = [
-  "acpus_profiles",
+  "acpus_presets",
   "acpus_tasks",
   "acpus_run",
   "acpus_inspect",
@@ -103,5 +103,5 @@ const ACPUS_TOOL_NAMES = [
 ] as const;
 
 export { AcpusActivityTray, AcpusInternalToolView } from "./activity-tray.js";
-export { AcpusProfileAction } from "./profile-action.js";
+export { AcpusPresetAction } from "./preset-action.js";
 export { AcpusClientState } from "./state.js";

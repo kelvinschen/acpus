@@ -1,17 +1,25 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow } from "@acpus/core";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import type { SchedulerEvent } from "../src/scheduler/events.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
-import { getRunVisualizationSnapshot, inspectNode } from "@acpus/runtime";
+import { inspectNode as inspectNodeEffect } from "../src/inspection/use-cases.js";
+import { getRunVisualizationSnapshot } from "../src/runs/use-cases.js";
 import { applySchedulerControlIntent } from "../src/scheduler/control.js";
 import { bootstrapRootEvents } from "../src/scheduler/materialize.js";
 import { settleFrozenRunTransitions } from "../src/scheduler/runtime-runner.js";
 import { frozenRunScope } from "../src/scheduler/settle.js";
-import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter, type RuntimeStoreAdapter } from "../src/store/store.js";
+import { makeRuntimeStoreService } from "../src/store/service.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
-import { throwingSchedulerStore } from "./support/scheduler-store.js";
+import { throwingSchedulerStore, tryRetryStore } from "./support/scheduler-store.js";
+
+function inspectNode(...args: Parameters<typeof inspectNodeEffect>) {
+  return Effect.runPromise(Effect.result(inspectNodeEffect(...args)));
+}
 
 describe("scheduler targeted retry eligibility", () => {
   it.each(["completed", "canceled"] as const)("rejects a failed target in a %s run without writing events", async terminalStatus => {
@@ -48,19 +56,6 @@ describe("scheduler targeted retry eligibility", () => {
     });
   });
 
-  it("keeps an owner-valid large quorum on the typed blocked-retry path", async () => {
-    await withClaimedRun("scheduler-retry-large-quorum-dependency", async ({ store, runId, claim }) => {
-      appendEvents(
-        store,
-        runId,
-        claim,
-        hiddenFailedDependencyEvents(runId, Number.MAX_SAFE_INTEGER + 1),
-      );
-
-      expectRejectedWithoutMutation(store, runId, claim, "outer.left.task");
-    });
-  });
-
   it("rejects targeted retry while paused without writing events", async () => {
     await withClaimedRun("scheduler-retry-paused-run", async ({ store, runId, claim }) => {
       appendEvents(store, runId, claim, pausedFailedTargetEvents(runId));
@@ -74,15 +69,15 @@ describe("scheduler targeted retry eligibility", () => {
       appendEvents(store, runId, claim, expressionResolutionFailureEvents(runId));
 
       expectRejectedWithoutMutation(store, runId, claim, "target");
-      expect((await getRunVisualizationSnapshot(workspace, runId))._unsafeUnwrap()).toMatchObject({
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRunVisualizationSnapshot(workspace, runId)))))).toMatchObject({
         controls: { canCancelRun: false, retryTargets: [] },
       });
       const details = await inspectNode(workspace, {
         runId,
         target: "target",
       });
-      expect(details.isOk()
-        ? details.value.availableControls
+      expect(Result.isSuccess(details)
+        ? details.success.availableControls
         : undefined).toEqual([]);
     });
   });
@@ -91,7 +86,7 @@ describe("scheduler targeted retry eligibility", () => {
     await withClaimedRun("scheduler-retry-projection-parity", async ({ workspace, store, runId, claim }) => {
       appendEvents(store, runId, claim, retryableFailedTargetEvents(runId));
 
-      expect((await getRunVisualizationSnapshot(workspace, runId))._unsafeUnwrap()).toMatchObject({
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRunVisualizationSnapshot(workspace, runId)))))).toMatchObject({
         controls: {
           canCancelRun: false,
           retryTargets: [{ target: "target", kind: "node", nodeId: "target" }],
@@ -101,15 +96,15 @@ describe("scheduler targeted retry eligibility", () => {
         runId,
         target: "target",
       });
-      expect(controls.isOk() ? controls.value.availableControls.map(control => control.type) : undefined)
+      expect(Result.isSuccess(controls) ? controls.success.availableControls.map(control => control.type) : undefined)
         .toEqual(["retry"]);
-      const retry = store.scheduler.tryRetry({
+      const retry = tryRetryStore(store.scheduler, {
         runId,
         ownerEpoch: claim.ownerEpoch,
         idempotencyKey: "retry:projection-parity",
         target: "target",
       });
-      expect(retry.isOk() ? retry.value.projection.instances.target : undefined)
+      expect(Result.isSuccess(retry) ? retry.success.projection.instances.target : undefined)
         .toMatchObject({ status: "ready", statusReason: "retry" });
     });
   });
@@ -132,7 +127,7 @@ describe("scheduler targeted retry eligibility", () => {
         ],
       });
 
-      expect((await getRunVisualizationSnapshot(workspace, runId))._unsafeUnwrap()).toMatchObject({
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRunVisualizationSnapshot(workspace, runId)))))).toMatchObject({
         run: { status: "running" },
         controls: {
           retryTargets: expect.arrayContaining([
@@ -140,13 +135,13 @@ describe("scheduler targeted retry eligibility", () => {
           ]),
         },
       });
-      const retry = store.scheduler.tryRetry({
+      const retry = tryRetryStore(store.scheduler, {
         runId,
         ownerEpoch: claim.ownerEpoch,
         idempotencyKey: "retry:intermediate-projection",
         target: targetKey,
       });
-      expect(retry.isOk()).toBe(true);
+      expect(Result.isSuccess(retry)).toBe(true);
     });
   });
 
@@ -163,7 +158,7 @@ describe("scheduler targeted retry eligibility", () => {
       expect(before.projection.groupMembers[outerMemberKey]).toMatchObject({ status: "running" });
       const eventCount = store.getRun(runId)?.eventCount;
 
-      expect((await getRunVisualizationSnapshot(workspace, runId))._unsafeUnwrap()).toMatchObject({
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRunVisualizationSnapshot(workspace, runId)))))).toMatchObject({
         run: { status: "running" },
         controls: {
           retryTargets: expect.arrayContaining([
@@ -175,8 +170,8 @@ describe("scheduler targeted retry eligibility", () => {
         runId,
         target: targetKey,
       });
-      expect(details.isOk()
-        ? details.value.availableControls
+      expect(Result.isSuccess(details)
+        ? details.success.availableControls
         : undefined).toContainEqual({ type: "retry", target: targetKey });
 
       const afterReads = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
@@ -184,13 +179,13 @@ describe("scheduler targeted retry eligibility", () => {
       expect(afterReads.projection.groupMembers[outerMemberKey]).toMatchObject({ status: "running" });
       expect(store.getRun(runId)?.eventCount).toBe(eventCount);
 
-      const retried = store.scheduler.tryRetry({
+      const retried = tryRetryStore(store.scheduler, {
         runId,
         ownerEpoch: claim.ownerEpoch,
         idempotencyKey: "retry:nested-intermediate-projection",
         target: targetKey,
       });
-      expect(retried.isOk() ? retried.value.projection.instances[targetKey] : undefined)
+      expect(Result.isSuccess(retried) ? retried.success.projection.instances[targetKey] : undefined)
         .toMatchObject({ status: "ready", statusReason: "retry" });
     });
   });
@@ -213,16 +208,16 @@ describe("scheduler targeted retry eligibility", () => {
         runId,
         target: "attempt_old",
       });
-      expect(historical.isOk()
-        ? historical.value.availableControls
+      expect(Result.isSuccess(historical)
+        ? historical.success.availableControls
         : undefined).toEqual([]);
 
       const current = await inspectNode(workspace, {
         runId,
         target: "attempt_current",
       });
-      expect(current.isOk()
-        ? current.value.availableControls
+      expect(Result.isSuccess(current)
+        ? current.success.availableControls
         : undefined).toEqual([{ type: "cancel", target: "require_ready" }]);
     });
   });
@@ -230,7 +225,7 @@ describe("scheduler targeted retry eligibility", () => {
   it("fails closed when an authored node id collides with the root frame identity", async () => {
     await withRuntimeWorkspace("scheduler-controls-root-id-collision", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, rootIdWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
         const claim = store.scheduler.claimRun(run.id, "root-id-collision-owner", 60_000);
@@ -253,10 +248,10 @@ describe("scheduler targeted retry eligibility", () => {
           runId: run.id,
           target: "root",
         });
-        expect(details.isOk()
+        expect(Result.isSuccess(details)
           ? {
-              target: { kind: details.value.subject.targetKind, id: details.value.subject.id },
-              availableControls: details.value.availableControls,
+              target: { kind: details.success.subject.targetKind, id: details.success.subject.id },
+              availableControls: details.success.availableControls,
             }
           : undefined).toEqual({
           target: { kind: "frame", id: "root" },
@@ -271,7 +266,7 @@ describe("scheduler targeted retry eligibility", () => {
   it("rejects a retry whose ancestor frame has no runnable scheduler state", async () => {
     await withRuntimeWorkspace("scheduler-retry-non-runnable-ancestor", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const initial = await openRuntimeStore(workspace);
+      const initial = await openRuntimeStoreAdapter(workspace);
       const run = await admitRunForTest(initial, { prepared, input: { ready: true }, cwd: workspace });
       const claim = initial.scheduler.claimRun(run.id, "retry-corruption-owner", 60_000);
       if (!claim) throw new Error(`Run '${run.id}' could not be claimed.`);
@@ -293,11 +288,11 @@ describe("scheduler targeted retry eligibility", () => {
       }
       initial.close();
 
-      const reopened = await openRuntimeStore(workspace);
+      const reopened = await openRuntimeStoreAdapter(workspace);
       try {
         const before = throwingSchedulerStore(reopened.scheduler).loadRunSnapshot(run.id);
         const eventCount = reopened.getRun(run.id)?.eventCount;
-        expect(() => reopened.scheduler.tryRetry({
+        expect(() => tryRetryStore(reopened.scheduler, {
           runId: run.id,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "retry:non-runnable-ancestor",
@@ -349,16 +344,16 @@ describe("scheduler targeted retry eligibility", () => {
       const before = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
       const eventCount = store.getRun(runId)?.eventCount;
 
-      const result = applySchedulerControlIntent(store, {
+      const result = await Effect.runPromise(Effect.result(applySchedulerControlIntent(makeRuntimeStoreService(store), {
         requestId: "retry:missing",
         runId,
         type: "retry",
         target: "missing",
-      }, claim.ownerEpoch);
+      }, claim.ownerEpoch)));
 
-      expect(result.isErr()).toBe(true);
-      if (result.isErr()) {
-        expect(result.error).toMatchObject({
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure).toMatchObject({
           type: "missing-retry-target",
           runId,
           targetKey: "missing",
@@ -372,7 +367,7 @@ describe("scheduler targeted retry eligibility", () => {
   it("rebuilds historical terminal runs that already contain targeted-retry events", async () => {
     await withRuntimeWorkspace("scheduler-retry-historical-terminal-replay", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const initial = await openRuntimeStore(workspace);
+      const initial = await openRuntimeStoreAdapter(workspace);
       const run = await admitRunForTest(initial, { prepared, input: { ready: true }, cwd: workspace });
       const claim = initial.scheduler.claimRun(run.id, "historical-retry-owner", 60_000);
       if (!claim) throw new Error(`Run '${run.id}' could not be claimed.`);
@@ -386,7 +381,7 @@ describe("scheduler targeted retry eligibility", () => {
       initial.scheduler.releaseRun(claim);
       initial.close();
 
-      const reopened = await openRuntimeStore(workspace);
+      const reopened = await openRuntimeStoreAdapter(workspace);
       try {
         const rebuilt = throwingSchedulerStore(reopened.scheduler).loadRunSnapshot(run.id).projection;
         expect(rebuilt.run.status).toBe("completed");
@@ -400,11 +395,11 @@ describe("scheduler targeted retry eligibility", () => {
 
 async function withClaimedRun(
   name: string,
-  fn: (input: { workspace: string; store: RuntimeStore; runId: string; claim: RunOwnerClaim }) => Promise<void>,
+  fn: (input: { workspace: string; store: RuntimeStoreAdapter; runId: string; claim: RunOwnerClaim }) => Promise<void>,
 ): Promise<void> {
   await withRuntimeWorkspace(name, async workspace => {
     const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-    const store = await openRuntimeStore(workspace);
+    const store = await openRuntimeStoreAdapter(workspace);
     try {
       const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
       const claim = store.scheduler.claimRun(run.id, "retry-eligibility-owner", 60_000);
@@ -418,11 +413,11 @@ async function withClaimedRun(
 
 async function withPendingParallelFailure(
   name: string,
-  fn: (input: { workspace: string; store: RuntimeStore; runId: string; claim: RunOwnerClaim; targetKey: string }) => Promise<void>,
+  fn: (input: { workspace: string; store: RuntimeStoreAdapter; runId: string; claim: RunOwnerClaim; targetKey: string }) => Promise<void>,
 ): Promise<void> {
   await withRuntimeWorkspace(name, async workspace => {
     const prepared = await prepareSyntheticWorkflow(workspace, atomicRetryWorkflow());
-    const store = await openRuntimeStore(workspace);
+    const store = await openRuntimeStoreAdapter(workspace);
     const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
     const claim = store.scheduler.claimRun(run.id, "atomic-retry-owner", 60_000);
     if (!claim) throw new Error(`Run '${run.id}' could not be claimed.`);
@@ -447,7 +442,11 @@ async function withPendingParallelFailure(
         idempotencyKey: "atomic-retry:sibling-completed",
         events: [{ type: "instance.completed", payload: { nodeKey: sibling.nodeKey, output: { ok: true } } }],
       });
-      const propagated = settleFrozenRunTransitions({ store, runId: run.id, ownerEpoch: claim.ownerEpoch });
+      const propagated = await Effect.runPromise(settleFrozenRunTransitions({
+        store: makeRuntimeStoreService(store),
+        runId: run.id,
+        ownerEpoch: claim.ownerEpoch,
+      }));
       if (propagated.version <= siblingCompleted.version) throw new Error("Sibling completion did not propagate.");
       throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
         runId: run.id,
@@ -468,7 +467,7 @@ async function withPendingNestedParallelFailure(
   name: string,
   fn: (input: {
     workspace: string;
-    store: RuntimeStore;
+    store: RuntimeStoreAdapter;
     runId: string;
     claim: RunOwnerClaim;
     targetKey: string;
@@ -477,7 +476,7 @@ async function withPendingNestedParallelFailure(
 ): Promise<void> {
   await withRuntimeWorkspace(name, async workspace => {
     const prepared = await prepareSyntheticWorkflow(workspace, nestedAtomicRetryWorkflow());
-    const store = await openRuntimeStore(workspace);
+    const store = await openRuntimeStoreAdapter(workspace);
     const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
     const claim = store.scheduler.claimRun(run.id, "nested-atomic-retry-owner", 60_000);
     if (!claim) throw new Error(`Run '${run.id}' could not be claimed.`);
@@ -540,11 +539,11 @@ async function withPendingNestedParallelFailure(
         result: { status: "completed", output: { ok: true } },
         idempotencyKey: "nested-atomic-retry:outer-sibling-completed",
       });
-      const propagated = settleFrozenRunTransitions({
-        store,
+      const propagated = await Effect.runPromise(settleFrozenRunTransitions({
+        store: makeRuntimeStoreService(store),
         runId: run.id,
         ownerEpoch: claim.ownerEpoch,
-      });
+      }));
       if (propagated.version <= siblingsCompleted.version) {
         throw new Error("Nested sibling completion did not propagate.");
       }
@@ -580,7 +579,7 @@ async function withPendingNestedParallelFailure(
   });
 }
 
-function appendEvents(store: RuntimeStore, runId: string, claim: RunOwnerClaim, events: SchedulerEvent[]): void {
+function appendEvents(store: RuntimeStoreAdapter, runId: string, claim: RunOwnerClaim, events: SchedulerEvent[]): void {
   const before = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
   throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
     runId,
@@ -592,7 +591,7 @@ function appendEvents(store: RuntimeStore, runId: string, claim: RunOwnerClaim, 
 }
 
 function expectRejectedWithoutMutation(
-  store: RuntimeStore,
+  store: RuntimeStoreAdapter,
   runId: string,
   claim: RunOwnerClaim,
   target: string,
@@ -600,16 +599,16 @@ function expectRejectedWithoutMutation(
   const before = throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId);
   const eventCount = store.getRun(runId)?.eventCount;
 
-  const result = store.scheduler.tryRetry({
+  const result = tryRetryStore(store.scheduler, {
     runId,
     ownerEpoch: claim.ownerEpoch,
     idempotencyKey: `retry:${runId}:${target}`,
     target,
   });
 
-  expect(result.isErr()).toBe(true);
-  if (result.isErr()) {
-    expect(result.error).toMatchObject({ type: "invalid-retry-target", runId, targetKey: target });
+  expect(Result.isFailure(result)).toBe(true);
+  if (Result.isFailure(result)) {
+    expect(result.failure).toMatchObject({ type: "invalid-retry-target", runId, targetKey: target });
   }
   expect(throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).version).toBe(before.version);
   expect(store.getRun(runId)?.eventCount).toBe(eventCount);

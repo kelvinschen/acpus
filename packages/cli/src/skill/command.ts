@@ -3,6 +3,8 @@ import { homedir } from "node:os";
 import { posix } from "node:path";
 import { isCancel, multiselect, select } from "@clack/prompts";
 import { Command } from "commander";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { skillError, usageError } from "../presentation/errors.js";
 import { writeResult, type SkillCommandResult } from "../presentation/output.js";
 import { getCliPackageInfo } from "../platform/package-info.js";
@@ -62,13 +64,13 @@ export function createSkillCommand(ctx: SkillCommandContext): Command {
     .argument("[path]", "canonical skill-root-relative file or directory path")
     .action(async (resourcePath?: string) => {
       const rootPath = await resolveBundledSkillRoot();
-      const resource = await readAcpusSkillResource(rootPath, resourcePath);
-      if (resource.isErr()) throw skillError(resource.error.message);
-      ctx.stdout.write(formatSkillResource(resource.value));
-      if (resource.value.kind === "file") {
-        ctx.stdout.write(resource.value.content);
-      } else if (resource.value.entries.length > 0) {
-        ctx.stdout.write(`${resource.value.entries.map(entry => `${entry.kind}\t${entry.path}`).join("\n")}\n`);
+      const resource = await Effect.runPromise(Effect.result(readAcpusSkillResource(rootPath, resourcePath)));
+      if (Result.isFailure(resource)) throw skillError(resource.failure.message);
+      ctx.stdout.write(formatSkillResource(resource.success));
+      if (resource.success.kind === "file") {
+        ctx.stdout.write(resource.success.content);
+      } else if (resource.success.entries.length > 0) {
+        ctx.stdout.write(`${resource.success.entries.map(entry => `${entry.kind}\t${entry.path}`).join("\n")}\n`);
       }
       ctx.setExitCode(0);
     }));
@@ -108,9 +110,9 @@ export function createSkillCommand(ctx: SkillCommandContext): Command {
 }
 
 async function resolveBundledSkillRoot(): Promise<string> {
-  const source = await bundledAcpusSkillPath(getCliPackageInfo().version);
-  if (source.isErr()) throw skillError(source.error.message);
-  return source.value;
+  const source = await Effect.runPromise(Effect.result(bundledAcpusSkillPath(getCliPackageInfo().version)));
+  if (Result.isFailure(source)) throw skillError(source.failure.message);
+  return source.success;
 }
 
 function formatSkillResource(resource: SkillResourceRead): string {

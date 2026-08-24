@@ -6,7 +6,7 @@
     text: |-
 {{ACPUS_SUPERVISOR_KNOWLEDGE}}
 
-      {{acpus_agents}}
+      {{acpus_agent_presets}}
 
 - id: acpus-supervisor
   name: '@acpus/dsh/supervisor'

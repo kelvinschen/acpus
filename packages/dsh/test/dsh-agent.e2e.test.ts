@@ -12,7 +12,7 @@ import { createDshAgentLaunches } from "../src/host/dsh-agent.js";
 import { loadDshComposition, supervisingAgent, terminalRun } from "./support/dsh-composition.js";
 
 describe.concurrent("DSH ACP Agent", () => {
-  it("runs without valid Acpx configuration through the selected DSH home", async () => {
+  it("runs the exact Host DSH launch ahead of global and project Agent config", async () => {
     const root = await mkdtemp(join(tmpdir(), "acpus-dsh-builtin-"));
     const workspace = join(root, "workspace");
     const home = join(root, "home");
@@ -44,9 +44,22 @@ describe.concurrent("DSH ACP Agent", () => {
       server.listen(0, "127.0.0.1", resolve);
     });
     const address = server.address() as AddressInfo;
-    await Promise.all([mkdir(workspace), mkdir(home), mkdir(dshHome)]);
     await Promise.all([
-      writeFile(join(workspace, ".acpxrc.json"), "{ invalid", "utf8"),
+      mkdir(join(workspace, ".acpus"), { recursive: true }),
+      mkdir(join(home, ".acpus"), { recursive: true }),
+      mkdir(dshHome),
+    ]);
+    await Promise.all([
+      writeFile(
+        join(home, ".acpus", "config.json"),
+        '{"agents":{"dsh":"global-dsh-must-not-run"}}\n',
+        "utf8",
+      ),
+      writeFile(
+        join(workspace, ".acpus", "config.json"),
+        '{"agents":{"dsh":"project-dsh-must-not-run"}}\n',
+        "utf8",
+      ),
       writeFile(
         join(dshHome, ".credentials.yaml"),
         "DEEPSEEK_API_KEY: home-managed-key\n",

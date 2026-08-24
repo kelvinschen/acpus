@@ -84,7 +84,7 @@ export function initializeRuntimeSchema(db: DatabaseSync): void {
       workflow_ir_path TEXT NOT NULL,
       workflow_ir_digest TEXT NOT NULL,
       input_json TEXT NOT NULL,
-      agent_overrides_json TEXT NOT NULL DEFAULT '{}',
+      agent_bindings_json TEXT NOT NULL DEFAULT '{}',
       output_json TEXT,
       lock_path TEXT NOT NULL,
       lock_digest TEXT NOT NULL,
@@ -195,6 +195,89 @@ export function initializeRuntimeSchema(db: DatabaseSync): void {
       UNIQUE(run_id, node_key, attempt_no)
     );
 
+    CREATE TABLE IF NOT EXISTS agent_sessions (
+      agent_session_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      scope_digest TEXT NOT NULL,
+      generation INTEGER NOT NULL CHECK (generation >= 1),
+      explicit_shared INTEGER NOT NULL CHECK (explicit_shared IN (0, 1)),
+      ready_at TEXT,
+      reported_version TEXT CHECK (
+        reported_version IS NULL OR length(reported_version) BETWEEN 1 AND 256
+      ),
+      lifecycle TEXT NOT NULL CHECK (lifecycle IN ('active', 'abandoned')),
+      checkpoint TEXT NOT NULL CHECK (checkpoint IN (
+        'not_dispatched',
+        'dispatch_intent',
+        'owned_in_flight',
+        'provider_observed',
+        'terminal_observed',
+        'acceptance_unknown',
+        'terminal_unknown'
+      )),
+      checkpoint_attempt_id TEXT NOT NULL,
+      checkpoint_turn_id TEXT,
+      checkpoint_session_lease_id TEXT,
+      checkpoint_prompt_origin TEXT NOT NULL CHECK (checkpoint_prompt_origin IN (
+        'authored', 'steering', 'repair'
+      )),
+      checkpoint_input_digest TEXT NOT NULL,
+      checkpoint_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE (run_id, scope_digest, generation),
+      CHECK (
+        (checkpoint_turn_id IS NULL
+          AND checkpoint_session_lease_id IS NULL
+          AND checkpoint = 'not_dispatched')
+        OR
+        (checkpoint_turn_id IS NOT NULL
+          AND checkpoint_session_lease_id IS NOT NULL)
+      )
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_sessions_active_scope
+      ON agent_sessions(run_id, scope_digest)
+      WHERE lifecycle = 'active';
+
+    CREATE TABLE IF NOT EXISTS agent_attempt_sessions (
+      attempt_id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
+      agent_session_id TEXT NOT NULL
+        REFERENCES agent_sessions(agent_session_id) ON DELETE CASCADE,
+      operation TEXT NOT NULL CHECK (operation IN (
+        'start', 'continue', 'safe_retry'
+      )),
+      session_open_mode TEXT NOT NULL CHECK (session_open_mode IN (
+        'new_or_empty', 'existing_required'
+      )),
+      predecessor_attempt_id TEXT,
+      steer_event_sequence INTEGER
+        CHECK (steer_event_sequence IS NULL OR steer_event_sequence >= 1),
+      initial_prompt_origin TEXT NOT NULL CHECK (initial_prompt_origin IN (
+        'authored', 'steering', 'repair'
+      )),
+      input_digest TEXT NOT NULL,
+      admitted_from_checkpoint TEXT CHECK (
+        admitted_from_checkpoint IS NULL OR admitted_from_checkpoint IN (
+          'not_dispatched',
+          'dispatch_intent',
+          'owned_in_flight',
+          'provider_observed',
+          'terminal_observed',
+          'acceptance_unknown',
+          'terminal_unknown'
+        )
+      ),
+      created_at TEXT NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_agent_attempt_sessions_session
+      ON agent_attempt_sessions(agent_session_id, created_at);
+
+    CREATE INDEX IF NOT EXISTS idx_agent_attempt_sessions_run
+      ON agent_attempt_sessions(run_id, created_at);
+
     CREATE TABLE IF NOT EXISTS group_members (
       run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
       group_key TEXT NOT NULL,
@@ -236,7 +319,7 @@ export function initializeRuntimeSchema(db: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS execution_metadata (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       run_id TEXT NOT NULL REFERENCES runs(id) ON DELETE CASCADE,
-      attempt_id TEXT,
+      attempt_id TEXT NOT NULL REFERENCES node_attempts(attempt_id) ON DELETE CASCADE,
       kind TEXT NOT NULL,
       metadata_json TEXT NOT NULL,
       created_at TEXT NOT NULL
@@ -279,7 +362,7 @@ export function initializeRuntimeSchema(db: DatabaseSync): void {
       node_id TEXT NOT NULL,
       attempt_no INTEGER NOT NULL,
       turn_no INTEGER NOT NULL CHECK (turn_no > 0),
-      prompt_kind TEXT NOT NULL CHECK (prompt_kind IN ('task', 'continuation', 'steer', 'repair')),
+      prompt_kind TEXT NOT NULL CHECK (prompt_kind IN ('task', 'steer', 'repair')),
       state TEXT NOT NULL CHECK (state IN ('recording', 'settled', 'incomplete')),
       degraded INTEGER NOT NULL DEFAULT 0 CHECK (degraded IN (0, 1)),
       gap_count INTEGER NOT NULL DEFAULT 0 CHECK (gap_count >= 0),
@@ -325,7 +408,6 @@ export function initializeRuntimeSchema(db: DatabaseSync): void {
       source TEXT NOT NULL,
       source_path TEXT NOT NULL,
       handler_id TEXT NOT NULL,
-      definition_hash TEXT NOT NULL,
       node_key TEXT,
       status TEXT NOT NULL CHECK (status IN ('completed', 'failed', 'timed_out')),
       exit_code INTEGER,
@@ -361,8 +443,8 @@ export function initializeRuntimeSchema(db: DatabaseSync): void {
       ON agent_observation_entries(run_id, attempt_id, observed_at, entry_id);
     CREATE INDEX IF NOT EXISTS idx_hook_journal_run_id ON hook_journal(run_id);
     CREATE INDEX IF NOT EXISTS idx_hook_journal_triggered_at ON hook_journal(triggered_at);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_hook_journal_event_handler
-      ON hook_journal(run_id, event_sequence, definition_hash);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_hook_journal_event_order
+      ON hook_journal(run_id, event_sequence, trigger_order);
 
     CREATE TABLE IF NOT EXISTS artifacts (
       id TEXT PRIMARY KEY,

@@ -19,7 +19,7 @@ export type NoticeProjection = {
   terminalSummary?: string;
 };
 
-export type NoticeFact =
+type NoticeFact =
   | {
       kind: "awaiting-input";
       runId: string;
@@ -99,7 +99,7 @@ export function deriveNotice(projection: NoticeProjection): DerivedNotice | unde
   };
 }
 
-export function noticeId(fact: NoticeFact): string {
+function noticeId(fact: NoticeFact): string {
   const tuple = fact.kind === "awaiting-input"
     ? [
         fact.runId,

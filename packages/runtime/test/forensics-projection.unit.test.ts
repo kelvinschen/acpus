@@ -1,4 +1,4 @@
-import type { ExprIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
+import type { ExprIR, ScopeIR, AdmittedWorkflowIR } from "@acpus/core/ir";
 import type { JsonPrimitive, JsonValue } from "@acpus/expression/ir";
 import { describe, expect, it } from "vitest";
 import { projectInspectionForensicsView } from "../src/inspection/forensics-projection.js";
@@ -6,6 +6,7 @@ import { resolveTargetState } from "../src/inspection/projection.js";
 import type { ResolvedTargetState } from "../src/inspection/resolved-target.js";
 import { appendBranch, appendFanoutItem, appendLoopIteration, appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import type { FrozenRun, RunDetails } from "../src/store/store.js";
+import type { AgentDirectInjectionSpec, FrozenAgentBinding } from "../src/agents/injections.js";
 
 const createdAt = "2026-08-01T00:00:00.000Z";
 const updatedAt = "2026-08-01T00:00:05.000Z";
@@ -13,8 +14,8 @@ const updatedAt = "2026-08-01T00:00:05.000Z";
 describe("Forensics projection", () => {
   it("treats prototype-named Agent definitions and overrides as own properties", () => {
     const profile = { kind: "agent_definition" as const, use: "codex" };
-    const ir: WorkflowIR = {
-      irVersion: 7,
+    const ir: AdmittedWorkflowIR = {
+      irVersion: 8,
       name: "prototype-agent",
       agents: Object.fromEntries([["__proto__", profile]]),
       root: {
@@ -31,28 +32,29 @@ describe("Forensics projection", () => {
     expect(root.definition.kind).toBe("workflow");
     if (root.definition.kind !== "workflow") throw new Error("Expected workflow Definition.");
     expect(Object.hasOwn(root.definition.agents, "__proto__")).toBe(true);
-    expect(root.definition.agents["__proto__"]).toEqual({ profile });
+    expect(root.definition.agents["__proto__"]).toEqual({ source: { kind: "workflow" }, effective: profile });
     expect(agent.definition).toEqual({
       kind: "agent",
       agent: "__proto__",
-      profile,
+      source: { kind: "workflow" },
+      effective: profile,
       prompt: "\"review\"",
     });
 
-    const override = { model: "review-model" };
-    const overridden = frozenRun(ir, {}, Object.fromEntries([["__proto__", override]]));
+    const injection = { model: "review-model" };
+    const overridden = frozenRun(ir, {}, Object.fromEntries([["__proto__", injection]]));
     expect(view(overridden, run, "review").definition).toEqual({
       kind: "agent",
       agent: "__proto__",
-      profile,
-      override,
+      source: { kind: "workflow" },
+      effective: profile,
       prompt: "\"review\"",
     });
   });
 
   it("projects the frozen root and every node Definition without inline Task source", () => {
     const ir = definitionWorkflow();
-    const agentOverrides = {
+    const agentInjections = {
       reviewer: {
         command: "effective-agent",
         model: "effective-model",
@@ -64,7 +66,7 @@ describe("Forensics projection", () => {
     };
     const input = { topic: "full input", nested: { keep: true } };
     const run = baseRun(ir, { input });
-    const frozen = frozenRun(ir, input, agentOverrides);
+    const frozen = frozenRun(ir, input, agentInjections);
 
     const root = view(frozen, run, "root");
     expect(root.definition).toMatchObject({
@@ -77,7 +79,8 @@ describe("Forensics projection", () => {
       },
       agents: {
         reviewer: {
-          profile: {
+          source: { kind: "direct" },
+          effective: {
             kind: "agent_command",
             command: "effective-agent",
             model: "effective-model",
@@ -86,7 +89,6 @@ describe("Forensics projection", () => {
             cwd: "/effective/profile",
             env: { PROFILE: "effective" },
           },
-          override: agentOverrides.reviewer,
         },
       },
       root: {
@@ -100,8 +102,8 @@ describe("Forensics projection", () => {
     expect(view(frozen, run, "review").definition).toMatchObject({
       kind: "agent",
       agent: "reviewer",
-      profile: ir.agents.reviewer,
-      override: agentOverrides.reviewer,
+      source: { kind: "direct" },
+      effective: ir.agents.reviewer,
       prompt: "`Review ${input.topic}`",
       permissionMode: "approve-reads",
       sessionKey: "input.session",
@@ -267,6 +269,18 @@ describe("Forensics projection", () => {
             providerIdentity: "must-not-leak",
           },
           createdAt,
+        }, {
+          id: 2,
+          attemptId,
+          kind: "agent_invocation",
+          metadata: {
+            prompt: "Repair the response.",
+            promptOrigin: "repair",
+            cwd: "/workspace/review",
+            env: { PROFILE: "repair" },
+            permissionMode: "deny-all",
+          },
+          createdAt: updatedAt,
         }],
         progress: [{
           nodeKey: agentKey,
@@ -308,6 +322,15 @@ describe("Forensics projection", () => {
     expect(serialized).not.toContain("providerIdentity");
     expect(serialized).not.toContain("partial response");
     expect(serialized).not.toContain("tools");
+
+    const repairFirst = structuredClone(run);
+    repairFirst.dynamic!.executionMetadata = [repairFirst.dynamic!.executionMetadata[1]!];
+    expect(view(frozenRun(ir), repairFirst, agentKey).invocation).toMatchObject({
+      status: "resolved",
+      kind: "agent",
+      promptOrigin: "repair",
+      prompt: "Repair the response.",
+    });
   });
 
   it("uses the latest occurrence invocation but exposes output only from the accepted attempt", () => {
@@ -530,7 +553,7 @@ describe("Forensics projection", () => {
     passedAssertFrame.result = {};
     delete passedAssertFrame.error;
     expect(view(frozen, passedAssert, keys.assert!).invocation).toEqual({ status: "resolved", kind: "assert", condition: true });
-    expect(view(frozen, passedAssert, keys.assert!).result).toEqual({ status: "completed_without_output" });
+    expect(view(frozen, passedAssert, keys.assert!).result).toEqual({ status: "accepted", value: {} });
     expect(view(frozen, run, keys.if!).invocation).toEqual({ status: "resolved", kind: "if", selectedBranch: "then" });
     expect(view(frozen, run, keys.if!).result).toEqual({ status: "accepted", value: { selected: "then" } });
     expect(view(frozen, run, keys.switch!).invocation).toEqual({ status: "resolved", kind: "switch", selectedBranch: "default" });
@@ -608,27 +631,42 @@ function view(frozen: FrozenRun, run: RunDetails, target: string) {
   return projectInspectionForensicsView({ frozen, run, details });
 }
 
-function targetState(ir: WorkflowIR, run: RunDetails, target: string): ResolvedTargetState {
+function targetState(ir: AdmittedWorkflowIR, run: RunDetails, target: string): ResolvedTargetState {
   const details = resolveTargetState({ ir, run, target, artifacts: [] });
   if (!details) throw new Error(`Expected target '${target}' to resolve.`);
   return details;
 }
 
 function frozenRun(
-  ir: WorkflowIR,
+  ir: AdmittedWorkflowIR,
   input: JsonValue = {},
-  agentOverrides: FrozenRun["agentOverrides"] = {},
+  agentInjections: Record<string, AgentDirectInjectionSpec> = {},
 ): FrozenRun {
+  const agentBindings = Object.fromEntries(Object.keys(ir.agents).map(name => [
+    name,
+    frozenBinding(Object.hasOwn(agentInjections, name) ? agentInjections[name] : undefined),
+  ]));
   return {
     ir,
     input,
-    agentOverrides,
+    agentBindings,
     meta: { runId: "run-forensics", workflowPath: "workflow.ts", workflowName: ir.name, workspaceDir: "/workspace" },
   };
 }
 
+function frozenBinding(
+  injection?: AgentDirectInjectionSpec,
+): FrozenAgentBinding {
+  return {
+    source: injection?.use !== undefined || injection?.command !== undefined
+      ? { kind: "direct" }
+      : { kind: "workflow" },
+    ...(injection === undefined ? {} : { injection }),
+  };
+}
+
 function baseRun(
-  ir: WorkflowIR,
+  ir: AdmittedWorkflowIR,
   options: {
     status?: RunDetails["status"];
     input?: JsonValue;
@@ -676,14 +714,14 @@ const ref = (...path: string[]): ExprIR => ({ kind: "ref", path });
 const emptyScope = (output: JsonValue = null): ScopeIR => ({ nodes: [], output: valueExpression(output) });
 const inlineTarget = (source = "async () => undefined") => ({ kind: "inline" as const, source });
 
-function definitionWorkflow(): WorkflowIR {
+function definitionWorkflow(): AdmittedWorkflowIR {
   const inlineChild = (id: string) => ({
     id,
     kind: "task" as const,
     run: { input: literal(null), target: inlineTarget() },
   });
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "forensics-definitions",
     description: "Frozen workflow description",
     inputSchema: {
@@ -768,9 +806,9 @@ function definitionWorkflow(): WorkflowIR {
   };
 }
 
-function taskWorkflow(): WorkflowIR {
+function taskWorkflow(): AdmittedWorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "forensics-task",
     agents: {},
     root: {
@@ -781,7 +819,7 @@ function taskWorkflow(): WorkflowIR {
   };
 }
 
-function nestedAgentWorkflow(): WorkflowIR {
+function nestedAgentWorkflow(): AdmittedWorkflowIR {
   const reviewScope: ScopeIR = {
     nodes: [{ id: "review", kind: "agent", run: { agent: "reviewer", prompt: literal("authored") } }],
     output: ref("nodes", "review", "output"),
@@ -791,7 +829,7 @@ function nestedAgentWorkflow(): WorkflowIR {
     output: ref("nodes", "choose", "output"),
   };
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "forensics-agent-context",
     agents: { reviewer: { kind: "agent_definition", use: "codex" } },
     root: {
@@ -811,9 +849,9 @@ function nestedAgentWorkflow(): WorkflowIR {
   };
 }
 
-function durableCompositeWorkflow(): WorkflowIR {
+function durableCompositeWorkflow(): AdmittedWorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "forensics-durable-composites",
     agents: {},
     root: {
@@ -839,10 +877,10 @@ function durableCompositeWorkflow(): WorkflowIR {
   };
 }
 
-function failureWorkflow(): WorkflowIR {
+function failureWorkflow(): AdmittedWorkflowIR {
   const skipped = { id: "skipped", kind: "task" as const, run: { input: literal(null), target: inlineTarget() } };
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "forensics-failures",
     agents: {},
     root: {

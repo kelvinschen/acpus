@@ -41,9 +41,9 @@ export default defineWorkflow({
     ),
   }),
   agents: {
-    planner: { use: "pi" },
-    explorer: { use: "pi" },
-    synthesizer: { use: "claude" },
+    planner: {},
+    explorer: {},
+    synthesizer: {},
   },
 }).build(({ input, agents, meta, step }) => {
   const plan = step("plan_aspects").agent({

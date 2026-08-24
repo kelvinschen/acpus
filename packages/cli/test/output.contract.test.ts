@@ -5,40 +5,6 @@ import { summarizeWorkflow, writeResult, type CliResult } from "../src/presentat
 import { CaptureStream } from "./support/capture-stream.js";
 
 describe("CLI result output contracts", () => {
-  it("renders fork output around the child run identity", () => {
-    const stdout = new CaptureStream();
-    const stderr = new CaptureStream();
-
-    expect(writeResult({
-      ok: true,
-      phase: "control",
-      message: "Fork run created.",
-      control: { type: "fork", state: "applied", sourceRunId: "run_source" },
-      run: {
-        id: "run_child",
-        name: "forked",
-        status: "pending",
-        workflowEntry: "fixed.workflow.ts",
-        sourceGraphDigest: "sha256:fork",
-        createdAt: "2026-07-11T00:00:00.000Z",
-        updatedAt: "2026-07-11T00:00:00.000Z",
-        progressVersion: 0,
-      },
-      followRunId: "run_child",
-    }, { stdout, stderr }, 0)).toBe(0);
-
-    expect(stdout.text).toBe([
-      "Fork run created.",
-      "Source run: run_source",
-      "Fork run: run_child",
-      "Fork status: pending",
-      "Workflow entry: fixed.workflow.ts",
-      "Next: acpus runs inspect run_child --await-decision",
-      "",
-    ].join("\n"));
-    expect(stderr.text).toBe("");
-  });
-
   it("renders consumed Signal validation without echoing payload", () => {
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
@@ -80,50 +46,7 @@ describe("CLI result output contracts", () => {
     expect(stderr.text).toBe("");
   });
 
-  it("renders a steer receipt and follows the requested short ref without echoing its instruction", () => {
-    const stdout = new CaptureStream();
-    const stderr = new CaptureStream();
-    expect(writeResult({
-      ok: true,
-      phase: "control",
-      message: "Attempt fenced; information update queued.",
-      control: {
-        type: "steer",
-        state: "applied",
-        runId: "run_1",
-        steerId: "cli:steer-1",
-        target: "@1a2b3c4d5e6f",
-        continuation: "queued",
-      },
-      run: {
-        id: "run_1",
-        name: "review",
-        status: "running",
-        workflowEntry: "review.workflow.ts",
-        sourceGraphDigest: "sha256:review",
-        createdAt: "2026-07-25T00:00:00.000Z",
-        updatedAt: "2026-07-25T00:00:01.000Z",
-        progressVersion: 2,
-      },
-      followRunId: "run_1",
-    }, { stdout, stderr }, 0)).toBe(0);
-
-    expect(stdout.text).toBe([
-      "Attempt fenced; information update queued.",
-      "Run: run_1",
-      "Steer: cli:steer-1",
-      "Target: @1a2b3c4d5e6f",
-      "Continuation: queued",
-      "Status: running",
-      "Workflow entry: review.workflow.ts",
-      "Next: acpus runs inspect run_1 --target @1a2b3c4d5e6f --await-decision",
-      "",
-    ].join("\n"));
-    expect(stdout.text).not.toContain("SECRET correction");
-    expect(stderr.text).toBe("");
-  });
-
-  it("renders targeted and run-level retry without inventing a root target", () => {
+  it("renders targeted retry without inventing a root target", () => {
     const run = {
       id: "run_1",
       name: "retry",
@@ -136,7 +59,6 @@ describe("CLI result output contracts", () => {
     };
     for (const [control, targetLine] of [
       [{ type: "retry", state: "applied", runId: "run_1", target: "@1a2b3c4d5e6f" } as const, "Target: @1a2b3c4d5e6f\n"],
-      [{ type: "retry", state: "applied", runId: "run_1" } as const, ""],
     ] as const) {
       const stdout = new CaptureStream();
       const stderr = new CaptureStream();
@@ -144,7 +66,6 @@ describe("CLI result output contracts", () => {
       expect(stdout.text).toBe(`Retry applied.\nRun: run_1\n${targetLine}Status: pending\nWorkflow entry: retry.workflow.ts\nNext: acpus runs inspect run_1 --await-decision\n`);
       expect(stdout.text).not.toContain("retryd");
       expect(stdout.text).not.toContain("retried");
-      if (targetLine === "") expect(stdout.text).not.toContain("Target:");
       expect(stderr.text).toBe("");
     }
   });
@@ -186,7 +107,7 @@ describe("CLI result output contracts", () => {
 
   it("counts nested workflow nodes in summaries", () => {
     const ir: WorkflowIR = {
-      irVersion: 7,
+      irVersion: 8,
       name: "nested",
       agents: {},
       root: {
@@ -347,35 +268,6 @@ describe("CLI result output contracts", () => {
     expect(stdout.text).toBe("semantic\ninput {}\n\n[info VIZ001] Visualization note.\n");
     expect(stdout.text).not.toContain("Workflow visualization rendered.");
     expect(stdout.text).not.toContain("Workflow: cli-valid");
-    expect(stderr.text).toBe("");
-  });
-
-  it("writes the compact workflow submission receipt", () => {
-    const stdout = new CaptureStream();
-    const stderr = new CaptureStream();
-    const exitCode = writeResult({
-      ok: true,
-      phase: "run",
-      diagnostics: [{ code: "RUN001", severity: "warning", message: "Review this run." }],
-      run: {
-        id: "run_1",
-        name: "cli-valid",
-        status: "running",
-        workflowEntry: "/tmp/workflow.ts",
-        sourceGraphDigest: "sha256:graph",
-        createdAt: "2026-06-29T00:00:00.000Z",
-        updatedAt: "2026-06-29T00:00:01.000Z",
-        progressVersion: 0,
-      },
-    }, { stdout, stderr }, 0);
-
-    expect(exitCode).toBe(0);
-    expect(stdout.text).toBe([
-      "Run run_1  cli-valid  running",
-      "Inspect: acpus runs inspect run_1",
-      "[warning RUN001] Review this run.",
-      "",
-    ].join("\n"));
     expect(stderr.text).toBe("");
   });
 
@@ -628,7 +520,8 @@ describe("CLI result output contracts", () => {
 
     expect(stdout.text).toBe([
       "Workflow imported.",
-      "Catalog: project/dynamic-import",
+      "Catalog workflow: dynamic-import",
+      "Catalog scope: project",
       "Catalog status: available",
       "Catalog package: /workspace/.acpus/workflows/dynamic-import",
       "Catalog entry: /workspace/.acpus/workflows/dynamic-import/workflow.ts",
@@ -645,7 +538,7 @@ class TtyCaptureStream extends CaptureStream {
   readonly isTTY = true;
 }
 
-function checkResult(): CliResult {
+function checkResult(): Extract<CliResult, { ok: true; phase: "check" }> {
   return {
     ok: true,
     phase: "check",
@@ -653,7 +546,7 @@ function checkResult(): CliResult {
     workflow: {
       name: "cli-valid",
       description: "Validate CLI workflow summaries.",
-      irVersion: 7,
+      irVersion: 8,
       nodeCount: 1,
       outputShape: { kind: "object", possibleKeys: ["ready"] },
       diagnostics: {

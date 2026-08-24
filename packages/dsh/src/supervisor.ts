@@ -1,6 +1,6 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { AcpusMode } from "./host/mode.js";
-import { renderAgentCatalog } from "./host/agent-profiles.js";
+import { renderAgentPresetCatalog } from "./host/agent-presets.js";
 import { registerSupervisorTools } from "./host/tools.js";
 
 export const name = "acpus-supervisor";
@@ -18,7 +18,9 @@ export function apply(ctx: Context): void {
       ...assembled,
       variables: {
         ...assembled.variables,
-        acpus_agents: renderAgentCatalog(await service.agentProfiles()),
+        acpus_agent_presets: renderAgentPresetCatalog(
+          await service.trustedAgentPresetChoices(),
+        ),
       },
     };
   });

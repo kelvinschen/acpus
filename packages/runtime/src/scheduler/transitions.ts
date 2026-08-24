@@ -43,19 +43,6 @@ export function applySchedulerEvents(projection: SchedulerProjection, events: re
 }
 
 function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): void {
-  if (event.type === "control.run_retry_requested") {
-    if (projection.run.status !== "failed") throw new Error(`Cannot retry run from ${projection.run.status}.`);
-    const fresh = createSchedulerProjection(projection.run.runId);
-    projection.run = fresh.run;
-    projection.frames = fresh.frames;
-    projection.instances = fresh.instances;
-    projection.attempts = fresh.attempts;
-    projection.groups = fresh.groups;
-    projection.groupMembers = fresh.groupMembers;
-    projection.signalWaits = fresh.signalWaits;
-    projection.branchDecisions = fresh.branchDecisions;
-    return;
-  }
   if (event.type === "control.paused") {
     assertRunControllable(projection.run.status, "pause");
     projection.run = { ...projection.run, status: "paused", paused: true };
@@ -66,7 +53,18 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
     projection.run = { ...projection.run, status: "pending", paused: false };
     return;
   }
-  if (event.type === "control.agent_steer_requested") return;
+  if (event.type === "control.agent_steer_requested") {
+    const instance = requireKey(projection.instances, event.payload.nodeKey, "node instance");
+    if (instance.status !== "running" && instance.status !== "awaiting") {
+      throw new Error(`Steer target '${instance.nodeKey}' is not active.`);
+    }
+    projection.instances[instance.nodeKey] = compactInstance({
+      ...instance,
+      pendingSteerId: event.payload.steerId,
+    });
+    return;
+  }
+  if (event.type === "control.agent_steer_blocked") return;
   if (event.type === "frame.started") {
     if (projection.frames[event.payload.frameKey]) throw new Error(`Frame '${event.payload.frameKey}' already exists.`);
     projection.frames[event.payload.frameKey] = compactFrame({
@@ -175,6 +173,9 @@ function applyMutable(projection: SchedulerProjection, event: SchedulerEvent): v
       ownerEpoch: event.payload.ownerEpoch,
       status: "started",
       ...(event.payload.steerId === undefined ? {} : { steerId: event.payload.steerId }),
+      ...(event.payload.steerEventSequence === undefined
+        ? {}
+        : { steerEventSequence: event.payload.steerEventSequence }),
       ...(event.payload.deadlineAt === undefined ? {} : { deadlineAt: event.payload.deadlineAt }),
     });
     return;
@@ -297,15 +298,28 @@ function applyInstanceEvent(projection: SchedulerProjection, event: SchedulerEve
   const instance = requireKey(projection.instances, event.payload.nodeKey!, "node instance");
   if (event.type === "instance.requeued") {
     assertInstanceRequeueable(projection, instance);
+    if ((event.payload.reason === "steered") !== (event.payload.steerEventSequence !== undefined)) {
+      throw new Error(`Node instance '${event.payload.nodeKey}' Steer lineage is inconsistent.`);
+    }
     if ((event.payload.reason === "steered") !== (event.payload.steerId !== undefined)) {
       throw new Error(`Node instance '${event.payload.nodeKey}' steer requeue metadata is inconsistent.`);
     }
+    const interruptedAttempt = event.payload.reason === "paused" || event.payload.reason === "superseded"
+      ? Object.values(projection.attempts)
+        .filter(attempt => attempt.nodeKey === instance.nodeKey && attempt.status !== "started")
+        .sort((left, right) => right.attemptNo - left.attemptNo)[0]
+      : undefined;
     projection.instances[event.payload.nodeKey] = compactInstance({
       ...instance,
       status: "ready",
       ...(event.payload.readinessSequence === undefined ? {} : { readinessSequence: event.payload.readinessSequence }),
-      statusReason: event.payload.reason,
-      pendingSteerId: event.payload.steerId,
+      statusReason: (event.payload.reason === "paused" || event.payload.reason === "superseded")
+        && interruptedAttempt?.steerId !== undefined
+        ? "steered"
+        : event.payload.reason,
+      pendingSteerId: event.payload.steerId ?? interruptedAttempt?.steerId,
+      pendingSteerEventSequence: event.payload.steerEventSequence
+        ?? interruptedAttempt?.steerEventSequence,
     });
     return;
   }
@@ -328,17 +342,17 @@ function applyInstanceEvent(projection: SchedulerProjection, event: SchedulerEve
     return;
   }
   assertInstanceOpen(instance);
-  if (event.type === "instance.started") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "running", statusReason: undefined, pendingSteerId: undefined, ...(event.payload.replayIdentity === undefined ? {} : { replayIdentity: event.payload.replayIdentity }) });
+  if (event.type === "instance.started") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "running", statusReason: undefined, pendingSteerId: undefined, pendingSteerEventSequence: undefined, ...(event.payload.replayIdentity === undefined ? {} : { replayIdentity: event.payload.replayIdentity }) });
   if (event.type === "instance.awaiting") {
     projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "awaiting", ...(event.payload.statusReason === undefined ? {} : { statusReason: event.payload.statusReason }), ...(event.payload.replayIdentity === undefined ? {} : { replayIdentity: event.payload.replayIdentity }) });
     startReadyAncestorMembers(projection, event.payload.nodeKey);
   }
   if (event.type === "instance.completed") {
-    projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "completed", statusReason: undefined, pendingSteerId: undefined, error: undefined, ...(event.payload.output === undefined ? {} : { output: event.payload.output }), ...(event.payload.acceptedAttemptId === undefined ? {} : { acceptedAttemptId: event.payload.acceptedAttemptId }), ...(event.payload.replayIdentity === undefined ? {} : { replayIdentity: event.payload.replayIdentity }), ...(event.payload.reusedFrom === undefined ? {} : { reusedFrom: event.payload.reusedFrom }) });
+    projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "completed", statusReason: undefined, pendingSteerId: undefined, pendingSteerEventSequence: undefined, error: undefined, ...(event.payload.output === undefined ? {} : { output: event.payload.output }), ...(event.payload.acceptedAttemptId === undefined ? {} : { acceptedAttemptId: event.payload.acceptedAttemptId }), ...(event.payload.replayIdentity === undefined ? {} : { replayIdentity: event.payload.replayIdentity }), ...(event.payload.reusedFrom === undefined ? {} : { reusedFrom: event.payload.reusedFrom }) });
     startReadyAncestorMembers(projection, event.payload.nodeKey);
   }
-  if (event.type === "instance.failed") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "failed", pendingSteerId: undefined, error: event.payload.error, ...(event.payload.statusReason === undefined ? {} : { statusReason: event.payload.statusReason }) });
-  if (event.type === "instance.cancelled") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "cancelled", pendingSteerId: undefined, statusReason: event.payload.cancelReason });
+  if (event.type === "instance.failed") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "failed", pendingSteerId: undefined, pendingSteerEventSequence: undefined, error: event.payload.error, ...(event.payload.statusReason === undefined ? {} : { statusReason: event.payload.statusReason }) });
+  if (event.type === "instance.cancelled") projection.instances[event.payload.nodeKey] = compactInstance({ ...instance, status: "cancelled", pendingSteerId: undefined, pendingSteerEventSequence: undefined, statusReason: event.payload.cancelReason });
 }
 
 function startReadyAncestorMembers(projection: SchedulerProjection, nodeKey: string): void {

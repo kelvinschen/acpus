@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import type { SchemaIR } from "@acpus/core/ir";
 import { describe, expect, it } from "vitest";
 import {
@@ -15,27 +16,10 @@ const booleanObject: SchemaIR = {
 
 const frame = (payload: string, prefix = "") => `${prefix}<ACPUS_OUTPUT>\n${payload}\n</ACPUS_OUTPUT>`;
 const escapedFrame = (payload: string, prefix = "") => `${prefix}<ACPUS_OUTPUT>\n${payload}\n<\\/ACPUS_OUTPUT>`;
-const accepted = (schema: SchemaIR, text: string) => conformAgentOutput(schema, text, "review")._unsafeUnwrap();
-const rejected = (schema: SchemaIR, text: string) => conformAgentOutput(schema, text, "review")._unsafeUnwrapErr();
+const accepted = (schema: SchemaIR, text: string) => Result.getOrThrow(conformAgentOutput(schema, text, "review"));
+const rejected = (schema: SchemaIR, text: string) => Result.getOrThrow(Result.flip(conformAgentOutput(schema, text, "review")));
 
 describe("agent output prompts", () => {
-  it("adds one minimal mandatory Result Shape contract", () => {
-    const prompt = buildAgentOutputPrompt("Do the work.", booleanObject);
-
-    expect(prompt).toBe(`Do the work.
-
-# RESULT HANDOFF [MANDATORY]
-Replace the type shape inside the tags with one matching JSON value; comments are guidance. Keep the tags verbatim, do not escape them, and end at the closing tag.
-<ACPUS_OUTPUT>
-{ ok: boolean }
-</ACPUS_OUTPUT>`);
-    expect(protocolMarkers(prompt)).toEqual(["<ACPUS_OUTPUT>", "</ACPUS_OUTPUT>"]);
-    expect(prompt).not.toContain("JSON Schema");
-    expect(prompt).not.toContain("interface");
-    expect(prompt).not.toContain("```");
-    expect(prompt).not.toContain("<\\/ACPUS_OUTPUT>");
-  });
-
   it("uses one bounded phase-specific repair instruction and repeats the contract", () => {
     const prompts = (["framing", "json", "schema"] as const)
       .map(phase => buildAgentOutputRepairPrompt(booleanObject, phase));

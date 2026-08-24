@@ -1,11 +1,12 @@
 import { tryParsePersistedDeadline } from "../deadline.js";
+import * as Result from "effect/Result";
 import type { SchedulerEvent } from "./events.js";
 
 const schedulerEventTypes = new Set<string>([
   "control.paused",
   "control.resumed",
-  "control.run_retry_requested",
   "control.agent_steer_requested",
+  "control.agent_steer_blocked",
   "frame.started",
   "frame.completed",
   "frame.failed",
@@ -61,7 +62,7 @@ export function decodeSchedulerPayload(payloadJson: string, eventType: string): 
   if (eventType === "attempt.started" || eventType === "signal.awaiting" || eventType === "signal.timeout_resumed") {
     const deadlineAt = record.deadlineAt;
     if ((deadlineAt !== undefined || eventType === "signal.timeout_resumed")
-      && (typeof deadlineAt !== "string" || tryParsePersistedDeadline(deadlineAt).isErr())) {
+      && (typeof deadlineAt !== "string" || Result.isFailure(tryParsePersistedDeadline(deadlineAt)))) {
       throw new Error(`Scheduler event '${eventType}' has an invalid persisted deadline.`);
     }
   }

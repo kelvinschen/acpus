@@ -1,4 +1,4 @@
-import type { AgentDefinitionIR, ExprIR, NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
+import type { AgentDeclarationIR, ExprIR, NodeIR, SchemaIR, ScopeIR, WorkflowIR } from "@acpus/core/ir";
 import { ansi } from "../presentation/terminal-style.js";
 import { terminalTreeChildPrefix, terminalTreeConnector } from "../presentation/terminal-tree.js";
 
@@ -234,7 +234,8 @@ function agentSummary(agents: WorkflowIR["agents"]): string {
       .filter(value => value !== undefined).join(", ")})`).join(" · ");
 }
 
-function agentTarget(agent: AgentDefinitionIR): string {
+function agentTarget(agent: AgentDeclarationIR): string {
+  if (agent.kind === "agent_slot") return "unbound";
   return agent.kind === "agent_definition" ? agent.use : `$ ${agent.command}`;
 }
 

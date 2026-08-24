@@ -1,4 +1,4 @@
-import { describe, expectTypeOf, it } from "vitest";
+import { describe, it } from "vitest";
 import type { CliResult } from "../src/presentation/output.js";
 
 const catalog = {
@@ -16,7 +16,6 @@ describe("CLI result type", () => {
   it("closes fields and success states by phase", () => {
     const imported = { ok: true, phase: "import", message: "Imported.", catalog, checked: false } as const;
     acceptResult(imported);
-    expectTypeOf(imported.checked).toEqualTypeOf<false>();
 
     // @ts-expect-error successful imports require checked
     acceptResult({ ok: true, phase: "import", message: "Imported.", catalog });
@@ -59,9 +58,9 @@ describe("CLI result type", () => {
     // @ts-expect-error successful run results cannot carry failure error codes
     acceptResult({ ok: true, phase: "run", message: "Started.", errorCode: "LISTEN_FAILED" });
     acceptResult({ ok: true, phase: "run", run: {} as never });
-    // @ts-expect-error a workflow submission has no structured follow-up receipt
+    // @ts-expect-error a workflow submission has no follow-up receipt field
     acceptResult({ ok: true, phase: "run", run: {} as never, followRunId: "run_1" });
-    // @ts-expect-error a workflow submission has no structured preparation payload
+    // @ts-expect-error a workflow submission has no preparation payload
     acceptResult({ ok: true, phase: "run", run: {} as never, sourceGraphDigest: "sha256:run" });
     // @ts-expect-error doctor results require the checks they summarize
     acceptResult({ ok: true, phase: "doctor", message: "OK" });
@@ -84,6 +83,7 @@ describe("CLI result type", () => {
         runId: "run_1",
         steerId: "cli:1",
         target: "review",
+        delivery: "interrupt_continue",
         continuation: "queued",
       },
     });

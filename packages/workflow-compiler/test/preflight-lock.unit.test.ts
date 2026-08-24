@@ -1,17 +1,19 @@
+import * as Result from "effect/Result";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { tryReadPackageLockDigest } from "../src/preflight/index.js";
+import { settle } from "./effect.js";
 
 describe("package lock discovery", () => {
   it("treats only missing lockfiles as absence", async () => {
     await withDirectory("compiler-lock-missing", async cwd => {
-      const result = await tryReadPackageLockDigest(cwd);
-      expect(result.isOk()).toBe(true);
-      if (result.isErr()) throw new Error(result.error.message);
-      expect(result.value).toBeUndefined();
+      const result = await settle(tryReadPackageLockDigest(cwd));
+      expect(Result.isSuccess(result)).toBe(true);
+      if (Result.isFailure(result)) throw new Error(result.failure.message);
+      expect(result.success).toBeUndefined();
     });
   });
 
@@ -20,10 +22,10 @@ describe("package lock discovery", () => {
       const contents = "lockfileVersion: '9.0'\n";
       await writeFile(join(cwd, "pnpm-lock.yaml"), contents);
 
-      const result = await tryReadPackageLockDigest(cwd);
-      expect(result.isOk()).toBe(true);
-      if (result.isErr()) throw new Error(result.error.message);
-      expect(result.value).toBe(`sha256:${createHash("sha256").update(contents).digest("hex")}`);
+      const result = await settle(tryReadPackageLockDigest(cwd));
+      expect(Result.isSuccess(result)).toBe(true);
+      if (Result.isFailure(result)) throw new Error(result.failure.message);
+      expect(result.success).toBe(`sha256:${createHash("sha256").update(contents).digest("hex")}`);
     });
   });
 
@@ -32,10 +34,10 @@ describe("package lock discovery", () => {
       const path = join(cwd, "pnpm-lock.yaml");
       await mkdir(path);
 
-      const result = await tryReadPackageLockDigest(cwd);
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected lock read failure");
-      expect(result.error).toMatchObject({ type: "package-lock-read-failed", path });
+      const result = await settle(tryReadPackageLockDigest(cwd));
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected lock read failure");
+      expect(result.failure).toMatchObject({ type: "package-lock-read-failed", path });
     });
   });
 
@@ -44,10 +46,10 @@ describe("package lock discovery", () => {
       const path = join(cwd, "pnpm-lock.yaml");
       await symlink("pnpm-lock.yaml", path);
 
-      const result = await tryReadPackageLockDigest(cwd);
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected lock read failure");
-      expect(result.error).toMatchObject({ type: "package-lock-read-failed", path });
+      const result = await settle(tryReadPackageLockDigest(cwd));
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected lock read failure");
+      expect(result.failure).toMatchObject({ type: "package-lock-read-failed", path });
     });
   });
 });

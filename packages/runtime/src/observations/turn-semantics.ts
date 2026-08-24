@@ -1,9 +1,9 @@
 import {
   type AgentContextSummary,
-  type AgentObservationEvent,
   type AgentTokenUsageSummary,
-  type AgentTurnObservation,
-  type AgentTurnResult,
+  type AgentTurnEvent,
+  type AgentTurnSnapshot,
+  type AcpEvent,
 } from "@acpus/agent-executor";
 import { utf8Head, utf8Tail } from "../utf8.js";
 
@@ -15,7 +15,7 @@ const currentToolBytes = 768;
 const timelineEntryBytes = 512;
 const terminalToolStatuses = new Set(["completed", "failed", "cancelled", "canceled"]);
 
-export type AgentPromptKind = "task" | "continuation" | "steer" | "repair";
+export type AgentPromptKind = "task" | "steer" | "repair";
 export type AgentObservationState = "recording" | "settled" | "incomplete";
 export type AgentObservationCompleteness = "complete" | "degraded";
 type AgentObservationPhase =
@@ -138,21 +138,21 @@ export class AgentObservationSemanticReducer {
   }
 
   observe(
-    observation: AgentTurnObservation,
+    observation: AgentTurnEvent,
     degraded: boolean,
   ): SemanticMutation {
     const { event } = observation;
-    const telemetryChanged = this.updateTelemetry(observation.progress.summary);
+    const telemetryChanged = this.updateTelemetry(event, observation.observedAt);
     if (event.type === "usage") {
-      this.updatedAt = event.observedAt;
+      this.updatedAt = observation.observedAt;
       return {
         entries: [],
         checkpoint: telemetryChanged,
         current: telemetryChanged ? this.current(degraded) : undefined,
-        observedAt: event.observedAt,
+        observedAt: observation.observedAt,
       };
     }
-    this.updatedAt = event.observedAt;
+    this.updatedAt = observation.observedAt;
     const beforePhase = this.phase();
     const entries: PendingSemanticEntry[] = [];
     let toolBoundary = false;
@@ -163,54 +163,51 @@ export class AgentObservationSemanticReducer {
       if (this.segment?.channel !== channel) entries.push(...this.closeSegment());
       this.segment ??= {
         channel,
-        sourceSequence: event.sequence,
-        at: event.observedAt,
+        sourceSequence: observation.sequence,
+        at: observation.observedAt,
         text: "",
         originalBytes: 0,
       };
       appendSemanticText(this.segment, eventText(event.content));
-      this.segment.at = event.observedAt;
+      this.segment.at = observation.observedAt;
     } else if (event.type === "plan") {
       if (this.segment?.channel !== "plan") entries.push(...this.closeSegment());
       this.segment ??= {
         channel: "plan",
-        sourceSequence: event.sequence,
-        at: event.observedAt,
+        sourceSequence: observation.sequence,
+        at: observation.observedAt,
         text: "",
         originalBytes: 0,
       };
       appendSemanticText(this.segment, eventText(event.value));
-      this.segment.at = event.observedAt;
+      this.segment.at = observation.observedAt;
     } else if (event.type === "tool") {
       entries.push(...this.closeSegment());
-      const id = event.toolCallId ?? `anonymous-${event.sequence}`;
+      const id = event.toolCallId;
       const previous = this.tools.get(id);
-      const tool = mergeTool(previous, event);
+      const tool = mergeTool(previous, { ...event, sequence: observation.sequence, observedAt: observation.observedAt });
       if (terminalToolStatuses.has(tool.status ?? "")) {
         toolBoundary = true;
         entries.push(toolEntry(
           this.identity,
           tool,
-          previous?.sourceSequence ?? event.sequence,
+          previous?.sourceSequence ?? observation.sequence,
           this.fenced,
         ));
         this.tools.delete(id);
         this.recentTool = tool;
       } else {
         toolBoundary = previous === undefined;
-        this.tools.set(id, { ...tool, sourceSequence: previous?.sourceSequence ?? event.sequence });
+        this.tools.set(id, { ...tool, sourceSequence: previous?.sourceSequence ?? observation.sequence });
       }
-    } else if (event.type === "turn_end") {
-      entries.push(...this.closeAll());
     }
     const afterPhase = this.phase();
-    const now = Date.parse(event.observedAt);
+    const now = Date.parse(observation.observedAt);
     const textBytes = this.segment?.originalBytes ?? 0;
     const checkpoint = entries.length > 0
       || beforePhase !== afterPhase
       || toolBoundary
       || firstUnknown
-      || event.type === "turn_end"
       || telemetryChanged
       || textBytes - this.lastCheckpointTextBytes >= responseCheckpointBytes
       || Number.isFinite(now) && now - this.lastCheckpointAt >= checkpointIntervalMs;
@@ -221,8 +218,8 @@ export class AgentObservationSemanticReducer {
     return {
       entries,
       checkpoint,
-      current: event.type === "turn_end" ? undefined : this.current(degraded),
-      observedAt: event.observedAt,
+      current: this.current(degraded),
+      observedAt: observation.observedAt,
     };
   }
 
@@ -234,14 +231,18 @@ export class AgentObservationSemanticReducer {
   }
 
   terminal(
-    result: AgentTurnResult,
+    snapshot: AgentTurnSnapshot,
     degraded: boolean,
+    completed?: Readonly<{ finalResponse: string }>,
   ): SemanticMutation {
-    const at = result.timing.finishedAt;
+    const at = snapshot.timing.finishedAt;
     this.updatedAt = at;
-    this.updateTelemetry(result.summary);
+    if (snapshot.summary.context === undefined) delete this.context;
+    else this.context = snapshot.summary.context;
+    if (snapshot.summary.tokenUsage === undefined) delete this.tokenUsage;
+    else this.tokenUsage = snapshot.summary.tokenUsage;
     const entries = this.closeAll();
-    const response = result.status === "completed" ? result.finalResponse : result.responses.at(-1) ?? "";
+    const response = completed?.finalResponse ?? snapshot.responses.at(-1) ?? "";
     return {
       entries,
       checkpoint: true,
@@ -322,13 +323,15 @@ export class AgentObservationSemanticReducer {
     };
   }
 
-  private updateTelemetry(summary: AgentTurnObservation["progress"]["summary"]): boolean {
-    const changed = !equalTelemetry(this.context, summary.context)
-      || !equalTelemetry(this.tokenUsage, summary.tokenUsage);
-    if (summary.context === undefined) delete this.context;
-    else this.context = summary.context;
-    if (summary.tokenUsage === undefined) delete this.tokenUsage;
-    else this.tokenUsage = summary.tokenUsage;
+  private updateTelemetry(event: AcpEvent, observedAt: string): boolean {
+    if (event.type !== "usage") return false;
+    const context = event.context === undefined ? undefined : { ...event.context, updatedAt: observedAt };
+    const tokenUsage = event.tokens === undefined ? undefined : { source: "usage_update" as const, ...event.tokens };
+    const changed = !equalTelemetry(this.context, context) || !equalTelemetry(this.tokenUsage, tokenUsage);
+    if (context === undefined) delete this.context;
+    else this.context = context;
+    if (tokenUsage === undefined) delete this.tokenUsage;
+    else this.tokenUsage = tokenUsage;
     return changed;
   }
 
@@ -374,10 +377,10 @@ function equalTelemetry(left: unknown, right: unknown): boolean {
 
 function mergeTool(
   previous: (AgentObservationToolActivity & { sourceSequence: number }) | undefined,
-  event: Extract<AgentObservationEvent, { type: "tool" }>,
+  event: Extract<AcpEvent, { type: "tool" }> & { sequence: number; observedAt: string },
 ): AgentObservationToolActivity {
-  const inputText = event.rawInput === undefined ? undefined : eventText(event.rawInput);
-  const outputValue = event.rawOutput ?? event.content;
+  const inputText = event.input === undefined ? undefined : eventText(event.input);
+  const outputValue = event.output ?? event.content;
   const outputText = outputValue === undefined ? undefined : eventText(outputValue);
   const [inputBudget, outputBudget] = inputText !== undefined && outputText !== undefined
     ? [Math.floor(currentToolBytes / 2), Math.ceil(currentToolBytes / 2)]
@@ -417,10 +420,10 @@ const toolKindNames: Readonly<Record<string, string>> = {
 const genericToolNames = new Set(["tool", "tool call", "unknown tool"]);
 
 function observationToolName(
-  event: Extract<AgentObservationEvent, { type: "tool" }>,
+  event: Extract<AcpEvent, { type: "tool" }>,
   previous: AgentObservationToolActivity | undefined,
 ): string {
-  const explicit = event.toolName === undefined ? undefined : visibleToolName(event.toolName);
+  const explicit = event.name === undefined ? undefined : visibleToolName(event.name);
   if (explicit && !genericToolNames.has(explicit.toLowerCase())) return explicit;
   const prior = previous?.name;
   if (prior && !genericToolNames.has(prior.toLowerCase())) return prior;
@@ -430,7 +433,7 @@ function observationToolName(
 }
 
 function observationToolTitle(
-  event: Extract<AgentObservationEvent, { type: "tool" }>,
+  event: Extract<AcpEvent, { type: "tool" }>,
   previous: AgentObservationToolActivity | undefined,
 ): string | undefined {
   const title = event.title === undefined ? undefined : visibleToolName(event.title);

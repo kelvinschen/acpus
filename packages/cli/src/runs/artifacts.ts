@@ -7,35 +7,33 @@ import {
   type ArtifactResolutionFailure,
   type RuntimeReadFailure,
 } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { notFoundError, usageError } from "../presentation/errors.js";
-import { jsonOutputFor, withJsonOutput, type JsonOutputOptions } from "../presentation/json-output-option.js";
-import { writeJsonLine } from "../presentation/output.js";
 import type { RunsCommandContext } from "./context.js";
 import { runtimeReadFailureCode, runtimeReadFailureMessage } from "./runtime-read.js";
 
-type ArtifactsRunOptions = JsonOutputOptions & {
+type ArtifactsRunOptions = {
   target?: string;
 };
 
-type ArtifactRunOptions = JsonOutputOptions;
-
 export function createArtifactCommands(ctx: RunsCommandContext): Command[] {
-  const artifacts = withJsonOutput(new Command("artifacts")
+  const artifacts = new Command("artifacts")
     .exitOverride()
     .description("List artifact metadata and absolute paths.")
     .argument("<run-id>", "run id")
     .option("--target <run-target>", "list artifacts for one static node, dynamic node, frame, or attempt")
-  ).action(async (runId: string, options: ArtifactsRunOptions) => {
-    await artifactsRunCommand(ctx, runId, options);
-  });
+    .action(async (runId: string, options: ArtifactsRunOptions) => {
+      await artifactsRunCommand(ctx, runId, options);
+    });
 
-  const artifact = withJsonOutput(new Command("artifact")
+  const artifact = new Command("artifact")
     .exitOverride()
     .description("Locate an artifact's verified local source.")
     .argument("<artifact-ref>", "artifact://<run-id>/<artifact-id>")
-  ).action(async (artifactRef: string, options: ArtifactRunOptions) => {
-    await artifactRunCommand(ctx, artifactRef, options);
-  });
+    .action(async (artifactRef: string) => {
+      await artifactRunCommand(ctx, artifactRef);
+    });
 
   return [artifacts, artifact];
 }
@@ -48,26 +46,19 @@ async function artifactsRunCommand(
   if (options.target === "") throw usageError("--target must be a non-empty string.");
   let artifacts: ArtifactRecord[];
   if (options.target === undefined) {
-    const listed = await listArtifacts(ctx.cwd, runId);
-    if (listed.isErr()) throw runtimeReadError(listed.error);
-    if (listed.value === undefined) throw notFoundError(`Run '${runId}' was not found.`, { errorCode: "RUN_NOT_FOUND" });
-    artifacts = listed.value;
+    const listed = await Effect.runPromise(Effect.result(listArtifacts(ctx.cwd, runId)));
+    if (Result.isFailure(listed)) throw runtimeReadError(listed.failure);
+    if (listed.success === undefined) throw notFoundError(`Run '${runId}' was not found.`, { errorCode: "RUN_NOT_FOUND" });
+    artifacts = listed.success;
   } else {
-    const inspected = await inspectTargetArtifacts(ctx.cwd, { runId, target: options.target });
-    if (inspected.isErr()) throw artifactInspectionError(inspected.error);
-    artifacts = inspected.value.artifacts;
+    const inspected = await Effect.runPromise(Effect.result(
+      inspectTargetArtifacts(ctx.cwd, { runId, target: options.target }),
+    ));
+    if (Result.isFailure(inspected)) throw artifactInspectionError(inspected.failure);
+    artifacts = inspected.success.artifacts;
   }
 
-  if (jsonOutputFor(options)) {
-    writeJsonLine(ctx.stdout, {
-      schemaVersion: 1,
-      ok: true,
-      phase: "inspect",
-      runId,
-      ...(options.target === undefined ? {} : { target: options.target }),
-      artifacts,
-    });
-  } else if (artifacts.length === 0) {
+  if (artifacts.length === 0) {
     ctx.stdout.write("No artifacts.\n");
   } else {
     ctx.stdout.write(`${artifacts.map(artifact => `${artifact.id} ${artifact.mediaType ?? "-"} ${artifact.path}`).join("\n")}\n`);
@@ -78,28 +69,18 @@ async function artifactsRunCommand(
 async function artifactRunCommand(
   ctx: RunsCommandContext,
   artifactRef: string,
-  options: ArtifactRunOptions,
 ): Promise<void> {
-  const resolved = await resolveArtifact(ctx.cwd, artifactRef);
-  if (resolved.isErr()) throw artifactResolutionError(resolved.error);
-  const artifact = resolved.value;
-  if (jsonOutputFor(options)) {
-    writeJsonLine(ctx.stdout, {
-      schemaVersion: 1,
-      ok: true,
-      phase: "inspect",
-      artifact,
-    });
-  } else {
-    ctx.stdout.write([
-      `Path: ${artifact.path}`,
-      `Media-Type: ${artifact.mediaType ?? "-"}`,
-      `Size: ${artifact.size} bytes`,
-      `Digest: ${artifact.digest}`,
-      `Source: ${artifact.nodeKey} attempt ${artifact.attempt}`,
-      "",
-    ].join("\n"));
-  }
+  const resolved = await Effect.runPromise(Effect.result(resolveArtifact(ctx.cwd, artifactRef)));
+  if (Result.isFailure(resolved)) throw artifactResolutionError(resolved.failure);
+  const artifact = resolved.success;
+  ctx.stdout.write([
+    `Path: ${artifact.path}`,
+    `Media-Type: ${artifact.mediaType ?? "-"}`,
+    `Size: ${artifact.size} bytes`,
+    `Digest: ${artifact.digest}`,
+    `Source: ${artifact.nodeKey.replace(/~[0-9a-f]{8}$/, "")} attempt ${artifact.attempt}`,
+    "",
+  ].join("\n"));
   ctx.setExitCode(0);
 }
 

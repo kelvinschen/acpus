@@ -359,7 +359,7 @@ export function AgentExecutionTab({ workspaceKey, runId, target, active }: { wor
       <InspectorSection title="Summary">
         <KeyValue label="Status" value={data.summary.status} />
         {data.lastObservedAt && <KeyValue label="Last observed" value={formatRelativeAge(data.lastObservedAt)} />}
-        {data.summary.sessionName && <KeyValue label="Session" value={data.summary.sessionName} />}
+        {data.summary.agentSessionId && <KeyValue label="Session" value={data.summary.agentSessionId} />}
         {data.summary.turnCount !== undefined && <KeyValue label="Turns" value={String(data.summary.turnCount)} />}
         {data.summary.message && <KeyValue label="Message" value={data.summary.message} />}
       </InspectorSection>

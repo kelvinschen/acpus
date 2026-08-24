@@ -33,18 +33,11 @@ export function formatInspectionView(
   return formatTargetForensics(view);
 }
 
-export function formatInspectionCandidates(
-  document: InspectionCandidates,
-  detail: "summary" | "timeline" | "forensics" = "summary",
-): string {
-  const args = detail === "timeline" ? ["--timeline"] : detail === "forensics" ? ["--forensics"] : [];
+export function formatInspectionCandidates(document: InspectionCandidates): string {
   const lines = [
     `Run ${document.run.id}  ${document.run.status}`,
     `Target ${document.target}  matches=${document.entries.length}`,
-    ...document.entries.flatMap(entry => [
-      `  ${statusGlyph(entry.status)} ${entry.selector}  ${entry.breadcrumb}`,
-      `     Select: ${command("acpus", "runs", "inspect", document.run.id, "--target", entry.selector, ...args)}`,
-    ]),
+    ...document.entries.map(entry => `  ${statusGlyph(entry.status)} ${entry.selector}  ${entry.breadcrumb}`),
   ];
   return `${lines.join("\n")}\n`;
 }
@@ -129,8 +122,7 @@ export function formatInspectionError(error: InspectionError, view: InspectionVi
     return `${error.message}\nError code: ARCHIVED_RUN_LOOKUP_UNAVAILABLE\n`;
   }
   if (error.type === "target-ambiguous") {
-    const detail = view.kind === "target" ? view.detail : "summary";
-    return `${formatInspectionCandidates(error.candidates, detail).trimEnd()}\nCannot attach: ${error.message}\n`;
+    return `${formatInspectionCandidates(error.candidates).trimEnd()}\nCannot attach: ${error.message}\n`;
   }
   return `Inspection failed: ${error.message}\nInspect: ${inspectionRecoveryCommand(view)}\n`;
 }
@@ -153,19 +145,28 @@ function formatRunView(view: RunView, showAwait: boolean): string {
 }
 
 function formatTargetSummary(view: TargetSummaryView, showAwait: boolean): string {
-  const pulse = view.pulse === undefined ? undefined : formatSummaryPulse(view.state.status, view.pulse);
+  const pulse = terminal(view.state.status) || view.pulse === undefined
+    ? undefined
+    : formatSummaryPulse(view.state.status, view.pulse);
   const lines = [
     `Run ${view.run.id}  ${view.run.status}`,
     `Target ${subjectText(view.subject.label, view.subject.selector)} · ${view.subject.kind}`,
     `State ${formatState(view.state)}`,
+    ...formatTargetResult(view.result),
     ...(pulse === undefined ? [] : [pulse]),
-    ...(view.acp === undefined ? [] : [`ACP silent for ${formatDurationMs(view.acp.silentForMs)}`]),
+    ...(terminal(view.state.status) || view.acp === undefined ? [] : [`ACP silent for ${formatDurationMs(view.acp.silentForMs)}`]),
     ...(view.attention === undefined ? [] : formatAttention(view.attention, view.run.id, view.state.failure?.message)),
     ...(view.visibility === undefined ? [] : [formatVisibility(view.visibility.reason)]),
     ...(view.occurrences === undefined ? [] : [`Occurrences total=${view.occurrences.total}${formatCounts(view.occurrences)}`]),
     ...formatTargetNavigation(view, showAwait),
   ];
   return `${lines.join("\n")}\n`;
+}
+
+function formatTargetResult(result: TargetSummaryView["result"]): string[] {
+  if (result?.status === "accepted") return ["Output:", ...formatJson(result.value, "  ")];
+  if (result?.status === "completed_without_output") return ["Result completed without output"];
+  return result?.status === "not_accepted" ? ["Result not accepted"] : [];
 }
 
 function formatTargetTimeline(view: TargetTimelineView, showAwait: boolean): string {
@@ -383,9 +384,17 @@ function formatActivity(
 }
 
 function formatAgentPhase(phase: string, headline?: string): string {
-  const label = phase.replaceAll("-", " ");
+  const label = displayAgentPhase(phase);
   const visible = visibleHeadline(phase, headline);
   return visible === undefined ? label : `${label}: ${visible}`;
+}
+
+function displayAgentPhase(phase: string): string {
+  if (phase === "reported-thought") return "thinking";
+  if (phase === "tool") return "using tool";
+  if (phase === "output-repair") return "repairing output";
+  if (phase === "settling") return "finishing";
+  return phase.replaceAll("-", " ");
 }
 
 function formatTimelineEntry(entry: TimelineEntry, impliedAttempt?: number): string {

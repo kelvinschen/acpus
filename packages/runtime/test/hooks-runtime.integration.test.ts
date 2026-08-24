@@ -1,3 +1,6 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import { makeNodeProcessHost } from "@acpus/owned-process";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
@@ -9,7 +12,7 @@ import { loadAgentHostPolicy } from "../src/configuration.js";
 import { dispatchCommittedHooksForRun, type HookContext } from "../src/hooks/dispatch.js";
 import type { HookRunner } from "../src/hooks/runner.js";
 import { createRuntimeRunScheduler } from "../src/scheduler/runtime-runner.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, runtimeRunDir, runtimeRow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { advanceRuntimeRun } from "./support/scheduler.js";
 
@@ -17,7 +20,7 @@ describe.concurrent("runtime hook integration", () => {
   it("triggers hooks from newly committed rows only", async () => {
     await withRuntimeWorkspace("hooks-runtime-new-rows", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, hookTaskWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const hooks = recordingHookRunner();
       try {
         const run = await admitRunForTest(store, { prepared, input: { packageName: "runtime" }, cwd: workspace });
@@ -40,7 +43,7 @@ describe.concurrent("runtime hook integration", () => {
   it("surfaces malformed committed hook data without advancing the durable cursor", async () => {
     await withRuntimeWorkspace("hooks-runtime-non-interfering", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, hookTaskWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const hooks = recordingHookRunner();
       try {
         const run = await admitRunForTest(store, { prepared, input: { packageName: "runtime" }, cwd: workspace });
@@ -75,7 +78,7 @@ describe.concurrent("runtime hook integration", () => {
   it("rejects a hook cursor ahead of the event log before daemon idle accounting", async () => {
     await withRuntimeWorkspace("hooks-runtime-cursor-ahead", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const lastSequence = store.getLastRunEventSequence(run.id);
@@ -98,7 +101,7 @@ describe.concurrent("runtime hook integration", () => {
   it("rejects a tampered Agent prompt artifact without advancing the durable cursor", async () => {
     await withRuntimeWorkspace("hooks-runtime-tampered-agent-prompt", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, hookTaskWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const hooks = recordingHookRunner();
       try {
         const run = await admitRunForTest(store, { prepared, input: { packageName: "runtime" }, cwd: workspace });
@@ -132,16 +135,20 @@ describe.concurrent("runtime hook integration", () => {
             relativePath,
             new Date().toISOString(),
           );
+          db.prepare(`
+            INSERT INTO execution_metadata (run_id, attempt_id, kind, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+          `).run(
+            run.id,
+            completed.attempt_id,
+            "agent_attempt",
+            JSON.stringify({ turns: [{ turnArtifact: { artifactId, mediaType: "application/json" } }] }),
+            new Date().toISOString(),
+          );
           db.prepare("UPDATE hook_dispatch_cursors SET event_sequence = ? WHERE run_id = ?").run(completed.sequence - 1, run.id);
         } finally {
           db.close();
         }
-        store.writeExecutionMetadata({
-          runId: run.id,
-          attemptId: completed.attempt_id,
-          kind: "agent_attempt",
-          metadata: { turns: [{ turnArtifact: { artifactId, mediaType: "application/json" } }] },
-        });
         await writeFile(artifactPath, '{"prompt":"tampered"}');
 
         expect(() => dispatchCommittedHooksForRun({ cwd: workspace, store, runId: run.id, hookRunner: hooks })).toThrow("size/digest verification");
@@ -156,14 +163,14 @@ describe.concurrent("runtime hook integration", () => {
   it("does not let a throwing hook observer interrupt production scheduling", async () => {
     await withRuntimeWorkspace("hooks-runtime-throwing-observer", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let triggerCount = 0;
       const hooks: HookRunner = {
         trigger() {
           triggerCount += 1;
           throw new Error("observer failed");
         },
-        async drain() {},
+        drain: () => Effect.void,
         activeCount() {
           return 0;
         },
@@ -171,6 +178,7 @@ describe.concurrent("runtime hook integration", () => {
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const execution = createRuntimeRunScheduler({
+          processes: makeNodeProcessHost(),
           cwd: workspace,
           store,
           maxLeafConcurrency: 1,
@@ -178,7 +186,7 @@ describe.concurrent("runtime hook integration", () => {
           hookRunner: hooks,
         }).start({ runId: run.id, ownerId: "owner-a" });
 
-        expect((await execution.result)._unsafeUnwrap()).toMatchObject({ status: "completed" });
+        expect(Result.getOrThrow((await Effect.runPromise(execution.result)))).toMatchObject({ status: "completed" });
         expect(triggerCount).toBeGreaterThan(0);
         expect(store.getRun(run.id)).toMatchObject({ status: "completed" });
       } finally {
@@ -190,7 +198,7 @@ describe.concurrent("runtime hook integration", () => {
   it("builds task hook context from persisted effective input", async () => {
     await withRuntimeWorkspace("hooks-runtime-effective-task-input", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, hookTaskWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const hooks = recordingHookRunner();
       try {
         const run = await admitRunForTest(store, { prepared, input: { packageName: "runtime" }, cwd: workspace });
@@ -211,7 +219,7 @@ describe.concurrent("runtime hook integration", () => {
       const markerPath = join(workspace, "hook-task.started");
       const releasePath = join(workspace, "hook-task.release");
       const prepared = await prepareSyntheticWorkflow(workspace, longHookTaskWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const hooks = recordingHookRunner();
       try {
         const run = await admitRunForTest(store, { prepared, input: { markerPath, releasePath }, cwd: workspace });
@@ -284,7 +292,7 @@ function recordingHookRunner(): HookRunner & { events: string[]; contexts: HookC
       this.events.push(event);
       this.contexts.push(context);
     },
-    async drain() {},
+    drain: () => Effect.void,
     activeCount() {
       return 0;
     },

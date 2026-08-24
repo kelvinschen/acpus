@@ -1,3 +1,6 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import { randomUUID } from "node:crypto";
 import {
   requestDaemonStatus,
@@ -17,19 +20,19 @@ export async function submitRunThroughDaemon(
   cwd: string,
   input: TestSubmitInput,
 ): Promise<RunDetails> {
-  const status = await requestDaemonStatus(cwd);
-  if (status.isErr()) throw failureError(status.error);
-  for await (const frame of requestDaemonSubmitAndObserve(cwd, {
-    expectedAuthority: status.value.authority,
+  const status = await Effect.runPromise(Effect.result(requestDaemonStatus(cwd)));
+  if (Result.isFailure(status)) throw failureError(status.failure);
+  for await (const frame of Stream.toAsyncIterable(Stream.result(requestDaemonSubmitAndObserve(cwd, {
+    expectedAuthority: status.success.authority,
     requestId: input.requestId ?? `test:${randomUUID()}`,
     prepared: input.prepared,
     input: input.input,
-    ...(input.agentOverrides === undefined ? {} : { agentOverrides: input.agentOverrides }),
+    ...(input.agentInjections === undefined ? {} : { agentInjections: input.agentInjections }),
     until: "admitted",
-  })) {
-    if (frame.isErr()) throw failureError(frame.error);
-    if (frame.value.kind === "admitted") return frame.value.run;
-    if (frame.value.kind === "error") throw failureError(frame.value.error);
+  })))) {
+    if (Result.isFailure(frame)) throw failureError(frame.failure);
+    if (frame.success.kind === "admitted") return frame.success.run;
+    if (frame.success.kind === "error") throw failureError(frame.success.error);
   }
   throw new Error("Daemon submission stream ended before admission was confirmed.");
 }

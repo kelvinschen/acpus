@@ -4,6 +4,8 @@ import {
   getRunVisualizationSnapshot,
   listRuns,
 } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import type {
   RunDetails,
   RunRecord,
@@ -35,9 +37,9 @@ export function registerRunRoutes(app: Hono, workspaces: WebWorkspaceContext): v
 
   app.get("/api/workspaces/:workspaceKey/runs", async (context) => {
     const workspace = await workspaces.resolve(context.req.param("workspaceKey"));
-    const read = await listRuns(workspace.canonicalPath);
-    if (read.isErr()) runtimeReadError(read.error);
-    const runs = read.value;
+    const read = await Effect.runPromise(Effect.result(listRuns(workspace.canonicalPath)));
+    if (Result.isFailure(read)) runtimeReadError(read.failure);
+    const runs = read.success;
     return context.json({
       ok: true,
       runs: runs.map(({ id, name, status, createdAt, updatedAt }) => ({
@@ -53,9 +55,11 @@ export function registerRunRoutes(app: Hono, workspaces: WebWorkspaceContext): v
   app.get("/api/workspaces/:workspaceKey/runs/:id/runtime-snapshot", async (context) => {
     const workspace = await workspaces.resolve(context.req.param("workspaceKey"));
     const runId = context.req.param("id");
-    const read = await getRunVisualizationSnapshot(workspace.canonicalPath, runId);
-    if (read.isErr()) runtimeReadError(read.error);
-    const snapshot = read.value;
+    const read = await Effect.runPromise(Effect.result(
+      getRunVisualizationSnapshot(workspace.canonicalPath, runId),
+    ));
+    if (Result.isFailure(read)) runtimeReadError(read.failure);
+    const snapshot = read.success;
     if (!snapshot) apiError(404, "run_not_found", `Run '${runId}' was not found.`);
     const run = {
       id: snapshot.run.id,

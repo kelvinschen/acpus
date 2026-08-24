@@ -24,7 +24,7 @@ afterEach(() => {
 });
 
 describe("update awareness", () => {
-  it("runs only for interactive text command actions outside automated environments", () => {
+  it("runs only for interactive command actions outside automated environments", () => {
     const stdout = new TtyCaptureStream();
     const stderr = new TtyCaptureStream();
     const input = {
@@ -38,7 +38,6 @@ describe("update awareness", () => {
     expect(isUpdateAwarenessEligible(input)).toBe(true);
     expect(isUpdateAwarenessEligible({ ...input, argv: ["workflow", "catalog", "--help"] })).toBe(false);
     expect(isUpdateAwarenessEligible({ ...input, topLevelCommand: "doctor", argv: ["doctor"] })).toBe(true);
-    expect(isUpdateAwarenessEligible({ ...input, topLevelCommand: "runs", argv: ["runs", "artifact", "artifact://run_1/a", "--json"] })).toBe(false);
     expect(isUpdateAwarenessEligible({ ...input, env: { CI: "1" } })).toBe(false);
     expect(isUpdateAwarenessEligible({ ...input, env: { NO_UPDATE_NOTIFIER: "1" } })).toBe(false);
     expect(isUpdateAwarenessEligible({ ...input, stdout: new CaptureStream() })).toBe(false);
@@ -177,95 +176,6 @@ describe("update awareness", () => {
       expect(JSON.parse(await readFile(notices, "utf8"))).not.toHaveProperty("skills");
     } finally {
       vi.useRealTimers();
-      if (previousHome === undefined) delete process.env.HOME;
-      else process.env.HOME = previousHome;
-      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
-      else process.env.USERPROFILE = previousUserProfile;
-      await rm(home, { recursive: true, force: true });
-    }
-  });
-
-  it("does not notify for a stale Skill without a CLI update", async () => {
-    const home = await mkdtemp(join(tmpdir(), "acpus-update-awareness-home-"));
-    const workspace = await mkdtemp(join(tmpdir(), "acpus-update-awareness-workspace-"));
-    const previousHome = process.env.HOME;
-    const previousUserProfile = process.env.USERPROFILE;
-    const cache = join(home, ".acpus", "cache", "update-awareness");
-    const notices = join(cache, "notices.json");
-    const program = new Command("acpus");
-    const workflow = new Command("workflow");
-    program.addCommand(workflow);
-    process.env.HOME = home;
-    process.env.USERPROFILE = home;
-
-    try {
-      await mkdir(cache, { recursive: true });
-      const skill = join(workspace, ".agents", "skills", "acpus");
-      await mkdir(skill, { recursive: true });
-      await writeFile(join(skill, "SKILL.md"), "---\nname: acpus\nmetadata:\n  acpus-version: 0.0.0\n---\n");
-      const show = async (): Promise<string> => {
-        await writeFile(join(cache, "last-attempt.json"), JSON.stringify({ checkedAt: new Date().toISOString() }));
-        const stdout = new TtyCaptureStream();
-        const stderr = new TtyCaptureStream();
-        const awareness = createUpdateAwareness({
-          argv: ["workflow", "catalog"],
-          stdout,
-          stderr,
-          env: {} as NodeJS.ProcessEnv,
-        });
-        awareness.start(workflow);
-        await awareness.finish(0);
-        return stderr.text;
-      };
-
-      expect(await show()).toBe("");
-      await expect(readFile(notices, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
-    } finally {
-      vi.useRealTimers();
-      if (previousHome === undefined) delete process.env.HOME;
-      else process.env.HOME = previousHome;
-      if (previousUserProfile === undefined) delete process.env.USERPROFILE;
-      else process.env.USERPROFILE = previousUserProfile;
-      await rm(home, { recursive: true, force: true });
-      await rm(workspace, { recursive: true, force: true });
-    }
-  });
-
-  it("includes the refresh command for a CLI update without an installed Skill", async () => {
-    const home = await mkdtemp(join(tmpdir(), "acpus-update-awareness-"));
-    const previousHome = process.env.HOME;
-    const previousUserProfile = process.env.USERPROFILE;
-    const cache = join(home, ".acpus", "cache", "update-awareness");
-    const program = new Command("acpus");
-    const workflow = new Command("workflow");
-    program.addCommand(workflow);
-    process.env.HOME = home;
-    process.env.USERPROFILE = home;
-
-    try {
-      await mkdir(cache, { recursive: true });
-      await writeFile(join(cache, "last-attempt.json"), JSON.stringify({ checkedAt: new Date().toISOString() }));
-      await writeFile(join(cache, "available.json"), JSON.stringify({
-        checkedAt: new Date().toISOString(),
-        version: "99.0.0",
-      }));
-      const stdout = new TtyCaptureStream();
-      const stderr = new TtyCaptureStream();
-      const awareness = createUpdateAwareness({
-        argv: ["workflow", "catalog"],
-        stdout,
-        stderr,
-        env: {} as NodeJS.ProcessEnv,
-      });
-
-      awareness.start(workflow);
-      await awareness.finish(0);
-
-      const notice = stripVTControlCharacters(stderr.text);
-      expect(notice).toContain("Update available:");
-      expect(notice).toContain("Run: npm install -g acpus@latest");
-      expect(notice).toContain("Refresh skill: acpus skill install");
-    } finally {
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
       if (previousUserProfile === undefined) delete process.env.USERPROFILE;

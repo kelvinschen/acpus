@@ -1,10 +1,9 @@
 import type { DatabaseSync } from "node:sqlite";
 import {
-  type AgentTurnObservation,
-  type AgentTurnRequest,
-  type AgentTurnResult,
+  type AgentTurnEvent,
+  type AgentTurnSnapshot,
 } from "@acpus/agent-executor";
-import { ResultAsync } from "neverthrow";
+import * as Effect from "effect/Effect";
 import {
   AgentObservationSemanticReducer,
   boundAgentObservationTimelineTool,
@@ -38,6 +37,12 @@ export type AgentObservationTurnContext = {
   promptKind: AgentPromptKind;
   signal?: AbortSignal;
 };
+
+export type AgentObservationTerminal = Readonly<{
+  status: "completed" | "failed" | "cancelled" | "timed_out";
+  snapshot: AgentTurnSnapshot;
+  finalResponse?: string;
+}>;
 
 export type AgentObservationFenceInput = {
   runId: string;
@@ -169,77 +174,77 @@ type DurableSteerFence = {
 
 export class AgentObservationLog {
   private readonly active = new Map<string, AgentTurnWriter>();
-  private readonly unavailableFences = new Map<string, Promise<void>>();
 
   constructor(private readonly db: DatabaseSync) {}
 
-  async captureTurn(
+  captureTurn<Request, TurnResult extends AgentObservationTerminal, Failure, Requirements>(
     context: AgentObservationTurnContext,
-    request: AgentTurnRequest,
-    runTurn: (request: AgentTurnRequest) => Promise<AgentTurnResult>,
-  ): Promise<AgentTurnResult> {
-    const writer = new AgentTurnWriter(this, context);
-    const key = activeKey(context.runId, context.attemptId, context.turn);
-    if (this.active.has(key)) {
-      throw new Error(`Agent observation turn '${context.attemptId}:${context.turn}' is already active.`);
-    }
-    this.active.set(key, writer);
-    try {
+    request: Request & Readonly<{ onEvent?: (event: AgentTurnEvent) => unknown }>,
+    runTurn: (request: Request & Readonly<{ onEvent?: (event: AgentTurnEvent) => unknown }>) => Effect.Effect<TurnResult, Failure, Requirements>,
+    cancelled: () => TurnResult,
+  ): Effect.Effect<TurnResult, Failure, Requirements> {
+    return Effect.suspend(() => {
+      const writer = new AgentTurnWriter(this, context);
+      const key = activeKey(context.runId, context.attemptId, context.turn);
+      if (this.active.has(key)) {
+        throw new Error(`Agent observation turn '${context.attemptId}:${context.turn}' is already active.`);
+      }
+      this.active.set(key, writer);
       writer.start();
-      return await this.captureStartedTurn(writer, context, request, runTurn);
-    } finally {
-      this.active.delete(key);
-    }
+      return this.captureStartedTurn(writer, context, request, runTurn, cancelled).pipe(
+        Effect.ensuring(Effect.sync(() => this.active.delete(key))),
+      );
+    });
   }
 
-  private async captureStartedTurn(
+  private captureStartedTurn<Request, TurnResult extends AgentObservationTerminal, Failure, Requirements>(
     writer: AgentTurnWriter,
     context: AgentObservationTurnContext,
-    request: AgentTurnRequest,
-    runTurn: (request: AgentTurnRequest) => Promise<AgentTurnResult>,
-  ): Promise<AgentTurnResult> {
+    request: Request & Readonly<{ onEvent?: (event: AgentTurnEvent) => unknown }>,
+    runTurn: (request: Request & Readonly<{ onEvent?: (event: AgentTurnEvent) => unknown }>) => Effect.Effect<TurnResult, Failure, Requirements>,
+    cancelled: () => TurnResult,
+  ): Effect.Effect<TurnResult, Failure, Requirements> {
+    const log = this;
     const onAbort = (): void => {
-      void writer.markFallbackFenced("runtime_abort", new Date().toISOString()).catch(() => {});
+      try {
+        writer.markFallbackFencedNow("runtime_abort", new Date().toISOString());
+      } catch {
+        // The primary Turn settlement retains authority over error composition.
+      }
     };
     context.signal?.addEventListener("abort", onAbort, { once: true });
     if (context.signal?.aborted) onAbort();
-    try {
-      if (!writer.fenced && !this.startedAttemptMatches(context)) {
-        await writer.markFallbackFenced("runtime_abort");
+    return Effect.gen(function* () {
+      if (!writer.fenced && !log.startedAttemptMatches(context)) {
+        yield* Effect.sync(() => writer.markFallbackFencedNow("runtime_abort"));
       }
       const result = writer.fenced
-        ? cancelledBeforeProviderDispatch()
-        : await runTurn({
+        ? cancelled()
+        : yield* runTurn({
             ...request,
-            onObservation: observation => {
-              writer.observe(observation);
-              notifyObserver(request.onObservation, observation);
+            onEvent: (event: AgentTurnEvent) => {
+              writer.observe(event);
+              notifyObserver(request.onEvent, event);
             },
-          });
+          } as Request & Readonly<{ onEvent?: (event: AgentTurnEvent) => unknown }>);
       writer.finish(result);
       return result;
-    } catch (error) {
-      try {
-        writer.markIncomplete("provider_settlement_missing");
-      } catch (observationError) {
-        throw new AggregateError(
-          [error, observationError],
-          "Agent execution failed and its semantic observation could not be closed.",
-        );
-      }
-      throw error;
-    } finally {
-      context.signal?.removeEventListener("abort", onAbort);
-    }
+    }).pipe(
+      Effect.onInterrupt(() => Effect.sync(() => writer.markFallbackFencedNow("runtime_abort")).pipe(Effect.ignore)),
+      Effect.onError(() => Effect.sync(() => writer.markIncomplete("provider_settlement_missing"))),
+      Effect.ensuring(Effect.sync(() => context.signal?.removeEventListener("abort", onAbort))),
+    );
   }
 
-  markFenced(input: AgentObservationFenceInput): Promise<void> {
-    const writer = [...this.active.values()]
-      .filter(candidate =>
-        candidate.context.runId === input.runId && candidate.context.attemptId === input.attemptId)
-      .sort((left, right) => right.context.turn - left.context.turn)[0];
-    if (writer) return writer.markFenced(input);
-    return this.markUnavailableFence(input);
+  markFenced(input: AgentObservationFenceInput): Effect.Effect<void> {
+    return Effect.sync(() => {
+      const writer = [...this.active.values()]
+        .filter(candidate =>
+          candidate.context.runId === input.runId && candidate.context.attemptId === input.attemptId)
+        .sort((left, right) => right.context.turn - left.context.turn)[0];
+      if (writer) writer.markFenced(input);
+      else this.persistUnavailableFence(input);
+    });
   }
 
   readInspectionProjection(input: {
@@ -249,40 +254,42 @@ export class AgentObservationLog {
     entryLimit?: number;
     latestTurnPerAttempt?: true;
     includeOlderCount?: boolean;
-  }): ResultAsync<AgentObservationInspectionProjection, AgentObservationReadError> {
-    return ResultAsync.fromPromise(
-      Promise.resolve().then(() => this.readProjection(input)),
-      cause => ({
+  }): Effect.Effect<AgentObservationInspectionProjection, AgentObservationReadError> {
+    return Effect.try({
+      try: () => this.readProjection(input),
+      catch: cause => ({
         type: "observation-read-failed",
         runId: input.runId,
         message: `Agent observations for run '${input.runId}' could not be read: ${causeMessage(cause)}.`,
         cause,
       }),
-    );
+    });
   }
 
   reconcileInterruptedTurns(
     runId: string,
-  ): ResultAsync<void, AgentObservationReconciliationError> {
-    return ResultAsync.fromPromise(
-      Promise.resolve().then(() => this.reconcileRun(runId)),
-      cause => ({
+  ): Effect.Effect<void, AgentObservationReconciliationError> {
+    return Effect.try({
+      try: () => this.reconcileRun(runId),
+      catch: cause => ({
         type: "observation-reconciliation-failed",
         runId,
         message: `Agent observations for run '${runId}' could not be reconciled: ${causeMessage(cause)}.`,
         cause,
       }),
-    );
+    });
   }
 
-  async reconcileTerminalTurns(): Promise<void> {
-    const rows = this.db.prepare(`
-      SELECT id AS run_id
-      FROM runs
-      WHERE status IN ('completed', 'failed', 'canceled')
-      ORDER BY id
-    `).all() as Array<{ run_id: string }>;
-    for (const row of rows) this.reconcileRun(row.run_id);
+  reconcileTerminalTurns(): Effect.Effect<void> {
+    return Effect.sync(() => {
+      const rows = this.db.prepare(`
+        SELECT id AS run_id
+        FROM runs
+        WHERE status IN ('completed', 'failed', 'canceled')
+        ORDER BY id
+      `).all() as Array<{ run_id: string }>;
+      for (const row of rows) this.reconcileRun(row.run_id);
+    });
   }
 
   beginTurn(writer: AgentTurnWriter, observedAt: string): void {
@@ -385,12 +392,12 @@ export class AgentObservationLog {
 
   finishTurn(
     writer: AgentTurnWriter,
-    result: AgentTurnResult,
+    result: AgentObservationTerminal,
     mutation: SemanticMutation,
   ): void {
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const version = this.advanceObservationVersion(writer.context.runId, result.timing.finishedAt);
+      const version = this.advanceObservationVersion(writer.context.runId, result.snapshot.timing.finishedAt);
       this.insertSemanticEntries(writer.context, mutation.entries, version);
       this.updateCurrent(writer, mutation.current, version);
       this.db.prepare(`
@@ -407,7 +414,7 @@ export class AgentObservationLog {
         writer.providerEventCount,
         writer.unknownEventCount,
         providerOutcome(result),
-        result.timing.finishedAt,
+        result.snapshot.timing.finishedAt,
         writer.context.runId,
         writer.context.attemptId,
         writer.context.turn,
@@ -455,20 +462,6 @@ export class AgentObservationLog {
       this.db.exec("ROLLBACK");
       throw error;
     }
-  }
-
-  private markUnavailableFence(input: AgentObservationUnavailableFenceInput): Promise<void> {
-    const key = `${input.runId}\0${input.attemptId}`;
-    const previous = this.unavailableFences.get(key) ?? Promise.resolve();
-    const pending = previous.then(
-      () => this.persistUnavailableFence(input),
-      () => this.persistUnavailableFence(input),
-    );
-    this.unavailableFences.set(key, pending);
-    void pending.finally(() => {
-      if (this.unavailableFences.get(key) === pending) this.unavailableFences.delete(key);
-    }).catch(() => {});
-    return pending;
   }
 
   private persistUnavailableFence(input: AgentObservationUnavailableFenceInput): void {
@@ -1040,7 +1033,6 @@ class AgentTurnWriter {
   private maxSourceSequence = -1;
   private readonly reducer: AgentObservationSemanticReducer;
   private failure: unknown;
-  private terminalMutation: SemanticMutation | undefined;
   private durableFenceSequence?: number;
   private boundaryClosed = false;
   private finished = false;
@@ -1064,8 +1056,8 @@ class AgentTurnWriter {
     return this.reducer.initialCurrent(observedAt);
   }
 
-  observe(observation: AgentTurnObservation): void {
-    this.maxSourceSequence = Math.max(this.maxSourceSequence, observation.event.sequence);
+  observe(observation: AgentTurnEvent): void {
+    this.maxSourceSequence = Math.max(this.maxSourceSequence, observation.sequence);
     this.providerEventCount += 1;
     if (observation.event.type === "unknown") {
       this.unknownEventCount += 1;
@@ -1073,10 +1065,6 @@ class AgentTurnWriter {
     }
     try {
       const mutation = this.reducer.observe(observation, this.degraded);
-      if (observation.event.type === "turn_end") {
-        this.terminalMutation = mutation;
-        return;
-      }
       if (!mutation.checkpoint && mutation.entries.length === 0) return;
       this.log.persistObservation(this, mutation);
     } catch (error) {
@@ -1084,30 +1072,28 @@ class AgentTurnWriter {
     }
   }
 
-  markFenced(input: AgentObservationFenceInput): Promise<void> {
-    return this.applyFence(input.eventSequence, input.committedAt, input.reason);
+  markFenced(input: AgentObservationFenceInput): void {
+    this.applyFence(input.eventSequence, input.committedAt, input.reason);
   }
 
-  markFallbackFenced(
+  markFallbackFencedNow(
     reason: string,
     observedAt = new Date().toISOString(),
-  ): Promise<void> {
-    return this.applyFence(undefined, observedAt, reason);
+  ): void {
+    this.applyFence(undefined, observedAt, reason);
   }
 
-  finish(result: AgentTurnResult): void {
+  finish(result: AgentObservationTerminal): void {
     if (this.finished) return;
     if (this.failure !== undefined) throw this.failure;
-    const remainder = this.reducer.terminal(result, this.degraded);
-    const mutation = this.terminalMutation
-      ? {
-          entries: [...this.terminalMutation.entries, ...remainder.entries],
-          checkpoint: true,
-          current: remainder.current,
-          observedAt: result.timing.finishedAt,
-        }
-      : remainder;
-    this.log.finishTurn(this, result, mutation);
+    const remainder = this.reducer.terminal(
+      result.snapshot,
+      this.degraded,
+      result.status === "completed" && result.finalResponse !== undefined
+        ? { finalResponse: result.finalResponse }
+        : undefined,
+    );
+    this.log.finishTurn(this, result, remainder);
     this.finished = true;
   }
 
@@ -1128,33 +1114,28 @@ class AgentTurnWriter {
     eventSequence: number | undefined,
     committedAt: string,
     reason: string,
-  ): Promise<void> {
+  ): void {
     if (this.finished) {
-      return Promise.resolve();
+      return;
     }
     if (eventSequence !== undefined && this.durableFenceSequence !== undefined) {
-      if (eventSequence === this.durableFenceSequence) return Promise.resolve();
-      return Promise.reject(new Error(
+      if (eventSequence === this.durableFenceSequence) return;
+      throw new Error(
         `Agent observation turn '${this.context.attemptId}:${this.context.turn}' already has a different durable fence.`,
-      ));
+      );
     }
     const mutation = this.boundaryClosed
       ? { entries: [], checkpoint: true, current: undefined, observedAt: committedAt }
       : this.reducer.boundary(committedAt);
-    try {
-      this.log.persistFence(this, {
-        ...(eventSequence === undefined ? {} : { eventSequence }),
-        committedAt,
-        reason,
-        mutation,
-      });
-    } catch (error) {
-      return Promise.reject(error);
-    }
+    this.log.persistFence(this, {
+      ...(eventSequence === undefined ? {} : { eventSequence }),
+      committedAt,
+      reason,
+      mutation,
+    });
     this.fenced = true;
     this.boundaryClosed = true;
     if (eventSequence !== undefined) this.durableFenceSequence = eventSequence;
-    return Promise.resolve();
   }
 
   private nextSyntheticSequence(): number {
@@ -1327,28 +1308,8 @@ function observationTurn(row: TurnRow): AgentObservationTurn {
   };
 }
 
-function cancelledBeforeProviderDispatch(): AgentTurnResult {
-  const observedAt = new Date().toISOString();
-  return {
-    status: "cancelled",
-    message: "Agent turn was fenced before provider dispatch.",
-    responses: [],
-    stderr: "",
-    summary: {
-      eventCount: 0,
-      availability: { context: "unavailable", tokenUsage: "unavailable" },
-      tools: { totalToolCallCount: 0, calls: [] },
-    },
-    timing: {
-      startedAt: observedAt,
-      finishedAt: observedAt,
-      elapsedMs: 0,
-    },
-  };
-}
-
-function providerOutcome(result: AgentTurnResult): NonNullable<AgentObservationTurn["providerStatus"]> {
-  return result.status === "failed" && result.failure.kind === "timeout" ? "timed_out" : result.status;
+function providerOutcome(result: AgentObservationTerminal): NonNullable<AgentObservationTurn["providerStatus"]> {
+  return result.status;
 }
 
 function activeKey(runId: string, attemptId: string, turn: number): string {
@@ -1356,8 +1317,8 @@ function activeKey(runId: string, attemptId: string, turn: number): string {
 }
 
 function notifyObserver(
-  observer: AgentTurnRequest["onObservation"],
-  observation: AgentTurnObservation,
+  observer: ((event: AgentTurnEvent) => unknown) | undefined,
+  observation: AgentTurnEvent,
 ): void {
   if (!observer) return;
   try {

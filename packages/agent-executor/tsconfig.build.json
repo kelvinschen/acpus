@@ -4,5 +4,9 @@
     "composite": true,
     "customConditions": [],
     "tsBuildInfoFile": "./tsconfig.build.tsbuildinfo"
-  }
+  },
+  "references": [
+    { "path": "../acp/tsconfig.build.json" },
+    { "path": "../owned-process/tsconfig.build.json" }
+  ]
 }

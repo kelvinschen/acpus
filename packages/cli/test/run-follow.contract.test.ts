@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { InspectionError, InspectionObservation, InspectionView } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Stream from "effect/Stream";
 import { followRun } from "../src/runs/follow.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
@@ -86,6 +88,37 @@ describe("inspection observation transcript", () => {
     expect(stdout.text).not.toContain("Updates · run");
   });
 
+  it("prints an accepted target result exactly once in the closed Summary", async () => {
+    runtime.observeInspection.mockImplementation(() => emissions([
+      ok({ kind: "attached", view: targetSummary() }),
+      ok({
+        kind: "closed",
+        reason: "subject-terminal",
+        view: {
+          ...targetSummary(),
+          run: { id: "run_1", status: "completed" },
+          state: { status: "completed" },
+          result: { status: "accepted", value: { accepted: true } },
+        },
+      }),
+    ]));
+    const stdout = new CaptureStream();
+
+    await followRun("/workspace", {
+      kind: "target",
+      runId: "run_1",
+      target: "@1a2b3c4d5e6f#2",
+      detail: "summary",
+    }, {
+      until: "subject-terminal",
+      stdout,
+      stderr: new CaptureStream(),
+    });
+
+    expect(stdout.text.match(/Output:/g)).toHaveLength(1);
+    expect(stdout.text.match(/"accepted": true/g)).toHaveLength(1);
+  });
+
   it("prints durable Timeline evidence without an empty state update", async () => {
     runtime.observeInspection.mockImplementation(() => emissions([
       ok({ kind: "attached", view: targetTimeline() }),
@@ -153,10 +186,10 @@ describe("inspection observation transcript", () => {
   it("does not emit elapsed time without a Runtime observation", async () => {
     let now = 0;
     vi.spyOn(Date, "now").mockImplementation(() => now);
-    runtime.observeInspection.mockImplementation((_cwd: string, query: { signal: AbortSignal }) => (async function* () {
+    runtime.observeInspection.mockImplementation((_cwd: string, query: { signal: AbortSignal }) => asyncEmissions((async function* () {
       yield ok({ kind: "attached", view: runningView() });
       await new Promise<void>(resolve => query.signal.addEventListener("abort", () => resolve(), { once: true }));
-    })());
+    })()));
     const stdout = new CaptureStream();
     const followed = followRun("/workspace", { kind: "run", runId: "run_1" }, {
       until: "decision-boundary",
@@ -192,10 +225,10 @@ describe("inspection observation transcript", () => {
   });
 
   it("stops consuming as soon as Runtime closes the observation", async () => {
-    runtime.observeInspection.mockImplementation(() => (async function* () {
+    runtime.observeInspection.mockImplementation(() => asyncEmissions((async function* () {
       yield ok({ kind: "closed", reason: "subject-terminal", view: completedView() });
       throw new Error("must not read after a closed observation");
-    })());
+    })()));
     const stdout = new CaptureStream();
     const stderr = new CaptureStream();
 
@@ -211,13 +244,13 @@ describe("inspection observation transcript", () => {
 
   it("detaches read-only and preserves a selected Timeline recovery command", async () => {
     let release!: () => void;
-    runtime.observeInspection.mockImplementation((_cwd: string, query: { signal: AbortSignal }) => (async function* () {
+    runtime.observeInspection.mockImplementation((_cwd: string, query: { signal: AbortSignal }) => asyncEmissions((async function* () {
       yield ok({ kind: "attached", view: targetTimeline() });
       await new Promise<void>(resolve => {
         release = resolve;
         query.signal.addEventListener("abort", () => resolve(), { once: true });
       });
-    })());
+    })()));
     const stdout = new CaptureStream();
     const followed = followRun("/workspace", {
       kind: "target",
@@ -242,12 +275,12 @@ describe("inspection observation transcript", () => {
 
   it("detaches when Ctrl-C races an in-flight inspection error", async () => {
     let resolveNext!: (value: IteratorResult<unknown>) => void;
-    runtime.observeInspection.mockImplementation(() => ({
+    runtime.observeInspection.mockImplementation(() => asyncEmissions({
       [Symbol.asyncIterator]: () => ({
         next: () => new Promise<IteratorResult<unknown>>(resolve => { resolveNext = resolve; }),
         return: async () => ({ done: true, value: undefined }),
       }),
-    }));
+    } as AsyncIterable<TestEmission>));
     const stderr = new CaptureStream();
     const followed = followRun("/workspace", { kind: "run", runId: "run_1" }, {
       until: "decision-boundary",
@@ -298,8 +331,9 @@ describe("inspection observation transcript", () => {
     expect(outcome).toEqual({ kind: "error", error });
     expect(stdout.text).toBe("");
     expect(stderr.text).toContain("Target review  matches=13");
-    expect(stderr.text).toContain("Select: acpus runs inspect run_1 --target @000000000001");
-    expect(stderr.text).toContain("Select: acpus runs inspect run_1 --target @00000000000d");
+    expect(stderr.text).toContain("@000000000001");
+    expect(stderr.text).toContain("@00000000000d");
+    expect(stderr.text).not.toContain("Select:");
     expect(stderr.text).not.toContain("Next:");
     expect(stderr.text).toContain("Cannot attach: Target is ambiguous.");
   });
@@ -399,14 +433,47 @@ function targetTimeline(): Extract<InspectionView, { kind: "target"; detail: "ti
   };
 }
 
-async function* emissions(values: unknown[]): AsyncGenerator<unknown> {
-  yield* values;
+function targetSummary(): Extract<InspectionView, { kind: "target"; detail: "summary" }> {
+  return {
+    kind: "target",
+    detail: "summary",
+    run: { id: "run_1", status: "running" },
+    subject: { label: "review", kind: "agent", selector: "@1a2b3c4d5e6f#2" },
+    state: { status: "running" },
+    pulse: { phase: "reported-thought", headline: "Reviewing" },
+  };
 }
 
-function ok(value: InspectionObservation): { isErr(): false; value: InspectionObservation } {
-  return { isErr: () => false, value };
+type TestEmission =
+  | { readonly _tag: "success"; readonly value: InspectionObservation }
+  | { readonly _tag: "failure"; readonly error: InspectionError };
+
+function emissions(values: ReadonlyArray<TestEmission>) {
+  return decodeEmissions(Stream.fromIterable(values));
 }
 
-function err(error: InspectionError): { isErr(): true; error: InspectionError } {
-  return { isErr: () => true, error };
+function asyncEmissions(values: AsyncIterable<TestEmission>) {
+  return decodeEmissions(Stream.fromAsyncIterable(values, unexpectedInspectionError));
+}
+
+function decodeEmissions(values: Stream.Stream<TestEmission, InspectionError>) {
+  return values.pipe(Stream.mapEffect(emission => emission._tag === "failure"
+    ? Effect.fail(emission.error)
+    : Effect.succeed(emission.value)));
+}
+
+function ok(value: InspectionObservation): TestEmission {
+  return { _tag: "success", value };
+}
+
+function err(error: InspectionError): TestEmission {
+  return { _tag: "failure", error };
+}
+
+function unexpectedInspectionError(error: unknown): InspectionError {
+  return {
+    type: "read-failed",
+    runId: "run_1",
+    message: error instanceof Error ? error.message : String(error),
+  };
 }

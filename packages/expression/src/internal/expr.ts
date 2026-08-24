@@ -1,4 +1,4 @@
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import type { ExprIR } from "../ir.js";
 
 const EXPR = Symbol.for("acpus.expression");
@@ -74,15 +74,15 @@ export type ExprLoweringError =
   | { type: "uninspectable-value"; path: string; message: string };
 
 export function valueToExprIR(value: unknown): ExprIR {
-  return tryValueToExprIR(value).match(
-    ir => ir,
-    error => {
+  return Result.match(tryValueToExprIR(value), {
+    onSuccess: ir => ir,
+    onFailure: error => {
       throw new Error(error.message);
     },
-  );
+  });
 }
 
-export function tryValueToExprIR(value: unknown, path = "$"): Result<ExprIR, ExprLoweringError> {
+export function tryValueToExprIR(value: unknown, path = "$"): Result.Result<ExprIR, ExprLoweringError> {
   return lowerValueToExprIR(value, path, new WeakSet());
 }
 
@@ -90,11 +90,11 @@ function lowerValueToExprIR(
   value: unknown,
   path: string,
   visiting: WeakSet<object>,
-): Result<ExprIR, ExprLoweringError> {
+): Result.Result<ExprIR, ExprLoweringError> {
   try {
     return lowerInspectableValue(value, path, visiting);
   } catch {
-    return err({
+    return Result.fail({
       type: "uninspectable-value",
       path,
       message: "Unsupported expression value: object could not be inspected.",
@@ -106,19 +106,19 @@ function lowerInspectableValue(
   value: unknown,
   path: string,
   visiting: WeakSet<object>,
-): Result<ExprIR, ExprLoweringError> {
-  if (isExpr(value)) return ok(value.__ir);
+): Result.Result<ExprIR, ExprLoweringError> {
+  if (isExpr(value)) return Result.succeed(value.__ir);
   if (value === null || typeof value === "string" || typeof value === "boolean") {
-    return ok({ kind: "literal", value });
+    return Result.succeed({ kind: "literal", value });
   }
   if (typeof value === "number") {
-    return Number.isFinite(value) ? ok({ kind: "literal", value }) : unsupportedExpressionValue(path, "non-finite number");
+    return Number.isFinite(value) ? Result.succeed({ kind: "literal", value }) : unsupportedExpressionValue(path, "non-finite number");
   }
   if (value === undefined) return unsupportedExpressionValue(path, "undefined");
   if (typeof value === "bigint" || typeof value === "symbol" || typeof value === "function") return unsupportedExpressionValue(path, typeof value);
   if (value && typeof value === "object") {
     if (visiting.has(value)) {
-      return err({
+      return Result.fail({
         type: "cyclic-value",
         path,
         message: "Unsupported expression value: cyclic reference.",
@@ -130,28 +130,28 @@ function lowerInspectableValue(
         const items: ExprIR[] = [];
         for (let index = 0; index < value.length; index++) {
           const itemPath = `${path}[${index}]`;
-          if (!Object.prototype.hasOwnProperty.call(value, index)) return err({ type: "sparse-array-hole", path: itemPath, message: "Unsupported expression value: sparse array hole." });
+          if (!Object.prototype.hasOwnProperty.call(value, index)) return Result.fail({ type: "sparse-array-hole", path: itemPath, message: "Unsupported expression value: sparse array hole." });
           const item = lowerValueToExprIR(value[index], itemPath, visiting);
-          if (item.isErr()) return item;
-          items.push(item.value);
+          if (Result.isFailure(item)) return item;
+          items.push(item.success);
         }
-        return ok({ kind: "array", items });
+        return Result.succeed({ kind: "array", items });
       }
       const prototype = Object.getPrototypeOf(value);
-      if (prototype !== Object.prototype && prototype !== null) return err({ type: "non-plain-object", path, message: "Unsupported expression value: non-plain object." });
-      if (Object.getOwnPropertySymbols(value).length > 0) return err({ type: "symbol-keys", path, message: "Unsupported expression value: symbol keys." });
+      if (prototype !== Object.prototype && prototype !== null) return Result.fail({ type: "non-plain-object", path, message: "Unsupported expression value: non-plain object." });
+      if (Object.getOwnPropertySymbols(value).length > 0) return Result.fail({ type: "symbol-keys", path, message: "Unsupported expression value: symbol keys." });
       const fields: Array<[string, ExprIR]> = [];
       for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
         const child = lowerValueToExprIR(item, `${path}.${key}`, visiting);
-        if (child.isErr()) {
-          if (child.error.type === "unsupported-expression-value" && child.error.valueType === "undefined" && child.error.path === `${path}.${key}`) {
-            return err({ ...child.error, message: `Unsupported expression value at key '${key}': undefined.` });
+        if (Result.isFailure(child)) {
+          if (child.failure.type === "unsupported-expression-value" && child.failure.valueType === "undefined" && child.failure.path === `${path}.${key}`) {
+            return Result.fail({ ...child.failure, message: `Unsupported expression value at key '${key}': undefined.` });
           }
           return child;
         }
-        fields.push([key, child.value]);
+        fields.push([key, child.success]);
       }
-      return ok({ kind: "object", fields: Object.fromEntries(fields) });
+      return Result.succeed({ kind: "object", fields: Object.fromEntries(fields) });
     } finally {
       visiting.delete(value);
     }
@@ -159,8 +159,8 @@ function lowerInspectableValue(
   return unsupportedExpressionValue(path, String(value));
 }
 
-function unsupportedExpressionValue(path: string, valueType: string): Result<ExprIR, ExprLoweringError> {
-  return err({ type: "unsupported-expression-value", path, valueType, message: `Unsupported expression value: ${valueType}.` });
+function unsupportedExpressionValue(path: string, valueType: string): Result.Result<ExprIR, ExprLoweringError> {
+  return Result.fail({ type: "unsupported-expression-value", path, valueType, message: `Unsupported expression value: ${valueType}.` });
 }
 
 export function accessor<T>(ir: ExprIR): ExprValue<T> {

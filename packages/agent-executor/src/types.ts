@@ -1,10 +1,15 @@
+import type { AcpError, AcpEvent, AcpLaunch, AcpTurnResult } from "@acpus/acp";
+import type * as Effect from "effect/Effect";
+import type * as Result from "effect/Result";
+import type { AcpAgentResolutionFailure } from "./agent-resolution.js";
+
 export type AgentPermissionMode = "approve-reads" | "approve-all" | "deny-all";
 
 export type AgentSelector =
   | { kind: "named"; name: string }
   | { kind: "command"; command: string };
 
-export type AcpAgentLaunch = string | string[];
+export type AcpAgentLaunch = AcpLaunch;
 
 export type NamedAcpAgentLaunchResolver = (input: Readonly<{
   model?: string;
@@ -14,33 +19,9 @@ export type NamedAcpAgentLaunchRegistry = Readonly<
   Record<string, NamedAcpAgentLaunchResolver>
 >;
 
-export type AgentJsonValue = null | boolean | number | string | AgentJsonValue[] | { [key: string]: AgentJsonValue };
-
-export type AgentBackendFailureKind =
-  | "config"
-  | "spawn"
-  | "provider_exit"
-  | "timeout"
-  | "worker_lost"
-  | "inactivity_stale";
-
-export type AgentBackendFailure = {
-  kind: AgentBackendFailureKind;
-  origin?: "provider" | "runtime";
-  retryable?: boolean;
-  message: string;
-  evidence?: {
-    failAfterMs: number;
-    silentForMs: number;
-    silenceStartedAt: string;
-  };
-  upstream?: {
-    source: "acpx";
-    operation: "sessions.ensure" | "session.set_config_option" | "prompt";
-    code?: string;
-    origin?: string;
-  };
-};
+export type ConfiguredAcpAgentCommandResolver = (
+  names: readonly string[],
+) => Effect.Effect<string | undefined, AcpAgentResolutionFailure>;
 
 export type AgentToolInputPreview = {
   preview: string;
@@ -95,54 +76,6 @@ export type AgentTurnSummary = {
   context?: AgentContextSummary;
   tokenUsage?: AgentTokenUsageSummary;
   tools: AgentToolsSummary;
-  cwd?: string;
-  acpxRecordId?: string;
-};
-
-export type AgentTurnProgress = {
-  responses: readonly string[];
-  summary: AgentTurnSummary;
-  updatedAt: string;
-};
-
-type AgentObservationEventBase = {
-  schemaVersion: 1;
-  sequence: number;
-  observedAt: string;
-  elapsedMs: number;
-};
-
-type AgentObservationEventPayload =
-  | { type: "message"; channel: "assistant" | "thought"; content: AgentJsonValue; tag?: string }
-  | {
-      type: "tool";
-      action: "call" | "update";
-      toolCallId?: string;
-      title?: string;
-      kind?: string;
-      toolName?: string;
-      status?: string;
-      rawInput?: AgentJsonValue;
-      rawOutput?: AgentJsonValue;
-      content?: AgentJsonValue;
-      locations?: AgentJsonValue;
-    }
-  | { type: "usage"; context?: AgentJsonValue; tokenUsage?: AgentJsonValue }
-  | { type: "plan"; value: AgentJsonValue }
-  | { type: "unknown"; tag?: string; value: AgentJsonValue }
-  | {
-      type: "turn_end";
-      status: "completed" | "failed" | "cancelled" | "timed_out";
-      stopReason?: string;
-      failure?: AgentJsonValue;
-      message?: string;
-    };
-
-export type AgentObservationEvent = AgentObservationEventBase & AgentObservationEventPayload;
-
-export type AgentTurnObservation = {
-  event: AgentObservationEvent;
-  progress: AgentTurnProgress;
 };
 
 export type AgentTurnTiming = {
@@ -151,99 +84,277 @@ export type AgentTurnTiming = {
   elapsedMs: number;
 };
 
-type AgentTurnResultBase = {
+export type RuntimeOwnerIdentity = Readonly<{
+  epoch: number;
+  pid: number;
+  startToken?: string;
+}>;
+
+export type AgentSessionSupervisorOptions = Readonly<{
+  workersRoot: string;
+  sessionStateDirectoryForRun(runId: string): string;
+  owner: RuntimeOwnerIdentity;
+  namedAgentLaunches?: NamedAcpAgentLaunchRegistry;
+  configuredAgentCommand?: ConfiguredAcpAgentCommandResolver;
+}>;
+
+export type AgentSessionRef = Readonly<{
+  runId: string;
+  agentSessionId: string;
+}>;
+
+export type AttemptContext = Readonly<{
+  runId: string;
+  nodeKey: string;
+  attemptId: string;
+  ownerEpoch: number;
+  deadlineAt?: string;
+  signal: AbortSignal;
+  inactivityFailAfterMs?: number;
+}>;
+
+export type AgentSessionIntent = Readonly<{
+  agentSessionId: string;
+  sessionOpenMode: "new_or_empty" | "existing_required";
+  cwd: string;
+  env: Readonly<NodeJS.ProcessEnv>;
+  agent: AgentSelector;
+  permissionMode: AgentPermissionMode;
+  configuration: Readonly<{
+    model?: string;
+    options: Readonly<Record<string, string>>;
+  }>;
+}>;
+
+export type AgentTurnSnapshot = Readonly<{
   responses: readonly string[];
-  stderr: string;
   summary: AgentTurnSummary;
   timing: AgentTurnTiming;
-};
+}>;
 
-export type AgentTurnResult = AgentTurnResultBase & (
-  | {
-      status: "completed";
-      finalResponse: string;
-    }
-  | {
-      status: "failed";
-      failure: AgentBackendFailure;
-    }
-  | {
-      status: "cancelled";
-      message: string;
-    }
+export type AgentTurnEvent = Readonly<{
+  sequence: number;
+  observedAt: string;
+  elapsedMs: number;
+  event: AcpEvent;
+}>;
+
+export type AgentTurnPolicyEvidence =
+  | Readonly<{
+      type: "cancelled";
+      reason: "operator" | "pause" | "lease_lost" | "steer" | "event_sink";
+      requestedAt: string;
+    }>
+  | Readonly<{
+      type: "deadline";
+      deadlineAt: string;
+      requestedAt: string;
+    }>
+  | Readonly<{
+      type: "inactivity";
+      failAfterMs: number;
+      silentForMs: number;
+      silenceStartedAt: string;
+      requestedAt: string;
+    }>;
+
+export type HardCleanupEvidence = Readonly<{
+  disposition: "cooperative" | "term" | "kill" | "unverified";
+  startedAt: string;
+  finishedAt: string;
+}>;
+
+export type AgentTurnSettlementEvidence = Readonly<{
+  policy?: AgentTurnPolicyEvidence;
+  protocolTerminal?:
+    | Readonly<{ type: "provider_result"; result: AcpTurnResult }>
+    | Readonly<{ type: "provider_error_response"; error: AcpError }>;
+  localFailure?: Readonly<{ type: "local_error"; error: AcpError }>;
+  hardCleanup?: HardCleanupEvidence;
+}>;
+
+export type TurnInput<E> = Readonly<{
+  turnId: string;
+  prompt: string;
+  onEvent: (event: AgentTurnEvent) => Result.Result<void, E>;
+}>;
+
+export type AgentTurnOutcome = Readonly<{
+  terminal: AcpTurnResult & Readonly<{ status: "completed" }>;
+  finalResponse: string;
+  snapshot: AgentTurnSnapshot;
+}>;
+
+export type AgentTurnFailure<E> = Readonly<{
+  snapshot: AgentTurnSnapshot;
+  evidence: AgentTurnSettlementEvidence;
+}> & (
+  | Readonly<{ type: "cancelled"; reason: "operator" | "pause" | "lease_lost" | "steer" | "provider" }>
+  | Readonly<{ type: "acp"; error: AcpError }>
+  | Readonly<{ type: "policy_timeout"; deadlineAt: string }>
+  | Readonly<{
+      type: "inactivity_stale";
+      failAfterMs: number;
+      silentForMs: number;
+      silenceStartedAt: string;
+    }>
+  | Readonly<{ type: "capsule_lost"; error: ProcessCapsuleError }>
+  | Readonly<{ type: "event_sink"; error: E }>
 );
 
-export type AgentTurnRequest = {
-  agent: AgentSelector;
-  prompt: string;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  sessionName: string;
-  permissionMode: AgentPermissionMode;
-  model?: string;
-  config?: Record<string, string>;
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  onProgress?: (progress: AgentTurnProgress) => unknown;
-  onObservation?: (observation: AgentTurnObservation) => unknown;
-};
+export type AgentSessionLease = Readonly<{
+  agentSessionId: string;
+  sessionLeaseId: string;
+  projectionRef: string;
+  reportedVersion?: string;
+  runTurn<E>(input: TurnInput<E>): Effect.Effect<AgentTurnOutcome, AgentTurnFailure<E>>;
+}>;
 
-export type ManagedAcpAttemptInput = {
-  runId: string;
-  attemptId: string;
-  sessionName: string;
-  cwd: string;
-  env: NodeJS.ProcessEnv;
-  agent: AgentSelector;
-  permissionMode: AgentPermissionMode;
-  model?: string;
-  inactivityFailAfterMs?: number;
-  onAcpActivity?: (observedAt: string) => void;
-};
+export type SessionOwnershipEvidence = Readonly<{
+  state: "live" | "dead" | "unverified" | "unsupported";
+  observedAt: string;
+  reason: string;
+}>;
 
-export type ManagedAcpAttempt = {
-  runTurn(input: AgentTurnRequest): Promise<AgentTurnResult>;
-};
+export type ProcessCapsuleError = Readonly<{
+  type: "process_capsule";
+  phase: "bootstrap" | "opening" | "ready" | "running" | "closing";
+  code: "worker_spawn_failed" | "worker_exit" | "ipc_closed" | "ipc_protocol" | "worker_exception";
+  message: string;
+}>;
 
-export type ManagedAcpExecutor = {
-  withAttempt<T>(input: ManagedAcpAttemptInput, use: (attempt: ManagedAcpAttempt) => Promise<T>): Promise<T>;
-  shutdown(): Promise<void>;
-};
+export type AgentSessionSupervisorStartError =
+  | Readonly<{ type: "ownership_state_unsupported"; manifestName: string; message: string }>
+  | Readonly<{ type: "startup_recovery_failed"; message: string }>;
+
+export type AgentSessionAcquireError =
+  | Readonly<{ type: "supervisor_closed"; agentSessionId?: string; message: string }>
+  | Readonly<{ type: "session_busy"; agentSessionId: string; message: string }>
+  | Readonly<{
+      type: "session_quarantined";
+      agentSessionId: string;
+      evidence: SessionOwnershipEvidence;
+      message: string;
+    }>
+  | Readonly<{
+      type: "ownership_state_unsupported";
+      agentSessionId?: string;
+      manifestName: string;
+      message: string;
+    }>
+  | Readonly<{
+      type: "agent_resolution_failed";
+      agentSessionId: string;
+      error: AcpAgentResolutionFailure;
+      message: string;
+    }>
+  | Readonly<{ type: "session_open_failed"; agentSessionId: string; error: AcpError; message: string }>
+  | Readonly<{ type: "capsule_open_failed"; agentSessionId: string; error: ProcessCapsuleError; message: string }>
+  | Readonly<{
+      type: "policy_timeout";
+      agentSessionId: string;
+      phase: "acquire" | "resolve" | "open";
+      deadlineAt: string;
+      message: string;
+    }>
+  | Readonly<{
+      type: "cancelled";
+      agentSessionId: string;
+      phase: "acquire" | "resolve" | "open";
+      message: string;
+    }>;
+
+export type AgentSessionCleanupError =
+  | Readonly<{
+      type: "cleanup_failed";
+      agentSessionId: string;
+      evidence: SessionOwnershipEvidence;
+      message: string;
+    }>
+  | Readonly<{
+      type: "cleanup_unverified";
+      agentSessionId: string;
+      evidence: SessionOwnershipEvidence & Readonly<{ state: "unverified" }>;
+      message: string;
+    }>;
+
+export type AgentSessionShutdownError = Readonly<{
+  type: "shutdown_failed";
+  errors: readonly AgentSessionCleanupError[];
+  message: string;
+}>;
+
+export type AgentSessionUseError<E> =
+  | Readonly<{ type: "acquire"; error: AgentSessionAcquireError }>
+  | Readonly<{ type: "use"; error: E }>
+  | Readonly<{ type: "cleanup"; error: AgentSessionCleanupError }>
+  | Readonly<{ type: "use_and_cleanup"; use: E; cleanup: AgentSessionCleanupError }>;
+
+export type SessionNeutralizationEvidence = Readonly<{
+  session: AgentSessionRef;
+  disposition: "already_absent" | "cooperative" | "term" | "kill";
+  observedAt: string;
+}>;
+
+export type AgentSessionNeutralizationError<E> =
+  | Readonly<{ type: "acquire"; error: AgentSessionAcquireError }>
+  | Readonly<{ type: "cancelled"; phase: "acquire" | "neutralize"; message: string }>
+  | Readonly<{ type: "neutralize"; errors: readonly AgentSessionCleanupError[] }>
+  | Readonly<{ type: "commit"; error: E }>;
+
+export type AgentSessionSupervisor = Readonly<{
+  withSessionLease<T, E>(
+    input: { attempt: AttemptContext; session: AgentSessionIntent },
+    use: (lease: AgentSessionLease) => Effect.Effect<T, E>,
+  ): Effect.Effect<T, AgentSessionUseError<E>>;
+  withSessionsNeutralized<T, E>(
+    input: { sessions: readonly AgentSessionRef[]; signal: AbortSignal },
+    commit: (evidence: readonly SessionNeutralizationEvidence[]) => Result.Result<T, E>,
+  ): Effect.Effect<T, AgentSessionNeutralizationError<E>>;
+  shutdown(): Effect.Effect<void, AgentSessionShutdownError>;
+}>;
 
 export type AcpOwnershipManifest = {
-  schemaVersion: 2;
-  workerId: string;
+  schemaVersion: 3;
+  hostId: string;
+  agentSessionId: string;
+  sessionLeaseId: string;
   runId: string;
   attemptId: string;
-  sessionName: string;
   owner: {
     pid: number;
     startToken?: string;
-    generation: string;
+    epoch: number;
   };
   worker: {
     pid: number;
     startToken?: string;
     pgid?: number;
   };
-  state: "active" | "degraded";
+  state:
+    | { phase: "opening" | "ready" | "cleaning" }
+    | { phase: "running" | "cancelling"; turnId: string }
+    | {
+        phase: "degraded";
+        previousPhase: "opening" | "ready" | "running" | "cancelling" | "cleaning";
+        evidence: {
+          reason: "cleanup_unverified" | "startup_recovery_unverified";
+          liveness: "live" | "unverified";
+          observedAt: string;
+        };
+      };
   createdAt: string;
-  cleanup?: {
-    attemptedAt: string;
-    reason: string;
-  };
 };
 
 export type AcpOwnershipHealth = {
   degraded: number;
   orphaned: number;
-  manifests: Array<Pick<AcpOwnershipManifest, "workerId" | "runId" | "attemptId" | "state">>;
-};
-
-export type ManagedAcpExecutorOptions = {
-  workersRoot: string;
-  sessionStateDirectoryForRun(runId: string): string;
-  owner: { generation: string | number; pid?: number; startToken?: string };
-  namedAgentLaunches?: NamedAcpAgentLaunchRegistry;
-  onDegraded?: (manifest: AcpOwnershipManifest) => void;
+  manifests: Array<{
+    hostId: string;
+    agentSessionId: string;
+    runId: string;
+    attemptId: string;
+    state: AcpOwnershipManifest["state"];
+    health: "healthy" | "quarantined" | "unverified";
+  }>;
 };

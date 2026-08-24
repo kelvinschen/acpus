@@ -1,4 +1,5 @@
-import type { NodeIR, WorkflowIR } from "@acpus/core/ir";
+import * as Result from "effect/Result";
+import type { NodeIR, AdmittedWorkflowIR } from "@acpus/core/ir";
 import { describe, expect, it } from "vitest";
 import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
 import { planSteerControl, steerControlTargets } from "../src/scheduler/steer-plan.js";
@@ -18,7 +19,7 @@ describe("scheduler steer plan", () => {
     ]);
     const frozen = frozenWorkflow([agent("review"), task("check")]);
 
-    expect(planSteerControl(frozen, snapshot, deriveOccurrenceRef(reviewPath))._unsafeUnwrap()).toEqual({
+    expect(Result.getOrThrow(planSteerControl(frozen, snapshot, deriveOccurrenceRef(reviewPath)))).toEqual({
       target: {
         runId: "run_1",
         attemptId: "attempt-review",
@@ -36,7 +37,7 @@ describe("scheduler steer plan", () => {
     }]);
   });
 
-  it("excludes shared Agent sessions from the batch and preserves exact conflict diagnostics", () => {
+  it("plans each exact active attempt even when Agent sessions are shared", () => {
     const snapshot = schedulerSnapshot([
       rootStarted({ first: "first~1", second: "second~1" }),
       ...started("first~1", "first", "attempt-first", [{ kind: "node", nodeId: "first" }]),
@@ -44,13 +45,15 @@ describe("scheduler steer plan", () => {
     ]);
     const frozen = frozenWorkflow([agent("first", "shared"), agent("second", "shared")]);
 
-    expect(steerControlTargets(frozen, snapshot)).toEqual([]);
-    expect(planSteerControl(frozen, snapshot, "attempt-first")._unsafeUnwrapErr()).toEqual({
-      type: "steer-session-conflict",
-      runId: "run_1",
-      targetKey: "first~1",
-      candidateKeys: ["second~1"],
-      message: "Agent session for steer target 'first~1' is also used by active nodeKeys: second~1.",
+    expect(steerControlTargets(frozen, snapshot).map(target => target.attemptId)).toEqual([
+      "attempt-first",
+      "attempt-second",
+    ]);
+    expect(Result.getOrThrow(planSteerControl(frozen, snapshot, "attempt-first"))).toMatchObject({
+      target: { attemptId: "attempt-first", nodeKey: "first~1" },
+    });
+    expect(Result.getOrThrow(planSteerControl(frozen, snapshot, "attempt-second"))).toMatchObject({
+      target: { attemptId: "attempt-second", nodeKey: "second~1" },
     });
   });
 
@@ -66,7 +69,7 @@ describe("scheduler steer plan", () => {
     const approved = new Set(steerControlTargets(frozen, snapshot).map(target => target.attemptId));
 
     for (const attempt of Object.values(snapshot.projection.attempts)) {
-      expect(approved.has(attempt.attemptId)).toBe(planSteerControl(frozen, snapshot, attempt.attemptId).isOk());
+      expect(approved.has(attempt.attemptId)).toBe(Result.isSuccess(planSteerControl(frozen, snapshot, attempt.attemptId)));
     }
   });
 
@@ -76,7 +79,7 @@ describe("scheduler steer plan", () => {
       ...started("check~1", "check", "attempt-check", [{ kind: "node", nodeId: "check" }]),
     ]);
 
-    expect(planSteerControl(frozenWorkflow([task("check")]), snapshot, "attempt-check")._unsafeUnwrapErr()).toEqual({
+    expect(Result.getOrThrow(Result.flip(planSteerControl(frozenWorkflow([task("check")]), snapshot, "attempt-check")))).toEqual({
       type: "invalid-steer-target",
       runId: "run_1",
       targetKey: "attempt-check",
@@ -119,8 +122,8 @@ function started(nodeKey: string, nodeId: string, attemptId: string, instancePat
 }
 
 function frozenWorkflow(nodes: NodeIR[]): FrozenSchedulerRun {
-  const ir: WorkflowIR = {
-    irVersion: 7,
+  const ir: AdmittedWorkflowIR = {
+    irVersion: 8,
     name: "steer-plan",
     agents: { reviewer: { kind: "agent_definition", use: "codex" } },
     root: { nodes, output: { kind: "object", fields: {} } },

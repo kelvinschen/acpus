@@ -13,6 +13,7 @@ describe("acpus package boundaries", () => {
       const source = await readFile(file, "utf8");
       if (/from\s+["'][^"']*\/runtime\/[^"']*["']/.test(source)
         || /from\s+["']@acpus\/runtime\/[^"']+["']/.test(source)
+        || /from\s+["']@acpus\/acp(?:\/[^"']*)?["']/.test(source)
         || /from\s+["']@acpus\/agent-executor(?:\/[^"']*)?["']/.test(source)) {
         offenders.push(file);
       }

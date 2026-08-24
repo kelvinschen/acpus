@@ -1,6 +1,6 @@
 # Representative workflow patterns
 
-Patterns are ordered from least to more orchestration. Choose the first shape that completely delivers and verifies the outcome; later patterns are not upgrades. These examples model the usual one-shot case: adapt duties and counts from the request, replace every teaching `use` with a selected Profile's exact `use` and optional `model`, replace angle-bracket literals with the current request's correctly escaped values, and never add a node merely because an example contains it.
+Patterns are ordered from least to more orchestration. Choose the first shape that completely delivers and verifies the outcome; later patterns are not upgrades. These examples model the usual one-shot case: adapt duties and counts from the request, map every logical Agent slot to a selected Preset in `acpus_run.agents`, replace angle-bracket literals with the current request's correctly escaped values, and never add a node merely because an example contains it.
 
 ## A. Minimal: exact deterministic observation
 
@@ -36,7 +36,7 @@ import { md } from "acpus/expression";
 
 export default defineWorkflow({
   name: "focused-work",
-  agents: { worker: { use: "selected-worker-use" } },
+  agents: { worker: {} },
 }).build(({ agents, meta, step }) => {
   const request = "<current user's exact focused request>";
   const result = step("work").agent({
@@ -61,9 +61,9 @@ import { md } from "acpus/expression";
 export default defineWorkflow({
   name: "focused-reviewed-decision",
   agents: {
-    evidence: { use: "selected-evidence-use" },
-    risk: { use: "selected-risk-use" },
-    synthesizer: { use: "selected-synthesizer-use" },
+    evidence: {},
+    risk: {},
+    synthesizer: {},
   },
 }).build(({ agents, meta, step }) => {
   const task = "<current decision task>";
@@ -106,9 +106,9 @@ const Aspect = z.object({ name: z.string(), focus: z.string() });
 export default defineWorkflow({
   name: "bounded-evidence-synthesis",
   agents: {
-    planner: { use: "selected-planner-use" },
-    researcher: { use: "selected-researcher-use" },
-    synthesizer: { use: "selected-synthesizer-use" },
+    planner: {},
+    researcher: {},
+    synthesizer: {},
   },
 }).build(({ agents, meta, step }) => {
   const subject = "<current research subject>";

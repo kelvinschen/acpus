@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import { normalizeWorkflowData, tryNormalizeWorkflowData } from "../src/evaluation/admissible.js";
 
@@ -15,7 +16,7 @@ describe("workflow data normalization", () => {
 
   it("preserves own __proto__ data without mutating the normalized prototype", () => {
     const input = JSON.parse('{"__proto__":{"safe":true},"value":1}') as unknown;
-    const normalized = tryNormalizeWorkflowData(input, "Output")._unsafeUnwrap() as Record<string, unknown>;
+    const normalized = Result.getOrThrow(tryNormalizeWorkflowData(input, "Output")) as Record<string, unknown>;
 
     expect(Object.getPrototypeOf(normalized)).toBe(Object.prototype);
     expect(Object.prototype.hasOwnProperty.call(normalized, "__proto__")).toBe(true);
@@ -44,7 +45,7 @@ describe("workflow data normalization", () => {
   it("returns a tagged path and reason for expected invalid workflow data", () => {
     const invalid = tryNormalizeWorkflowData(["ok", undefined], "Node output");
 
-    expect(invalid.isErr() && invalid.error).toEqual({
+    expect(Result.isFailure(invalid) && invalid.failure).toEqual({
       type: "workflow-data-invalid",
       label: "Node output",
       path: "$[1]",
@@ -63,8 +64,8 @@ describe("workflow data normalization", () => {
   ] as const)("classifies $name precisely", ({ value, path, reason }) => {
     const normalized = tryNormalizeWorkflowData(value(), "Node output");
 
-    expect(normalized.isErr()).toBe(true);
-    if (normalized.isErr()) expect(normalized.error).toMatchObject({ type: "workflow-data-invalid", path, reason });
+    expect(Result.isFailure(normalized)).toBe(true);
+    if (Result.isFailure(normalized)) expect(normalized.failure).toMatchObject({ type: "workflow-data-invalid", path, reason });
   });
 
   it("does not turn an unexpected object inspection failure into invalid workflow data", () => {

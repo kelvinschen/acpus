@@ -1,4 +1,6 @@
 import type { Hono } from "hono";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import type { WorkflowVisualizationSource } from "../../api-types.js";
 import { apiError } from "../errors.js";
 import {
@@ -14,9 +16,9 @@ export function registerWorkflowRoutes(app: Hono, cwd: string): void {
 
   app.get("/api/workflows/files", async (context) => {
     const dir = context.req.query("dir") ?? "";
-    const files = await listWorkflowFiles(cwd, dir);
-    if (files.isErr()) apiError(400, "invalid_workflow_path", files.error.message);
-    return context.json({ ok: true, files: files.value });
+    const files = await Effect.runPromise(Effect.result(listWorkflowFiles(cwd, dir)));
+    if (Result.isFailure(files)) apiError(400, "invalid_workflow_path", files.failure.message);
+    return context.json({ ok: true, files: files.success });
   });
 
   app.post("/api/workflows/visualize", async (context) => {
@@ -24,13 +26,13 @@ export function registerWorkflowRoutes(app: Hono, cwd: string): void {
       apiError(400, "invalid_json", "Visualization body must be JSON."),
     );
     const source = parseWorkflowVisualizationSource(body);
-    const visualization = await tryVisualizeWorkflowSource(cwd, source);
+    const visualization = await Effect.runPromise(Effect.result(tryVisualizeWorkflowSource(cwd, source)));
     return context.json({
       ok: true,
-      result: visualization.match(
-        ready => ready,
-        failure => ({ status: "failed" as const, phase: failure.phase, message: failure.message }),
-      ),
+      result: Result.match(visualization, {
+        onSuccess: ready => ready,
+        onFailure: failure => ({ status: "failed" as const, phase: failure.phase, message: failure.message }),
+      }),
     });
   });
 }

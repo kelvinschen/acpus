@@ -14,7 +14,7 @@ export default defineWorkflow({
   name: "my-workflow",
   description: "demo",
   inputSchema: z.object({ topic: z.string() }),
-  agents: { worker: { use: "codex" } },
+  agents: { worker: {} },
 }).build(({ input, agents, step }) => {
   const result = step("work").agent({
     agent: agents.worker,
@@ -26,7 +26,9 @@ export default defineWorkflow({
 
 ## Mental Model
 
-`build` declares a static graph; it does not execute it. `input`, `meta`, composite locals, and node outputs are opaque `Expr<T>` values resolved during a run. Composite callbacks declare static subgraphs that runtime loop rounds, fanout items, or branches instantiate.
+- `build` declares a static graph; it does not execute it.
+- `input`, `meta`, composite locals, and node outputs are opaque `Expr<T>` values resolved during a run.
+- Composite callbacks declare static subgraphs instantiated by branches, fanout items, and loop rounds.
 
 Choose the operation by intent:
 
@@ -71,8 +73,10 @@ const canRelease = and(eq(input.kind, "release"), gte(input.score, 80));
 const prompt = md`Review ${label}: ${summary}`;
 ```
 
-Unary, two-value, and three-value positional `lift` forms are supported; use the named-object form for more dependencies. Return only durable data.
-`lift` callbacks **MUST** be inline synchronous arrows. Pass runtime data as dependencies; **NEVER** capture workflow values or helpers such as `md`. Return plain data, then render outside `lift`.
+- Use positional `lift` for one to three values; use the named-object form for more dependencies.
+- `lift` callbacks **MUST** be inline synchronous arrows.
+- Pass runtime data as dependencies; **NEVER** capture workflow values or helpers such as `md`.
+- Return plain durable data, then render outside `lift`.
 
 Graph boundaries support the documented Zod 4 subset; Use `z.infer` when a TypeScript annotation must stabilize the same shape:
 
@@ -91,7 +95,7 @@ Keep authored data JSON-compatible. A top-level scope value or array element mus
 
 > Basic Rules
 > - Return durable primitives, `null`, arrays, plain objects, `ArtifactRef`, or expressions. Never return a `NodeRef`, promise, class instance, or raw `undefined`
-> - Use static step IDs. Runtime derives distinct `nodeKey` values for loop/fanout instances.
+> - Use static step IDs. Acpus distinguishes loop and fanout occurrences automatically.
 > - Give an Agent an `outputSchema` only when deterministic workflow code reads its fields; keep Agent-to-Agent handoffs as prose.
 > - No `outputSchema` in task and composites.
 
@@ -101,7 +105,7 @@ Leaf nodes use the enclosing `step` dispatcher:
 const review = step("review").agent({
   // `timeout`: leave unset unless the user or workflow explicitly requires a hard elapsed deadline
   // `sessionKey`: only set for when reusing context across occurrences, such as loop rounds or different steps; otherwise omit it
-  agent: agents.worker, // read `acpx-agents.md` before choosing agent backends/models.
+  agent: agents.worker, // read `acp-agents.md` before choosing agent backends/models.
   prompt: template`Review ${input.topic}.`,
 });
 
@@ -166,7 +170,10 @@ const reviews = step("reviews").fanout({
 ```
 
 ```ts
-// **Loop is do-while and returns its final state through `.output`. Its `do` callback receives `{ state, round }`;** declare child nodes through the enclosing `step`. A transition replaces the complete state, never merges partial objects. Widen empty arrays, `null`, and literal fields with an explicit state type:
+// Loop is do-while and returns final state through `.output`.
+// `do` receives `{ state, round }`; declare child nodes through the enclosing `step`.
+// Each transition replaces the complete state; it never merges partial objects.
+// Widen empty arrays, `null`, and literal fields with an explicit state type.
 const initial: State = { items: [], note: null };
 const rounds = step("rounds").loop({
   state: initial,
@@ -189,7 +196,7 @@ Only after applying the rules above, choose the closest compact teaching example
 | --- | --- | --- |
 | [`typed-loop-state`](../workflows/examples/typed-loop-state/workflow.ts) | `loop` | Widen evolving loop state and replace it completely each round. |
 | [`adversarial-review`](../workflows/examples/adversarial-review/workflow.ts) | `agent`, `task`, `parallel`, `fanout`, `loop` | Iterate with resident and fresh reviewers in a bounded loop. |
-| [`change-approval`](../workflows/examples/change-approval/workflow.ts) | `agent`, `task`, `signal`, `assert`, `if`, `loop` | Draft, refine, optionally approve, and enforce a plan. |
+| [`specify-approve-deliver`](../workflows/examples/specify-approve-deliver/workflow.ts) | `agent`, `task`, `signal`, `assert`, `if`, `loop` | Approve a contract, then iterate one Implementer session against fresh reviews and publish. |
 | [`design-forge`](../workflows/examples/design-forge/workflow.ts) | `agent`, `task`, `if`, `parallel`, `loop` | Long example (higher token cost to read) with a resident Designer and three scoped challengers. |
 | [`issue-triage`](../workflows/examples/issue-triage/workflow.ts) | `agent`, `task`, `switch`, `parallel`, `fanout` | Triage items in parallel and route them by switch. |
 | [`scaled-exploration`](../workflows/examples/scaled-exploration/workflow.ts) | `agent`, `task`, `fanout` | Plan a standard-scale fanout and reduce results in batches. |
@@ -203,5 +210,5 @@ Only look up declaration when the above rules and examples don't already answer 
 2. Read only the relevant symbol and nearby signature from its reported `typesPath`.
 
 ## Advance
-- Read `advanced-authoring.md` only for Agent session reuse, reusable/prebuilt Tasks, imports, artifacts, Task process controls, cancellation, or Agent tracing.
-- Read `signal-authoring.md` only for parallel waits, payload, or timeout semantics.
+- Read `advanced-authoring.md` ONLY for Agent session reuse, reusable/prebuilt Tasks, imports, artifacts, Task process controls, cancellation, or Agent tracing.
+- Read `signal-authoring.md` ONLY for parallel waits, payload, or timeout semantics.

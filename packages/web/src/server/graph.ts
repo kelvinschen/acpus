@@ -541,6 +541,7 @@ function formatNodeDetail(detail: RuntimeNodeDetail): NodeDetail {
         ...(detail.use === undefined ? {} : { use: detail.use }),
         ...(detail.command === undefined ? {} : { command: detail.command }),
         ...(detail.model === undefined ? {} : { model: detail.model }),
+        ...(detail.unbound === undefined ? {} : { unbound: detail.unbound }),
         ...(detail.outputSchema === undefined ? {} : { outputSchema: printSchema(detail.outputSchema) }),
       };
     case "signal":

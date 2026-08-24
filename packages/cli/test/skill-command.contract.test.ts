@@ -167,16 +167,6 @@ describe("skill CLI contracts", () => {
     });
   });
 
-  it("documents the custom skills root option for install and uninstall", async () => {
-    for (const action of ["install", "uninstall"]) {
-      const result = await runCommand(process.cwd(), ["skill", action, "--help"]);
-      expect(result.exitCode).toBe(0);
-      expect(result.stdout.text).toContain("--dir <skills-root>");
-      expect(result.stdout.text).toContain("custom skills root directory");
-      expect(result.stderr.text).toBe("");
-    }
-  });
-
   it("trims, deduplicates, and canonically orders comma-separated agents", async () => {
     await withPlainTestWorkspace("skill-agent-order", async workspace => {
       const result = await runSkill(workspace, ["--project", "--agent", " claude, universal,claude "]);
@@ -190,20 +180,6 @@ describe("skill CLI contracts", () => {
     });
   });
 
-  it("uses the operating-system home for exact global targets", async () => {
-    await withPlainTestWorkspace("skill-global-targets", async workspace => {
-      const home = join(workspace, "isolated-home");
-      osMocks.homedir.mockReturnValue(home);
-
-      const result = await runSkill(workspace, ["--global", "--agent", "universal,claude"]);
-
-      expect(result.exitCode).toBe(0);
-      expect(result.stdout.text).toContain(`installed\tuniversal\t${join(home, ".agents", "skills", "acpus")}`);
-      expect(result.stdout.text).toContain(`installed\tclaude\t${join(home, ".claude", "skills", "acpus")}`);
-      await expect(lstat(join(workspace, ".agents"))).rejects.toMatchObject({ code: "ENOENT" });
-    });
-  });
-
   it("reports missing roots in dry-run without creating them", async () => {
     await withPlainTestWorkspace("skill-install-dry-run", async workspace => {
       const result = await runSkill(workspace, ["--project", "--agent", "universal,claude", "--dry-run"]);
@@ -213,26 +189,6 @@ describe("skill CLI contracts", () => {
       expect(result.stdout.text).toContain("would-install\tclaude");
       await expect(lstat(join(workspace, ".agents"))).rejects.toMatchObject({ code: "ENOENT" });
       await expect(lstat(join(workspace, ".claude"))).rejects.toMatchObject({ code: "ENOENT" });
-    });
-  });
-
-  it("supports custom-root update and dry-run without creating a missing root", async () => {
-    await withPlainTestWorkspace("skill-custom-update", async workspace => {
-      const root = join(workspace, "custom-skills");
-      const target = join(root, "acpus");
-      await writeSkill(target, "0.0.0");
-
-      const updated = await runSkill(workspace, ["--dir", root]);
-      expect(updated.exitCode).toBe(0);
-      expect(updated.stdout.text).toContain(`updated\tcustom\t${target}`);
-      expect(parseAcpusSkillMetadata(await readFile(join(target, "SKILL.md"), "utf8")).version)
-        .toBe(getCliPackageInfo().version);
-
-      const missingRoot = join(workspace, "missing-skills");
-      const dryRun = await runSkill(workspace, ["--dir", missingRoot, "--dry-run"]);
-      expect(dryRun.exitCode).toBe(0);
-      expect(dryRun.stdout.text).toContain(`would-install\tcustom\t${join(missingRoot, "acpus")}`);
-      await expect(lstat(missingRoot)).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
 

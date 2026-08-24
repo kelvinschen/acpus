@@ -1,3 +1,5 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -9,7 +11,7 @@ import {
   setRuntimeHomeForTest,
 } from "../src/runtime-layout.js";
 import {
-  openRuntimeStore,
+  openRuntimeStoreAdapter,
 } from "../src/store/store.js";
 import { RUNTIME_STORAGE_VERSION } from "../src/storage/database.js";
 import { withSharedStorageHome, withStorageWorkspace } from "./support/storage-workspace.js";
@@ -21,7 +23,7 @@ describe("known runtime workspaces", () => {
       const layout = resolveRuntimeLayout(workspace);
       await expect(access(layout.home)).rejects.toMatchObject({ code: "ENOENT" });
 
-      await expect(listKnownWorkspaces(workspace)).resolves.toEqual({
+      await expect(Effect.runPromise(listKnownWorkspaces(workspace))).resolves.toEqual({
         currentWorkspaceKey: layout.workspaceKey,
         workspaces: [{
           workspaceKey: layout.workspaceKey,
@@ -30,9 +32,9 @@ describe("known runtime workspaces", () => {
         }],
         failures: [],
       });
-      const resolved = await resolveKnownWorkspace(workspace, layout.workspaceKey);
+      const resolved = await Effect.runPromise(Effect.result(resolveKnownWorkspace(workspace, layout.workspaceKey)));
 
-      expect(resolved.isOk() && resolved.value).toEqual({
+      expect(Result.isSuccess(resolved) && resolved.success).toEqual({
         workspaceKey: layout.workspaceKey,
         canonicalPath: layout.canonicalPath,
       });
@@ -53,7 +55,7 @@ describe("known runtime workspaces", () => {
       const secondLayout = resolveRuntimeLayout(second);
       const before = await runtimeStateFingerprint(home);
 
-      const listing = await listKnownWorkspaces(first);
+      const listing = await Effect.runPromise(listKnownWorkspaces(first));
 
       expect(listing).toEqual({
         currentWorkspaceKey: firstLayout.workspaceKey,
@@ -74,8 +76,8 @@ describe("known runtime workspaces", () => {
         failures: [],
       });
       expect(await runtimeStateFingerprint(home)).toBe(before);
-      const resolved = await resolveKnownWorkspace(first, secondLayout.workspaceKey);
-      expect(resolved.isOk() && resolved.value).toEqual({
+      const resolved = await Effect.runPromise(Effect.result(resolveKnownWorkspace(first, secondLayout.workspaceKey)));
+      expect(Result.isSuccess(resolved) && resolved.success).toEqual({
         workspaceKey: secondLayout.workspaceKey,
         canonicalPath: secondLayout.canonicalPath,
       });
@@ -94,7 +96,7 @@ describe("known runtime workspaces", () => {
       await mkdir(malformedRoot);
       await writeFile(join(malformedRoot, "workspace.json"), "{");
 
-      const listing = await listKnownWorkspaces(first);
+      const listing = await Effect.runPromise(listKnownWorkspaces(first));
 
       expect(listing.workspaces).toEqual([
         {
@@ -111,13 +113,13 @@ describe("known runtime workspaces", () => {
       expect(listing.failures).toEqual([
         expect.objectContaining({ workspaceKey: malformedKey }),
       ]);
-      const incompatible = await resolveKnownWorkspace(first, secondLayout.workspaceKey);
-      expect(incompatible.isOk() && incompatible.value).toEqual({
+      const incompatible = await Effect.runPromise(Effect.result(resolveKnownWorkspace(first, secondLayout.workspaceKey)));
+      expect(Result.isSuccess(incompatible) && incompatible.success).toEqual({
         workspaceKey: secondLayout.workspaceKey,
         canonicalPath: secondLayout.canonicalPath,
       });
-      const malformed = await resolveKnownWorkspace(first, malformedKey);
-      expect(malformed.isErr() && malformed.error).toMatchObject({
+      const malformed = await Effect.runPromise(Effect.result(resolveKnownWorkspace(first, malformedKey)));
+      expect(Result.isFailure(malformed) && malformed.failure).toMatchObject({
         type: "workspace-unavailable",
         workspaceKey: malformedKey,
       });
@@ -132,26 +134,26 @@ describe("known runtime workspaces", () => {
       const secondLayout = resolveRuntimeLayout(second);
       await rm(second, { recursive: true });
 
-      const listing = await listKnownWorkspaces(first);
+      const listing = await Effect.runPromise(listKnownWorkspaces(first));
       expect(listing.workspaces.map(workspace => workspace.workspaceKey)).toEqual([firstLayout.workspaceKey]);
       expect(listing.failures).toEqual([
         expect.objectContaining({ workspaceKey: secondLayout.workspaceKey }),
       ]);
 
-      const unavailable = await resolveKnownWorkspace(first, secondLayout.workspaceKey);
-      expect(unavailable.isErr() && unavailable.error).toMatchObject({
+      const unavailable = await Effect.runPromise(Effect.result(resolveKnownWorkspace(first, secondLayout.workspaceKey)));
+      expect(Result.isFailure(unavailable) && unavailable.failure).toMatchObject({
         type: "workspace-unavailable",
         workspaceKey: secondLayout.workspaceKey,
       });
-      const invalid = await resolveKnownWorkspace(first, "../outside");
-      expect(invalid.isErr() && invalid.error).toEqual({
+      const invalid = await Effect.runPromise(Effect.result(resolveKnownWorkspace(first, "../outside")));
+      expect(Result.isFailure(invalid) && invalid.failure).toEqual({
         type: "workspace-key-invalid",
         workspaceKey: "../outside",
         message: "Workspace key '../outside' is invalid.",
       });
       const unknownKey = unusedWorkspaceKey([firstLayout.workspaceKey, secondLayout.workspaceKey]);
-      const unknown = await resolveKnownWorkspace(first, unknownKey);
-      expect(unknown.isErr() && unknown.error).toEqual({
+      const unknown = await Effect.runPromise(Effect.result(resolveKnownWorkspace(first, unknownKey)));
+      expect(Result.isFailure(unknown) && unknown.failure).toEqual({
         type: "workspace-not-found",
         workspaceKey: unknownKey,
         message: `Workspace '${unknownKey}' was not found.`,
@@ -169,9 +171,9 @@ describe("known runtime workspaces", () => {
       const restorePlatformHome = setRuntimeHomeForTest(platformWorkspace, home);
       try {
         const platform = process.platform === "linux" ? "darwin" : "linux";
-        const platformLayout = await ensureRuntimeLayout(platformWorkspace, { platform });
-        if (platformLayout.isErr()) throw new Error(platformLayout.error.message);
-        const listing = await listKnownWorkspaces(first);
+        const platformLayout = await Effect.runPromise(Effect.result(ensureRuntimeLayout(platformWorkspace, { platform })));
+        if (Result.isFailure(platformLayout)) throw new Error(platformLayout.failure.message);
+        const listing = await Effect.runPromise(listKnownWorkspaces(first));
 
         expect(listing.workspaces).toEqual([
           {
@@ -187,7 +189,7 @@ describe("known runtime workspaces", () => {
           },
         ]);
         expect(listing.failures).toEqual(expect.arrayContaining([
-          expect.objectContaining({ workspaceKey: platformLayout.value.workspaceKey }),
+          expect.objectContaining({ workspaceKey: platformLayout.success.workspaceKey }),
         ]));
       } finally {
         restorePlatformHome();
@@ -205,7 +207,7 @@ describe("known runtime workspaces", () => {
       const symlinkKey = unusedWorkspaceKey([firstLayout.workspaceKey]);
       await symlink(second, join(home, "workspaces", symlinkKey), "dir");
 
-      const listing = await listKnownWorkspaces(first);
+      const listing = await Effect.runPromise(listKnownWorkspaces(first));
 
       expect(listing.workspaces.map(workspace => workspace.workspaceKey)).toEqual([firstLayout.workspaceKey]);
       expect(listing.failures).toEqual([
@@ -219,7 +221,7 @@ async function initializeWorkspace(
   workspace: string,
   runs: Array<{ id: string; updatedAt: string }>,
 ): Promise<void> {
-  const store = await openRuntimeStore(workspace);
+  const store = await openRuntimeStoreAdapter(workspace);
   store.close();
   const layout = resolveRuntimeLayout(workspace);
   const db = new DatabaseSync(layout.databasePath);

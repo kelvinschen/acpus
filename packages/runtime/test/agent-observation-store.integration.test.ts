@@ -1,15 +1,24 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { mkdir, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { AgentTurnObservation, AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
+import type {
+  FixtureAgentTurnObservation as AgentTurnObservation,
+  FixtureAgentTurnRequest as AgentTurnRequest,
+  FixtureAgentTurnResult as AgentTurnResult,
+} from "./support/agent-turn.js";
+import type { AgentTurnEvent, AgentTurnSnapshot } from "@acpus/agent-executor";
+import { fixtureEvent } from "./support/agent-turn.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
+import { settle } from "./effect.js";
 import {
   runtimeDatabasePath,
   runtimeRow,
   withRuntimeWorkspace,
-} from "./support/runtime-fixtures.js";
+} from "./support/runtime-harness.js";
 
 const observedAt = "2026-07-26T00:00:00.000Z";
 type ObservationBase = "schemaVersion" | "sequence" | "observedAt" | "elapsedMs";
@@ -17,8 +26,9 @@ type ObservationEventInput = AgentTurnObservation["event"] extends infer Event
   ? Event extends unknown ? Omit<Event, ObservationBase> : never
   : never;
 const agentMocks = vi.hoisted(() => ({
-  executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<AgentTurnResult>>(),
+  executeAgentTurn: vi.fn<(request: AgentTurnRequest) => Promise<ObservationTurnResult>>(),
 }));
+type ObservationTurnResult = AgentTurnResult & { snapshot: AgentTurnSnapshot };
 beforeEach(() => {
   agentMocks.executeAgentTurn.mockReset();
 });
@@ -26,7 +36,7 @@ beforeEach(() => {
 describe("Agent observation store projection", () => {
   it("reads only the latest Turn for each requested attempt", async () => {
     await withRuntimeWorkspace("agent-observation-latest-turns", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const runId = "20260726000000LLLLLLLLLLLLLLLLLLLL";
       const attempts = [
         { attemptId: "attempt_a", nodeKey: "agent-a~1", nodeId: "agent-a" },
@@ -40,23 +50,23 @@ describe("Agent observation store projection", () => {
           await captureSettledTurn(store, workspace, runId, attempt.attemptId, attempt.nodeKey, attempt.nodeId, 2);
         }
 
-        const latest = await store.observationLog.readInspectionProjection({
+        const latest = await settle(store.observationLog.readInspectionProjection({
           runId,
           attemptIds: attempts.map(attempt => attempt.attemptId),
           latestTurnPerAttempt: true,
-        });
+        }));
 
-        expect(latest.isOk()).toBe(true);
-        if (latest.isErr()) throw latest.error;
-        expect(latest.value.turns.map(value => [value.attemptId, value.turn])).toEqual([
+        expect(Result.isSuccess(latest)).toBe(true);
+        if (Result.isFailure(latest)) throw latest.failure;
+        expect(latest.success.turns.map(value => [value.attemptId, value.turn])).toEqual([
           ["attempt_a", 2],
           ["attempt_b", 2],
         ]);
-        expect(latest.value.currents.map(value => [value.attemptId, value.turn])).toEqual([
+        expect(latest.success.currents.map(value => [value.attemptId, value.turn])).toEqual([
           ["attempt_a", 2],
           ["attempt_b", 2],
         ]);
-        expect(latest.value.omittedTurns).toBe(true);
+        expect(latest.success.omittedTurns).toBe(true);
       } finally {
         store.close();
       }
@@ -65,7 +75,7 @@ describe("Agent observation store projection", () => {
 
   it("preserves a completed tool's between phase through a usage checkpoint", async () => {
     await withRuntimeWorkspace("agent-observation-usage-telemetry", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const runId = "20260726000000AAAAAAAAAAAAAAAAAAAA";
       const attemptId = "attempt_usage";
       let releaseProvider!: () => void;
@@ -76,23 +86,23 @@ describe("Agent observation store projection", () => {
       const ready = new Promise<void>(resolve => {
         inspectionReady = resolve;
       });
-      let capture: ReturnType<typeof store.observationLog.captureTurn> | undefined;
+      let capture: Promise<AgentTurnResult> | undefined;
       let beforeUsage: SemanticCheckpointRow | undefined;
       let afterUsage: SemanticCheckpointRow | undefined;
       let afterResponse: SemanticCheckpointRow | undefined;
-      const forwarded: AgentTurnObservation[] = [];
+      const forwarded: AgentTurnEvent[] = [];
       try {
         await mkdir(join(resolveRuntimeLayout(workspace).runsRoot, runId));
         seedCaptureAttempt(workspace, runId, attemptId);
         const initialSummary = completedTurn().summary;
         const telemetrySummary = diagnosticSummary();
         agentMocks.executeAgentTurn.mockImplementation(async request => {
-          request.onObservation?.(turnObservation(0, {
+          observeTurn(request, turnObservation(0, {
             type: "message",
             channel: "thought",
             content: "Inspect the evidence.",
           }, initialSummary));
-          request.onObservation?.(turnObservation(1, {
+          observeTurn(request, turnObservation(1, {
             type: "tool",
             action: "call",
             toolCallId: "tool-1",
@@ -100,7 +110,7 @@ describe("Agent observation store projection", () => {
             status: "running",
             rawInput: { cmd: "pnpm test" },
           }, initialSummary));
-          request.onObservation?.(turnObservation(2, {
+          observeTurn(request, turnObservation(2, {
             type: "tool",
             action: "update",
             toolCallId: "tool-1",
@@ -109,13 +119,13 @@ describe("Agent observation store projection", () => {
             rawOutput: "passed",
           }, initialSummary));
           beforeUsage = semanticCheckpoint(workspace, runId, attemptId);
-          request.onObservation?.(turnObservation(3, {
+          observeTurn(request, turnObservation(3, {
             type: "usage",
             context: { used: 95, size: 100 },
-            tokenUsage: { input_tokens: 90, output_tokens: 5 },
+            tokenUsage: { inputTokens: 90, outputTokens: 5, totalTokens: 95 },
           }, telemetrySummary));
           afterUsage = semanticCheckpoint(workspace, runId, attemptId);
-          request.onObservation?.(turnObservation(4, {
+          observeTurn(request, turnObservation(4, {
             type: "message",
             channel: "assistant",
             content: "x".repeat(512),
@@ -123,7 +133,7 @@ describe("Agent observation store projection", () => {
           afterResponse = semanticCheckpoint(workspace, runId, attemptId);
           inspectionReady();
           await providerRelease;
-          request.onObservation?.(turnObservation(5, {
+          observeTurn(request, turnObservation(5, {
             type: "turn_end",
             status: "completed",
           }, telemetrySummary, ["x".repeat(512)]));
@@ -134,7 +144,7 @@ describe("Agent observation store projection", () => {
           });
         });
 
-        capture = store.observationLog.captureTurn({
+        capture = Effect.runPromise(store.observationLog.captureTurn({
           runId,
           nodeId: "agent",
           nodeKey: "agent~1",
@@ -143,16 +153,16 @@ describe("Agent observation store projection", () => {
           turn: 1,
           promptKind: "task",
         }, {
-          agent: { kind: "named", name: "mock" },
+          agent: { kind: "named" as const, name: "mock" },
           prompt: "work",
           cwd: workspace,
           env: {},
-          sessionName: attemptId,
-          permissionMode: "deny-all",
-          onObservation: observation => {
-            forwarded.push(observation);
+          agentSessionId: attemptId,
+          permissionMode: "deny-all" as const,
+          onEvent: event => {
+            forwarded.push(event);
           },
-        }, agentMocks.executeAgentTurn);
+        }, request => Effect.promise(() => agentMocks.executeAgentTurn(request)), cancelledTurn));
         await ready;
 
         expect(JSON.parse(beforeUsage?.currentJson ?? "{}")).toMatchObject({
@@ -183,10 +193,9 @@ describe("Agent observation store projection", () => {
           tokenUsage: { source: "usage_update", totalTokens: 95 },
         });
         expect(current).not.toHaveProperty("totalToolCalls");
-        expect(forwarded.find(observation => observation.event.type === "usage")?.progress.summary).toMatchObject({
+        expect(forwarded.find(observation => observation.event.type === "usage")?.event).toMatchObject({
           context: { used: 95, size: 100 },
-          tokenUsage: { totalTokens: 95 },
-          tools: { totalToolCallCount: 12 },
+          tokens: { totalTokens: 95 },
         });
 
         releaseProvider();
@@ -194,15 +203,15 @@ describe("Agent observation store projection", () => {
         const runDir = store.getRunDir(runId);
         if (!runDir) throw new Error("expected run directory");
         await expect(readdir(runDir)).resolves.not.toContain("evidence");
-        const settled = await store.observationLog.readInspectionProjection({
+        const settled = await settle(store.observationLog.readInspectionProjection({
           runId,
           attemptIds: [attemptId],
           latestTurnPerAttempt: true,
           entryLimit: 50,
-        });
-        expect(settled.isOk()).toBe(true);
-        if (settled.isErr()) throw settled.error;
-        expect(settled.value.currents).toEqual([
+        }));
+        expect(Result.isSuccess(settled)).toBe(true);
+        if (Result.isFailure(settled)) throw settled.failure;
+        expect(settled.success.currents).toEqual([
           expect.objectContaining({
             state: "settled",
             phase: "settled",
@@ -211,7 +220,7 @@ describe("Agent observation store projection", () => {
             tokenUsage: expect.objectContaining({ source: "usage_update", totalTokens: 95 }),
           }),
         ]);
-        expect(settled.value.entries.map(entry => entry.kind === "activity" ? entry.channel : entry.kind))
+        expect(settled.success.entries.map(entry => entry.kind === "activity" ? entry.channel : entry.kind))
           .toEqual(["reported-thought", "tool", "response"]);
       } finally {
         releaseProvider?.();
@@ -223,7 +232,7 @@ describe("Agent observation store projection", () => {
 
   it("settles completed current activity from final response without partial fallback", async () => {
     await withRuntimeWorkspace("agent-observation-final-response", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const runId = "20260726000000BBBBBBBBBBBBBBBBBBBB";
       const attemptId = "attempt_final";
       try {
@@ -231,7 +240,7 @@ describe("Agent observation store projection", () => {
         seedCaptureAttempt(workspace, runId, attemptId);
         const summary = diagnosticSummary();
         agentMocks.executeAgentTurn.mockImplementation(async request => {
-          request.onObservation?.({
+          observeTurn(request, {
             event: {
               schemaVersion: 1,
               sequence: 0,
@@ -243,7 +252,7 @@ describe("Agent observation store projection", () => {
             },
             progress: { responses: ["intermediate"], summary, updatedAt: observedAt },
           });
-          request.onObservation?.({
+          observeTurn(request, {
             event: {
               schemaVersion: 1,
               sequence: 1,
@@ -257,7 +266,7 @@ describe("Agent observation store projection", () => {
           return completedTurn(summary, "", undefined, ["intermediate"]);
         });
 
-        await store.observationLog.captureTurn({
+        await Effect.runPromise(store.observationLog.captureTurn({
           runId,
           nodeId: "agent",
           nodeKey: "agent~1",
@@ -266,24 +275,24 @@ describe("Agent observation store projection", () => {
           turn: 1,
           promptKind: "task",
         }, {
-          agent: { kind: "named", name: "mock" },
+          agent: { kind: "named" as const, name: "mock" },
           prompt: "work",
           cwd: workspace,
           env: {},
-          sessionName: attemptId,
-          permissionMode: "deny-all",
-        }, agentMocks.executeAgentTurn);
-        const settled = await store.observationLog.readInspectionProjection({
+          agentSessionId: attemptId,
+          permissionMode: "deny-all" as const,
+        }, request => Effect.promise(() => agentMocks.executeAgentTurn(request)), cancelledTurn));
+        const settled = await settle(store.observationLog.readInspectionProjection({
           runId,
           attemptIds: [attemptId],
           latestTurnPerAttempt: true,
           entryLimit: 50,
-        });
-        expect(settled.isOk()).toBe(true);
-        if (settled.isErr()) throw settled.error;
-        expect(settled.value.currents[0]).toMatchObject({ state: "settled", phase: "settled" });
-        expect(settled.value.currents[0]).not.toHaveProperty("response");
-        expect(settled.value.entries).toEqual([
+        }));
+        expect(Result.isSuccess(settled)).toBe(true);
+        if (Result.isFailure(settled)) throw settled.failure;
+        expect(settled.success.currents[0]).toMatchObject({ state: "settled", phase: "settled" });
+        expect(settled.success.currents[0]).not.toHaveProperty("response");
+        expect(settled.success.entries).toEqual([
           expect.objectContaining({ kind: "activity", channel: "response" }),
         ]);
       } finally {
@@ -294,7 +303,7 @@ describe("Agent observation store projection", () => {
 
   it("persists post-fence attribution when late activity shares the fence timestamp", async () => {
     await withRuntimeWorkspace("agent-observation-post-fence-attribution", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const runId = "20260726000000CCCCCCCCCCCCCCCCCCCC";
       const attemptId = "attempt_fenced";
       const fenceAt = "2026-07-26T00:00:30.000Z";
@@ -314,13 +323,13 @@ describe("Agent observation store projection", () => {
       const finishRelease = new Promise<void>(resolve => {
         finishProvider = resolve;
       });
-      let capture: ReturnType<typeof store.observationLog.captureTurn> | undefined;
+      let capture: Promise<AgentTurnResult> | undefined;
       try {
         await mkdir(join(resolveRuntimeLayout(workspace).runsRoot, runId));
         seedCaptureAttempt(workspace, runId, attemptId);
         const summary = completedTurn().summary;
         agentMocks.executeAgentTurn.mockImplementation(async request => {
-          request.onObservation?.({
+          observeTurn(request, {
             event: {
               schemaVersion: 1,
               sequence: 0,
@@ -338,7 +347,7 @@ describe("Agent observation store projection", () => {
           });
           providerStarted();
           await lateRelease;
-          request.onObservation?.({
+          observeTurn(request, {
             event: {
               schemaVersion: 1,
               sequence: 1,
@@ -356,7 +365,7 @@ describe("Agent observation store projection", () => {
           });
           lateObserved();
           await finishRelease;
-          request.onObservation?.({
+          observeTurn(request, {
             event: {
               schemaVersion: 1,
               sequence: 2,
@@ -378,7 +387,7 @@ describe("Agent observation store projection", () => {
           });
         });
 
-        capture = store.observationLog.captureTurn({
+        capture = Effect.runPromise(store.observationLog.captureTurn({
           runId,
           nodeId: "agent",
           nodeKey: "agent~1",
@@ -387,31 +396,31 @@ describe("Agent observation store projection", () => {
           turn: 1,
           promptKind: "task",
         }, {
-          agent: { kind: "named", name: "mock" },
+          agent: { kind: "named" as const, name: "mock" },
           prompt: "work",
           cwd: workspace,
           env: {},
-          sessionName: attemptId,
-          permissionMode: "deny-all",
-        }, agentMocks.executeAgentTurn);
+          agentSessionId: attemptId,
+          permissionMode: "deny-all" as const,
+        }, request => Effect.promise(() => agentMocks.executeAgentTurn(request)), cancelledTurn));
         await started;
-        await store.observationLog.markFenced({
+        await Effect.runPromise(store.observationLog.markFenced({
           runId,
           attemptId,
           eventSequence: 42,
           committedAt: fenceAt,
           reason: "operator_steered",
-        });
+        }));
         releaseLate();
         await lateReady;
 
-        const active = await store.observationLog.readInspectionProjection({
+        const active = await settle(store.observationLog.readInspectionProjection({
           runId,
           attemptIds: [attemptId],
-        });
-        expect(active.isOk()).toBe(true);
-        if (active.isErr()) throw active.error;
-        expect(active.value.currents).toEqual([
+        }));
+        expect(Result.isSuccess(active)).toBe(true);
+        if (Result.isFailure(active)) throw active.failure;
+        expect(active.success.currents).toEqual([
           expect.objectContaining({
             attemptId,
             updatedAt: fenceAt,
@@ -422,14 +431,14 @@ describe("Agent observation store projection", () => {
 
         finishProvider();
         await capture;
-        const settled = await store.observationLog.readInspectionProjection({
+        const settled = await settle(store.observationLog.readInspectionProjection({
           runId,
           attemptIds: [attemptId],
           entryLimit: 2,
-        });
-        expect(settled.isOk()).toBe(true);
-        if (settled.isErr()) throw settled.error;
-        expect(settled.value.entries
+        }));
+        expect(Result.isSuccess(settled)).toBe(true);
+        if (Result.isFailure(settled)) throw settled.failure;
+        expect(settled.success.entries
           .filter(entry => entry.kind === "activity")
           .sort((left, right) => left.sourceSequence - right.sourceSequence)
           .map(entry => ({
@@ -451,7 +460,7 @@ describe("Agent observation store projection", () => {
 
   it("enforces entry-count and payload-byte retention without recording a gap", async () => {
     await withRuntimeWorkspace("agent-observation-entry-retention", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const runId = "20260726000000EEEEEEEEEEEEEEEEEEEE";
       const countAttemptId = "attempt_count";
       const byteAttemptId = "attempt_bytes";
@@ -520,27 +529,27 @@ describe("Agent observation store projection", () => {
 
   it("pages entries that share one observation version without skipping a sibling", async () => {
     await withRuntimeWorkspace("agent-observation-entry-cursor", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const runId = "20260726000000BBBBBBBBBBBBBBBBBBBB";
       const attemptId = "attempt_page";
       try {
         seedObservationTurn(workspace, runId, attemptId);
 
-        const first = await store.observationLog.readInspectionProjection({
+        const first = await settle(store.observationLog.readInspectionProjection({
           runId,
           attemptIds: [attemptId],
           entryLimit: 1,
-        });
-        expect(first.isOk()).toBe(true);
-        if (first.isErr()) throw first.error;
-        expect(first.value.entries.map(entry => entry.sourceSequence)).toEqual([2]);
-        expect(first.value).toMatchObject({
+        }));
+        expect(Result.isSuccess(first)).toBe(true);
+        if (Result.isFailure(first)) throw first.failure;
+        expect(first.success.entries.map(entry => entry.sourceSequence)).toEqual([2]);
+        expect(first.success).toMatchObject({
           olderEntryCount: 1,
           hasOlderEntries: true,
         });
 
-        const boundary = first.value.entries[0]!;
-        const second = await store.observationLog.readInspectionProjection({
+        const boundary = first.success.entries[0]!;
+        const second = await settle(store.observationLog.readInspectionProjection({
           runId,
           attemptIds: [attemptId],
           entryLimit: 1,
@@ -549,11 +558,11 @@ describe("Agent observation store projection", () => {
             sourceSequence: boundary.sourceSequence,
             id: boundary.id,
           },
-        });
-        expect(second.isOk()).toBe(true);
-        if (second.isErr()) throw second.error;
-        expect(second.value.entries.map(entry => entry.sourceSequence)).toEqual([1]);
-        expect(second.value).toMatchObject({
+        }));
+        expect(Result.isSuccess(second)).toBe(true);
+        if (Result.isFailure(second)) throw second.failure;
+        expect(second.success.entries.map(entry => entry.sourceSequence)).toEqual([1]);
+        expect(second.success).toMatchObject({
           olderEntryCount: 0,
           hasOlderEntries: false,
         });
@@ -565,7 +574,7 @@ describe("Agent observation store projection", () => {
 });
 
 async function captureSettledTurn(
-  store: Awaited<ReturnType<typeof openRuntimeStore>>,
+  store: Awaited<ReturnType<typeof openRuntimeStoreAdapter>>,
   workspace: string,
   runId: string,
   attemptId: string,
@@ -573,22 +582,22 @@ async function captureSettledTurn(
   nodeId: string,
   turn = 2,
 ): Promise<void> {
-  await store.observationLog.captureTurn({
+  await Effect.runPromise(store.observationLog.captureTurn({
     runId,
     nodeId,
     nodeKey,
     attemptId,
     attemptNo: 1,
     turn,
-    promptKind: turn === 1 ? "task" : "continuation",
+    promptKind: "task",
   }, {
-    agent: { kind: "named", name: "mock" },
+    agent: { kind: "named" as const, name: "mock" },
     prompt: "continue",
     cwd: workspace,
     env: {},
-    sessionName: attemptId,
-    permissionMode: "deny-all",
-  }, agentMocks.executeAgentTurn);
+    agentSessionId: attemptId,
+    permissionMode: "deny-all" as const,
+  }, request => Effect.promise(() => agentMocks.executeAgentTurn(request)), cancelledTurn));
 }
 
 function completedTurn(
@@ -604,7 +613,8 @@ function completedTurn(
     elapsedMs: 0,
   },
   responses: readonly string[] = finalResponse.length === 0 ? [] : [finalResponse],
-): AgentTurnResult {
+): ObservationTurnResult {
+  const snapshot = { responses, summary, timing };
   return {
     status: "completed",
     responses,
@@ -612,6 +622,7 @@ function completedTurn(
     stderr: "",
     summary,
     timing,
+    snapshot,
   };
 }
 
@@ -650,6 +661,31 @@ function turnObservation(
       ...event,
     } as AgentTurnObservation["event"],
     progress: { responses, summary, updatedAt },
+  };
+}
+
+function observeTurn(request: AgentTurnRequest, observation: AgentTurnObservation): void {
+  const projected = fixtureEvent(observation.event);
+  if (!projected) return;
+  request.onEvent?.({
+    sequence: observation.event.sequence,
+    observedAt: observation.event.observedAt,
+    elapsedMs: observation.event.elapsedMs,
+    event: projected,
+  });
+}
+
+function cancelledTurn(): ObservationTurnResult {
+  const summary = completedTurn().summary;
+  const timing = { startedAt: observedAt, finishedAt: observedAt, elapsedMs: 0 };
+  return {
+    status: "cancelled",
+    message: "fenced before provider dispatch",
+    responses: [],
+    stderr: "",
+    summary,
+    timing,
+    snapshot: { responses: [], summary, timing },
   };
 }
 

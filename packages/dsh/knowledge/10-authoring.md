@@ -73,18 +73,18 @@ const releasable = and(eq(status.output.kind, "release"), gte(status.output.scor
 
 Every `lift` callback must be an inline synchronous arrow. Pass every runtime dependency explicitly; never capture another Expr or an expression helper inside it. Return plain JSON-compatible data from `lift`, then render outside. Use `template` for compact strings and `md` for multiline prompts.
 
-## Agent nodes and catalog
+## Agent nodes and Presets
 
-Select a Profile by injected `guidance`, then copy its exact `use` and optional `model` into a logical declaration. The Profile id is only a selection label and must not become `use` unless the Profile's actual `use` is identical. Use distinct logical declarations for distinct roles even when they select the same backend.
+Declare one logical slot for each distinct duty. Leave the slot unbound in workflow source, select a Preset by `guidance`, and pass the exact slot-to-Preset mapping in `acpus_run.agents`. Use distinct logical slots for distinct duties even when they select the same Preset.
 
 ```ts
 agents: {
-  researcher: { use: "exact-profile-use", model: "exact-profile-model" },
-  verifier: { use: "another-profile-use" },
+  researcher: {},
+  verifier: {},
 }
 ```
 
-Omit `model` unless the catalog or user supplies it. Never add config, command, environment, credentials, or provider fields from inference. Catalog presence does not prove executable, authentication, network, or provider readiness; actual startup is authoritative.
+Do not put a Preset id in `use`, copy its hidden Agent definition, or infer config, command, environment, credentials, or provider fields. A concrete workflow Agent remains valid only when the user explicitly asks for that direct binding. Catalog presence does not prove executable, authentication, network, or provider readiness; actual startup is authoritative.
 
 Set `cwd: meta.workspaceDir` for workspace work. Leave `timeout` unset unless the user or workflow defines a real hard deadline. Use `sessionKey` only for deliberate continuity across occurrences, commonly a resident worker across loop rounds. Give it a stable run-local key. Fresh independent reviewers should omit it.
 

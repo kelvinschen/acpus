@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { errAsync, okAsync } from "neverthrow";
+import * as Effect from "effect/Effect";
 import { AcpusMode } from "../src/host/mode.js";
+import { run } from "./effect.js";
 
 describe("Acpus Tray cancellation", () => {
   it("resolves exact selectors and defaults omission to the latest task", async () => {
@@ -19,14 +20,14 @@ describe("Acpus Tray cancellation", () => {
       parentSessionId: "session-1",
       generation: run.generation,
     }));
-    const open = vi.fn((link: { workspace: string }) => okAsync({
+    const open = vi.fn((link: { workspace: string }) => Effect.succeed({
       workspace: link.workspace,
       runtime: { workspace: link.workspace },
     }));
     Object.assign(mode, {
       links: {
-        readSession: vi.fn(async () => ({ sessionId: "session-1", revision: 1, runs })),
-        listLinks: vi.fn(async () => links),
+        readSession: vi.fn(() => Effect.succeed({ sessionId: "session-1", revision: 1, runs })),
+        listLinks: vi.fn(() => Effect.succeed(links)),
       },
       supervision: { openLinkedRuntime: open },
     });
@@ -54,10 +55,10 @@ describe("Acpus Tray cancellation", () => {
   });
 
   it("uses the durable request id, reconciles projection, and schedules attention", async () => {
-    const control = vi.fn(async () => ({ isErr: () => false }));
-    const settleCancel = vi.fn(async () => undefined);
-    const reconcileRun = vi.fn(async () => undefined);
-    const scheduleNoticeDelivery = vi.fn();
+    const control = vi.fn(() => Effect.succeed({}));
+    const settleCancel = vi.fn(() => Effect.void);
+    const reconcileRun = vi.fn(() => Effect.void);
+    const scheduleNoticeDelivery = vi.fn(() => Effect.void);
     const mode = modeStub({ control, settleCancel, reconcileRun, scheduleNoticeDelivery });
 
     await expect(mode.cancelSessionTask({ sessionId: "session-1", generation: 1 }))
@@ -100,34 +101,34 @@ describe("Acpus Tray cancellation", () => {
       runId: link.runId,
       status: "pending" as const,
     }));
-    const settleCancel = vi.fn(async () => undefined);
-    const reconcileRun = vi.fn(async () => undefined);
-    const scheduleNoticeDelivery = vi.fn();
-    const runtimeControl = vi.fn(() => okAsync({ type: "cancel", state: "applied", run: {} }));
+    const settleCancel = vi.fn(() => Effect.void);
+    const reconcileRun = vi.fn(() => Effect.void);
+    const scheduleNoticeDelivery = vi.fn(() => Effect.void);
+    const runtimeControl = vi.fn(() => Effect.succeed({ type: "cancel", state: "applied", run: {} }));
     Object.assign(mode, {
       links: {
-        pendingControls: vi.fn(async () => controls),
-        listLinks: vi.fn(async () => links),
-        readSession: vi.fn(async () => ({ sessionId: "session-1", revision: 1, runs: [] })),
+        pendingControls: vi.fn(() => Effect.succeed(controls)),
+        listLinks: vi.fn(() => Effect.succeed(links)),
+        readSession: vi.fn(() => Effect.succeed({ sessionId: "session-1", revision: 1, runs: [] })),
         settleCancel,
       },
       supervision: {
-        whenReady: vi.fn(async () => undefined),
+        whenReady: vi.fn(() => Effect.void),
         openLinkedRuntime: vi.fn((link: { generation: number; workspace: string }) =>
           link.generation === 1
-            ? errAsync({
+            ? Effect.fail({
                 type: "workspace-unavailable" as const,
                 workspace: link.workspace,
                 message: "missing",
               })
-            : okAsync({ workspace: link.workspace, runtime: { control: runtimeControl } })),
+            : Effect.succeed({ workspace: link.workspace, runtime: { control: runtimeControl } })),
         reconcileRun,
         scheduleNoticeDelivery,
       },
     });
 
-    await (mode as unknown as { reconcilePendingCancels(): Promise<void> })
-      .reconcilePendingCancels();
+    await run((mode as unknown as { reconcilePendingCancels(): Effect.Effect<void, Error> })
+      .reconcilePendingCancels());
 
     expect(settleCancel).toHaveBeenCalledTimes(1);
     expect(settleCancel).toHaveBeenCalledWith(expect.objectContaining({
@@ -172,9 +173,9 @@ function modeStub(overrides: {
   const mode = Object.create(AcpusMode.prototype) as AcpusMode;
   Object.assign(mode, {
     links: {
-      listLinks: vi.fn(async () => [link]),
-      prepareCancel: vi.fn(async () => prepared),
-      settleCancel: overrides.settleCancel ?? vi.fn(async () => undefined),
+      listLinks: vi.fn(() => Effect.succeed([link])),
+      prepareCancel: vi.fn(() => Effect.succeed(prepared)),
+      settleCancel: overrides.settleCancel ?? vi.fn(() => Effect.void),
     },
     runtimes: {
       open: vi.fn(async () => ({
@@ -183,15 +184,15 @@ function modeStub(overrides: {
       })),
     },
     supervision: {
-      openLinkedRuntime: vi.fn(() => okAsync({
+      openLinkedRuntime: vi.fn(() => Effect.succeed({
         workspace: "/workspace",
         runtime: { control: overrides.control ?? vi.fn() },
       })),
-      reconcileRun: overrides.reconcileRun ?? vi.fn(async () => undefined),
-      scheduleNoticeDelivery: overrides.scheduleNoticeDelivery ?? vi.fn(),
+      reconcileRun: overrides.reconcileRun ?? vi.fn(() => Effect.void),
+      scheduleNoticeDelivery: overrides.scheduleNoticeDelivery ?? vi.fn(() => Effect.void),
     },
     projections: {
-      readSessionActivity: vi.fn(async () => ({
+      readSessionActivity: vi.fn(() => Effect.succeed({
         sessionId: "session-1",
         revision: 2,
         tasks: [],

@@ -19,19 +19,19 @@ For Agent-heavy authoring, calibrate logical work before topology; broad or unce
 
 ### **READ first**
 
-- **Authoring** Read `references/authoring.md` completely;
+- **Authoring** Read `references/authoring.md`;
+- **Bind an agent:** Read `references/acp-agents.md` before selecting Presets or concrete Agent backends.
 - **Run or observe:** Read `references/cli-operations.md` for admission, inspection, artifacts, ordinary interaction, and stop controls;
-- **Recover or intervene:** Read `references/runtime-recovery.md` for failed/timed-out/stale runs, exceptional mid-run update, retry/fork decisions, or deep diagnostics.
-- **Library/catalog reuse:** Only user-written `/wf:<hint>` or `/workflow:<hint>` requests enable library/catalog lookup or reuse. Unmarked, read only user-named workflows to explain/modify/diagnose. For reuse read README first, implementation only to modify/diagnose; else follow **Author or adapt**.
-- **Choose an agent:** Read `references/acpx-agents.md` when Agent availability matters.
+- **Library/catalog reuse:** Enable only for user-written `/wf:<hint>` or `/workflow:<hint>`. Read the README first; read implementation only to modify or diagnose. Without a marker, read only user-named workflows.
 
 ### **DO NOT read by default**
 
-- **Advanced authoring:** Read `references/advanced-authoring.md` only when the requirement needs Agent session reuse, reusable or prebuilt Tasks, third-party package imports, artifacts, Task process controls, or cooperative Task cancellation.
+- **Recover or intervene:** Read `references/runtime-recovery.md` for failed/timed-out/stale runs, Retry, Steer, Fork decisions, or deep diagnostics.
+- **Advanced authoring:** Read `references/advanced-authoring.md` only for Agent session reuse, reusable/prebuilt Tasks, imports, artifacts, Task process controls, or cooperative cancellation.
 - **Signal authoring:** Read `references/signal-authoring.md` only for parallel Signal waits, payload validation, timeout behavior, or duration syntax.
-- **Advanced CLI operations:** Read `references/advanced-cli-operations.md` only when the requirement needs Forensics, inspection candidate-selection/follow mechanics, detailed runtime-control mechanics, catalogs, import, static visualization, WebUI, bundled-skill management, run deletion, version lookup, or structured CLI automation.
-- **Review Agent records:** Read `references/agent-records.md` only for settled turn artifacts or the run-local acpx session projection.
-- **Configure hooks:** Read `references/hooks-json.md`.
+- **Advanced CLI operations:** Read `references/advanced-cli-operations.md` only for Forensics, detailed controls, catalogs/import, visualization, WebUI, Skill management, deletion, or version lookup.
+- **Review Agent records:** Read `references/agent-records.md` only for settled turn artifacts or the run-local ACP session projection.
+- **Configure Acpus:** Read `references/configuration.md` for named Agents, Presets, and Hooks.
 
 ### **Explain concepts:**
 Search all available documentation under `references/` to explain concepts. Choose the most relevant reference(s) for each topic.

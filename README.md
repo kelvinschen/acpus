@@ -210,11 +210,15 @@ acpus runs inspect <run-id> --follow
 acpus runs pause <run-id>
 acpus runs resume <run-id>
 acpus runs retry <run-id> --target <node-or-@ref>
+acpus runs steer <run-id> --target <active-agent-or-@ref> --instruction '<update>'
 acpus runs signal <run-id> --target <signal-or-@ref> --payload '{"approved":true}'
 acpus runs fork <run-id> --workflow workflow.ts
 ```
 
-`retry` 重试当前 Run 中失败的部分。
+`retry` 可以重试失败或超时的 Task、Agent 和 frame。local Agent Retry 会先清理并放弃受影响
+的 Session generation，再以 authored prompt 创建下一代；若范围碰到显式共享 Session，
+Runtime 会拒绝并给出对应的 `fork --target` 命令。`steer` 采用 Interrupt & Continue：先
+fence 并 drain 当前 Turn，再在同一 Session 的 replacement Turn 中使用新指令。
 `fork` 创建新 Run。
 新 Run 只会复用与新 Workflow 兼容、且依赖未变化的已完成工作。
 
@@ -227,66 +231,17 @@ acpus runs fork <run-id> --workflow workflow.ts
 
 Hook 命令失败或超时不会改变 Workflow 的状态和输出。
 
-项目级 Hook 写在 `.acpus/hooks.json`，对所有项目生效的 Hook 写在 `~/.acpus/hooks.json`。下面的配置会在 Run 等待输入时执行项目中的通知脚本：
-
-```json
-{
-  "run.awaiting": [
-    {
-      "id": "notify-me",
-      "command": "./scripts/notify-acpus.sh",
-      "timeout": "10s"
-    }
-  ]
-}
-```
-
-命令会在 Workflow 的工作目录中运行，并从标准输入收到本次事件的 JSON, Hook 事件的传参包含 Agent Prompt、Task 输入和输出等。
-
-保存后检查配置：
-
-```sh
-acpus hooks validate
-acpus hooks list
-```
-
-Acpus 启动时读取 Hook 配置，修改后的配置会在下次启动时生效。完整的事件列表、筛选方式和输入格式见 [Runtime Hooks 配置](packages/cli/skills/acpus/references/hooks-json.md)。
+Acpus 通过统一配置管理 Hook。文件位置、完整结构、事件、筛选、验证命令、输入格式和加载时机见 [Acpus 配置](packages/cli/skills/acpus/references/configuration.md#runtime-hooks)。
 
 你也可以让你的 Agent 来配置 Hook。
 
 ## 配置 Agent
 
-Acpus 使用锁定版本的 `acpx` 来解析具名 Agent。
-每次启动具名 Agent Attempt 之前，Acpus 会读取两处配置：
+Acpus 通过 `@acpus/acp` 使用稳定的 ACP v1 会话接口。具名 Agent、Preset、项目/全局作用域、解析优先级和加载时机统一见 [Acpus 配置](packages/cli/skills/acpus/references/configuration.md)。显式 `{ command: "..." }` 会绕过具名解析。
 
-- 全局配置：`~/.acpx/config.json`
-- 项目配置：`.acpxrc.json`
-
-Acpus 使用当前 Attempt 的工作目录和环境来解析最终的 `agents` 映射。
-
-```json
-{
-  "agents": {
-    "my-agent": { "argv": ["node", "./scripts/agent-acp-bridge.mjs"] }
-  }
-}
-```
-
-在 Workflow 中使用 `{ use: "my-agent" }` 引用该名称。
-项目配置覆盖全局配置。
-已配置的名称可以覆盖内置 Agent。
-显式使用 `{ command: "..." }` 会绕过 Acpx 配置。
-
-更多配置方式见锁定版本 Acpx 的
-[`agents` map](https://github.com/openclaw/acpx/blob/v0.13.0/docs/config.md#the-agents-map)
-和 [config-defined agents](https://github.com/openclaw/acpx/blob/v0.13.0/docs/custom-agents.md#3-config-defined-agents)。
-
-Acpus 只从 Acpx 读取具名 Agent 的启动方式。
-它不会应用 Acpx 的 `mcpServers`、`auth`、权限默认值、`defaultAgent`、TTL、timeout 或 format。
-
-Agent 登录态、服务商环境变量和 `ACPX_AUTH_*` 变量会从 Agent 环境继承。
-Acpx 会先验证完整配置。
-任一字段非法时，具名 Agent Attempt 可能无法启动。
+Workflow Agent profile 还可声明 `model` 和字符串到字符串的 `config` 选项，例如
+`{ use: "my-agent", model: "model-id", config: { reasoning_effort: "high" } }`。
+Acpus 将它们作为 ACP 会话的期望 model 和 options 应用，并在恢复会话时重放。
 
 ## Skill 安装的补充说明
 
@@ -353,7 +308,8 @@ Acpus 0.5 使用 YAML Workflow Spec，并采用不同的节点模型和 CLI。
 - [CLI Spec](specs/cli-spec.md)
 - [WebUI Spec](specs/webui-spec.md)
 
-当前行为以 `specs/` 为准。
+当前实现机制以代码、导出类型和可执行帮助为准；跨实现保持的稳定产品合同见
+`specs/`。
 未来工作放在 `docs/roadmap/`。
 旧版本保留在 Git Tag 历史中。
 

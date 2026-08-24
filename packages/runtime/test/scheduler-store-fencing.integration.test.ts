@@ -1,17 +1,24 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
+import { defineWorkflow } from "@acpus/core";
+import { sha256Digest } from "@acpus/core/content-identity";
+import { agentSessionIdForScope, agentSessionScopeDigest } from "../src/execution/agent-session.js";
+import type { AgentSessionCheckpointValue } from "../src/execution/agent-operation-plan.js";
 import { readArtifact, resolveArtifact } from "../src/runs/use-cases.js";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
-import type { AttemptStartInput, SchedulerSnapshot, SchedulerStorePort, SchedulerStoreResult } from "../src/scheduler/store-port.js";
-import { throwSchedulerStoreResult } from "../src/scheduler/store-port.js";
+import type { AttemptStartInput, SchedulerSnapshot, SchedulerStorePort } from "../src/scheduler/store-port.js";
 import type { RegisterArtifactInput } from "../src/artifacts/types.js";
-import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter, type RuntimeStoreAdapter } from "../src/store/store.js";
 import { tryCaptureRunFile } from "../src/store/run-file.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { dbRun } from "./support/store-port-fixtures.js";
+import { captureSchedulerCall } from "./support/scheduler-store.js";
 
 describe("scheduler store attempt fences", () => {
   it("starts against one snapshot version and binds replay identity to that admission version", async () => {
@@ -35,22 +42,22 @@ describe("scheduler store attempt fences", () => {
         });
         expect(replayed.snapshot.version).toBe(started.snapshot.version);
 
-        const rebound = store.scheduler.tryStartAttempt({
+        const rebound = captureSchedulerCall(() => store.scheduler.tryStartAttempt({
           ...input,
           expectedVersion: started.snapshot.version,
-        });
-        expect(rebound.isErr()).toBe(true);
-        if (rebound.isOk()) throw new Error("expected admission-version rebound to fail");
-        expect(rebound.error).toMatchObject({
+        }));
+        expect(Result.isFailure(rebound)).toBe(true);
+        if (Result.isSuccess(rebound)) throw new Error("expected admission-version rebound to fail");
+        expect(rebound.failure).toMatchObject({
           type: "idempotency-conflict",
           idempotencyKey: input.idempotencyKey,
           runId: run.id,
         });
 
-        const stale = store.scheduler.tryStartAttempt(startInput(run.id, "second", claim.ownerEpoch, ready.version));
-        expect(stale.isErr()).toBe(true);
-        if (stale.isOk()) throw new Error("expected stale attempt start to fail");
-        expect(stale.error).toMatchObject({ type: "version-mismatch", expectedVersion: ready.version, actualVersion: started.snapshot.version });
+        const stale = captureSchedulerCall(() => store.scheduler.tryStartAttempt(startInput(run.id, "second", claim.ownerEpoch, ready.version)));
+        expect(Result.isFailure(stale)).toBe(true);
+        if (Result.isSuccess(stale)) throw new Error("expected stale attempt start to fail");
+        expect(stale.failure).toMatchObject({ type: "version-mismatch", expectedVersion: ready.version, actualVersion: started.snapshot.version });
         expect(unwrap(store.scheduler.tryLoadRunSnapshot(run.id)).projection.instances.second).toMatchObject({ status: "ready" });
       } finally {
         store.close();
@@ -68,21 +75,21 @@ describe("scheduler store attempt fences", () => {
         const input = startInput(run.id, "leaf", firstOwner.ownerEpoch, ready.version);
         const started = unwrap(store.scheduler.tryStartAttempt(input));
 
-        const secondIdentity = store.scheduler.tryStartAttempt({
+        const secondIdentity = captureSchedulerCall(() => store.scheduler.tryStartAttempt({
           ...input,
           expectedVersion: started.snapshot.version,
           idempotencyKey: `${input.idempotencyKey}:second`,
-        });
-        expect(secondIdentity.isErr()).toBe(true);
-        if (secondIdentity.isOk()) throw new Error("expected running instance start to fail");
-        expect(secondIdentity.error).toMatchObject({ type: "instance-not-ready", runId: run.id, nodeKey: "leaf", status: "running" });
+        }));
+        expect(Result.isFailure(secondIdentity)).toBe(true);
+        if (Result.isSuccess(secondIdentity)) throw new Error("expected running instance start to fail");
+        expect(secondIdentity.failure).toMatchObject({ type: "instance-not-ready", runId: run.id, nodeKey: "leaf", status: "running" });
 
         expect(store.scheduler.releaseRun(firstOwner)).toBe(true);
         expect(store.scheduler.claimRun(run.id, "owner-b", 60_000)).toMatchObject({ ownerEpoch: firstOwner.ownerEpoch + 1 });
-        const staleReplay = store.scheduler.tryStartAttempt(input);
-        expect(staleReplay.isErr()).toBe(true);
-        if (staleReplay.isOk()) throw new Error("expected stale owner replay to fail");
-        expect(staleReplay.error).toMatchObject({ type: "owner-epoch-inactive", runId: run.id, ownerEpoch: firstOwner.ownerEpoch });
+        const staleReplay = captureSchedulerCall(() => store.scheduler.tryStartAttempt(input));
+        expect(Result.isFailure(staleReplay)).toBe(true);
+        if (Result.isSuccess(staleReplay)) throw new Error("expected stale owner replay to fail");
+        expect(staleReplay.failure).toMatchObject({ type: "owner-epoch-inactive", runId: run.id, ownerEpoch: firstOwner.ownerEpoch });
       } finally {
         store.close();
       }
@@ -108,11 +115,11 @@ describe("scheduler store attempt fences", () => {
 
         expireRunLease(workspace, run.id);
         expect(store.scheduler.claimRun(run.id, "owner-b", 60_000)).toMatchObject({ ownerEpoch: firstOwner.ownerEpoch + 1 });
-        const replay = store.scheduler.tryCommitAttemptResult(commit);
+        const replay = captureSchedulerCall(() => store.scheduler.tryCommitAttemptResult(commit));
 
-        expect(replay.isErr()).toBe(true);
-        if (replay.isOk()) throw new Error("expected stale result replay to fail");
-        expect(replay.error).toMatchObject({ type: "owner-epoch-inactive", runId: run.id, ownerEpoch: firstOwner.ownerEpoch });
+        expect(Result.isFailure(replay)).toBe(true);
+        if (Result.isSuccess(replay)) throw new Error("expected stale result replay to fail");
+        expect(replay.failure).toMatchObject({ type: "owner-epoch-inactive", runId: run.id, ownerEpoch: firstOwner.ownerEpoch });
       } finally {
         store.close();
       }
@@ -155,29 +162,29 @@ describe("scheduler store attempt fences", () => {
         const currentOwner = store.scheduler.claimRun(run.id, "owner-b", 60_000)!;
         const beforeRecovery = unwrap(store.scheduler.tryLoadRunSnapshot(run.id));
 
-        const staleVersion = store.scheduler.tryMarkExpiredOwnerAttemptsSuperseded({
+        const staleVersion = captureSchedulerCall(() => store.scheduler.tryMarkExpiredOwnerAttemptsSuperseded({
           runId: run.id,
           currentOwnerEpoch: currentOwner.ownerEpoch,
           expiredOwnerEpoch: expiredOwner.ownerEpoch,
           expectedVersion: beforeRecovery.version - 1,
-        });
-        expect(staleVersion.isErr()).toBe(true);
-        if (staleVersion.isOk()) throw new Error("expected recovery version fence to fail");
-        expect(staleVersion.error).toMatchObject({
+        }));
+        expect(Result.isFailure(staleVersion)).toBe(true);
+        if (Result.isSuccess(staleVersion)) throw new Error("expected recovery version fence to fail");
+        expect(staleVersion.failure).toMatchObject({
           type: "version-mismatch",
           expectedVersion: beforeRecovery.version - 1,
           actualVersion: beforeRecovery.version,
         });
 
-        const wrongOwner = store.scheduler.tryMarkExpiredOwnerAttemptsSuperseded({
+        const wrongOwner = captureSchedulerCall(() => store.scheduler.tryMarkExpiredOwnerAttemptsSuperseded({
           runId: run.id,
           currentOwnerEpoch: currentOwner.ownerEpoch + 1,
           expiredOwnerEpoch: expiredOwner.ownerEpoch,
           expectedVersion: beforeRecovery.version,
-        });
-        expect(wrongOwner.isErr()).toBe(true);
-        if (wrongOwner.isOk()) throw new Error("expected current owner fence to fail");
-        expect(wrongOwner.error).toMatchObject({ type: "owner-epoch-inactive", ownerEpoch: currentOwner.ownerEpoch + 1 });
+        }));
+        expect(Result.isFailure(wrongOwner)).toBe(true);
+        if (Result.isSuccess(wrongOwner)) throw new Error("expected current owner fence to fail");
+        expect(wrongOwner.failure).toMatchObject({ type: "owner-epoch-inactive", ownerEpoch: currentOwner.ownerEpoch + 1 });
 
         const recovered = unwrap(store.scheduler.tryMarkExpiredOwnerAttemptsSuperseded({
           runId: run.id,
@@ -207,8 +214,8 @@ describe("scheduler store attempt fences", () => {
 
         await materializeArtifact(store, first);
         await materializeArtifact(store, second);
-        expect(store.registerArtifact(first).isOk()).toBe(true);
-        expect(store.registerArtifact(second).isOk()).toBe(true);
+        store.registerArtifact(first);
+        store.registerArtifact(second);
         unwrap(store.scheduler.tryCommitAttemptResult({
           runId: run.id,
           attemptId: attempt.attemptId,
@@ -218,12 +225,315 @@ describe("scheduler store attempt fences", () => {
         }));
 
         const late = artifactInput(store, run.id, attempt.attemptId, claim.ownerEpoch, "artifact_late");
-        const rejected = store.registerArtifact(late);
-        expect(rejected.isErr()).toBe(true);
-        if (rejected.isOk()) throw new Error("expected terminal artifact registration to fail");
-        expect(rejected.error).toMatchObject({ type: "terminal-attempt", attemptId: attempt.attemptId, status: "completed" });
+        const rejected = captureSchedulerCall(() => store.registerArtifact(late));
+        expect(Result.isFailure(rejected)).toBe(true);
+        if (Result.isSuccess(rejected)) throw new Error("expected terminal artifact registration to fail");
+        expect(rejected.failure).toMatchObject({ type: "terminal-attempt", attemptId: attempt.attemptId, status: "completed" });
         expect(store.listArtifacts(run.id).map(artifact => artifact.id)).toEqual([first.id, second.id]);
         expect(store.listArtifacts(run.id, 1).map(artifact => artifact.id)).toEqual([first.id]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("fences execution metadata by exact started Attempt and active owner lease", async () => {
+    await withRuntimeWorkspace("scheduler-store-metadata-fence", async workspace => {
+      const store = await openedStore(workspace);
+      try {
+        const run = await admittedRun(store, workspace);
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        const ready = appendReadyInstances(store.scheduler, run.id, claim.ownerEpoch, ["leaf"]);
+        const attempt = unwrap(store.scheduler.tryStartAttempt(startInput(run.id, "leaf", claim.ownerEpoch, ready.version)));
+        const input = {
+          runId: run.id,
+          attemptId: attempt.attemptId,
+          ownerEpoch: claim.ownerEpoch,
+          kind: "task_attempt",
+          metadata: { accepted: true },
+        } as const;
+
+        store.writeExecutionMetadata(input);
+
+        const wrongRun = captureSchedulerCall(() => store.writeExecutionMetadata({ ...input, runId: `${run.id}-other` }));
+        expect(Result.isFailure(wrongRun) && wrongRun.failure).toMatchObject({
+          type: "attempt-not-found",
+          attemptId: attempt.attemptId,
+        });
+
+        const staleOwner = captureSchedulerCall(() => store.writeExecutionMetadata({ ...input, ownerEpoch: claim.ownerEpoch + 1 }));
+        expect(Result.isFailure(staleOwner) && staleOwner.failure).toMatchObject({
+          type: "owner-epoch-stale",
+          runId: run.id,
+          attemptId: attempt.attemptId,
+          ownerEpoch: claim.ownerEpoch + 1,
+        });
+
+        unwrap(store.scheduler.tryCommitAttemptResult({
+          runId: run.id,
+          attemptId: attempt.attemptId,
+          ownerEpoch: claim.ownerEpoch,
+          result: { status: "completed", output: { ok: true } },
+          idempotencyKey: "metadata-fence:complete",
+        }));
+        const terminal = captureSchedulerCall(() => store.writeExecutionMetadata(input));
+        expect(Result.isFailure(terminal) && terminal.failure).toMatchObject({
+          type: "terminal-attempt",
+          attemptId: attempt.attemptId,
+          status: "completed",
+        });
+
+        expireRunLease(workspace, run.id);
+        const expired = captureSchedulerCall(() => store.writeExecutionMetadata(input));
+        expect(Result.isFailure(expired) && expired.failure).toMatchObject({
+          type: "owner-epoch-inactive",
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+        });
+
+        expect(store.getExecutionMetadata(run.id)).toEqual([
+          expect.objectContaining({ attemptId: attempt.attemptId, kind: "task_attempt", metadata: { accepted: true } }),
+        ]);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("atomically binds an Agent Attempt and commits invocation plus dispatch intent", async () => {
+    await withRuntimeWorkspace("scheduler-store-agent-session-dispatch", async workspace => {
+      const store = await openedStore(workspace);
+      try {
+        const run = await admittedAgentRun(store, workspace);
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        const ready = appendReadyInstances(store.scheduler, run.id, claim.ownerEpoch, ["review"]);
+        const attempt = unwrap(store.scheduler.tryStartAttempt(startInput(run.id, "review", claim.ownerEpoch, ready.version)));
+        const scopeDigest = agentSessionScopeDigest(run.id, "node", "review");
+        const agentSessionId = agentSessionIdForScope(scopeDigest, 1);
+        const inputDigest = sha256Digest("prompt:authored");
+        const binding = {
+          runId: run.id,
+          attemptId: attempt.attemptId,
+          ownerEpoch: claim.ownerEpoch,
+          agentSessionId,
+          scopeDigest,
+          generation: 1,
+          explicitShared: false,
+          operation: "start" as const,
+          sessionOpenMode: "new_or_empty" as const,
+          promptOrigin: "authored" as const,
+          inputDigest,
+        };
+
+        expect(Result.getOrThrow(Result.flip(captureSchedulerCall(() => store.scheduler.tryBindAgentAttemptSession({
+          ...binding,
+          agentSessionId: agentSessionIdForScope(scopeDigest, 2),
+        }))))).toMatchObject({ type: "agent-session-binding-conflict" });
+        expect(Result.getOrThrow(Result.flip(captureSchedulerCall(() => store.scheduler.tryBindAgentAttemptSession({
+          ...binding,
+          promptOrigin: "steering",
+        }))))).toMatchObject({ type: "agent-session-binding-conflict" });
+        expect(unwrap(store.scheduler.tryBindAgentAttemptSession(binding))).toMatchObject({
+          attemptId: attempt.attemptId,
+          agentSessionId,
+          operation: "start",
+        });
+        expect(unwrap(store.scheduler.tryBindAgentAttemptSession(binding))).toMatchObject({ attemptId: attempt.attemptId });
+        expect(Result.getOrThrow(Result.flip(captureSchedulerCall(() => store.scheduler.tryBindAgentAttemptSession({ ...binding, inputDigest: sha256Digest("different") })))))
+          .toMatchObject({ type: "agent-session-binding-conflict" });
+
+        const notDispatched = {
+          checkpoint: "not_dispatched" as const,
+          attemptId: attempt.attemptId,
+          promptOrigin: "authored" as const,
+          inputDigest,
+        };
+        const dispatchInput = {
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          agentSessionId,
+          attemptId: attempt.attemptId,
+          turnId: "turn-1",
+          sessionLeaseId: "lease-1",
+          expected: notDispatched,
+          invocationMetadata: { promptOrigin: "authored", inputDigest },
+        } as const;
+        expect(Result.getOrThrow(Result.flip(captureSchedulerCall(() => store.scheduler.tryCommitAgentTurnDispatch(dispatchInput)))))
+          .toMatchObject({ type: "agent-session-checkpoint-conflict" });
+        expect(store.getExecutionMetadata(run.id)).toEqual([]);
+        expect(unwrap(store.scheduler.tryRecordAgentSessionReady({
+          runId: run.id,
+          attemptId: attempt.attemptId,
+          ownerEpoch: claim.ownerEpoch,
+          agentSessionId,
+          reportedVersion: "fixture-agent/1.2.3",
+          now: new Date("2026-08-20T00:00:00.000Z"),
+        }))).toBeUndefined();
+        expect(store.scheduler.readAgentControlInspection(run.id).agentSessions)
+          .toContainEqual(expect.objectContaining({
+            agentSessionId,
+            reportedVersion: "fixture-agent/1.2.3",
+          }));
+        expect(unwrap(store.scheduler.tryRecordAgentSessionReady({
+          runId: run.id,
+          attemptId: attempt.attemptId,
+          ownerEpoch: claim.ownerEpoch,
+          agentSessionId,
+          reportedVersion: "fixture-agent/1.2.4",
+          now: new Date("2026-08-20T00:00:01.000Z"),
+        }))).toBeUndefined();
+        expect(store.scheduler.readAgentControlInspection(run.id).agentSessions)
+          .toContainEqual(expect.objectContaining({ reportedVersion: "fixture-agent/1.2.4" }));
+        const readiness = new DatabaseSync(runtimeDatabasePath(workspace), { readOnly: true });
+        expect(readiness.prepare("SELECT ready_at, reported_version FROM agent_sessions WHERE agent_session_id = ?")
+          .get(agentSessionId)).toEqual({
+            ready_at: "2026-08-20T00:00:00.000Z",
+            reported_version: "fixture-agent/1.2.4",
+          });
+        readiness.close();
+        expect(unwrap(store.scheduler.tryCommitAgentTurnDispatch({
+          ...dispatchInput,
+        }))).toMatchObject({ checkpoint: "dispatch_intent", turnId: "turn-1" });
+        expect(store.getExecutionMetadata(run.id)).toEqual([
+          expect.objectContaining({
+            attemptId: attempt.attemptId,
+            kind: "agent_invocation",
+            metadata: { promptOrigin: "authored", inputDigest },
+          }),
+        ]);
+        expect(Result.getOrThrow(Result.flip(captureSchedulerCall(() => store.scheduler.tryCommitAgentTurnDispatch({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          agentSessionId,
+          attemptId: attempt.attemptId,
+          turnId: "turn-2",
+          sessionLeaseId: "lease-2",
+          expected: notDispatched,
+          invocationMetadata: { invalid: true },
+        }))))).toMatchObject({ type: "agent-session-checkpoint-conflict" });
+        expect(store.getExecutionMetadata(run.id)).toHaveLength(1);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("enforces the closed checkpoint graph and exact post-fence settlement tuple", async () => {
+    await withRuntimeWorkspace("scheduler-store-agent-session-checkpoint", async workspace => {
+      const store = await openedStore(workspace);
+      try {
+        const run = await admittedAgentRun(store, workspace);
+        const claim = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
+        const ready = appendReadyInstances(store.scheduler, run.id, claim.ownerEpoch, ["review"]);
+        const attempt = unwrap(store.scheduler.tryStartAttempt(startInput(run.id, "review", claim.ownerEpoch, ready.version)));
+        const scopeDigest = agentSessionScopeDigest(run.id, "node", "review");
+        const agentSessionId = agentSessionIdForScope(scopeDigest, 1);
+        const inputDigest = sha256Digest("prompt:checkpoint");
+        unwrap(store.scheduler.tryBindAgentAttemptSession({
+          runId: run.id,
+          attemptId: attempt.attemptId,
+          ownerEpoch: claim.ownerEpoch,
+          agentSessionId,
+          scopeDigest,
+          generation: 1,
+          explicitShared: false,
+          operation: "start",
+          sessionOpenMode: "new_or_empty",
+          promptOrigin: "authored",
+          inputDigest,
+        }));
+        unwrap(store.scheduler.tryRecordAgentSessionReady({
+          runId: run.id,
+          attemptId: attempt.attemptId,
+          ownerEpoch: claim.ownerEpoch,
+          agentSessionId,
+        }));
+        const intent = unwrap(store.scheduler.tryCommitAgentTurnDispatch({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          agentSessionId,
+          attemptId: attempt.attemptId,
+          turnId: "turn-1",
+          sessionLeaseId: "lease-1",
+          expected: { checkpoint: "not_dispatched", attemptId: attempt.attemptId, promptOrigin: "authored", inputDigest },
+          invocationMetadata: { ok: true },
+        })) as Exclude<AgentSessionCheckpointValue, { checkpoint: "not_dispatched" }>;
+        const owned = { ...intent, checkpoint: "owned_in_flight" as const };
+        expect(unwrap(store.scheduler.tryAdvanceAgentSessionCheckpoint({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          agentSessionId,
+          attemptId: attempt.attemptId,
+          expected: intent,
+          next: owned,
+          cause: "local_call_pending",
+        }))).toEqual(owned);
+        const wrongCause = captureSchedulerCall(() => store.scheduler.tryAdvanceAgentSessionCheckpoint({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          agentSessionId,
+          attemptId: attempt.attemptId,
+          expected: owned,
+          next: { ...owned, checkpoint: "terminal_observed" },
+          cause: "provider_activity",
+        }));
+        expect(Result.getOrThrow(Result.flip(wrongCause))).toMatchObject({ type: "agent-session-checkpoint-conflict" });
+        const provider = { ...owned, checkpoint: "provider_observed" as const };
+        unwrap(store.scheduler.tryAdvanceAgentSessionCheckpoint({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          agentSessionId,
+          attemptId: attempt.attemptId,
+          expected: owned,
+          next: provider,
+          cause: "provider_activity",
+        }));
+        expect(unwrap(store.scheduler.tryAdvanceAgentSessionCheckpoint({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          agentSessionId,
+          attemptId: attempt.attemptId,
+          expected: intent,
+          next: owned,
+          cause: "local_call_pending",
+        }))).toEqual(provider);
+
+        const current = unwrap(store.scheduler.tryLoadRunSnapshot(run.id));
+        unwrap(store.scheduler.tryAppendSchedulerEvents({
+          runId: run.id,
+          ownerEpoch: claim.ownerEpoch,
+          expectedVersion: current.version,
+          idempotencyKey: "agent-session:supersede",
+          events: [{ type: "attempt.superseded", payload: { attemptId: attempt.attemptId } }],
+        }));
+        dbRun(workspace, `
+          INSERT INTO runtime_authority (workspace_realpath, epoch, updated_at)
+          VALUES (?, 7, ?)
+        `, workspace, new Date().toISOString());
+        expect(Result.getOrThrow(Result.flip(captureSchedulerCall(() => store.scheduler.trySettleFencedAgentSessionCheckpoint({
+          runId: run.id,
+          runtimeOwnerEpoch: 7,
+          agentSessionId,
+          attemptId: attempt.attemptId,
+          turnId: "wrong-turn",
+          sessionLeaseId: "lease-1",
+          expected: "provider_observed",
+          next: "terminal_observed",
+          cause: "provider_terminal",
+          observedAt: new Date(),
+        }))))).toMatchObject({ type: "agent-session-settlement-authority-mismatch" });
+        expect(unwrap(store.scheduler.trySettleFencedAgentSessionCheckpoint({
+          runId: run.id,
+          runtimeOwnerEpoch: 7,
+          agentSessionId,
+          attemptId: attempt.attemptId,
+          turnId: "turn-1",
+          sessionLeaseId: "lease-1",
+          expected: "provider_observed",
+          next: "terminal_observed",
+          cause: "provider_terminal",
+          observedAt: new Date(),
+        }))).toMatchObject({ checkpoint: "terminal_observed" });
       } finally {
         store.close();
       }
@@ -247,16 +557,16 @@ describe("scheduler store attempt fences", () => {
           events: [{ type: "attempt.superseded", payload: { attemptId: attempt.attemptId, cancelReason: "operator_steered" } }],
         }));
 
-        const late = store.registerArtifact(artifactInput(
+        const late = captureSchedulerCall(() => store.registerArtifact(artifactInput(
           store,
           run.id,
           attempt.attemptId,
           claim.ownerEpoch,
           "artifact_late",
-        ));
-        expect(late.isErr()).toBe(true);
-        if (late.isOk()) throw new Error("expected superseded artifact registration to fail");
-        expect(late.error).toMatchObject({ type: "terminal-attempt", attemptId: attempt.attemptId, status: "superseded" });
+        )));
+        expect(Result.isFailure(late)).toBe(true);
+        if (Result.isSuccess(late)) throw new Error("expected superseded artifact registration to fail");
+        expect(late.failure).toMatchObject({ type: "terminal-attempt", attemptId: attempt.attemptId, status: "superseded" });
         expect(store.listArtifacts(run.id)).toEqual([]);
       } finally {
         store.close();
@@ -288,11 +598,11 @@ describe("scheduler store attempt fences", () => {
   it("registers and publicly reads only the exact regular file with valid metadata", async () => {
     await withRuntimeWorkspace("scheduler-store-artifact-file-verification", async workspace => {
       const absentShard = resolveRuntimeLayout(workspace).workspaceRoot;
-      await expect(resolveArtifact(workspace, "artifact://run_missing/artifact_missing")).resolves.toMatchObject({
-        error: { type: "artifact-not-found", runId: "run_missing", artifactId: "artifact_missing" },
+      await expect(Effect.runPromise(Effect.result(resolveArtifact(workspace, "artifact://run_missing/artifact_missing")))).resolves.toMatchObject({
+        failure: { type: "artifact-not-found", runId: "run_missing", artifactId: "artifact_missing" },
       });
       await expect(lstat(absentShard)).rejects.toMatchObject({ code: "ENOENT" });
-      expect((await readArtifact(workspace, "run_missing", "artifact_missing"))._unsafeUnwrap()).toBeUndefined();
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(readArtifact(workspace, "run_missing", "artifact_missing")))))).toBeUndefined();
       const store = await openedStore(workspace);
       try {
         const run = await admittedRun(store, workspace);
@@ -311,42 +621,42 @@ describe("scheduler store attempt fences", () => {
         expect(store.listArtifacts(run.id)).toEqual([]);
         await rm(path, { recursive: true });
         await materializeArtifact(store, artifact);
-        expect(store.registerArtifact(artifact).isOk()).toBe(true);
+        store.registerArtifact(artifact);
         const expected = store.getArtifact(run.id, artifact.id);
         if (!expected) throw new Error("expected registered artifact");
 
-        expect((await readArtifact(workspace, run.id, artifact.id))._unsafeUnwrap()).toEqual({
+        expect(Result.getOrThrow((await Effect.runPromise(Effect.result(readArtifact(workspace, run.id, artifact.id)))))).toEqual({
           artifact: expected,
           bytes: Buffer.from("x"),
         });
-        await expect(resolveArtifact(workspace, `artifact://${run.id}/${artifact.id}`)).resolves.toMatchObject({
-          value: {
+        await expect(Effect.runPromise(Effect.result(resolveArtifact(workspace, `artifact://${run.id}/${artifact.id}`)))).resolves.toMatchObject({
+          success: {
             ...expected,
             uri: `artifact://${run.id}/${artifact.id}`,
           },
         });
-        await expect(resolveArtifact(workspace, "artifact://missing")).resolves.toMatchObject({
-          error: { type: "invalid-artifact-ref" },
+        await expect(Effect.runPromise(Effect.result(resolveArtifact(workspace, "artifact://missing")))).resolves.toMatchObject({
+          failure: { type: "invalid-artifact-ref" },
         });
-        await expect(resolveArtifact(workspace, `artifact://${run.id}/artifact_missing`)).resolves.toMatchObject({
-          error: { type: "artifact-not-found", runId: run.id, artifactId: "artifact_missing" },
+        await expect(Effect.runPromise(Effect.result(resolveArtifact(workspace, `artifact://${run.id}/artifact_missing`)))).resolves.toMatchObject({
+          failure: { type: "artifact-not-found", runId: run.id, artifactId: "artifact_missing" },
         });
-        expect((await readArtifact(workspace, run.id, "artifact_missing"))._unsafeUnwrap()).toBeUndefined();
-        expect((await readArtifact(workspace, "run_missing", artifact.id))._unsafeUnwrap()).toBeUndefined();
+        expect(Result.getOrThrow((await Effect.runPromise(Effect.result(readArtifact(workspace, run.id, "artifact_missing")))))).toBeUndefined();
+        expect(Result.getOrThrow((await Effect.runPromise(Effect.result(readArtifact(workspace, "run_missing", artifact.id)))))).toBeUndefined();
         await writeFile(path, "y");
-        await expect(resolveArtifact(workspace, `artifact://${run.id}/${artifact.id}`)).resolves.toMatchObject({
-          value: {
+        await expect(Effect.runPromise(Effect.result(resolveArtifact(workspace, `artifact://${run.id}/${artifact.id}`)))).resolves.toMatchObject({
+          success: {
             ...expected,
             uri: `artifact://${run.id}/${artifact.id}`,
           },
         });
-        expect((await readArtifact(workspace, run.id, artifact.id))._unsafeUnwrapErr()).toMatchObject({
+        expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(readArtifact(workspace, run.id, artifact.id))))))).toMatchObject({
           type: "runtime-store-unavailable",
           message: expect.stringContaining("size/digest verification"),
         });
         await rm(path);
-        await expect(resolveArtifact(workspace, `artifact://${run.id}/${artifact.id}`)).resolves.toMatchObject({
-          error: { type: "artifact-path-invalid", runId: run.id, artifactId: artifact.id },
+        await expect(Effect.runPromise(Effect.result(resolveArtifact(workspace, `artifact://${run.id}/${artifact.id}`)))).resolves.toMatchObject({
+          failure: { type: "artifact-path-invalid", runId: run.id, artifactId: artifact.id },
         });
       } finally {
         store.close();
@@ -440,7 +750,7 @@ describe("scheduler store attempt fences", () => {
         };
 
         await materializeArtifact(store, acceptedArtifact);
-        expect(store.registerArtifact(acceptedArtifact).isOk()).toBe(true);
+        store.registerArtifact(acceptedArtifact);
         store.writeNodeProgress(currentProgress);
         const progressVersion = store.getRun(run.id)!.progressVersion;
 
@@ -454,10 +764,10 @@ describe("scheduler store attempt fences", () => {
           expiredOwner.ownerEpoch,
           "artifact_stale",
         );
-        const rejected = store.registerArtifact(staleArtifact);
-        expect(rejected.isErr()).toBe(true);
-        if (rejected.isOk()) throw new Error("expected expired-owner artifact registration to fail");
-        expect(rejected.error).toMatchObject({
+        const rejected = captureSchedulerCall(() => store.registerArtifact(staleArtifact));
+        expect(Result.isFailure(rejected)).toBe(true);
+        if (Result.isSuccess(rejected)) throw new Error("expected expired-owner artifact registration to fail");
+        expect(rejected.failure).toMatchObject({
           type: "owner-epoch-inactive",
           runId: run.id,
           ownerEpoch: expiredOwner.ownerEpoch,
@@ -477,13 +787,25 @@ describe("scheduler store attempt fences", () => {
   });
 });
 
-async function openedStore(workspace: string): Promise<RuntimeStore> {
-  return openRuntimeStore(workspace);
+async function openedStore(workspace: string): Promise<RuntimeStoreAdapter> {
+  return openRuntimeStoreAdapter(workspace);
 }
 
-async function admittedRun(store: RuntimeStore, workspace: string) {
+async function admittedRun(store: RuntimeStoreAdapter, workspace: string) {
   const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
   return admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
+}
+
+async function admittedAgentRun(store: RuntimeStoreAdapter, workspace: string) {
+  const workflow = defineWorkflow({
+    name: "scheduler-store-fencing-agent",
+    agents: { reviewer: { use: "codex" } },
+  }).build(({ agents, step }) => {
+    step("review").agent({ agent: agents.reviewer, prompt: "Review." });
+    return {};
+  });
+  const prepared = await prepareSyntheticWorkflow(workspace, workflow);
+  return admitRunForTest(store, { prepared, input: {}, cwd: workspace });
 }
 
 function appendReadyInstances(store: SchedulerStorePort, runId: string, ownerEpoch: number, nodeKeys: string[]): SchedulerSnapshot {
@@ -538,7 +860,7 @@ function startInput(runId: string, nodeKey: string, ownerEpoch: number, expected
 }
 
 function artifactInput(
-  store: RuntimeStore,
+  store: RuntimeStoreAdapter,
   runId: string,
   attemptId: string,
   ownerEpoch: number,
@@ -565,17 +887,17 @@ function artifactInput(
   };
 }
 
-async function materializeArtifact(store: RuntimeStore, artifact: RegisterArtifactInput): Promise<string> {
+async function materializeArtifact(store: RuntimeStoreAdapter, artifact: RegisterArtifactInput): Promise<string> {
   const runDir = store.getRunDir(artifact.runId);
   if (!runDir) throw new Error(`Run '${artifact.runId}' has no directory.`);
   const path = join(runDir, artifact.relativePath);
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, "x");
-  artifact.file = tryCaptureRunFile(
+  artifact.file = Result.getOrThrow(tryCaptureRunFile(
     store.getRunDirectoryToken(artifact.runId)!,
     path,
     `Artifact '${artifact.id}'`,
-  )._unsafeUnwrap();
+  ));
   return path;
 }
 
@@ -588,6 +910,6 @@ function expireRunLease(workspace: string, runId: string): void {
   }
 }
 
-function unwrap<T>(result: SchedulerStoreResult<T>): T {
-  return throwSchedulerStoreResult(result);
+function unwrap<Success>(value: Success): Success {
+  return value;
 }

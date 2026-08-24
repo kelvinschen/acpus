@@ -1,9 +1,16 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { DatabaseSync } from "node:sqlite";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
+import { it as effectIt } from "@effect/vitest";
 import { describe, expect, it } from "vitest";
-import { advanceRun, type NodeExecutor } from "../src/scheduler/advance.js";
-import { openRuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { advanceRun as advanceRunEffect, type NodeExecutor } from "../src/scheduler/advance.js";
+import type { AttemptCommitInput } from "../src/scheduler/store-port.js";
+import { advanceRun } from "./support/effect-scheduler.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
+import { prepareSyntheticWorkflow, runtimeDatabasePath, scopedRuntimeWorkspace, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { completed } from "./support/scheduler.js";
 
@@ -11,14 +18,12 @@ describe("durable scheduler advance with store", () => {
   it("resumes an interrupted race by committing winner and loser cancellation from projection", async () => {
     await withRuntimeWorkspace("scheduler-advance-store-race", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const calls: string[] = [];
-      const executor: NodeExecutor = {
-        execute: context => {
+      const executor = nodeExecutor(context => {
           calls.push(context.nodeKey);
-          return Promise.resolve(completed());
-        },
-      };
+          return completed();
+      });
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const setupOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -60,7 +65,7 @@ describe("durable scheduler advance with store", () => {
   it("resumes an interrupted quorum fanout by accepting durable completion order", async () => {
     await withRuntimeWorkspace("scheduler-advance-store-quorum", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const setupOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -88,7 +93,7 @@ describe("durable scheduler advance with store", () => {
           runId: run.id,
           ownerId: "owner-b",
           store: store.scheduler,
-          executor: { execute: () => Promise.resolve(completed()) },
+          executor: nodeExecutor(() => completed()),
         });
 
         const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
@@ -107,7 +112,7 @@ describe("durable scheduler advance with store", () => {
   it("updates direct group member lifecycle from real leaf completion", async () => {
     await withRuntimeWorkspace("scheduler-advance-store-member-lifecycle", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const calls: string[] = [];
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
@@ -130,12 +135,10 @@ describe("durable scheduler advance with store", () => {
           runId: run.id,
           ownerId: "owner-b",
           store: store.scheduler,
-          executor: {
-            execute: context => {
+          executor: nodeExecutor(context => {
               calls.push(context.nodeKey);
-              return Promise.resolve(completed({ ok: true }));
-            },
-          },
+              return completed({ ok: true });
+          }),
         });
 
         const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
@@ -151,7 +154,7 @@ describe("durable scheduler advance with store", () => {
   it("supersedes expired-owner attempts before a recovered owner advances", async () => {
     await withRuntimeWorkspace("scheduler-advance-store-recovery", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const calls: string[] = [];
       const oldAttemptStatusesAtExecution: string[] = [];
       let activeExecutors = 0;
@@ -183,8 +186,7 @@ describe("durable scheduler advance with store", () => {
           ownerId: "owner-b",
           store: store.scheduler,
           maxLeafConcurrency: 1,
-          executor: {
-            execute: async context => {
+          executor: nodeExecutor(async context => {
               calls.push(context.nodeKey);
               activeExecutors += 1;
               peakExecutors = Math.max(peakExecutors, activeExecutors);
@@ -197,8 +199,7 @@ describe("durable scheduler advance with store", () => {
               } finally {
                 activeExecutors -= 1;
               }
-            },
-          },
+          }),
         });
 
         const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
@@ -246,7 +247,7 @@ describe("durable scheduler advance with store", () => {
   it("times out expired old-owner attempts before superseding recovery", async () => {
     await withRuntimeWorkspace("scheduler-advance-store-recovery-timeout", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const calls: string[] = [];
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
@@ -275,13 +276,10 @@ describe("durable scheduler advance with store", () => {
           runId: run.id,
           ownerId: "owner-b",
           store: store.scheduler,
-          executor: {
-            execute: context => {
+          executor: nodeExecutor(context => {
               calls.push(context.nodeKey);
-              return Promise.resolve(completed());
-            },
-          },
-          now: () => new Date("2026-06-30T00:00:01.000Z"),
+              return completed();
+          }),
         });
 
         const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
@@ -297,7 +295,7 @@ describe("durable scheduler advance with store", () => {
   it("times out expired durable signal waits before returning awaiting", async () => {
     await withRuntimeWorkspace("scheduler-advance-store-signal-timeout", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         const owner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
@@ -318,8 +316,7 @@ describe("durable scheduler advance with store", () => {
           runId: run.id,
           ownerId: "owner-b",
           store: store.scheduler,
-          executor: { execute: () => Promise.resolve(completed()) },
-          now: () => new Date("2026-06-30T00:00:01.000Z"),
+          executor: nodeExecutor(() => completed()),
         });
 
         const projection = throwingSchedulerStore(store.scheduler).loadRunSnapshot(run.id).projection;
@@ -331,22 +328,22 @@ describe("durable scheduler advance with store", () => {
     });
   });
 
-  it("does not continuously replay the full projection while an executor is active", async () => {
-    await withRuntimeWorkspace("scheduler-advance-store-active-poll", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      let releaseExecutor!: () => void;
-      const executorEntered = new Promise<void>(resolve => {
-        releaseExecutor = resolve;
-      });
+  effectIt.effect("polls an active uncoordinated executor only at the 250ms fallback cadence", () => Effect.gen(function* () {
+      const workspace = yield* scopedRuntimeWorkspace("scheduler-advance-store-active-poll");
+      const prepared = yield* Effect.promise(() => prepareSyntheticWorkflow(workspace, validWorkflow()));
+      const store = yield* Effect.acquireRelease(
+        Effect.promise(() => openRuntimeStoreAdapter(workspace)),
+        store => Effect.sync(() => store.close()),
+      );
+      const releaseExecutor = yield* Deferred.make<void>();
+      const pumpReady = yield* Deferred.make<void>();
       const originalLoad = store.scheduler.tryLoadRunSnapshot.bind(store.scheduler);
       let snapshotReads = 0;
       store.scheduler.tryLoadRunSnapshot = runId => {
         snapshotReads += 1;
         return originalLoad(runId);
       };
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
+        const run = yield* Effect.promise(() => admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace }));
         const setupOwner = store.scheduler.claimRun(run.id, "owner-a", 60_000)!;
         throwingSchedulerStore(store.scheduler).appendSchedulerEvents({
           runId: run.id,
@@ -359,39 +356,31 @@ describe("durable scheduler advance with store", () => {
         });
         expireLease(workspace, run.id);
 
-        let markEntered!: () => void;
-        const entered = new Promise<void>(resolve => {
-          markEntered = resolve;
-        });
-        const advancing = advanceRun({
+        const advancing = yield* Effect.forkChild(advanceRunEffect({
           runId: run.id,
           ownerId: "owner-b",
           store: store.scheduler,
           executor: {
-            execute: async () => {
-              markEntered();
-              await executorEntered;
-              return completed();
-            },
+            execute: () => Deferred.await(releaseExecutor).pipe(Effect.as(completed())),
           },
-        });
-        await entered;
+          onCheckpoint: snapshot => Object.values(snapshot.projection.attempts).some(attempt => attempt.status === "started")
+            ? Deferred.succeed(pumpReady, undefined).pipe(Effect.asVoid)
+            : Effect.void,
+        }));
+        yield* Deferred.await(pumpReady);
         const readsAtStart = snapshotReads;
-        await new Promise(resolve => setTimeout(resolve, 80));
-        const activeReads = snapshotReads - readsAtStart;
-        releaseExecutor();
-        await advancing;
-        expect(activeReads).toBeLessThanOrEqual(1);
-      } finally {
-        store.close();
-      }
-    });
-  });
+        yield* TestClock.adjust(249);
+        expect(snapshotReads - readsAtStart).toBe(0);
+        yield* TestClock.adjust(1);
+        expect(snapshotReads - readsAtStart).toBe(1);
+        yield* Deferred.succeed(releaseExecutor, undefined);
+        yield* Fiber.join(advancing);
+  }));
 
   it("renews ownership before each derived transition batch", async () => {
     await withRuntimeWorkspace("scheduler-advance-store-derived-heartbeat", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const originalHeartbeat = store.scheduler.heartbeatRun.bind(store.scheduler);
       const originalAppend = store.scheduler.tryAppendSchedulerEvents.bind(store.scheduler);
       let renewedSinceAppend = false;
@@ -415,7 +404,7 @@ describe("durable scheduler advance with store", () => {
           ownerId: "owner",
           store: store.scheduler,
           leaseMs: 60_000,
-          executor: { execute: () => Promise.reject(new Error("derived-only run must not execute a leaf")) },
+          executor: { execute: () => Effect.die(new Error("derived-only run must not execute a leaf")) },
           bootstrap: snapshot => snapshot.projection.frames.root ? [] : [{
             type: "frame.started",
             payload: { runId: run.id, frameKey: "root", frameKind: "root", scope: {} },
@@ -446,4 +435,12 @@ function expireLease(workspace: string, runId: string): void {
   } finally {
     db.close();
   }
+}
+
+function nodeExecutor(
+  execute: (context: Parameters<NodeExecutor["execute"]>[0]) =>
+    | AttemptCommitInput["result"]
+    | Promise<AttemptCommitInput["result"]>,
+): NodeExecutor {
+  return { execute: context => Effect.promise(() => Promise.resolve(execute(context))) };
 }

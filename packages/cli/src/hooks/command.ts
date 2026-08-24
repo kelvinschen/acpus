@@ -1,6 +1,8 @@
 import { Command } from "commander";
 import type { Writable } from "node:stream";
-import { formatHookLoadError, globalHooksPath, loadHooksConfigScope, loadHooksConfigScopes, projectHooksPath, type HookConfigScope } from "@acpus/runtime";
+import { formatHookLoadError, loadHooksConfigScope, loadHooksConfigScopes, type HookConfigScope } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { validationError, usageError } from "../presentation/errors.js";
 import { writeResult, type HookListResult } from "../presentation/output.js";
 
@@ -29,10 +31,11 @@ export function createHooksCommand(ctx: HooksCommandContext): Command {
     .action(async (options: ScopeOptions) => {
       const scopes = await loadSelectedScopes(ctx, options);
       const count = scopes.reduce((sum, scope) => sum + scope.hooks.length, 0);
+      const paths = scopes.map(scope => `${scope.source === "project" ? "Project" : "Global"}: ${scope.path}`).join("\n");
       ctx.setExitCode(writeResult({
         ok: true,
         phase: "validate",
-        message: `OK (${count} hooks)`,
+        message: `OK (${count} hooks)\n${paths}`,
       }, ctx, 0));
     }));
 
@@ -56,13 +59,16 @@ export function createHooksCommand(ctx: HooksCommandContext): Command {
 
 async function loadSelectedScopes(ctx: HooksCommandContext, options: ScopeOptions): Promise<HookConfigScope[]> {
   if (options.project && options.global) throw usageError("--project and --global are mutually exclusive.");
-  const result = options.project
-    ? await loadHooksConfigScope("project", projectHooksPath(ctx.cwd))
-    : options.global
-      ? await loadHooksConfigScope("global", globalHooksPath())
-      : await loadHooksConfigScopes(ctx.cwd);
-  if (result.isErr()) throw validationError(formatHookLoadError(result.error));
-  return Array.isArray(result.value) ? result.value : [result.value];
+  if (options.project || options.global) {
+    const result = await Effect.runPromise(Effect.result(options.project
+      ? loadHooksConfigScope("project", { workspaceDir: ctx.cwd })
+      : loadHooksConfigScope("global", {})));
+    if (Result.isFailure(result)) throw validationError(formatHookLoadError(result.failure));
+    return [result.success];
+  }
+  const result = await Effect.runPromise(Effect.result(loadHooksConfigScopes(ctx.cwd)));
+  if (Result.isFailure(result)) throw validationError(formatHookLoadError(result.failure));
+  return result.success;
 }
 
 function groupedHooks(scopes: readonly HookConfigScope[]): HookListResult {

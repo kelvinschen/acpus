@@ -6,12 +6,14 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const expectedEngine = "^22.18.0 || >=24.0.0";
 const expectedPublicPackages = new Set([
+  "@acpus/acp",
   "@acpus/agent-executor",
   "acpus",
   "@acpus/core",
   "@acpus/dsh",
   "@acpus/expression",
   "@acpus/loader",
+  "@acpus/owned-process",
   "@acpus/runtime",
   "@acpus/tasks",
   "@acpus/web",

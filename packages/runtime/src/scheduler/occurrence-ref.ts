@@ -147,7 +147,7 @@ export function resolveOccurrenceRefCandidate<T>(
 }
 
 function parseOccurrenceRef(value: string): { ref: OccurrenceRef; attemptNo?: number } | undefined {
-  const match = /^@([0-9a-f]{12})(?:#([1-9]\d*))?$/.exec(value);
+  const match = /^@([0-9a-f]{8})(?:#([1-9]\d*))?$/.exec(value);
   if (!match) return undefined;
   const attemptNo = match[2] === undefined ? undefined : Number(match[2]);
   if (attemptNo !== undefined && !Number.isSafeInteger(attemptNo)) return undefined;

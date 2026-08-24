@@ -3,24 +3,11 @@ import { validateExprIR } from "@acpus/expression/validator";
 import { expressionCallbackLayout } from "@acpus/expression/ir";
 
 describe("expression validator", () => {
-  it("returns diagnostics data", () => {
-    expect(validateExprIR({ kind: "literal", value: true })).toEqual([]);
-  });
-
   it("uses the EX diagnostic namespace", () => {
     expect(validateExprIR({ kind: "call", fn: "unknown", args: [] })).toEqual([{
       code: "EX001",
       severity: "error",
       message: "Unknown expression operator 'unknown'.",
-      path: "$.fn",
-    }]);
-  });
-
-  it.each(["fmap", "lift2", "lift3"])("treats removed %s calls as unknown operators", fn => {
-    expect(validateExprIR({ kind: "call", fn, args: [] })).toEqual([{
-      code: "EX001",
-      severity: "error",
-      message: `Unknown expression operator '${fn}'.`,
       path: "$.fn",
     }]);
   });

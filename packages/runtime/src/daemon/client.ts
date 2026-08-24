@@ -1,12 +1,17 @@
 import { connect } from "node:net";
 import { StringDecoder } from "node:string_decoder";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import { resolveRuntimeWorkspaceLayout } from "../runtime-layout.js";
 import { sameRuntimeAuthority } from "./authority.js";
 import {
   classifyDaemonStatus,
   describeDaemonRequest,
   isDaemonControlResult,
+  isDaemonInspectionResult,
   isDaemonResponse,
   isDaemonRunStreamFrame,
   isDaemonShutdownResult,
@@ -14,6 +19,7 @@ import {
   type DaemonClientFailure,
   type DaemonControlIntent,
   type DaemonControlResult,
+  type DaemonInspectionResult,
   type DaemonRequest,
   type DaemonResponse,
   type DaemonRunStreamClientFailure,
@@ -23,95 +29,134 @@ import {
   type DaemonStatusProbe,
   type DaemonSubmitAndObserveInput,
 } from "./protocol.js";
+import type { ObservableInspectionViewQuery } from "../inspection/types.js";
 
 export function daemonEndpoint(cwd: string): string {
   return resolveRuntimeWorkspaceLayout(cwd).daemonEndpoint;
 }
 
-export function requestDaemonStatus(cwd: string): ResultAsync<DaemonStatus, DaemonClientFailure> {
+export function requestDaemonStatus(cwd: string): Effect.Effect<DaemonStatus, DaemonClientFailure> {
   return requestDaemonStatusAtEndpoint(daemonEndpoint(cwd));
 }
 
-export function requestDaemonStatusAtEndpoint(endpoint: string): ResultAsync<DaemonStatus, DaemonClientFailure> {
+export function requestDaemonStatusAtEndpointResult(
+  endpoint: string,
+): Effect.Effect<Result.Result<DaemonStatus, DaemonClientFailure>> {
+  return Effect.result(requestDaemonStatusAtEndpoint(endpoint));
+}
+
+function requestDaemonStatusAtEndpoint(
+  endpoint: string,
+): Effect.Effect<DaemonStatus, DaemonClientFailure> {
   const request = { method: "status" } as const;
-  return requestDaemon(endpoint, request).andThen(response => daemonResult(request, response, isDaemonStatus));
+  return requestDaemon(endpoint, request).pipe(
+    Effect.flatMap(response => Effect.fromResult(daemonResult(request, response, isDaemonStatus))),
+  );
 }
 
 /**
  * Probes only the closed current status shape and the one explicitly supported
  * predecessor shape. Everything else remains occupied but unknown to callers.
  */
-export function requestDaemonStatusProbe(cwd: string): ResultAsync<DaemonStatusProbe, DaemonClientFailure> {
+export function requestDaemonStatusProbe(cwd: string): Effect.Effect<DaemonStatusProbe, DaemonClientFailure> {
   return requestDaemonStatusProbeAtEndpoint(daemonEndpoint(cwd));
 }
 
-export function requestDaemonStatusProbeAtEndpoint(endpoint: string): ResultAsync<DaemonStatusProbe, DaemonClientFailure> {
+export function requestDaemonStatusProbeAtEndpointResult(
+  endpoint: string,
+): Effect.Effect<Result.Result<DaemonStatusProbe, DaemonClientFailure>> {
+  return Effect.result(requestDaemonStatusProbeAtEndpoint(endpoint));
+}
+
+function requestDaemonStatusProbeAtEndpoint(
+  endpoint: string,
+): Effect.Effect<DaemonStatusProbe, DaemonClientFailure> {
   const request = { method: "status" } as const;
-  return requestDaemon(endpoint, request).andThen(response => {
-    if (!response.ok) return err({
+  return requestDaemon(endpoint, request).pipe(Effect.flatMap(response => response.ok
+    ? Effect.succeed(classifyDaemonStatus(response.result))
+    : Effect.fail({
       type: "rejected" as const,
       code: response.error.code,
       message: response.error.message,
       ...(response.error.ambiguity ? { ambiguity: true as const } : {}),
-    });
-    return ok(classifyDaemonStatus(response.result));
-  });
+    })));
 }
 
 export function requestDaemonControl(
   cwd: string,
   control: DaemonControlIntent,
-): ResultAsync<DaemonControlResult, DaemonClientFailure> {
+): Effect.Effect<DaemonControlResult, DaemonClientFailure> {
   const request = { method: "control", control } as const;
-  return requestDaemon(daemonEndpoint(cwd), request).andThen(response => daemonResult(
-    request,
-    response,
-    value => isDaemonControlResult(value, control.type),
-  ));
+  return requestDaemon(daemonEndpoint(cwd), request).pipe(
+    Effect.flatMap(response => Effect.fromResult(daemonResult(
+      request,
+      response,
+      candidate => isDaemonControlResult(candidate, control.type),
+    ))),
+  );
+}
+
+export function requestDaemonInspection(
+  cwd: string,
+  view: ObservableInspectionViewQuery,
+): Effect.Effect<DaemonInspectionResult, DaemonClientFailure> {
+  const request = { method: "inspect", view } as const;
+  return requestDaemon(daemonEndpoint(cwd), request).pipe(
+    Effect.flatMap(response => Effect.fromResult(daemonResult(request, response, isDaemonInspectionResult))),
+  );
 }
 
 export function requestDaemonSubmitAndObserve(
   cwd: string,
   input: DaemonSubmitAndObserveInput,
   options: { signal?: AbortSignal } = {},
-): AsyncIterable<Result<DaemonRunStreamFrame, DaemonRunStreamClientFailure>> {
+): Stream.Stream<DaemonRunStreamFrame, DaemonRunStreamClientFailure> {
   return daemonRunStream(cwd, { ...input, method: "submitAndObserve" }, options.signal);
 }
 
-export function requestDaemonShutdown(cwd: string): ResultAsync<DaemonShutdownResult, DaemonClientFailure> {
+export function requestDaemonShutdown(cwd: string): Effect.Effect<DaemonShutdownResult, DaemonClientFailure> {
   return requestDaemonShutdownAtEndpoint(daemonEndpoint(cwd));
 }
 
-export function requestDaemonShutdownAtEndpoint(endpoint: string): ResultAsync<DaemonShutdownResult, DaemonClientFailure> {
+export function requestDaemonShutdownAtEndpointResult(
+  endpoint: string,
+): Effect.Effect<Result.Result<DaemonShutdownResult, DaemonClientFailure>> {
+  return Effect.result(requestDaemonShutdownAtEndpoint(endpoint));
+}
+
+function requestDaemonShutdownAtEndpoint(
+  endpoint: string,
+): Effect.Effect<DaemonShutdownResult, DaemonClientFailure> {
   const request = { method: "shutdown" } as const;
-  return requestDaemon(endpoint, request).andThen(response => daemonResult(request, response, isDaemonShutdownResult));
+  return requestDaemon(endpoint, request).pipe(
+    Effect.flatMap(response => Effect.fromResult(daemonResult(request, response, isDaemonShutdownResult))),
+  );
 }
 
 /** The v3 retirement bridge deliberately exposes shutdown and nothing mutable. */
-export function requestPredecessorDaemonShutdown(cwd: string): ResultAsync<DaemonShutdownResult, DaemonClientFailure> {
+export function requestPredecessorDaemonShutdown(cwd: string): Effect.Effect<DaemonShutdownResult, DaemonClientFailure> {
   return requestDaemonShutdown(cwd);
 }
 
-export function requestPredecessorDaemonShutdownAtEndpoint(endpoint: string): ResultAsync<DaemonShutdownResult, DaemonClientFailure> {
-  return requestDaemonShutdownAtEndpoint(endpoint);
+export function requestPredecessorDaemonShutdownAtEndpointResult(
+  endpoint: string,
+): Effect.Effect<Result.Result<DaemonShutdownResult, DaemonClientFailure>> {
+  return requestDaemonShutdownAtEndpointResult(endpoint);
 }
 
-export async function probeDaemonEndpoint(cwd: string): Promise<boolean> {
+export function probeDaemonEndpoint(cwd: string): Effect.Effect<boolean> {
+  return probeDaemonEndpointValue(cwd);
+}
+
+export function probeDaemonEndpointValue(cwd: string): Effect.Effect<boolean> {
   const endpoint = daemonEndpoint(cwd);
-  return await new Promise(resolveProbe => {
-    const socket = connect(endpoint);
-    let settled = false;
-    const finish = (occupied: boolean): void => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      socket.destroy();
-      resolveProbe(occupied);
-    };
-    const timeout = setTimeout(() => finish(true), 1_000);
-    socket.once("connect", () => finish(true));
-    socket.once("error", error => finish(!isDefinitivelyUnbound(error)));
-  });
+  return Effect.scoped(Effect.acquireRelease(
+    Effect.sync(() => connect(endpoint)),
+    socket => Effect.sync(() => socket.destroy()),
+  ).pipe(
+    Effect.flatMap(socket => probeSocket(socket)),
+    Effect.timeoutOrElse({ duration: 1_000, orElse: () => Effect.succeed(true) }),
+  ));
 }
 
 function isDefinitivelyUnbound(error: NodeJS.ErrnoException): boolean {
@@ -121,31 +166,74 @@ function isDefinitivelyUnbound(error: NodeJS.ErrnoException): boolean {
 function requestDaemon(
   endpoint: string,
   request: Exclude<DaemonRequest, { method: "submitAndObserve" }>,
-): ResultAsync<DaemonResponse, Extract<DaemonClientFailure, { type: "transport" | "protocol" }>> {
-  return new ResultAsync(new Promise(resolveRequest => {
-    const socket = connect(endpoint);
-    const chunks: Buffer[] = [];
-    const timeoutMs = request.method === "control" ? 30_000 : 1_000;
-    const timeout = setTimeout(() => {
-      socket.destroy();
-      resolveRequest(err({
-        type: "transport",
-        reason: "timeout",
+): Effect.Effect<DaemonResponse, Extract<DaemonClientFailure, { type: "transport" | "protocol" }>> {
+  const timeoutMs = request.method === "control" ? 30_000 : request.method === "inspect" ? 5_000 : 1_000;
+  return Effect.scoped(Effect.acquireRelease(
+    Effect.sync(() => connect(endpoint)),
+    socket => Effect.sync(() => socket.destroy()),
+  ).pipe(
+    Effect.flatMap(socket => exchangeDaemonRequest(socket, request)),
+    Effect.timeoutOrElse({
+      duration: timeoutMs,
+      orElse: () => Effect.fail({
+        type: "transport" as const,
+        reason: "timeout" as const,
         method: request.method,
         message: `Timed out waiting for daemon ${describeDaemonRequest(request)} response.`,
-      }));
-    }, timeoutMs);
-    socket.once("error", error => {
-      clearTimeout(timeout);
-      resolveRequest(err(daemonTransportFailure(request, error)));
-    });
-    socket.on("data", chunk => chunks.push(Buffer.from(chunk)));
-    socket.once("end", () => {
-      clearTimeout(timeout);
+      }),
+    }),
+  ));
+}
+
+function probeSocket(socket: ReturnType<typeof connect>): Effect.Effect<boolean> {
+  return Effect.callback<boolean>(resume => {
+    let settled = false;
+    const cleanup = (): void => {
+      socket.off("connect", connected);
+      socket.off("error", failed);
+    };
+    const finish = (occupied: boolean): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resume(Effect.succeed(occupied));
+    };
+    const connected = (): void => finish(true);
+    const failed = (error: NodeJS.ErrnoException): void => finish(!isDefinitivelyUnbound(error));
+    socket.once("connect", connected);
+    socket.once("error", failed);
+    return Effect.sync(cleanup);
+  });
+}
+
+function exchangeDaemonRequest(
+  socket: ReturnType<typeof connect>,
+  request: Exclude<DaemonRequest, { method: "submitAndObserve" }>,
+): Effect.Effect<DaemonResponse, Extract<DaemonClientFailure, { type: "transport" | "protocol" }>> {
+  return Effect.callback<DaemonResponse, Extract<DaemonClientFailure, { type: "transport" | "protocol" }>>(resume => {
+    const chunks: Buffer[] = [];
+    let settled = false;
+    const cleanup = (): void => {
+      socket.off("error", failed);
+      socket.off("data", received);
+      socket.off("end", ended);
+      socket.off("connect", connected);
+    };
+    const settle = (effect: Effect.Effect<DaemonResponse, Extract<DaemonClientFailure, { type: "transport" | "protocol" }>>): void => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resume(effect);
+    };
+    const failed = (error: NodeJS.ErrnoException): void => settle(Effect.fail(daemonTransportFailure(request, error)));
+    const received = (chunk: Buffer): void => {
+      chunks.push(Buffer.from(chunk));
+    };
+    const ended = (): void => {
       try {
         const response = JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
         if (!isDaemonResponse(response)) {
-          resolveRequest(err({
+          settle(Effect.fail({
             type: "protocol",
             stage: "envelope",
             method: request.method,
@@ -153,195 +241,200 @@ function requestDaemon(
           }));
           return;
         }
-        resolveRequest(ok(response));
+        settle(Effect.succeed(response));
       } catch {
-        resolveRequest(err({
+        settle(Effect.fail({
           type: "protocol",
           stage: "envelope",
           method: request.method,
           message: "Daemon returned invalid response JSON.",
         }));
       }
-    });
-    socket.once("connect", () => {
+    };
+    const connected = (): void => {
       socket.end(JSON.stringify(request));
-    });
-  }));
+    };
+    socket.once("error", failed);
+    socket.on("data", received);
+    socket.once("end", ended);
+    socket.once("connect", connected);
+    return Effect.sync(cleanup);
+  });
 }
 
-async function* daemonRunStream(
+function daemonRunStream(
   cwd: string,
   request: Extract<DaemonRequest, { method: "submitAndObserve" }>,
   signal?: AbortSignal,
-): AsyncIterable<Result<DaemonRunStreamFrame, DaemonRunStreamClientFailure>> {
-  if (signal?.aborted) return;
-  const socket = connect(daemonEndpoint(cwd));
-  const decoder = new StringDecoder("utf8");
-  const queue = new AsyncEventQueue<Result<DaemonRunStreamFrame, DaemonRunStreamClientFailure>>();
-  let pending = "";
-  let finished = false;
-  let ended = false;
-  let requestSent = false;
-  let receivedFrame = false;
-  let terminalFrame = false;
-  let admittedRunId: string | undefined;
-  let terminalOutcome: DaemonRunStreamClientFailure["outcome"] | undefined;
-  let terminalRunId: string | undefined;
+): Stream.Stream<DaemonRunStreamFrame, DaemonRunStreamClientFailure> {
+  if (signal?.aborted) return Stream.empty;
+  return Stream.callback<DaemonRunStreamFrame, DaemonRunStreamClientFailure>(queue =>
+    Effect.acquireRelease(
+      Effect.sync(() => {
+        const socket = connect(daemonEndpoint(cwd));
+        const decoder = new StringDecoder("utf8");
+        let pending = "";
+        let finished = false;
+        let ended = false;
+        let requestSent = false;
+        let receivedFrame = false;
+        let terminalFrame = false;
+        let admittedRunId: string | undefined;
+        let terminalOutcome: DaemonRunStreamClientFailure["outcome"] | undefined;
+        let terminalRunId: string | undefined;
 
-  const outcome = (): DaemonRunStreamClientFailure["outcome"] =>
-    admittedRunId === undefined ? terminalOutcome ?? (requestSent ? "unknown" : "not-admitted") : "admitted";
-  const outcomeRunId = (): string | undefined => admittedRunId ?? terminalRunId;
-  const finish = (): void => {
-    if (finished) return;
-    finished = true;
-    queue.end();
-  };
-  const fail = (failure: DaemonRunStreamClientFailure): void => {
-    if (finished) return;
-    finished = true;
-    queue.push(err(failure));
-    queue.end();
-    socket.destroy();
-  };
-  const protocolFailure = (
-    stage: "frame" | "stream",
-    reason: "malformed" | "unexpected" | "truncated",
-    message: string,
-  ): DaemonRunStreamClientFailure => {
-    const runId = outcomeRunId();
-    return {
-      type: "protocol",
-      stage,
-      reason,
-      method: "submitAndObserve",
-      outcome: outcome(),
-      ...(runId === undefined ? {} : { runId }),
-      message,
-    };
-  };
-  const acceptFrame = (value: unknown): void => {
-    if (!isDaemonRunStreamFrame(value)) {
-      fail(protocolFailure("frame", "malformed", "Daemon returned a malformed run stream frame."));
-      return;
-    }
-    if (terminalFrame) {
-      fail(protocolFailure("stream", "unexpected", "Daemon returned a frame after the run stream had closed."));
-      return;
-    }
-    if (value.kind === "admitted") {
-      if (receivedFrame) {
-        fail(protocolFailure("stream", "unexpected", "Daemon returned an unexpected admitted frame."));
-        return;
-      }
-      admittedRunId = value.run.id;
-      if (!sameRuntimeAuthority(value.authority, request.expectedAuthority)) {
-        fail(protocolFailure("stream", "unexpected", "Daemon admitted the run under a different Runtime authority."));
-        return;
-      }
-      if (request.until === "admitted") terminalFrame = true;
-    } else if (value.kind === "observation") {
-      if (admittedRunId === undefined || request.until === "admitted") {
-        fail(protocolFailure("stream", "unexpected", "Daemon returned an observation before admission."));
-        return;
-      }
-      if (value.observation.kind === "closed") terminalFrame = true;
-    } else {
-      if (admittedRunId !== undefined
-        && (value.outcome !== "admitted" || value.runId !== undefined && value.runId !== admittedRunId)) {
-        fail(protocolFailure("stream", "unexpected", "Daemon returned an inconsistent post-admission error outcome."));
-        return;
-      }
-      terminalOutcome = value.outcome;
-      terminalRunId = value.runId;
-      terminalFrame = true;
-    }
-    receivedFrame = true;
-    queue.push(ok(value));
-  };
-  const acceptLine = (line: string): void => {
-    if (finished) return;
-    try {
-      acceptFrame(JSON.parse(line) as unknown);
-    } catch {
-      fail(protocolFailure("frame", "malformed", "Daemon returned malformed run stream JSON."));
-    }
-  };
-  const acceptText = (text: string): void => {
-    pending += text;
-    let newline = pending.indexOf("\n");
-    while (newline >= 0 && !finished) {
-      const line = pending.slice(0, newline);
-      pending = pending.slice(newline + 1);
-      acceptLine(line);
-      newline = pending.indexOf("\n");
-    }
-  };
+        const outcome = (): DaemonRunStreamClientFailure["outcome"] =>
+          admittedRunId === undefined ? terminalOutcome ?? (requestSent ? "unknown" : "not-admitted") : "admitted";
+        const outcomeRunId = (): string | undefined => admittedRunId ?? terminalRunId;
+        const finish = (): void => {
+          if (finished) return;
+          finished = true;
+          Queue.endUnsafe(queue);
+        };
+        const fail = (failure: DaemonRunStreamClientFailure): void => {
+          if (finished) return;
+          finished = true;
+          Queue.failCauseUnsafe(queue, Cause.fail(failure));
+          socket.destroy();
+        };
+        const protocolFailure = (
+          stage: "frame" | "stream",
+          reason: "malformed" | "unexpected" | "truncated",
+          message: string,
+        ): DaemonRunStreamClientFailure => {
+          const runId = outcomeRunId();
+          return {
+            type: "protocol",
+            stage,
+            reason,
+            method: "submitAndObserve",
+            outcome: outcome(),
+            ...(runId === undefined ? {} : { runId }),
+            message,
+          };
+        };
+        const acceptFrame = (value: unknown): void => {
+          if (!isDaemonRunStreamFrame(value)) {
+            fail(protocolFailure("frame", "malformed", "Daemon returned a malformed run stream frame."));
+            return;
+          }
+          if (terminalFrame) {
+            fail(protocolFailure("stream", "unexpected", "Daemon returned a frame after the run stream had closed."));
+            return;
+          }
+          if (value.kind === "admitted") {
+            if (receivedFrame) {
+              fail(protocolFailure("stream", "unexpected", "Daemon returned an unexpected admitted frame."));
+              return;
+            }
+            admittedRunId = value.run.id;
+            if (!sameRuntimeAuthority(value.authority, request.expectedAuthority)) {
+              fail(protocolFailure("stream", "unexpected", "Daemon admitted the run under a different Runtime authority."));
+              return;
+            }
+            if (request.until === "admitted") terminalFrame = true;
+          } else if (value.kind === "observation") {
+            if (admittedRunId === undefined || request.until === "admitted") {
+              fail(protocolFailure("stream", "unexpected", "Daemon returned an observation before admission."));
+              return;
+            }
+            if (value.observation.kind === "closed") terminalFrame = true;
+          } else {
+            if (admittedRunId !== undefined
+              && (value.outcome !== "admitted" || value.runId !== undefined && value.runId !== admittedRunId)) {
+              fail(protocolFailure("stream", "unexpected", "Daemon returned an inconsistent post-admission error outcome."));
+              return;
+            }
+            terminalOutcome = value.outcome;
+            terminalRunId = value.runId;
+            terminalFrame = true;
+          }
+          receivedFrame = true;
+          Queue.offerUnsafe(queue, value);
+        };
+        const acceptLine = (line: string): void => {
+          if (finished) return;
+          try {
+            acceptFrame(JSON.parse(line) as unknown);
+          } catch {
+            fail(protocolFailure("frame", "malformed", "Daemon returned malformed run stream JSON."));
+          }
+        };
+        const acceptText = (text: string): void => {
+          pending += text;
+          let newline = pending.indexOf("\n");
+          while (newline >= 0 && !finished) {
+            const line = pending.slice(0, newline);
+            pending = pending.slice(newline + 1);
+            acceptLine(line);
+            newline = pending.indexOf("\n");
+          }
+        };
+        const abort = (): void => {
+          if (finished) return;
+          finished = true;
+          socket.destroy();
+          Queue.endUnsafe(queue);
+        };
 
-  const abort = (): void => {
-    if (finished) return;
-    finished = true;
-    socket.destroy();
-    queue.end();
-  };
-  signal?.addEventListener("abort", abort, { once: true });
-  if (signal?.aborted) abort();
-  socket.once("connect", () => {
-    if (finished) return;
-    requestSent = true;
-    socket.write(`${JSON.stringify(request)}\n`);
-  });
-  socket.on("data", chunk => acceptText(decoder.write(Buffer.from(chunk))));
-  socket.once("end", () => {
-    ended = true;
-    if (finished) return;
-    acceptText(decoder.end());
-    if (finished) return;
-    if (pending.length > 0) {
-      fail(protocolFailure("stream", "truncated", "Daemon truncated a run stream frame."));
-      return;
-    }
-    if (!terminalFrame) {
-      fail(protocolFailure("stream", "truncated", "Daemon ended the run stream before its terminal frame."));
-      return;
-    }
-    finish();
-  });
-  socket.once("error", error => {
-    if (finished) return;
-    const failure = daemonRunStreamTransportFailure(error, outcome(), outcomeRunId());
-    fail(failure);
-  });
-  socket.once("close", () => {
-    if (finished || ended) return;
-    fail(daemonRunStreamTransportFailure(
-      new Error("Daemon closed the run stream connection."),
-      outcome(),
-      outcomeRunId(),
+        signal?.addEventListener("abort", abort, { once: true });
+        if (signal?.aborted) abort();
+        socket.once("connect", () => {
+          if (finished) return;
+          requestSent = true;
+          socket.write(`${JSON.stringify(request)}\n`);
+        });
+        socket.on("data", chunk => acceptText(decoder.write(Buffer.from(chunk))));
+        socket.once("end", () => {
+          ended = true;
+          if (finished) return;
+          acceptText(decoder.end());
+          if (finished) return;
+          if (pending.length > 0) {
+            fail(protocolFailure("stream", "truncated", "Daemon truncated a run stream frame."));
+            return;
+          }
+          if (!terminalFrame) {
+            fail(protocolFailure("stream", "truncated", "Daemon ended the run stream before its terminal frame."));
+            return;
+          }
+          finish();
+        });
+        socket.once("error", error => {
+          if (finished) return;
+          fail(daemonRunStreamTransportFailure(error, outcome(), outcomeRunId()));
+        });
+        socket.once("close", () => {
+          if (finished || ended) return;
+          fail(daemonRunStreamTransportFailure(
+            new Error("Daemon closed the run stream connection."),
+            outcome(),
+            outcomeRunId(),
+          ));
+        });
+        return { abort, socket };
+      }),
+      ({ abort, socket }) => Effect.sync(() => {
+        signal?.removeEventListener("abort", abort);
+        socket.destroy();
+      }),
     ));
-  });
-
-  try {
-    for await (const event of queue) yield event;
-  } finally {
-    signal?.removeEventListener("abort", abort);
-    socket.destroy();
-  }
 }
 
 function daemonResult<T>(
   request: Exclude<DaemonRequest, { method: "submitAndObserve" }>,
   response: DaemonResponse,
   validate: (value: unknown) => value is T,
-): Result<T, DaemonClientFailure> {
-  if (!response.ok) return err({
+): Result.Result<T, DaemonClientFailure> {
+  if (!response.ok) return Result.fail({
     type: "rejected",
     code: response.error.code,
     message: response.error.message,
     ...(response.error.ambiguity ? { ambiguity: true } : {}),
   });
   return validate(response.result)
-    ? ok(response.result)
-    : err({
+    ? Result.succeed(response.result)
+    : Result.fail({
       type: "protocol",
       stage: "result",
       method: request.method,
@@ -386,39 +479,4 @@ function daemonRunStreamTransportFailure(
     ...(error.code === undefined ? {} : { errno: error.code }),
     message: error.message,
   };
-}
-
-type AsyncQueueWaiter<T> = (event: IteratorResult<T>) => void;
-
-class AsyncEventQueue<T> implements AsyncIterable<T> {
-  private readonly values: T[] = [];
-  private readonly waiters: AsyncQueueWaiter<T>[] = [];
-  private done = false;
-
-  push(value: T): void {
-    if (this.done) return;
-    const waiter = this.waiters.shift();
-    if (waiter) waiter({ done: false, value });
-    else this.values.push(value);
-  }
-
-  end(): void {
-    if (this.done) return;
-    this.done = true;
-    for (const waiter of this.waiters.splice(0)) waiter({ done: true, value: undefined });
-  }
-
-  async *[Symbol.asyncIterator](): AsyncIterator<T> {
-    while (true) {
-      const value = this.values.shift();
-      if (value !== undefined) {
-        yield value;
-        continue;
-      }
-      if (this.done) return;
-      const next = await new Promise<IteratorResult<T>>(resolve => this.waiters.push(resolve));
-      if (next.done) return;
-      yield next.value;
-    }
-  }
 }

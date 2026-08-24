@@ -1,8 +1,10 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import { access, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineWorkflow } from "@acpus/core";
-import type { Result } from "neverthrow";
 import { describe, expect, it, vi } from "vitest";
 
 const lifecycleInspector = vi.hoisted(() => vi.fn(() => {
@@ -14,19 +16,34 @@ vi.mock("../src/runtime-store-lifecycle.js", async importOriginal => ({
   inspectRuntimeStore: lifecycleInspector,
 }));
 
-import { requestDaemonStatus, requestDaemonSubmitAndObserve } from "../src/daemon/client.js";
-import { startDaemonLoop } from "../src/daemon/loop.js";
+import {
+  requestDaemonStatus as requestDaemonStatusEffect,
+  requestDaemonSubmitAndObserve as requestDaemonSubmitAndObserveStream,
+} from "../src/daemon/client.js";
+import { startDaemonLoop } from "./support/daemon-loop.js";
 import type { DaemonRunStreamClientFailure, DaemonRunStreamFrame } from "../src/daemon/protocol.js";
-import { inspectAgentExecution } from "../src/inspection/use-cases.js";
+import { inspectAgentExecution as inspectAgentExecutionEffect } from "../src/inspection/use-cases.js";
 import {
   initializeRuntimeStoreForTest,
   prepareSyntheticWorkflow,
   runtimeDatabasePath,
   withRuntimeWorkspace,
-} from "./support/runtime-fixtures.js";
+} from "./support/runtime-harness.js";
 
 const fixtureAgent = fileURLToPath(new URL("./fixtures/wal-usage-acp-agent.mjs", import.meta.url));
 const realSetTimeout = globalThis.setTimeout;
+
+function requestDaemonStatus(...args: Parameters<typeof requestDaemonStatusEffect>) {
+  return Effect.runPromise(Effect.result(requestDaemonStatusEffect(...args)));
+}
+
+function requestDaemonSubmitAndObserve(...args: Parameters<typeof requestDaemonSubmitAndObserveStream>) {
+  return Stream.toAsyncIterable(Stream.result(requestDaemonSubmitAndObserveStream(...args)));
+}
+
+function inspectAgentExecution(...args: Parameters<typeof inspectAgentExecutionEffect>) {
+  return Effect.runPromise(Effect.result(inspectAgentExecutionEffect(...args)));
+}
 
 function acceleratedObservationTimeout<TArgs extends unknown[]>(
   callback: (...args: TArgs) => void,
@@ -48,18 +65,20 @@ describe("daemon WAL-backed observation", () => {
         walProgressWorkflow({ agentReady, agentRelease, taskReady, taskRelease }),
       );
       await initializeRuntimeStoreForTest(workspace);
+      const incidents: unknown[] = [];
       const loop = await startDaemonLoop(workspace, {
         heartbeatMs: 10,
         idleStopMs: 60_000,
         packageVersion: "test",
+        onRunIncident: incident => incidents.push(incident),
       });
       let observationTimer: ReturnType<typeof vi.spyOn> | undefined;
       try {
         const status = await requestDaemonStatus(workspace);
-        if (status.isErr()) throw new Error(status.error.message);
+        if (Result.isFailure(status)) throw new Error(status.failure.message);
         observationTimer = vi.spyOn(globalThis, "setTimeout").mockImplementation(acceleratedObservationTimeout);
         const iterator = requestDaemonSubmitAndObserve(workspace, {
-          expectedAuthority: status.value.authority,
+          expectedAuthority: status.success.authority,
           requestId: "daemon-wal-observation",
           prepared,
           input: {},
@@ -70,6 +89,7 @@ describe("daemon WAL-backed observation", () => {
         expect(admitted).toMatchObject({ kind: "admitted", run: { id: expect.any(String) } });
         if (admitted.kind !== "admitted") throw new Error("Expected daemon admission.");
         const attached = frame(await iterator.next());
+        if (attached.kind === "error") throw new Error(JSON.stringify(attached));
         expect(attached).toMatchObject({
           kind: "observation",
           observation: { kind: "attached" },
@@ -82,15 +102,15 @@ describe("daemon WAL-backed observation", () => {
             runId: admitted.run.id,
             target: "review",
           });
-          return execution.isOk()
-            && execution.value.available
-            && execution.value.tokenUsage?.totalTokens === 24;
+          return Result.isSuccess(execution)
+            && execution.success.available
+            && execution.success.tokenUsage?.totalTokens === 24;
         });
         const execution = await inspectAgentExecution(workspace, {
           runId: admitted.run.id,
           target: "review",
         });
-        expect(execution.isOk() ? execution.value : undefined).toMatchObject({
+        expect(Result.isSuccess(execution) ? execution.success : undefined).toMatchObject({
           available: true,
           contextWindow: { used: 24, size: 100, percent: 24 },
           tokenUsage: {
@@ -124,6 +144,9 @@ describe("daemon WAL-backed observation", () => {
           remaining.push(nextFrame);
           if (nextFrame.kind === "observation" && nextFrame.observation.kind === "closed") break;
         }
+        if (remaining.at(-1)?.kind === "error") {
+          throw new Error(JSON.stringify({ frame: remaining.at(-1), incidents }, errorJson));
+        }
         expect(remaining.at(-1)).toMatchObject({
           kind: "observation",
           observation: {
@@ -145,6 +168,12 @@ describe("daemon WAL-backed observation", () => {
     });
   }, 15_000);
 });
+
+function errorJson(_key: string, value: unknown): unknown {
+  return value instanceof Error
+    ? { name: value.name, message: value.message, stack: value.stack }
+    : value;
+}
 
 function walProgressWorkflow(paths: {
   agentReady: string;
@@ -186,10 +215,10 @@ function walProgressWorkflow(paths: {
 }
 
 function frame(
-  result: IteratorResult<Result<DaemonRunStreamFrame, DaemonRunStreamClientFailure>>,
+  result: IteratorResult<Result.Result<DaemonRunStreamFrame, DaemonRunStreamClientFailure>>,
 ): DaemonRunStreamFrame {
-  if (result.done || result.value.isErr()) throw new Error("Expected a successful daemon stream frame.");
-  return result.value.value;
+  if (result.done || Result.isFailure(result.value)) throw new Error("Expected a successful daemon stream frame.");
+  return result.value.success;
 }
 
 

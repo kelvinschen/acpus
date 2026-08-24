@@ -55,14 +55,17 @@ The workflow declares three independently configurable Agent slots:
 
 ## Run
 
-Run from the repository or document workspace the Agents should inspect:
+Run from the repository or document workspace the Agents should inspect after
+binding the required `researcher`, `controller`, and `synthesizer` slots in
+`agents.json`:
 
 ```sh
 acpus workflow run /absolute/path/to/rlm-frontier/workflow.ts \
-  --input '{"task":"Investigate this system","rubric":"Use exact evidence"}'
+  --input '{"task":"Investigate this system","rubric":"Use exact evidence"}' \
+  --agents agents.json
 ```
 
-Apply Agent overrides from a JSON file when needed:
+Use the same required Agent injections with other inputs:
 
 ```sh
 acpus workflow run /absolute/path/to/rlm-frontier/workflow.ts \

@@ -1,20 +1,23 @@
-import { processStartToken } from "./process-tree.js";
-import type { ManagedAcpExecutorOptions } from "./types.js";
+import type { ProcessHostShape } from "@acpus/owned-process";
+import * as Effect from "effect/Effect";
+import type { RuntimeOwnerIdentity } from "./types.js";
 
-export type AcpExecutorOwnerIdentity = {
+export type NormalizedRuntimeOwnerIdentity = {
   pid: number;
   startToken?: string;
-  generation: string;
+  epoch: number;
 };
 
-export async function normalizeAcpExecutorOwner(
-  owner: ManagedAcpExecutorOptions["owner"],
-): Promise<AcpExecutorOwnerIdentity> {
-  const pid = owner.pid ?? process.pid;
-  const startToken = owner.startToken ?? await processStartToken(pid);
-  return {
-    pid,
-    ...(startToken === undefined ? {} : { startToken }),
-    generation: String(owner.generation),
-  };
+export function normalizeRuntimeOwner(
+  owner: RuntimeOwnerIdentity,
+  processes: ProcessHostShape,
+): Effect.Effect<NormalizedRuntimeOwnerIdentity> {
+  return Effect.gen(function*() {
+    const startToken = owner.startToken ?? (yield* processes.startToken(owner.pid));
+    return {
+      pid: owner.pid,
+      ...(startToken === undefined ? {} : { startToken }),
+      epoch: owner.epoch,
+    };
+  });
 }

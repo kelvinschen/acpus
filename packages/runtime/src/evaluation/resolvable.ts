@@ -1,6 +1,6 @@
 import { isPositiveInteger, tryParseDurationMs } from "@acpus/core/ir";
 import type { ExprIR, JsonObject } from "@acpus/expression/ir";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import { tryCreateDeadline as tryCreatePersistedDeadline } from "../deadline.js";
 import { tryEvaluateExpr, type EvaluationOptions, type EvaluationScope } from "./evaluator.js";
 
@@ -14,20 +14,20 @@ export type ResolvedDuration = {
   milliseconds: number;
 };
 
-export function tryResolveString(expr: ExprIR, scope: EvaluationScope, field: string, options?: EvaluationOptions): Result<string, ResolutionError> {
+export function tryResolveString(expr: ExprIR, scope: EvaluationScope, field: string, options?: EvaluationOptions): Result.Result<string, ResolutionError> {
   const resolved = tryEvaluate(expr, scope, field, options);
-  if (resolved.isErr()) return err(resolved.error);
-  return typeof resolved.value === "string"
-    ? ok(resolved.value)
-    : typeError(field, "string", resolved.value);
+  if (Result.isFailure(resolved)) return Result.fail(resolved.failure);
+  return typeof resolved.success === "string"
+    ? Result.succeed(resolved.success)
+    : typeError(field, "string", resolved.success);
 }
 
-export function tryResolveDuration(expr: ExprIR, scope: EvaluationScope, field: string): Result<ResolvedDuration, ResolutionError> {
-  return tryResolveString(expr, scope, field).andThen(value => {
+export function tryResolveDuration(expr: ExprIR, scope: EvaluationScope, field: string): Result.Result<ResolvedDuration, ResolutionError> {
+  return Result.flatMap(tryResolveString(expr, scope, field), value => {
     const milliseconds = tryParseDurationMs(value);
-    return milliseconds.isOk()
-      ? ok({ value, milliseconds: milliseconds.value })
-      : err({
+    return milliseconds._tag === "Success"
+      ? Result.succeed({ value, milliseconds: milliseconds.success })
+      : Result.fail({
           type: "constraint",
           field,
           expected: "duration string like 500ms, 30s, 5m, 1h, or 1000",
@@ -36,8 +36,8 @@ export function tryResolveDuration(expr: ExprIR, scope: EvaluationScope, field: 
   });
 }
 
-export function tryCreateDeadline(now: Date, milliseconds: number, field: string): Result<Date, ResolutionError> {
-  return tryCreatePersistedDeadline(now, milliseconds).mapErr(() => ({
+export function tryCreateDeadline(now: Date, milliseconds: number, field: string): Result.Result<Date, ResolutionError> {
+  return Result.mapError(tryCreatePersistedDeadline(now, milliseconds), () => ({
     type: "constraint",
     field,
     expected: "duration with a representable persisted deadline",
@@ -50,59 +50,59 @@ export function tryResolveInteger(
   scope: EvaluationScope,
   field: string,
   minimum: number,
-): Result<number, ResolutionError> {
+): Result.Result<number, ResolutionError> {
   const resolved = tryEvaluate(expr, scope, field);
-  if (resolved.isErr()) return err(resolved.error);
-  if (typeof resolved.value !== "number") return typeError(field, "integer", resolved.value);
+  if (Result.isFailure(resolved)) return Result.fail(resolved.failure);
+  if (typeof resolved.success !== "number") return typeError(field, "integer", resolved.success);
   const invalid = minimum === 1
-    ? !isPositiveInteger(resolved.value)
-    : !Number.isInteger(resolved.value) || resolved.value < minimum;
+    ? !isPositiveInteger(resolved.success)
+    : !Number.isInteger(resolved.success) || resolved.success < minimum;
   if (invalid) {
-    return err({
+    return Result.fail({
       type: "constraint",
       field,
       expected: `integer greater than or equal to ${minimum}`,
       message: `${field} must resolve to an integer greater than or equal to ${minimum}.`,
     });
   }
-  return ok(resolved.value);
+  return Result.succeed(resolved.success);
 }
 
 export function tryResolveConcurrencyLimit(
   expr: ExprIR,
   scope: EvaluationScope,
   field: string,
-): Result<number | undefined, ResolutionError> {
+): Result.Result<number | undefined, ResolutionError> {
   const resolved = tryEvaluate(expr, scope, field);
-  if (resolved.isErr()) return err(resolved.error);
-  if (resolved.value === undefined || resolved.value === 0) return ok(undefined);
-  if (typeof resolved.value !== "number") return typeError(field, "integer", resolved.value);
-  if (!isPositiveInteger(resolved.value)) {
-    return err({
+  if (Result.isFailure(resolved)) return Result.fail(resolved.failure);
+  if (resolved.success === undefined || resolved.success === 0) return Result.succeed(undefined);
+  if (typeof resolved.success !== "number") return typeError(field, "integer", resolved.success);
+  if (!isPositiveInteger(resolved.success)) {
+    return Result.fail({
       type: "constraint",
       field,
       expected: "0 or a positive integer",
       message: `${field} must resolve to 0 or a positive integer.`,
     });
   }
-  return ok(resolved.value);
+  return Result.succeed(resolved.success);
 }
 
 export function resolutionErrorPayload(error: ResolutionError): JsonObject {
   return { reason: "expression_resolution_failed", ...error };
 }
 
-function tryEvaluate(expr: ExprIR, scope: EvaluationScope, field: string, options?: EvaluationOptions): Result<unknown, ResolutionError> {
-  return tryEvaluateExpr(expr, scope, options).mapErr(failure => ({
+function tryEvaluate(expr: ExprIR, scope: EvaluationScope, field: string, options?: EvaluationOptions): Result.Result<unknown, ResolutionError> {
+  return Result.mapError(tryEvaluateExpr(expr, scope, options), failure => ({
       type: "evaluation",
       field,
       message: failure.message,
     }));
 }
 
-function typeError<T>(field: string, expected: string, value: unknown): Result<T, ResolutionError> {
+function typeError<T>(field: string, expected: string, value: unknown): Result.Result<T, ResolutionError> {
   const actual = value === null ? "null" : Array.isArray(value) ? "array" : typeof value;
-  return err({
+  return Result.fail({
     type: "type",
     field,
     expected,

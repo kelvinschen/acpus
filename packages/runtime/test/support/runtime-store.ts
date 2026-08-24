@@ -1,8 +1,9 @@
-import type { RunRecord, RuntimeStore } from "../../src/store/store.js";
+import * as Effect from "effect/Effect";
+import type { RunRecord, RuntimeStoreAdapter } from "../../src/store/store.js";
 
 export async function admitRunForTest(
-  store: RuntimeStore,
-  input: Parameters<RuntimeStore["admitRun"]>[0],
+  store: RuntimeStoreAdapter,
+  input: Parameters<RuntimeStoreAdapter["admitRun"]>[0],
 ): Promise<RunRecord> {
-  return (await store.admitRun(input))._unsafeUnwrap();
+  return Effect.runPromise(store.admitRun(input));
 }

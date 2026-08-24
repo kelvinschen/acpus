@@ -17,6 +17,7 @@ import {
 import { createAgentActivityProjector } from "./agent-activity-projection.js";
 import { deriveOccurrenceRef, occurrenceRefSelector } from "../scheduler/occurrence-ref.js";
 import { signalBlocksInspectionTarget } from "./signal-boundary.js";
+import { projectInspectionTargetResult } from "./target-result.js";
 import type {
   InspectionActivity,
   InspectionAttention,
@@ -48,14 +49,18 @@ export function projectInspectionTargetSummaryView(input: {
 }): Extract<InspectionView, { kind: "target"; detail: "summary" }> {
   const aggregate = staticAggregate(input.details);
   const state = inspectionTargetState(input.details);
+  const terminal = terminalInspectionStatus(state.status);
   const progress = aggregate || input.details.staticNode?.kind === "agent"
     ? undefined
     : selectedProgress(input.run, input.details);
-  const pulse = aggregate
+  const pulse = aggregate || terminal
     ? undefined
     : input.details.staticNode?.kind === "agent"
       ? agentTargetPulse(input.details, input.observations)
       : targetPulse(input.details, progress);
+  const result = aggregate
+    ? undefined
+    : projectInspectionTargetResult({ run: input.run, details: input.details, status: state.status });
   const attention = targetAttention(state, input.details);
   const visibility = input.observations
     ? inspectionVisibility(input.details, input.observations)
@@ -69,12 +74,16 @@ export function projectInspectionTargetSummaryView(input: {
     run: { id: input.run.id, status: input.run.status },
     subject,
     state: visibleInspectionState(state, input.details.summary.failure),
+    ...(result ? { result } : {}),
     ...(pulse ? { pulse: inspectionPulse(pulse) } : {}),
     ...(visibleAttention ? { attention: visibleAttention } : {}),
     ...(visibility ? { visibility: { ...visibility } } : {}),
     ...(input.details.summary.counts
       ? { occurrences: inspectionCounts(input.details.summary.counts) }
       : {}),
+    ...(input.details.summary.agentSession === undefined ? {} : { agentSession: input.details.summary.agentSession }),
+    ...(input.details.summary.steer === undefined ? {} : { steer: input.details.summary.steer }),
+    availableControls: input.details.availableControls,
   };
 }
 
@@ -401,48 +410,20 @@ function agentTargetPulse(
     ...(attempt ? { attemptId: attempt.attemptId, attemptNo: attempt.attemptNo } : {}),
   });
   if (!activity) return undefined;
-  const settledActivities = activity.phase === "settled"
-    ? observations?.entries
-      .flatMap(entry => entry.kind === "activity"
-        && entry.attemptId === attempt?.attemptId
-        && visibleSummary(entry.summary.text, summaryHeadlineCharacters).length > 0
-        ? [entry]
-        : [])
-    : undefined;
-  const settledIntent = settledActivities
-    ?.filter(entry => entry.channel === "reported-thought" || entry.channel === "plan")
-      .sort((left, right) => left.at.localeCompare(right.at) || left.sourceSequence - right.sourceSequence)
-      .at(-1);
-  const settledResponse = settledActivities
-    ?.filter(entry => entry.channel === "response")
-      .sort((left, right) => left.at.localeCompare(right.at) || left.sourceSequence - right.sourceSequence)
-      .at(-1);
-  const settledActivity = settledIntent ?? settledResponse;
   const current = activity.current;
   const tool = current?.tools?.active.at(-1);
-  let headline = tool
+  const headline = tool
     ? visibleSummary(`${tool.name}${tool.status ? ` ${tool.status}` : ""}`, summaryHeadlineCharacters)
     : current?.intent
       ? visibleTailInspectionExcerpt(current.intent.excerpt, summaryHeadlineCharacters)
       : current?.response
         ? visibleTailInspectionExcerpt(current.response, summaryHeadlineCharacters)
         : undefined;
-  if (settledActivity?.kind === "activity") {
-    const label = settledActivity.channel === "plan"
-      ? "Plan"
-      : settledActivity.channel === "reported-thought" ? "Reported thought" : "Response tail";
-    const prefix = `${label}: `;
-    headline = `${prefix}${visibleTailInspectionExcerpt(
-      settledActivity.summary,
-      summaryHeadlineCharacters - Array.from(prefix).length,
-    )}`;
-  }
-  const turn = settledActivity?.turn ?? activity.turn;
   return {
     phase: activity.phase,
     ...(headline ? { headline } : {}),
-    ...(turn === undefined ? {} : { turn }),
-    updatedAt: settledActivity?.at ?? activity.updatedAt,
+    ...(activity.turn === undefined ? {} : { turn: activity.turn }),
+    updatedAt: activity.updatedAt,
   };
 }
 

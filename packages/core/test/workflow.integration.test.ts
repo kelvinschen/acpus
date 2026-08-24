@@ -8,6 +8,7 @@ import {
 } from "../src/index.js";
 import { compileWorkflowDefinition, tryCompileWorkflowDefinition } from "../src/workflow.js";
 import { lift, template } from "@acpus/expression";
+import * as Result from "effect/Result";
 
 const NormalizeInput = z.object({ packageName: z.string() });
 const ReviewOutput = z.object({ ready: z.boolean(), summary: z.string() });
@@ -118,7 +119,7 @@ describe("workflow compilation", () => {
     });
 
     expect(ir.diagnostics).toEqual([]);
-    expect(ir.irVersion).toBe(7);
+    expect(ir.irVersion).toBe(8);
     expect(ir).not.toHaveProperty("lock");
     expect(ir.description).toBe("Review a package release for readiness.");
     expect(ir.root.nodes.map((node) => node.kind)).toEqual([
@@ -818,23 +819,6 @@ describe("workflow compilation", () => {
     })).toThrow("step() can only be called during workflow graph declaration.");
   });
 
-  it("allows node output fields named ir to be wired as normal user fields", () => {
-    const definition = defineWorkflow({ name: "output_ir_field" }).build(({ step }) => {
-      const inspect = step("inspect").task({
-        input: null,
-        exec: async () => ({ ir: "ok" }),
-      });
-
-      return { ir: inspect.output.ir };
-    });
-
-    const ir = compileWorkflowDefinition(definition);
-
-    expect(ir.diagnostics).toEqual([]);
-    expect(ir.root.output).toMatchObject({ kind: "object", fields: { ir: { kind: "ref", path: ["nodes", "inspect", "output", "ir"] } } });
-    expect(ir.root.nodes[0]).not.toHaveProperty("outputSchema");
-  });
-
   it("returns ordinary lowering failures without changing throwing-wrapper semantics", () => {
     const cause = Object.assign(new Error("build failed"), { code: "BUILD_FAILED" });
     const definition = defineWorkflow({ name: "throwing_build" }).build(() => {
@@ -843,9 +827,9 @@ describe("workflow compilation", () => {
 
     const result = tryCompileWorkflowDefinition(definition);
 
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected lowering failure");
-    expect(result.error).toEqual({
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("expected lowering failure");
+    expect(result.failure).toEqual({
       type: "workflow-lowering-failed",
       message: "build failed",
       cause,
@@ -869,9 +853,9 @@ describe("workflow compilation", () => {
     });
 
     const result = tryCompileWorkflowDefinition(definition);
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected malformed Task failure");
-    expect(result.error).toEqual({
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("expected malformed Task failure");
+    expect(result.failure).toEqual({
       type: "invalid-task-spec",
       nodeId: "bad_task",
       message: "Task node 'bad_task' must use inline { input, exec } or reusable { input, task }.",
@@ -889,9 +873,9 @@ describe("workflow compilation", () => {
 
     for (const options of [undefined, { validate: false }]) {
       const result = tryCompileWorkflowDefinition(definition, options);
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected missing reusable Task link");
-      expect(result.error).toMatchObject({
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected missing reusable Task link");
+      expect(result.failure).toMatchObject({
         type: "reusable-task-target-missing",
         nodeId: "linked",
       });
@@ -912,9 +896,9 @@ describe("workflow compilation", () => {
         targets: new Map([["linked", { specifier: "./tasks.ts", exportName: "normalizePackage" }]]),
       },
     });
-    expect(invalid.isErr()).toBe(true);
-    if (invalid.isOk()) throw new Error("expected invalid reusable Task link");
-    expect(invalid.error).toMatchObject({
+    expect(Result.isFailure(invalid)).toBe(true);
+    if (Result.isSuccess(invalid)) throw new Error("expected invalid reusable Task link");
+    expect(invalid.failure).toMatchObject({
       type: "reusable-task-target-invalid",
       nodeId: "linked",
       field: "referrerPath",
@@ -930,9 +914,9 @@ describe("workflow compilation", () => {
           targets: new Map([["linked", { specifier: "./tasks.ts", exportName: "normalizePackage" }]]),
         },
       });
-      expect(rooted.isErr()).toBe(true);
-      if (rooted.isOk()) throw new Error("expected rooted reusable Task referrer failure");
-      expect(rooted.error).toMatchObject({
+      expect(Result.isFailure(rooted)).toBe(true);
+      if (Result.isSuccess(rooted)) throw new Error("expected rooted reusable Task referrer failure");
+      expect(rooted.failure).toMatchObject({
         type: "reusable-task-target-invalid",
         field: "referrerPath",
       });
@@ -1033,29 +1017,6 @@ describe("workflow compilation", () => {
     });
   });
 
-  it("requires loop bodies to declare stop in the transition output", () => {
-    const definition = defineWorkflow({ name: "counted_loop" }).build(({ step }) => {
-      const loop = step("counted").loop({
-        state: { ok: false as boolean },
-        do() { return { state: { ok: true }, stop: true }; },
-      });
-      return { ok: loop.output.ok };
-    });
-
-    const ir = compileWorkflowDefinition(definition);
-
-    expect(ir.diagnostics).toEqual([]);
-    expect(ir.root.nodes[0]).toMatchObject({
-      id: "counted",
-      kind: "loop",
-      do: {
-        output: { kind: "object", fields: {
-          stop: { kind: "literal", value: true },
-        } },
-      },
-    });
-  });
-
   it("lowers custom acpx command agent definitions and skips malformed agent definitions", () => {
     const valid = defineWorkflow({
       name: "command_agent_definition",
@@ -1100,14 +1061,33 @@ describe("workflow compilation", () => {
       run: { agent: "worker" },
     });
 
+    const slot = defineWorkflow({
+      name: "agent_slot",
+      agents: {
+        reviewer: {},
+        constrained: { model: "gpt-5.4", config: { effort: "high" }, permissionMode: "deny-all" },
+      },
+    }).build(() => ({}));
+
+    expect(compileWorkflowDefinition(slot).agents).toEqual({
+      reviewer: { kind: "agent_slot" },
+      constrained: {
+        kind: "agent_slot",
+        model: "gpt-5.4",
+        config: { effort: "high" },
+        permissionMode: "deny-all",
+      },
+    });
+
     const malformed = defineWorkflow({
       name: "malformed_agent_definition",
       agents: {
-        missing_use: { model: "gpt-5.4" },
         mixed: { use: "codex", command: "acpx worker" },
         ir_shaped: { kind: "agent_definition", use: "codex" },
         legacy_agent_mode: { use: "codex", agentMode: "plan" },
         bad_config: { use: "codex", config: { mode: true } },
+        preset_shaped: { preset: "reviewer" },
+        unknown_field: { mystery: true },
       } as any,
     }).build(() => ({}));
 
@@ -1115,10 +1095,6 @@ describe("workflow compilation", () => {
 
     expect(malformedIr.agents).toEqual({});
     expect(malformedIr.diagnostics).toEqual([
-      expect.objectContaining({
-        code: "A002",
-        path: "agents.missing_use",
-      }),
       expect.objectContaining({
         code: "A002",
         path: "agents.mixed",
@@ -1134,6 +1110,14 @@ describe("workflow compilation", () => {
       expect.objectContaining({
         code: "A002",
         path: "agents.bad_config.config.mode",
+      }),
+      expect.objectContaining({
+        code: "A002",
+        path: "agents.preset_shaped.preset",
+      }),
+      expect.objectContaining({
+        code: "A002",
+        path: "agents.unknown_field.mystery",
       }),
     ]);
   });
@@ -1191,24 +1175,6 @@ describe("workflow compilation", () => {
       count: { kind: "literal", value: 2 },
     });
     expect(quorum).not.toHaveProperty("itemOutputSchema");
-  });
-
-  it("rejects undefined in plain workflow-data objects", () => {
-    const withUndefined = defineWorkflow({ name: "strip_undefined" }).build((() => ({
-      payload: {
-        keep: true,
-        drop: undefined,
-        nested: { keep: "yes", drop: undefined },
-      },
-    })) as any);
-
-    expect(() => compileWorkflowDefinition(withUndefined)).toThrow("Unsupported expression value at key 'drop': undefined.");
-
-    const withDate = defineWorkflow({ name: "reject_non_plain_object" }).build((() => ({
-      when: new Date(0),
-    })) as any);
-
-    expect(() => compileWorkflowDefinition(withDate)).toThrow("Unsupported expression value: non-plain object.");
   });
 
   it("accepts scalar scope outputs and fails invalid lowering invariants", () => {

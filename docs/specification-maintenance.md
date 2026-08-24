@@ -1,46 +1,54 @@
-# Specification Maintenance Guide
+# SPEC 维护指南
 
-This is the authority for Spec maintenance. Specs state current product
-contracts, not plans, history, tutorials, tests, or implementation notes. Use
-the template and catalog in [`specs/INDEX.md`](../specs/INDEX.md).
+本文档是维护 SPEC 时必须遵循的权威指南。SPEC 只记录当前稳定且实质的产品契约：代码无法表达的约束，或虽然能从代码推导、但缺少文档就需要高成本重新发现的约束。SPEC 绝非实现代码的文字翻版。请使用 [`specs/INDEX.md`](../specs/INDEX.md) 中的模板与目录。
 
-## Scope
+## 可信来源
 
-- `specs/` owns stable behavior implemented by production code.
-- `docs/roadmap/` owns future work; Git history and release tags own the past.
-- Informative assets do not own product requirements. Follow
-  [Skill Maintenance](skill-maintenance.md) for Skill content.
-- Observable is not enough: specify only stable, material behavior owned by
-  production code.
+- 生产代码是当前运行机制与内部结构的可信依据。
+- 导出的类型、Schema、命令帮助与配置定义精确的数据结构与枚举；自动化测试与 CI 提供可执行的验证证据。
+- SPEC 负责定义核心契约：当具体实现被替换后，调用方、运维人员或协作模块仍可依赖这些行为。
+- 架构决策记录（ADR）记录持久的设计考量；Skill 与用户指南提供操作指引；Git 历史与发布标签记录过去的演进历程。
+- 仅当外部链接能避免高成本的重新探索时，SPEC 才可以链接到其他来源。不要在 SPEC 中维护源码映射、导出清单或测试用例目录。
 
-## Change Rules
+## 准入检查
 
-- **New capability:** add its smallest stable contract to the existing owner.
-- **Changed capability:** replace or consolidate superseded requirements.
-- **Removed capability:** delete obsolete requirements; leave no tombstones.
-- **Behavior-preserving refactor:** add no requirement; update only stale
-  ownership, links, or verification routing.
-- Create a new spec only for a distinct stable boundary with a clear owner and
-  independent verification.
+仅当满足以下全部条件时，某项要求才属于 `specs/`：
 
-## Writing Rules
+1. 它明确规定了对调用方、运维人员或跨模块交互边界具有实际意义的行为。
+2. 即使实现内部依然正确，改变这项行为仍可能使既有产品决策失效，或破坏下游的合法操作和跨模块协作。
+3. 即使更换具体底层实现，该要求仍应继续有效。
+4. 无法低成本且无歧义地从生产代码、导出类型、Schema、命令帮助、配置或相应模块边界已有的显式契约中直接推导得出。常规测试是契约的佐证，不能替代规范本身的意图。
 
-- State observable outcomes, public interfaces, invariants, and decision
-  boundaries; omit algorithms, internal structure, examples, and test matrices.
-- Keep each contract canonical in one owner spec. Other specs link to it and
-  describe only their own boundary.
-- Select material contracts before making requirements atomic. Atomic does not
-  mean exhaustive.
-- Use RFC 2119/8174 terms deliberately. Negative requirements belong only to a
-  current closed shape, safety boundary, or unsupported input.
-- Treat current development as greenfield; specify compatibility only when
-  explicitly requested as current behavior.
+仅具备可观察性是不够的。SPEC 只保留稳定、实质的契约；即便是可被观察到的次要实现细节，也应直接省略。
 
-## Verification
+## 范围
 
-- Update the owner spec and focused verification together only when the current
-  product contract changes.
-- Name the narrow command and contract risk; follow
-  [Testing Maintenance](testing-maintenance.md) for test design.
-- Before handoff, confirm one owner, current-only wording, focused verification,
-  and no avoidable net growth.
+- `specs/` 负责定义由当前生产代码实现的产品契约。
+- `docs/roadmap/` 规划未来工作；Git 历史与发布标签记录已完成的规划、已废弃的行为与过往实现。
+- 说明性文档不定义产品契约。面向 Skill 的指引请遵循 [Skill 维护指南](skill-maintenance.md)。
+- 围绕业务能力或真实且稳定的模块边界组织 SPEC，而非为每个包单独建档。当不再存在独立的长期契约时，应直接删除对应的 SPEC。
+
+## 变更规则
+
+- **新增能力：** 仅向主责 SPEC 添加满足准入条件的最小契约。
+- **变更能力：** 在修改实现与针对性验证的同时，同步更新或合并受影响的契约。
+- **移除能力：** 直接删除过时要求，不要保留废弃占位标记（tombstone）。
+- **保持行为的重构：** 不增加任何要求；仅更新已失效的责任归属、链接或验证命令。
+- 仅当存在明确且稳定的模块边界、清晰的归属模块与独立验证时，才创建新的 SPEC。
+
+## 编写规则
+
+- 以使用者的语言陈述执行结果、不变式、故障边界与决策边界。
+- 语言风格：优先描述“谁在什么条件下产生什么结果”，避免生硬直译抽象名词或黑话；保留更易识别的英文专业名称（如模块名、产品名和核心领域词）；当中文术语需要与英文代码概念对齐时，仅在当前文档首次出现时增加简短英文注释（如“运行实例（occurrence）”）。
+- 省略算法步骤、内部模块拆分、存储布局、进程拓扑、类库选型、具体类型声明、配置清单副本、UI 样式标记、测试用例矩阵、穷举分支示例以及已失效的历史演进记录。
+- 确保每项契约仅由单个主 SPEC 负责定义。其他 SPEC 只描述自己负责的边界行为，并在重新探索成本过高时链接至主 SPEC。
+- 先确认一项内容确实属于实质契约，再决定是否拆成多条独立要求；“每条要求只表达一件事”不等于穷举实现细节。
+- 审慎使用 RFC 2119/8174 词汇。否定性要求仅适用于当前的封闭边界、安全限制或不支持的产品操作。
+- 将当前开发视为全新构建（greenfield）；只有当前产品明确要求兼容行为时，才将兼容性写入 SPEC。
+
+## 验证
+
+- 仅当产品契约发生变化时才更新 SPEC；内部实现与测试的调整不应导致 SPEC 跟着改写。
+- 指明具体的针对性验证命令及其所覆盖的契约风险。不要照搬整个测试套件或罗列具体测试用例。
+- 修改测试、测试配置或测试脚本前，请遵循 [测试维护指南](testing-maintenance.md)。
+- 交付前，确认可信来源唯一、表述立足当前、验证命令具有针对性、不存在对实现的简单重复，且未引入非必要的净增内容。

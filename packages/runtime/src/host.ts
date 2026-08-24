@@ -6,6 +6,7 @@ export {
   type WorkspaceRuntimeOpenFailure,
 } from "./workspace-runtime.js";
 export type {
+  ConfiguredAcpAgentCommandResolver,
   NamedAcpAgentLaunchRegistry,
   NamedAcpAgentLaunchResolver,
 } from "@acpus/agent-executor";
@@ -24,4 +25,9 @@ export type {
   ObserveInspectionQuery,
 } from "./inspection/types.js";
 export type { ArtifactRecord } from "./artifacts/types.js";
+export type {
+  AgentPresetProvider,
+  AgentPresetProviderFailure,
+  HostAgentPreset,
+} from "./acpus-config.js";
 export type { RunDetails, RuntimeReadFailure } from "./store/store.js";

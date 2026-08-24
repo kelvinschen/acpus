@@ -13,7 +13,9 @@ Contents:
 
 ## Choose Task Form
 
-**Inline Task first.** It stays compatible with a self-contained heredoc. Use a file-backed reusable Task at the second authored call site or when the implementation requires module/third-party imports. Fanout/loop runtime instances do not count as authoring reuse.
+- **Default:** Use an inline Task; it remains compatible with a self-contained heredoc.
+- **Reusable Task:** Use at the second authored call site or when module/third-party imports are required.
+- **Not reuse:** Fanout and loop runtime instances do not count as a second authored call site.
 
 Inline Tasks may dynamically import Node built-ins inside `exec`:
 
@@ -58,7 +60,10 @@ const normalized = step("normalize").task({
 });
 ```
 
-`inputSchema` is a TypeScript input witness, not runtime parsing/defaulting. `z.infer` keeps schema and input annotations aligned. For reusable Tasks, an explicit `Promise<Result>` return and typed local values prevent output inference from drifting across branches; output remains inferred from `exec`, so never add `outputSchema`. Bare-package dependencies resolve from the workflow workspace, and each attempt loads the resolved Task module in a fresh Node process.
+- **`inputSchema`:** A TypeScript input witness, not runtime parsing or defaulting.
+- **Types:** Use `z.infer` to align schema and annotations. Use an explicit `Promise<Result>` and typed locals when reusable Task branches could widen output inference.
+- **Output:** Infer it from `exec`; never add `outputSchema`.
+- **Imports:** Resolve bare packages from the workflow workspace. Load the Task module fresh for each Attempt.
 
 Use an existing reusable Task when the requirement needs its capability:
 
@@ -95,7 +100,10 @@ const report = step("write_report").task({
 });
 ```
 
-`artifact.write` accepts `string | Uint8Array` and returns `ArtifactRef`. `artifact.path(ref)` synchronously returns an absolute path. The ref must arrive through Task input or that Task's successful write; arbitrary/cross-run refs fail. Serialize JSON yourself; no format-specific or file-copy helpers.
+- `artifact.write` accepts `string | Uint8Array` and returns `ArtifactRef`.
+- `artifact.path(ref)` synchronously returns an absolute path.
+- Accept only refs passed through Task input or written successfully by that Task; arbitrary or cross-run refs fail.
+- Serialize JSON explicitly; there are no format-specific or file-copy helpers.
 
 Direct Agent-prompt interpolation of `ArtifactRef` renders its absolute local path. `${ref.uri}` keeps the URI. Nested refs render as compact JSON.
 
@@ -103,7 +111,10 @@ Direct Agent-prompt interpolation of `ArtifactRef` renders its absolute local pa
 
 Each Task attempt runs in a fresh Node process. Context contains only `input`, `$`, `artifact`, `env`, and `abortSignal`.
 
-An authored relative Task `cwd` resolves from the workflow workspace and becomes initial `process.cwd()`; Task file access and `$` commands then resolve from that process cwd. Later commands follow `process.chdir()` and `process.env` changes. Task `env` is a string-only host-environment overlay and cannot unset inherited variables.
+- Resolve a relative Task `cwd` from the workflow workspace and use it as initial `process.cwd()`.
+- Resolve Task file access and `$` commands from the current process cwd.
+- Honor later `process.chdir()` and `process.env` changes.
+- Treat Task `env` as a string-only overlay; it cannot unset inherited variables.
 
 ```ts
 const inspect = step("inspect").task({
@@ -121,13 +132,21 @@ const inspect = step("inspect").task({
 });
 ```
 
-Task `timeout` aborts and terminates the whole attempt; `execution.defaultCommandTimeout` is only the default for individual `$` commands. `$` also supports per-command timeout, `.allowExitCode(...)`, `.nothrow()`, `.json<T>()`, `.text()`, and `.lines()`. Interpolate argument arrays instead of assembling shell strings. Use `abortSignal` for cooperative cancellation in non-command async work.
+- **Task `timeout`:** Abort and terminate the whole Attempt.
+- **`defaultCommandTimeout`:** Set only the default for each `$` command.
+- **Per-command controls:** Use timeout, `.allowExitCode(...)`, `.nothrow()`, `.json<T>()`, `.text()`, or `.lines()`.
+- **Arguments:** Interpolate argument arrays; do not assemble shell strings.
+- **Cancellation:** Use `abortSignal` for non-command async work.
 
 ## Agent Session Reuse
 
-Use `sessionKey` only to continue a conversation across loop rounds or steps; omit it otherwise. Give each conversation a distinct, stable, non-empty, run-local key. Fork treats each key atomically: it reuses the complete source conversation or reruns every occurrence in a fresh child session.
+- Set `sessionKey` only to continue one conversation across loop rounds or steps; omit it otherwise.
+- Give each conversation a distinct, stable, non-empty, run-local key.
+- Treat each key atomically during Fork: reuse the complete conversation or rerun every occurrence in a fresh child Session.
 
-Occurrences sharing a key must use the same Agent backend, effective model, and `config`; Acpus does not detect conflicts. See [Acpx Agents](acpx-agents.md#acp-agent-config) for configuration.
+- Keep the resolved Agent launch, effective cwd, model, and `config` identical across occurrences sharing a key.
+- Acpus validates the binding before Provider startup and reports only `launch | cwd | model | options` mismatch categories, never raw values.
+- See [ACP Agents](acp-agents.md#acp-agent-config) for configuration.
 
 In a fix/review loop, give only the fixer a key so each review starts fresh:
 

@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "composite": true,
+    "customConditions": [],
+    "tsBuildInfoFile": "./tsconfig.build.tsbuildinfo"
+  },
+  "references": [
+    { "path": "../owned-process/tsconfig.build.json" }
+  ]
+}

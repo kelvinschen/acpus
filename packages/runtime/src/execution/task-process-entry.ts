@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
+import * as Result from "effect/Result";
 import { sha256Digest } from "@acpus/core/content-identity";
 import { importAuthoringModule } from "@acpus/loader";
 import { task } from "@acpus/core";
@@ -70,13 +71,13 @@ async function execute(request: TaskProcessRequest): Promise<void> {
       return;
     }
     const normalized = tryNormalizeWorkflowData(output, "Task output", { allowTopLevelUndefined: true });
-    if (normalized.isErr()) {
-      await finish({ type: "failed", message: normalized.error.message });
+    if (Result.isFailure(normalized)) {
+      await finish({ type: "failed", message: normalized.failure.message });
       return;
     }
-    await finish(normalized.value === undefined
+    await finish(normalized.success === undefined
       ? { type: "completed", hasOutput: false }
-      : { type: "completed", hasOutput: true, output: normalized.value });
+      : { type: "completed", hasOutput: true, output: normalized.success });
   } catch (error) {
     const systemFailure = runtimeSystemFailure ?? (error instanceof TaskRuntimeSystemError ? error : undefined);
     await finish(systemFailure

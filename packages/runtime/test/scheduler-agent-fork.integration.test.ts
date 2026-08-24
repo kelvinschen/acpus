@@ -1,11 +1,13 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { defineWorkflow, z } from "@acpus/core";
 import { template } from "@acpus/expression";
-import type { AgentTurnRequest } from "@acpus/agent-executor";
+import type { FixtureAgentTurnRequest as AgentTurnRequest } from "./support/agent-turn.js";
 import { describe, expect, it } from "vitest";
 import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
-import { openRuntimeStore } from "../src/store/store.js";
-import { prepareSyntheticWorkflow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
+import { prepareSyntheticWorkflow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-harness.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 import { observedCompletedAgentTurn, taggedAgentOutput } from "./support/agent-turn.js";
 import { getRunVisualizationSnapshot } from "../src/runs/use-cases.js";
@@ -13,24 +15,25 @@ import {
   advanceFrozenRun,
   forkAgentWorkflow,
   forkRuntimeRun,
-  overrideAgentWorkflow,
+  interruptFrozenRunWhen,
+  injectedAgentWorkflow,
   targetedForkCompletedSourceWorkflow,
   targetedForkFailedSourceWorkflow,
   targetedForkReplacementWorkflow,
 } from "./support/scheduler-agent-fork.js";
 
-describe.concurrent("scheduler agent overrides and forks", () => {
-  it("executes scheduler-backed agent nodes with submit-time agent overrides", async () => {
-      await withRuntimeWorkspace("scheduler-node-executor-agent-submit-override", async workspace => {
-        const prepared = await prepareSyntheticWorkflow(workspace, overrideAgentWorkflow());
-        const store = await openRuntimeStore(workspace);
+describe.concurrent("scheduler Agent injections and forks", () => {
+  it("executes scheduler-backed Agent nodes with submit-time injections", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-submit-injection", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, injectedAgentWorkflow());
+        const store = await openRuntimeStoreAdapter(workspace);
         const turns: AgentTurnRequest[] = [];
         try {
           const run = await admitRunForTest(store, {
             prepared,
             input: {},
             cwd: workspace,
-            agentOverrides: {
+            agentInjections: {
               reviewer: { command: "custom-acp-server", permissionMode: "deny-all" },
             },
           });
@@ -46,12 +49,13 @@ describe.concurrent("scheduler agent overrides and forks", () => {
             },
           })).resolves.toMatchObject({ status: "completed", started: 1, completed: 1 });
 
-          expect(store.getRun(run.id)?.agentOverrides).toEqual({
-            reviewer: { command: "custom-acp-server", permissionMode: "deny-all" },
+          expect(store.getFrozenRun(run.id)?.agentBindings.reviewer).toMatchObject({
+            source: { kind: "direct" },
+            injection: { command: "custom-acp-server", permissionMode: "deny-all" },
           });
-          expect((await getRunVisualizationSnapshot(workspace, run.id))._unsafeUnwrap()).toMatchObject({
+          expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRunVisualizationSnapshot(workspace, run.id)))))).toMatchObject({
             workflow: {
-              name: "scheduler-node-executor-agent-override",
+              name: "scheduler-node-executor-agent-injection",
               description: "Review a change with configured agents.",
               agents: {
                 reviewer: {
@@ -76,16 +80,16 @@ describe.concurrent("scheduler agent overrides and forks", () => {
       });
     });
 
-  it("inherits fork agent overrides and clears identity-tied fields on replacement", async () => {
-      await withRuntimeWorkspace("scheduler-node-executor-agent-fork-override", async workspace => {
-        const prepared = await prepareSyntheticWorkflow(workspace, overrideAgentWorkflow());
-        const store = await openRuntimeStore(workspace);
+  it("inherits fork Agent injections and clears identity-tied fields on replacement", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-agent-fork-injection", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, injectedAgentWorkflow());
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const source = await admitRunForTest(store, {
             prepared,
             input: {},
             cwd: workspace,
-            agentOverrides: {
+            agentInjections: {
               reviewer: {
                 use: "claude",
                 model: "sonnet",
@@ -97,14 +101,14 @@ describe.concurrent("scheduler agent overrides and forks", () => {
           });
 
           const inherited = await forkRuntimeRun(store, source.id);
-          expect(store.getRun(inherited.id)?.agentOverrides).toEqual({
-            reviewer: {
+          expect(store.getFrozenRun(inherited.id)?.agentBindings).toMatchObject({
+            reviewer: { injection: {
               use: "claude",
               model: "sonnet",
               config: { mode: "plan", effort: "high" },
               permissionMode: "deny-all",
-            },
-            auditor: { use: "codex", model: "audit-model" },
+            } },
+            auditor: { injection: { use: "codex", model: "audit-model" } },
           });
           expect(store.getFrozenRun(inherited.id)?.ir.agents.reviewer).toMatchObject({
             kind: "agent_definition",
@@ -115,9 +119,9 @@ describe.concurrent("scheduler agent overrides and forks", () => {
           });
 
           const reconfigured = await forkRuntimeRun(store, source.id, {
-            agentOverrides: { reviewer: { config: { mode: "agent" } } },
+            agentInjections: { reviewer: { config: { mode: "agent" } } },
           });
-          expect(store.getRun(reconfigured.id)?.agentOverrides?.reviewer).toMatchObject({
+          expect(store.getFrozenRun(reconfigured.id)?.agentBindings.reviewer?.injection).toMatchObject({
             use: "claude",
             model: "sonnet",
             config: { mode: "agent" },
@@ -128,18 +132,18 @@ describe.concurrent("scheduler agent overrides and forks", () => {
           });
 
           const cleared = await forkRuntimeRun(store, source.id, {
-            agentOverrides: { reviewer: { config: {} } },
+            agentInjections: { reviewer: { config: {} } },
           });
-          expect(store.getRun(cleared.id)?.agentOverrides?.reviewer).toMatchObject({ config: {} });
+          expect(store.getFrozenRun(cleared.id)?.agentBindings.reviewer?.injection).toMatchObject({ config: {} });
           expect(store.getFrozenRun(cleared.id)?.ir.agents.reviewer).toMatchObject({ config: {} });
 
           const replaced = await forkRuntimeRun(store, source.id, {
-            agentOverrides: { reviewer: { command: "custom-acp-server" } },
+            agentInjections: { reviewer: { command: "custom-acp-server" } },
           });
           const effective = store.getFrozenRun(replaced.id)?.ir.agents.reviewer;
-          expect(store.getRun(replaced.id)?.agentOverrides).toEqual({
-            reviewer: { command: "custom-acp-server", permissionMode: "deny-all" },
-            auditor: { use: "codex", model: "audit-model" },
+          expect(store.getFrozenRun(replaced.id)?.agentBindings).toMatchObject({
+            reviewer: { injection: { command: "custom-acp-server", permissionMode: "deny-all" } },
+            auditor: { injection: { use: "codex", model: "audit-model" } },
           });
           expect(effective).toMatchObject({
             kind: "agent_command",
@@ -163,7 +167,7 @@ describe.concurrent("scheduler agent overrides and forks", () => {
       await withRuntimeWorkspace("scheduler-node-executor-fork-recovery", async workspace => {
         const sourcePrepared = await prepareSyntheticWorkflow(workspace, targetedForkFailedSourceWorkflow());
         const replacementPrepared = await prepareSyntheticWorkflow(workspace, targetedForkReplacementWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const source = await admitRunForTest(store, { prepared: sourcePrepared, input: {}, cwd: workspace });
           await expect(advanceFrozenRun({
@@ -203,7 +207,7 @@ describe.concurrent("scheduler agent overrides and forks", () => {
   it("reruns only leaves whose declared workflow input changed", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-fork-field-input", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, fieldInputForkWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const source = await admitRunForTest(store, {
             prepared,
@@ -226,11 +230,36 @@ describe.concurrent("scheduler agent overrides and forks", () => {
       });
     });
 
+  it("semantically reuses omitted and explicitly equivalent normalized fork input", async () => {
+      await withRuntimeWorkspace("scheduler-node-executor-fork-semantic-input", async workspace => {
+        const prepared = await prepareSyntheticWorkflow(workspace, semanticForkInputWorkflow());
+        const store = await openRuntimeStoreAdapter(workspace);
+        try {
+          const source = await admitRunForTest(store, {
+            prepared,
+            input: { value: "same" },
+            cwd: workspace,
+          });
+
+          const inherited = await forkRuntimeRun(store, source.id);
+          const explicitEquivalent = await forkRuntimeRun(store, source.id, { input: { value: "same" } });
+          const changed = await forkRuntimeRun(store, source.id, { input: { value: "different" } });
+
+          expect(explicitEquivalent).toMatchObject({ id: inherited.id, forkCreated: false });
+          expect(changed).toMatchObject({ forkCreated: true });
+          expect(changed.id).not.toBe(inherited.id);
+          expect(store.getFrozenRun(inherited.id)?.input).toEqual({ value: "same", mode: "standard" });
+        } finally {
+          store.close();
+        }
+      });
+    });
+
   it("replays a downstream leaf when a changed predecessor reproduces the same output", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-fork-stable-output", async workspace => {
         const sourcePrepared = await prepareSyntheticWorkflow(workspace, stableOutputForkWorkflow(false));
         const replacementPrepared = await prepareSyntheticWorkflow(workspace, stableOutputForkWorkflow(true));
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const source = await admitRunForTest(store, { prepared: sourcePrepared, input: {}, cwd: workspace });
           await expect(advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store }))
@@ -250,9 +279,9 @@ describe.concurrent("scheduler agent overrides and forks", () => {
     });
 
   it("drives completed children through the same replay path", async () => {
-      await withRuntimeWorkspace("scheduler-node-executor-targeted-fork-empty-agent-overrides", async workspace => {
+      await withRuntimeWorkspace("scheduler-node-executor-targeted-fork-empty-agent-injections", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, targetedForkCompletedSourceWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         try {
           const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
           await expect(advanceFrozenRun({
@@ -262,7 +291,7 @@ describe.concurrent("scheduler agent overrides and forks", () => {
             store,
           })).resolves.toMatchObject({ status: "completed", started: 2, completed: 2 });
 
-          const fork = await forkRuntimeRun(store, source.id, { agentOverrides: {} });
+          const fork = await forkRuntimeRun(store, source.id, { agentInjections: {} });
           expect(store.getRun(fork.id)).toMatchObject({ status: "pending" });
           await expect(advanceFrozenRun({ cwd: workspace, runId: fork.id, ownerId: "fork-owner", store }))
             .resolves.toMatchObject({ status: "completed", started: 0, completed: 2 });
@@ -275,8 +304,8 @@ describe.concurrent("scheduler agent overrides and forks", () => {
 
   it("replays compatible agents without creating a child attempt or session", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-agent-fork-replay", async workspace => {
-        const prepared = await prepareSyntheticWorkflow(workspace, overrideAgentWorkflow());
-        const store = await openRuntimeStore(workspace);
+        const prepared = await prepareSyntheticWorkflow(workspace, injectedAgentWorkflow());
+        const store = await openRuntimeStoreAdapter(workspace);
         const turns: AgentTurnRequest[] = [];
         try {
           const source = await admitRunForTest(store, { prepared, input: {}, cwd: workspace });
@@ -310,7 +339,7 @@ describe.concurrent("scheduler agent overrides and forks", () => {
   it("replays an unchanged explicit session group without creating a child session", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-agent-fork-explicit-session", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, forkAgentWorkflow("shared-session"));
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         const turns: AgentTurnRequest[] = [];
         const executeAgentTurn = async (request: AgentTurnRequest) => {
           turns.push(request);
@@ -330,7 +359,7 @@ describe.concurrent("scheduler agent overrides and forks", () => {
             .resolves.toMatchObject({ status: "completed", started: 0, completed: 2 });
 
           expect(turns).toHaveLength(2);
-          expect(turns[1]!.sessionName).toBe(turns[0]!.sessionName);
+          expect(turns[1]!.agentSessionId).toBe(turns[0]!.agentSessionId);
           expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.attempts)).toEqual([]);
           expect(store.getRun(fork.id)?.dynamic?.nodeInstances).toEqual([
             expect.objectContaining({ nodeId: "first_review", reusedFromRunId: source.id }),
@@ -345,7 +374,7 @@ describe.concurrent("scheduler agent overrides and forks", () => {
   it("continues an atomic session-group replay after the runtime store reopens", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-agent-fork-session-reopen", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, forkAgentWorkflow("shared-session"));
-        let store = await openRuntimeStore(workspace);
+        let store = await openRuntimeStoreAdapter(workspace);
         const turns: AgentTurnRequest[] = [];
         const executeAgentTurn = async (request: AgentTurnRequest) => {
           turns.push(request);
@@ -356,19 +385,18 @@ describe.concurrent("scheduler agent overrides and forks", () => {
           await advanceFrozenRun({ cwd: workspace, runId: source.id, ownerId: "source-owner", store, executeAgentTurn });
           const fork = await forkRuntimeRun(store, source.id);
 
-          await expect(advanceFrozenRun({
+          await interruptFrozenRunWhen({
             cwd: workspace,
             runId: fork.id,
             ownerId: "fork-owner-a",
             store,
-            shouldStop: () => runtimeRows(workspace, `
+          }, () => runtimeRows(workspace, `
               SELECT replayed_count
               FROM fork_replay_session_groups
               WHERE run_id = ?
-            `, fork.id)[0]?.replayed_count === 1,
-          })).resolves.toMatchObject({ status: "lease_lost", started: 0, completed: 1 });
+            `, fork.id)[0]?.replayed_count === 1);
           store.close();
-          store = await openRuntimeStore(workspace);
+          store = await openRuntimeStoreAdapter(workspace);
 
           await expect(advanceFrozenRun({ cwd: workspace, runId: fork.id, ownerId: "fork-owner-b", store }))
             .resolves.toMatchObject({ status: "completed", started: 0, completed: 1 });
@@ -384,7 +412,7 @@ describe.concurrent("scheduler agent overrides and forks", () => {
       await withRuntimeWorkspace("scheduler-node-executor-agent-fork-session-source-order", async workspace => {
         const sourcePrepared = await prepareSyntheticWorkflow(workspace, parallelSessionOrderWorkflow(1));
         const childPrepared = await prepareSyntheticWorkflow(workspace, parallelSessionOrderWorkflow(3));
-        const store = await openRuntimeStore(workspace);
+        const store = await openRuntimeStoreAdapter(workspace);
         const turns: AgentTurnRequest[] = [];
         const executeAgentTurn = async (request: AgentTurnRequest) => {
           turns.push(request);
@@ -426,13 +454,12 @@ describe.concurrent("scheduler agent overrides and forks", () => {
           `, replayed.id).map(row => row.node_id)).toEqual(["agent_a", "agent_b", "agent_c"]);
 
           const outOfOrder = await forkRuntimeRun(store, source.id, { prepared: childPrepared, input: { variant: 2 } });
-          await expect(advanceFrozenRun({
+          await interruptFrozenRunWhen({
             cwd: workspace,
             runId: outOfOrder.id,
             ownerId: "bootstrap-order-owner",
             store,
-            shouldStop: () => true,
-          })).resolves.toMatchObject({ status: "lease_lost", started: 0, completed: 0 });
+          }, () => true);
           const orderedCandidates = store.scheduler.listReplayCandidates(outOfOrder.id)
             .filter(candidate => candidate.sessionGroupDigest !== undefined);
           expect(orderedCandidates).toHaveLength(3);
@@ -464,8 +491,7 @@ describe.concurrent("scheduler agent overrides and forks", () => {
                 sessionGroupDigest: String(lateFact.session_group_digest),
               },
             });
-            if (committed.isErr()) throw new Error(committed.error.message);
-            expect(committed.value).toMatchObject({
+            expect(committed).toMatchObject({
               disposition: "mismatch",
               invalidatedNodeKeys: orderedCandidates.map(candidate => candidate.nodeKey),
             });
@@ -479,17 +505,16 @@ describe.concurrent("scheduler agent overrides and forks", () => {
           `, outOfOrder.id)).toEqual([]);
 
           const partial = await forkRuntimeRun(store, source.id, { prepared: childPrepared, input: { variant: 3 } });
-          await expect(advanceFrozenRun({
+          await interruptFrozenRunWhen({
             cwd: workspace,
             runId: partial.id,
             ownerId: "partial-order-owner",
             store,
-            shouldStop: () => runtimeRows(workspace, `
+          }, () => runtimeRows(workspace, `
               SELECT replayed_count
               FROM fork_replay_session_groups
               WHERE run_id = ?
-            `, partial.id)[0]?.replayed_count === 1,
-          })).resolves.toMatchObject({ status: "lease_lost", started: 0, completed: 2 });
+            `, partial.id)[0]?.replayed_count === 1);
           const remaining = store.scheduler.listReplayCandidates(partial.id)
             .filter(candidate => candidate.sessionGroupDigest !== undefined);
           expect(remaining).toHaveLength(2);
@@ -589,6 +614,13 @@ function fieldInputForkWorkflow() {
     const fromB = step("from_b").task({ input: input.b, exec: async ({ input }) => input });
     return { a: fromA.output, b: fromB.output };
   });
+}
+
+function semanticForkInputWorkflow() {
+  return defineWorkflow({
+    name: "scheduler-node-executor-fork-semantic-input",
+    inputSchema: z.object({ value: z.string(), mode: z.string().default("standard") }),
+  }).build(({ input }) => ({ value: input.value, mode: input.mode }));
 }
 
 function stableOutputForkWorkflow(changed: boolean) {

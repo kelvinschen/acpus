@@ -1,175 +1,45 @@
-# Agent Executor Spec
+# Agent Executor SPEC
 
-## Purpose
+## 目的
 
-`@acpus/agent-executor` owns one isolated `acpx/runtime` worker tree for each
-Runtime Agent attempt. It exposes normalized turn results and process-ownership
-evidence; [Runtime](runtime-spec.md) owns durable attempts, session identity,
-and operator-facing recovery.
+`@acpus/agent-executor` 将 Runtime 的 Agent Session 执行意图转化为独占的、限定在当前工作区内的 ACP Session 租约。它负责解析启动配置、处理 Turn 收尾、清理 Session 资源并持久化所有权记录。[Runtime](runtime-spec.md) 负责持久化调度与 Retry 决策；[ACP](acp-spec.md) 负责协议层 Session 行为与恢复数据（projection）。
 
-## Requirements
+## 要求
 
-### Public Boundary
+### 命名 Agent 解析
 
-- The package MUST expose `createManagedAcpExecutor`, `recoverAcpOwnership`,
-  `inspectAcpOwnership`, `acpxSessionProjectionPath`, and their public
-  managed-attempt, host-provided named Agent launch, normalized-turn, and ownership
-  types.
-- `withAttempt` MUST provide one callback-scoped `runTurn` capability and MUST
-  clean its worker tree after the callback settles, regardless of the callback
-  result.
-- A managed attempt MUST admit at most one active turn at a time.
-- A Host MAY supply immutable named Agent launch resolvers. A command selector
-  MUST take precedence over Host resolvers; a matching resolver MUST take
-  precedence over Acpx; every other named Agent MUST match package-pinned Acpx
-  resolution for the attempt's effective working directory and environment.
-- A Host resolver MUST receive only the attempt's optional effective model and
-  MUST return a structured Agent launch.
-- Structured argv returned by Acpx MUST cross worker startup without being
-  rendered back into a command string.
-- Named Agent resolution MUST complete before the executor creates a worker or
-  ownership evidence.
-- A managed attempt MUST resolve its named Agent once and reuse that launch for
-  every turn; a later attempt MUST resolve against the then-current config.
-- A command selector and a host-resolved named Agent MUST NOT read or validate
-  Acpx configuration.
-- The executor MUST NOT apply any Acpx configuration domain other than
-  `agents`.
-- A recoverable Acpx configuration-resolution failure MUST return a
-  non-retryable runtime `config` failure without creating ownership evidence.
-- An unavailable or incompatible package-pinned Acpx resolver MUST surface as a
-  system failure.
-- The executor MUST NOT expose or persist the full resolved Acpx configuration.
-- A worker MUST use the `acpx/runtime` API with the supplied persistent session
-  directory; turns in one managed attempt MUST reuse that worker and session.
-- `acpxSessionProjectionPath` MUST map an acpx record id to
-  `sessions/<encodeURIComponent(acpx-record-id)>.json` relative to the supplied
-  session-state directory.
-- The worker MUST supply an Acpus-owned `AcpSessionStore` adapter to
-  `acpx/runtime`.
-- The adapter MUST persist the acpx session projection at the path returned by
-  `acpxSessionProjectionPath`.
-- The adapter MUST load that projection for later workers that resume the same
-  session.
-- The adapter MUST preserve structured Agent argv in the session projection.
-- Before saving, the adapter MUST preserve the acpx-projected User and Agent
-  messages, including Text, Thinking, tool calls, and each tool result's compact
-  `content`; it MUST omit each tool result's optional `output`.
-- Because Acpus does not persist the acpx raw event stream, the saved session
-  projection MUST use an empty `event_log.active_path`, omit
-  `event_log.last_write_at`, and set `event_log.last_write_error` to an explicit
-  explanation instead of naming a nonexistent stream file.
-- `runTurn` MUST return the public normalized result union and MUST deliver
-  normalized progress and observation callbacks without letting callback
-  failures change turn settlement.
-- The managed executor MUST reject child IPC messages with an unsupported
-  version or malformed discriminant-specific payload. A turn result MUST carry
-  string response segments, shared summary and timing data, and exactly the
-  terminal detail required by its status, including completed-only
-  `finalResponse`.
-- Each turn MUST start with an empty response collector that is not shared with
-  any earlier repair, retry, resumed, or steering turn.
-- The response collector MUST append each non-thought `text_delta` exactly as
-  received to the current response segment.
-- A thought or plan event MUST close the current response segment without
-  invalidating the latest final-response candidate.
-- A tool invocation MUST close the current response segment and invalidate
-  every earlier final-response candidate.
-- A tool lifecycle update MUST close the current response segment without
-  invalidating the latest final-response candidate.
-- Usage, ordinary status, and unknown status events MUST NOT enter or segment
-  responses and MUST NOT change the final-response candidate.
-- Empty text deltas MUST NOT create response segments. Non-empty whitespace
-  MUST be preserved as response text.
-- Response collection MUST depend only on normalized event order and MUST NOT
-  use provider names or response-text heuristics.
-- Turn progress MUST expose the ordered response segments observed so far; its
-  final segment MAY still be growing.
-- Every progress and result response array MUST be detached from the mutable
-  collector state.
-- A completed turn MUST expose `finalResponse` as its latest valid
-  final-response candidate.
-- A completed turn without a valid final-response candidate MUST expose an
-  empty `finalResponse` instead of falling back to an earlier response.
-- A failed or cancelled turn MUST retain its observed response segments and
-  MUST NOT expose `finalResponse`.
-- A rejected static session option MUST return a `config` failure with upstream
-  operation `session.set_config_option`.
-- The executor MUST not expose raw ACP transport capture or raw provider wire
-  output as a public request or result field.
-- A named `claude` worker MUST default `ACPX_CLAUDE_INCLUDE_USER_SETTINGS=1`
-  only when the caller did not set it; command-backed workers MUST not receive
-  that default by name matching.
+- 使用显式命令选择器时，Agent Executor MUST 按该命令启动 Agent 并跳过命名 Agent 解析；使用命名选择器时，MUST 严格遵循 [Configuration](configuration-spec.md) 定义的配置优先级，MUST NOT 自行维护另一套独立的 Agent 目录。
+- 配置中声明的启动命令 MUST 完整保留其原有的 shell 执行语义。若命令解析失败，MUST 在授予 Session 所有权之前返回失败；配置错误引起的失败 MUST 作为不可重试的 Agent 解析失败处理。
+- Session 租约创建时生效的启动配置 MUST 在该租约存续期间保持不变；后续新申请的租约 MUST 使用申请时的最新配置；Agent Executor 自身 MUST NOT 持久化存储已解析出的启动数据。
 
-### Activity And Inactivity
+### Session Supervisor
 
-- Context-window counters and token usage MUST remain independent optional
-  telemetry: context is the latest reported session-window checkpoint, while
-  token usage describes the current turn and MUST NOT be inferred from context.
-- After a turn settles, an Acpx status containing exactly one newly persisted
-  per-request usage entry MUST replace any live token breakdown with normalized
-  `prompt_response` usage. Missing, unreadable, or ambiguous status usage MUST
-  retain the live breakdown or remain unavailable without changing settlement.
-- Terminal token enrichment MUST accompany the existing turn result and
-  `turn_end` observation without reporting separate ACP activity or emitting an
-  additional usage observation.
-- The executor MUST report ACP activity when it locally dispatches a turn and
-  when it receives a public normalized `acpx/runtime` event.
-- A status event with context counters or a token breakdown MUST become a usage
-  observation.
-- A `plan` status MUST become a plan observation.
-- An empty `usage_update`, `available_commands_update`, `current_mode_update`,
-  `config_option_update`, or `session_info_update` status MUST count as ACP
-  activity without becoming a persisted observation.
-- An untagged status whose complete text is `session resumed` MUST count as ACP
-  activity without becoming a persisted observation.
-- An untagged status whose first two whitespace-delimited fields are a known
-  client-operation method and one of `running`, `completed`, or `failed` MUST
-  count as ACP activity without becoming a persisted observation. The known
-  methods are `fs/read_text_file`, `fs/write_text_file`, `terminal/create`,
-  `terminal/output`, `terminal/wait_for_exit`, `terminal/kill`, and
-  `terminal/release`.
-- Any other status without usage counters or a token breakdown MUST remain an
-  unknown observation so Runtime can report genuinely unsupported provider
-  semantics as degraded.
-- An optional `inactivityFailAfterMs` MUST reset on each reported activity.
-- When that interval elapses, the executor MUST cancel the active turn and
-  return a retryable `inactivity_stale` runtime failure with its silence
-  duration and configured interval as evidence.
-- Activity reporting MUST not claim receipt of an unexposed transport frame or
-  provider-side execution confirmation.
+- Session Supervisor MUST 在对外提供租约前读取当前工作区保存的所有权记录。记录格式不受支持时，Session Supervisor MUST 启动失败；所有权无法确认时，MUST 阻止相应 Session 获取新租约。Session Supervisor MUST NOT 让多个租约并发共享同一个活跃 Session。
+- 对于同一个逻辑 Agent Session，同一时刻 MUST 至多存在一个活跃租约或正在进行的所有权清理操作（neutralization）；若检测到所有权冲突，MUST 在激活新租约前返回失败。
+- 在等待所有权、解析 Agent 配置、打开 ACP Session、运行 Turn 和清理资源的整个过程中，Agent Executor MUST 响应 Runtime 传入的取消信号，并以 Runtime 声明的截止时间为准。
+- ACP 绑定关系的校验 MUST 在 Session 激活之前完成；如果绑定不匹配或启动配置未成功解析，Agent Executor MUST NOT 分配或占用任何外部 Session 资源。
+- 每个租约同一时间 MUST 至多接受一个活跃 Turn；后续的会话延续、Retry 以及 Steer 产生的 Attempt，MUST 依据 Runtime 确定的 Session 执行计划重新申请并获取租约，MUST NOT 隐式复用旧租约的所有权。
+- 批量释放多个 Session 时，Agent Executor MUST 在通知 Runtime 提交状态变更前，确认所有目标 Session 的所有权都已移除；只要有一个 Session 未清理完成，MUST NOT 向 Runtime 提交废弃标记或修改调度器状态。
+- Agent Executor 关闭时，MUST 立即停止接受新的租约申请，并在受限时间内尝试清理其负责的所有 Session 资源；若无法确认清理已完成，MUST 返回类型化结果，明确列出仍可能存在的 Session 所有权。
 
-### Ownership And Cleanup
+### 取消与 Turn 收尾
 
-- Before initializing a spawned worker, the executor MUST atomically write an
-  active ownership manifest under the supplied workers root.
-- A manifest MUST identify its run, attempt, session, executor-owner
-  generation, and worker process; it MUST include a process-start token
-  whenever the platform can obtain one.
-- Managed-attempt cleanup MUST request turn cancellation and worker close,
-  then make one bounded best-effort tree cleanup using TERM, KILL, and a final
-  liveness check.
-- Cleanup MUST delete a manifest only after the worker tree is no longer live.
-- When cleanup cannot establish that the tree is gone, the executor MUST retain
-  a degraded manifest rather than report a clean result.
-- `recoverAcpOwnership` MUST perform only a bounded startup sweep of the
-  supplied workspace workers root; it MUST not start a background reaper or
-  scan other workspaces.
-- Startup recovery MUST signal a residual worker only when its stored
-  process-start token still matches; an unverified live PID MUST remain as
-  ownership evidence without being signalled.
-- `inspectAcpOwnership` MUST be read-only and report only degraded or orphaned
-  ownership evidence; an active manifest owned by the supplied current owner
-  MUST not be reported as an orphan.
+- 多个取消来源竞争时，Agent Executor MUST 采用最先生效的取消原因，并据此确定唯一的清理截止时间。被取消的 Turn MUST 继续独占原租约，直到以下任一收尾条件满足：已收到终态结果并处理完所有已接收事件；已确认 Worker 进程退出；已在截止时间内完成强制清理。
+- Turn 正常完成时，Agent Executor MUST 仅向外部暴露最新有效的完整响应；对于执行失败或被取消的 Turn，Agent Executor MAY 保留信息量受限的部分观测和收尾证据供调试使用，但 MUST NOT 把未完成的局部文本输出伪装成已完成的最终响应。
+- ACP 协议事件 MUST 严格按照底层 Provider 发送的原始顺序转发给调用方；如果调用方处理事件时失败，Agent Executor MUST 将该失败归入当前 Turn，并启动同一套取消与收尾流程；该失败 MUST NOT 在租约释放后作为无归属异常继续传播。
+- 上下文窗口占用指标与 Turn 的 Token 消耗量 MUST 作为互相独立的可选观测数据；如果底层未提供相关遥测数据，系统 MUST 明确将其标记为不可用，MUST NOT 虚构填补为零。
+- Agent Executor 通过租约暴露的接口 MUST 在租约之间保持隔离，MUST NOT 暴露能够跨租约操作底层 Session 的写入权限或控制接口。
 
-## Verification
+### 所有权与恢复
 
-- `pnpm test:unit packages/agent-executor`: verifies named Agent resolution,
-  command bypass, response collection, managed-worker lifecycle,
-  bounded cleanup, identity-safe startup recovery, session projection
-  persistence, and normalized status classification.
-- `pnpm test:integration packages/agent-executor`: verifies effective Acpx
-  configuration, read-only catalog discovery, and managed named-Agent startup
-  and failure behavior.
-- `pnpm test:contract packages/agent-executor` and `pnpm test:type packages/agent-executor`:
-  verify the closed worker IPC protocol, exported managed-executor, and normalized result surface.
+- Session 变为活跃状态之前，MUST 先写入持久化的所有权记录，以防止其他租约或恢复后的 Session Supervisor 错误接管其占用的资源。
+- 持久化的所有权记录 MAY 仅在确认 Session 占用的外部资源已彻底释放后删除；状态未知的残留所有权记录 MUST 继续阻止访问，MUST NOT 被误判为可以安全分配给其他租约。
+- Session Supervisor 启动恢复时，MUST 只扫描指定工作区内的所有权记录。恢复逻辑 MAY 仅在记录的进程身份仍与实际进程匹配时向残留进程树发送信号；无法确认时 MUST 保留不确定的所有权证据，MUST NOT 操作该进程。
+- 公开的所有权检查接口 MUST 是只读的；如果无法判定所有权状态，返回结果 MUST 如实标记为无法确认，且 MUST NOT 泄露敏感的启动参数或主机资源细节。
+- 外部系统资源的终止与清理 MUST 完整保留 [Owned Process](owned-process-spec.md) 所定义的安全性与生命周期保证；Agent Executor 仅负责制定 Session 管理策略与维护持久化所有权记录。
+
+## 验证
+
+- `pnpm test:contract packages/agent-executor`：验证独占 Session 租约与 Session 权限隔离。
+- `pnpm test:unit packages/agent-executor`：验证独占性、Turn 收尾、Session 资源释放、取消机制以及不确定所有权的访问拦截。
+- `pnpm test:integration packages/agent-executor`：验证命名 Agent 解析、ACP Session 生命周期、资源清理与启动恢复。

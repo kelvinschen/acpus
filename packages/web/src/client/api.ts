@@ -2,10 +2,6 @@ export {
   getArtifactContent,
   getArtifactPreview,
 } from "./api/artifacts.js";
-export type {
-  ArtifactContent,
-  ArtifactPreview,
-} from "./api/artifacts.js";
 export {
   getNodeExecutionInspection,
   getNodeInspection,
@@ -25,9 +21,6 @@ export {
 } from "./api/system.js";
 export {
   WebApiError,
-} from "./api/transport.js";
-export type {
-  WebApiFailure,
 } from "./api/transport.js";
 export {
   listWorkflowCatalog,
@@ -52,7 +45,7 @@ export type {
   WorkspaceSummary,
   WorkflowContext,
   WorkflowFileEntry,
-  WorkflowFiles,
+  WorkflowVisualizationContext,
   WorkflowVisualizationResult,
   WorkflowVisualizationSource,
 } from "../api-types.js";

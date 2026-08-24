@@ -19,13 +19,19 @@ type BaseEvent<Type extends string, Payload extends object> = {
 export type SchedulerEvent =
   | BaseEvent<"control.paused", {}>
   | BaseEvent<"control.resumed", {}>
-  | BaseEvent<"control.run_retry_requested", {}>
   | BaseEvent<"control.agent_steer_requested", {
     steerId: string;
     requestedTarget: string;
     nodeKey: string;
     fencedAttemptId: string;
     instruction: string;
+    delivery: "interrupt_continue";
+  }>
+  | BaseEvent<"control.agent_steer_blocked", {
+    steerId: string;
+    nodeKey: string;
+    fencedAttemptId: string;
+    checkpoint: "acceptance_unknown" | "terminal_unknown";
   }>
   // Starts a durable execution frame and installs the lexical scope snapshot used by resume.
   | BaseEvent<"frame.started", { runId: string; frameKey: string; frameKind: FrameKind; scope?: Record<string, string>; instancePath?: InstancePath; parentFrameKey?: string; nodeKey?: string; nodeId?: string; strategy?: "all" | "race" | "quorum" }>
@@ -39,13 +45,16 @@ export type SchedulerEvent =
   | BaseEvent<"instance.ready", { runId: string; nodeKey: string; nodeId: string; instancePath: InstancePath; parentFrameKey?: string; readinessSequence?: number; timeoutMs?: number }>
   | BaseEvent<"instance.started", { nodeKey: string; attemptId?: string; replayIdentity?: ReplayIdentity }>
   | BaseEvent<"instance.awaiting", { nodeKey: string; statusReason?: string; replayIdentity?: ReplayIdentity }>
-  | BaseEvent<"instance.requeued", { nodeKey: string; reason: "paused" | "superseded" | "steered"; readinessSequence?: number; steerId?: string }>
+  | BaseEvent<"instance.requeued",
+    | { nodeKey: string; reason: "paused" | "superseded"; readinessSequence?: number; steerEventSequence?: never; steerId?: never }
+    | { nodeKey: string; reason: "steered"; readinessSequence?: number; steerEventSequence: number; steerId: string }
+  >
   | BaseEvent<"instance.retry_requested", { nodeKey: string; readinessSequence?: number; retryDependencyMemberKeys?: string[] }>
   | BaseEvent<"instance.completed", { nodeKey: string; output?: JsonValue; acceptedAttemptId?: string; attemptId?: string; replayIdentity?: ReplayIdentity; reusedFrom?: { runId: string; nodeKey: string } }>
   | BaseEvent<"instance.failed", { nodeKey: string; error: JsonObject; statusReason?: string; attemptId?: string }>
   | BaseEvent<"instance.cancelled", { nodeKey: string; cancelReason: CancellationReason }>
   // Tracks one scheduler-visible leaf attempt; executor-internal sub-attempts are not events here.
-  | BaseEvent<"attempt.started", { runId: string; attemptId: string; nodeKey: string; nodeId: string; attemptNo: number; ownerEpoch: number; admissionVersion?: number; deadlineAt?: string; steerId?: string; replayIdentity?: ReplayIdentity }>
+  | BaseEvent<"attempt.started", { runId: string; attemptId: string; nodeKey: string; nodeId: string; attemptNo: number; ownerEpoch: number; admissionVersion?: number; steerEventSequence?: number; deadlineAt?: string; steerId?: string; replayIdentity?: ReplayIdentity }>
   | BaseEvent<"attempt.completed", { attemptId: string; result?: JsonValue }>
   | BaseEvent<"attempt.failed", { attemptId: string; error: JsonObject; terminalReason?: string }>
   | BaseEvent<"attempt.timed_out", { attemptId: string; error?: JsonObject }>

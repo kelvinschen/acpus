@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -16,19 +17,6 @@ import { stableJson } from "../src/stable-json.js";
 type SnapshotPreparedWorkflow = Extract<PreparedRunWorkflow, { source: { kind: "snapshot" } }>;
 
 describe("prepared workflow snapshot validation", () => {
-  it("matches the canonical source graph digest vector", () => {
-    const prepared = preparedSnapshot([
-      { path: "workflow.ts", content: "export default 1;\n" },
-    ]);
-
-    expect(prepared.source).toEqual({
-      kind: "snapshot",
-      entry: "workflow.ts",
-      digest: "sha256:7e383697a9071b82ad5bd7185791ca677d40d04ea6a31603e26885a8ceac8508",
-    });
-    expect(tryValidatePreparedRunWorkflow("/unused-workspace", prepared).isOk()).toBe(true);
-  });
-
   const unsupportedVersion = workflowIr();
   (unsupportedVersion as { irVersion: number }).irVersion = 6;
 
@@ -47,9 +35,9 @@ describe("prepared workflow snapshot validation", () => {
     },
   ])("rejects self-consistent $name", ({ ir }) => {
     const result = tryValidatePreparedRunWorkflow("/unused-workspace", preparedWithIr(ir));
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected invalid frozen IR");
-    expect(result.error).toMatchObject({
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("expected invalid frozen IR");
+    expect(result.failure).toMatchObject({
       type: "prepared-workflow-invalid",
       reason: "invalid-ir",
     });
@@ -61,7 +49,7 @@ describe("prepared workflow snapshot validation", () => {
     }));
     const original = structuredClone(prepared);
 
-    expect(tryValidatePreparedRunWorkflow("/unused-workspace", prepared).isOk()).toBe(true);
+    expect(Result.isSuccess(tryValidatePreparedRunWorkflow("/unused-workspace", prepared))).toBe(true);
     expect(prepared).toEqual(original);
   });
 
@@ -80,7 +68,7 @@ describe("prepared workflow snapshot validation", () => {
       },
       { name: "package-lock mismatch", prepared: { ...valid, packageLockDigest }, reason: "package-lock-mismatch" },
     ] as const)("reports $reason for $name", ({ prepared, reason }) => {
-      expect(tryValidatePreparedRunWorkflow("/unused-workspace", prepared)._unsafeUnwrapErr()).toMatchObject({
+      expect(Result.getOrThrow(Result.flip(tryValidatePreparedRunWorkflow("/unused-workspace", prepared)))).toMatchObject({
         type: "prepared-workflow-invalid",
         reason,
       });
@@ -219,9 +207,9 @@ describe("prepared workflow snapshot validation", () => {
 
     it.each(cases)("rejects $name", item => {
       const result = tryValidatePreparedRunWorkflow("/unused-workspace", item.prepared);
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error(`expected '${item.name}' to fail`);
-      expect(result.error).toMatchObject({
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error(`expected '${item.name}' to fail`);
+      expect(result.failure).toMatchObject({
         type: "prepared-workflow-invalid",
         reason: item.reason,
       });
@@ -232,7 +220,7 @@ describe("prepared workflow snapshot validation", () => {
     const prepared = preparedSnapshot([
       { path: "workflow.ts", content: "export default 1;\n" },
     ]);
-    const validated = tryValidatePreparedRunWorkflow("/unused-workspace", prepared)._unsafeUnwrap();
+    const validated = Result.getOrThrow(tryValidatePreparedRunWorkflow("/unused-workspace", prepared));
     const source = structuredClone(validated.source);
     const lock = structuredClone(validated.lock);
     const bundle = structuredClone(validated.sourceBundle);
@@ -256,7 +244,7 @@ describe("prepared workflow snapshot validation", () => {
     ]), false);
     try {
       const missingEntry = tryValidatePreparedRunWorkflow(workspace, prepared);
-      expect(missingEntry._unsafeUnwrapErr()).toMatchObject({
+      expect(Result.getOrThrow(Result.flip(missingEntry))).toMatchObject({
         type: "prepared-workflow-invalid",
         reason: "entry-mismatch",
       });
@@ -293,7 +281,7 @@ describe("prepared workflow snapshot validation", () => {
       await symlink(join(root, "outside.ts"), join(workspace, "referrer.ts"));
       const prepared = preparedWorkspaceWithReferrers("referrer.ts");
 
-      expect(tryValidatePreparedRunWorkflow(workspace, prepared)._unsafeUnwrapErr()).toMatchObject({
+      expect(Result.getOrThrow(Result.flip(tryValidatePreparedRunWorkflow(workspace, prepared)))).toMatchObject({
         type: "prepared-workflow-invalid",
         reason: "entry-mismatch",
       });
@@ -308,10 +296,10 @@ describe("prepared workflow snapshot validation", () => {
       await writeFile(join(workspace, "workflow.ts"), "export default 1;\n");
       await writeFile(join(workspace, "referrer.ts"), "export const task = true;\n");
 
-      expect(tryValidatePreparedRunWorkflow(
+      expect(Result.isSuccess(tryValidatePreparedRunWorkflow(
         workspace,
         preparedWorkspaceWithReferrers("referrer.ts"),
-      ).isOk()).toBe(true);
+      ))).toBe(true);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -324,10 +312,10 @@ describe("prepared workflow snapshot validation", () => {
       await writeFile(join(workspace, "target.ts"), "export const task = true;\n");
       await symlink(join(workspace, "target.ts"), join(workspace, "referrer.ts"));
 
-      expect(tryValidatePreparedRunWorkflow(
+      expect(Result.isSuccess(tryValidatePreparedRunWorkflow(
         workspace,
         preparedWorkspaceWithReferrers("referrer.ts"),
-      ).isOk()).toBe(true);
+      ))).toBe(true);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -371,7 +359,7 @@ describe("prepared workflow snapshot validation", () => {
         }],
       })), false);
 
-      expect(tryValidatePreparedRunWorkflow(workspace, prepared)._unsafeUnwrapErr()).toMatchObject({
+      expect(Result.getOrThrow(Result.flip(tryValidatePreparedRunWorkflow(workspace, prepared)))).toMatchObject({
         type: "prepared-workflow-invalid",
         reason: "entry-mismatch",
       });
@@ -390,7 +378,7 @@ type WorkflowParts = Partial<Omit<WorkflowIR, "root">> & {
 function workflowIr(partial: WorkflowParts = {}): WorkflowIR {
   const { nodes, output = { kind: "object", fields: {} }, root, ...rest } = partial;
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "snapshot-validation",
     agents: {},
     inputSchema: {

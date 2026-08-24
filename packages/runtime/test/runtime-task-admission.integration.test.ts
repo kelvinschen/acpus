@@ -1,7 +1,10 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { TaskExecutionTargetIR, WorkflowIR } from "@acpus/core/ir";
-import { getRun, tryNormalizeWorkflowInput } from "@acpus/runtime";
+import { tryNormalizeWorkflowInput } from "../src/admission/input.js";
+import { getRun } from "../src/runs/use-cases.js";
 import { describe, expect, it } from "vitest";
 import {
   admitPreparedWorkflowForTest,
@@ -19,14 +22,14 @@ describe.concurrent("runtime task admission use cases", () => {
     await withRuntimeWorkspace("runtime-failed-state", async workspace => {
       const task = await admitSyntheticWorkflow(workspace, failingTaskWorkflow());
       expect(task.status).toBe("failed");
-      const taskNode = (await getRun(workspace, task.run.id))._unsafeUnwrap()?.dynamic?.nodeInstances
+      const taskNode = Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, task.run.id)))))?.dynamic?.nodeInstances
         .find(node => node.nodeId === "boom");
       expect(taskNode).toMatchObject({ status: "failed" });
       expect(taskNode?.output).toBeUndefined();
 
       const pure = await admitSyntheticWorkflow(workspace, failingPureWorkflow());
       expect(pure.status).toBe("failed");
-      const failedFrame = (await getRun(workspace, pure.run.id))._unsafeUnwrap()?.dynamic?.frames
+      const failedFrame = Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, pure.run.id)))))?.dynamic?.frames
         .find(frame => frame.nodeId === "fail");
       expect(failedFrame).toMatchObject({ status: "failed" });
       expect(failedFrame?.result).toBeUndefined();
@@ -51,7 +54,7 @@ describe.concurrent("runtime task admission use cases", () => {
           referrer: { path: `${item.name}.workflow.ts` },
         });
         const frozen = preparedWorkflow(prepared.ir, join(workspace, prepared.source.entry), workspace);
-        const admitted = await admitPreparedWorkflowForTest(workspace, frozen, tryNormalizeWorkflowInput(frozen.ir, {})._unsafeUnwrap());
+        const admitted = await admitPreparedWorkflowForTest(workspace, frozen, Result.getOrThrow(tryNormalizeWorkflowInput(frozen.ir, {})));
 
         expect(admitted.status).toBe("failed");
         if (admitted.status !== "failed") throw new Error("expected failed reusable module load run");

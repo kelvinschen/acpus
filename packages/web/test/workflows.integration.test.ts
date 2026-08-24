@@ -2,8 +2,10 @@ import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import { tryVisualizeWorkflowSource } from "../src/server/workflows/visualization.js";
+import { settle } from "./effect.js";
 
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 
@@ -26,35 +28,35 @@ export default defineWorkflow({
 `);
       const workspaceEntries = (await readdir(cwd)).sort();
 
-      const result = await tryVisualizeWorkflowSource(cwd, {
+      const result = await settle(tryVisualizeWorkflowSource(cwd, {
         kind: "file",
         path: "..release.workflow.ts",
-      });
+      }));
 
-      expect(result.isOk()).toBe(true);
-      if (result.isErr()) throw new Error(result.error.message);
-      expect(result.value.workflow).toEqual({
+      expect(Result.isSuccess(result)).toBe(true);
+      if (Result.isFailure(result)) throw new Error(result.failure.message);
+      expect(result.success.workflow).toEqual({
         name: "web-integration",
         description: "Prepared through the Web compiler seam.",
         agents: {},
-        irVersion: 7,
+        irVersion: 8,
         nodeCount: 1,
       });
-      expect(result.value.contract.inputSchema).toEqual({
+      expect(result.success.contract.inputSchema).toEqual({
         kind: "object",
         fields: { ready: { kind: "boolean" } },
         required: ["ready"],
         additionalProperties: false,
       });
-      expect(result.value.contract.outputShape).toEqual({
+      expect(result.success.contract.outputShape).toEqual({
         kind: "object",
         possibleKeys: ["ready"],
       });
-      expect(result.value.graph.nodes.map(node => [node.id, node.kind])).toContainEqual([
+      expect(result.success.graph.nodes.map(node => [node.id, node.kind])).toContainEqual([
         "check",
         "assert",
       ]);
-      expect(result.value.sourceGraphDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
+      expect(result.success.sourceGraphDigest).toMatch(/^sha256:[a-f0-9]{64}$/);
       expect((await readdir(cwd)).sort()).toEqual(workspaceEntries);
     } finally {
       await rm(cwd, { recursive: true, force: true });

@@ -2,7 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { SchemaIR } from "@acpus/core/ir";
 import { isJsonValue, type JsonValue } from "@acpus/expression/ir";
 import { jsonrepair } from "jsonrepair";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import { tryNormalizeValue } from "../evaluation/schema.js";
 
 const OUTPUT_OPEN = "<ACPUS_OUTPUT>";
@@ -45,9 +45,9 @@ export function buildAgentOutputRepairPrompt(schema: SchemaIR, phase: AgentOutpu
   return `# OUTPUT REPAIR\n${reason}\nReturn the complete corrected frame now. Do not repeat the task or explain the correction.\n\n${outputContract(schema)}`;
 }
 
-export function conformAgentOutput(schema: SchemaIR, text: string, nodeId: string): Result<AgentOutputAccepted, AgentOutputFailure> {
+export function conformAgentOutput(schema: SchemaIR, text: string, nodeId: string): Result.Result<AgentOutputAccepted, AgentOutputFailure> {
   const framed = framedPayload(text);
-  if (framed === undefined) return err({
+  if (framed === undefined) return Result.fail({
     kind: "output_framing",
     phase: "framing",
     message: `Agent node '${nodeId}' response did not contain one complete terminal ${OUTPUT_OPEN} frame.`,
@@ -55,7 +55,7 @@ export function conformAgentOutput(schema: SchemaIR, text: string, nodeId: strin
   });
 
   const parsed = parsePayload(schema, framed.payload);
-  if (!parsed.ok) return err({
+  if (!parsed.ok) return Result.fail({
     kind: parsed.phase === "framing" ? "output_framing" : "output_json",
     phase: parsed.phase,
     message: parsed.phase === "framing"
@@ -68,15 +68,15 @@ export function conformAgentOutput(schema: SchemaIR, text: string, nodeId: strin
   const projectionChanged = !isDeepStrictEqual(parsed.value, projected);
   const normalized = tryNormalizeValue(schema, projected, `Node '${nodeId}' output`);
   const parsing = framed.parsing === "repaired" ? "repaired" : parsed.parsing;
-  return normalized.isOk()
-    ? ok({
-        output: normalized.value,
+  return Result.isSuccess(normalized)
+    ? Result.succeed({
+        output: normalized.success,
         outputProcessing: { outcome: "accepted", parsing, projectionChanged },
       })
-    : err({
+    : Result.fail({
         kind: "output_conformance",
         phase: "schema",
-        message: normalized.error.message,
+        message: normalized.failure.message,
         outputProcessing: { outcome: "rejected", phase: "schema", parsing, projectionChanged },
       });
 }
@@ -184,7 +184,7 @@ function parseDanglingTerminalQuote(schema: SchemaIR, payload: string): JsonValu
     const value: unknown = JSON.parse(terminal.slice(0, -1));
     if (!isJsonValue(value)) return undefined;
     const projected = projectToSchema(schema, value);
-    return tryNormalizeValue(schema, projected, "Agent output").isOk() ? value : undefined;
+    return Result.isSuccess(tryNormalizeValue(schema, projected, "Agent output")) ? value : undefined;
   } catch {
     return undefined;
   }
@@ -232,7 +232,7 @@ function projectToSchema(schema: SchemaIR, value: JsonValue): JsonValue {
   if (schema.kind === "union") {
     for (const variant of schema.variants) {
       const projected = projectToSchema(variant, value);
-      if (tryNormalizeValue(variant, projected, "Agent union variant").isOk()) return projected;
+      if (Result.isSuccess(tryNormalizeValue(variant, projected, "Agent union variant"))) return projected;
     }
     return value;
   }

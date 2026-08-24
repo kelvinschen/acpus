@@ -1,24 +1,26 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defineWorkflow, z } from "@acpus/core";
 import { describe, expect, it } from "vitest";
-import type { Result } from "neverthrow";
 import {
   getRun,
   requestDaemonControl as requestDaemonControlResult,
-  startDaemonLoop,
   type DaemonClientFailure,
+  type RunDetails,
 } from "../src/index.js";
+import { startDaemonLoop } from "./support/daemon-loop.js";
 import { submitRunThroughDaemon } from "./support/daemon-submit.js";
-import { initializeRuntimeStoreForTest, prepareSyntheticWorkflow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
+import { initializeRuntimeStoreForTest, prepareSyntheticWorkflow, runtimeRows, withRuntimeWorkspace } from "./support/runtime-harness.js";
 
 async function requestDaemonControl(...args: Parameters<typeof requestDaemonControlResult>) {
-  return unwrapDaemon(await requestDaemonControlResult(...args));
+  return unwrapDaemon(await Effect.runPromise(Effect.result(requestDaemonControlResult(...args))));
 }
 
-function unwrapDaemon<T>(result: Result<T, DaemonClientFailure>): T {
-  if (result.isOk()) return result.value;
-  throw Object.assign(new Error(result.error.message), result.error.type === "rejected" ? { code: result.error.code } : {});
+function unwrapDaemon<T>(result: Result.Result<T, DaemonClientFailure>): T {
+  if (Result.isSuccess(result)) return result.success;
+  throw Object.assign(new Error(result.failure.message), result.failure.type === "rejected" ? { code: result.failure.code } : {});
 }
 
 describe.concurrent("daemon execution owner epochs", () => {
@@ -51,7 +53,7 @@ describe.concurrent("daemon execution owner epochs", () => {
         await loop.shutdown();
       }
     });
-  }, 5_000);
+  });
 
   it.concurrent("starts failed-run retry work under a new owner epoch", async () => {
     await withRuntimeWorkspace("daemon-retry-owner-epoch", async workspace => {
@@ -64,7 +66,7 @@ describe.concurrent("daemon execution owner epochs", () => {
         await expect(waitForTerminalRun(workspace, admitted.id)).resolves.toMatchObject({ status: "failed" });
         const first = runtimeRows(workspace, "SELECT owner_epoch FROM node_attempts WHERE run_id = ? AND attempt_no = 1", admitted.id)[0] as { owner_epoch: number };
 
-        await expect(requestDaemonControl(workspace, { requestId: "retry-failed", type: "retry", runId: admitted.id })).resolves.toMatchObject({ type: "retry", state: "applied" });
+        await expect(requestDaemonControl(workspace, { requestId: "retry-failed", type: "retry", runId: admitted.id, target: "work" })).resolves.toMatchObject({ type: "retry", state: "applied" });
         await waitUntil(() => {
           const attempt = runtimeRows(workspace, "SELECT owner_epoch FROM node_attempts WHERE run_id = ? ORDER BY owner_epoch DESC, attempt_no DESC LIMIT 1", admitted.id)[0] as { owner_epoch?: number } | undefined;
           return attempt?.owner_epoch !== undefined && attempt.owner_epoch > first.owner_epoch;
@@ -77,7 +79,7 @@ describe.concurrent("daemon execution owner epochs", () => {
         await loop.shutdown();
       }
     });
-  }, 5_000);
+  });
 });
 
 function pausableTaskWorkflow() {
@@ -135,9 +137,9 @@ async function waitUntil(predicate: () => boolean | Promise<boolean>): Promise<v
   throw new Error("condition was not met");
 }
 
-async function waitForTerminalRun(cwd: string, runId: string): Promise<{ status: string; run: NonNullable<ReturnType<Awaited<ReturnType<typeof getRun>>["_unsafeUnwrap"]>> }> {
+async function waitForTerminalRun(cwd: string, runId: string): Promise<{ status: string; run: RunDetails }> {
   for (let attempt = 0; attempt < 400; attempt += 1) {
-    const run = (await getRun(cwd, runId))._unsafeUnwrap();
+    const run = Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(cwd, runId)))));
     if (run && ["completed", "failed", "canceled"].includes(run.status)) return { status: run.status, run };
     await new Promise(resolve => setTimeout(resolve, 10));
   }

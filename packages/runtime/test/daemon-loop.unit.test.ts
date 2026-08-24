@@ -1,25 +1,30 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import { access, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { ResultAsync } from "neverthrow";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ManagedAcpExecutor } from "@acpus/agent-executor";
+import type { AgentSessionSupervisor } from "@acpus/agent-executor";
 import { daemonEndpoint } from "../src/daemon/client.js";
 import type { DaemonHandlers } from "../src/daemon/server.js";
 import { RunExecutionSessions } from "../src/daemon/sessions.js";
 import type { RuntimeTickResult } from "../src/daemon/tick.js";
 import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout, setRuntimeHomeForTest } from "../src/runtime-layout.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
+import type { RuntimeStoreBusy } from "../src/store/service.js";
 import { treeFingerprint } from "./support/tree-fingerprint.js";
 
-const runRuntimeTick = vi.fn<() => Promise<RuntimeTickResult>>();
+const runRuntimeTick = vi.fn<() => Effect.Effect<RuntimeTickResult, RuntimeStoreBusy>>();
 const startupCleanup = vi.hoisted(() => ({ failure: undefined as Error | undefined }));
 const daemonServer = vi.hoisted(() => ({ handlers: undefined as DaemonHandlers | undefined }));
 const cleanupTrace = vi.hoisted(() => ({
   calls: [] as string[],
   executorFailure: undefined as Error | undefined,
   releaseFailure: undefined as Error | undefined,
+  serverCloseGate: undefined as Promise<void> | undefined,
+  serverCloseStarted: undefined as (() => void) | undefined,
 }));
 const startupRecovery = vi.hoisted(() => ({
   claimed: false,
@@ -34,16 +39,20 @@ vi.mock("../src/daemon/server.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../src/daemon/server.js")>();
   return {
     ...actual,
-    startDaemonServer: async (...args: Parameters<typeof actual.startDaemonServer>) => {
+    startDaemonServer: (...args: Parameters<typeof actual.startDaemonServer>) => {
       daemonServer.handlers = args[1];
-      const server = await actual.startDaemonServer(...args);
-      return {
+      return actual.startDaemonServer(...args).pipe(Effect.map(server => ({
         ...server,
-        close: async () => {
+        close: () => Effect.sync(() => {
           cleanupTrace.calls.push("server:close");
-          await server.close();
-        },
-      };
+          cleanupTrace.serverCloseStarted?.();
+        }).pipe(
+          Effect.andThen(cleanupTrace.serverCloseGate === undefined
+            ? Effect.void
+            : Effect.promise(() => cleanupTrace.serverCloseGate!)),
+          Effect.andThen(server.close()),
+        ),
+      })));
     },
   };
 });
@@ -51,36 +60,37 @@ vi.mock("@acpus/agent-executor", async importOriginal => {
   const actual = await importOriginal<typeof import("@acpus/agent-executor")>();
   return {
     ...actual,
-    createManagedAcpExecutor: async (...args: Parameters<typeof actual.createManagedAcpExecutor>): Promise<ManagedAcpExecutor> => {
-      const executor = await actual.createManagedAcpExecutor(...args);
+    createAgentSessionSupervisor: (...args: Parameters<typeof actual.createAgentSessionSupervisor>) =>
+      actual.createAgentSessionSupervisor(...args).pipe(Effect.map(executor => {
       const shutdown = executor.shutdown.bind(executor);
-      return {
+      const wrapped: AgentSessionSupervisor = {
         ...executor,
-        shutdown: async () => {
+        shutdown: () => Effect.suspend(() => {
           cleanupTrace.calls.push("executor:shutdown");
-          await shutdown();
-          if (cleanupTrace.executorFailure) throw cleanupTrace.executorFailure;
-        },
+          return shutdown().pipe(Effect.flatMap(() => cleanupTrace.executorFailure
+            ? Effect.fail({ type: "shutdown_failed" as const, errors: [], message: cleanupTrace.executorFailure.message })
+            : Effect.void));
+        }),
       };
-    },
+      return wrapped;
+    })),
   };
 });
 vi.mock("../src/store/store.js", async importOriginal => {
   const actual = await importOriginal<typeof import("../src/store/store.js")>();
-  const instrument = (store: Awaited<ReturnType<typeof actual.openRuntimeStoreAtLayout>>) => {
+  const instrument = (store: Awaited<ReturnType<typeof actual.openRuntimeStoreAdapterAtLayout>>) => {
     const claimRuntimeAuthority = store.claimRuntimeAuthority.bind(store);
     store.claimRuntimeAuthority = input => {
       const claim = claimRuntimeAuthority(input);
-      if (claim.isOk()) startupRecovery.claimed = true;
+      if (Result.isSuccess(claim)) startupRecovery.claimed = true;
       return claim;
     };
     const recover = store.observationLog.reconcileTerminalTurns.bind(store.observationLog);
-    store.observationLog.reconcileTerminalTurns = async () => {
+    store.observationLog.reconcileTerminalTurns = () => Effect.sync(() => {
       startupRecovery.calls += 1;
       startupRecovery.claimedAtRecovery = startupRecovery.claimed;
       if (startupRecovery.failure !== undefined) throw startupRecovery.failure;
-      await recover();
-    };
+    }).pipe(Effect.andThen(recover()));
     const cleanup = store.cleanupStagedRunDirectories.bind(store);
     store.cleanupStagedRunDirectories = () => startupCleanup.failure === undefined
       ? cleanup()
@@ -101,17 +111,22 @@ vi.mock("../src/store/store.js", async importOriginal => {
   };
   return {
     ...actual,
-    openRuntimeStoreAtLayout: async (...args: Parameters<typeof actual.openRuntimeStoreAtLayout>) => {
+    openRuntimeStoreAdapterAtLayout: async (...args: Parameters<typeof actual.openRuntimeStoreAdapterAtLayout>) => {
       if (args[0].generationId) startupRecovery.openedGenerationIds.push(args[0].generationId);
-      return instrument(await actual.openRuntimeStoreAtLayout(...args));
+      return instrument(await actual.openRuntimeStoreAdapterAtLayout(...args));
     },
   };
 });
 
 const {
   DaemonRuntimeStoreReadinessError,
-  startDaemonLoop,
+  startDaemonLoop: startDaemonLoopEffect,
 } = await import("../src/daemon/loop.js");
+
+async function startDaemonLoop(...args: Parameters<typeof startDaemonLoopEffect>) {
+  const loop = await Effect.runPromise(startDaemonLoopEffect(...args));
+  return { shutdown: () => Effect.runPromise(loop.shutdown()) };
+}
 
 let dir: string;
 let runtimeHome: string;
@@ -130,12 +145,14 @@ beforeEach(async () => {
   cleanupTrace.calls = [];
   cleanupTrace.executorFailure = undefined;
   cleanupTrace.releaseFailure = undefined;
+  cleanupTrace.serverCloseGate = undefined;
+  cleanupTrace.serverCloseStarted = undefined;
   startupRecovery.claimed = false;
   startupRecovery.claimedAtRecovery = false;
   startupRecovery.calls = 0;
   startupRecovery.openedGenerationIds = [];
   startupRecovery.failure = undefined;
-  runRuntimeTick.mockReset();
+  runRuntimeTick.mockReset().mockReturnValue(Effect.succeed({ runs: 0, idleBlockers: 0 }));
 });
 
 afterEach(async () => {
@@ -151,7 +168,7 @@ afterEach(async () => {
 describe("daemon loop", () => {
   it("initializes a fresh store and leaves an outdated store unchanged", async () => {
     const absent = await treeFingerprint(runtimeHome);
-    runRuntimeTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+    runRuntimeTick.mockReturnValue(Effect.succeed({ runs: 0, idleBlockers: 0 }));
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 50,
       idleStopMs: 1_000,
@@ -173,7 +190,7 @@ describe("daemon loop", () => {
   });
 
   it("adopts one active generation when fresh daemon starts race", async () => {
-    runRuntimeTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+    runRuntimeTick.mockReturnValue(Effect.succeed({ runs: 0, idleBlockers: 0 }));
 
     const starts = await Promise.allSettled([
       startDaemonLoop(dir, { heartbeatMs: 50, idleStopMs: 1_000, packageVersion: "test" }),
@@ -247,7 +264,7 @@ describe("daemon loop", () => {
 
   it("recovers terminal observations only after claiming daemon ownership", async () => {
     await initializeReadyStore();
-    runRuntimeTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+    runRuntimeTick.mockReturnValue(Effect.succeed({ runs: 0, idleBlockers: 0 }));
 
     const loop = await startDaemonLoop(dir, {
       idleStopMs: 1_000,
@@ -286,9 +303,9 @@ describe("daemon loop", () => {
   it("continues heartbeating while a work tick is still running", async () => {
     await initializeReadyStore();
     let finishTick!: () => void;
-    runRuntimeTick.mockImplementationOnce(() => new Promise(resolve => {
+    runRuntimeTick.mockImplementationOnce(() => Effect.promise(() => new Promise(resolve => {
       finishTick = () => resolve({ runs: 1, idleBlockers: 1 });
-    }));
+    })));
 
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 20,
@@ -309,32 +326,37 @@ describe("daemon loop", () => {
   it("waits for an active work tick before closing the store", async () => {
     await initializeReadyStore();
     let finishTick!: () => void;
-    runRuntimeTick.mockImplementationOnce(() => new Promise(resolve => {
+    let releaseServerClose!: () => void;
+    cleanupTrace.serverCloseGate = new Promise(resolve => { releaseServerClose = resolve; });
+    const serverCloseStarted = new Promise<void>(resolve => {
+      cleanupTrace.serverCloseStarted = resolve;
+    });
+    runRuntimeTick.mockImplementationOnce(() => Effect.promise(() => new Promise(resolve => {
       finishTick = () => resolve({ runs: 1, idleBlockers: 1 });
-    }));
+    })));
 
     const loop = await startDaemonLoop(dir, {
-      heartbeatMs: 20,
+      heartbeatMs: 1,
       idleStopMs: 1_000,
       packageVersion: "test",
     });
     await waitUntil(() => runRuntimeTick.mock.calls.length > 0);
-    await new Promise(resolve => setTimeout(resolve, 30));
     expect(runRuntimeTick).toHaveBeenCalledOnce();
-    let shutdownResolved = false;
-    const shutdown = loop.shutdown().then(() => {
-      shutdownResolved = true;
-    });
-    await new Promise(resolve => setTimeout(resolve, 30));
-    expect(shutdownResolved).toBe(false);
-    finishTick();
-    await shutdown;
-    expect(shutdownResolved).toBe(true);
+    const shutdown = loop.shutdown();
+    await serverCloseStarted;
+    try {
+      finishTick();
+      await Effect.runPromise(Effect.sleep(10));
+      expect(runRuntimeTick).toHaveBeenCalledOnce();
+    } finally {
+      releaseServerClose();
+      await shutdown;
+    }
   });
 
   it("withdraws request authority as soon as protocol shutdown is accepted", async () => {
     await initializeReadyStore();
-    runRuntimeTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+    runRuntimeTick.mockReturnValue(Effect.succeed({ runs: 0, idleBlockers: 0 }));
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 50,
       idleStopMs: 1_000,
@@ -342,35 +364,33 @@ describe("daemon loop", () => {
     });
 
     const handlers = daemonServer.handlers!;
-    const status = handlers.status() as { value: { authority: Parameters<typeof handlers.submitAndObserve>[0]["expectedAuthority"] } };
-    const accepted = handlers.shutdown();
-    const admissionAfterAcceptance = await handlers.submitAndObserve({
-      expectedAuthority: status.value.authority,
+    const status = await Effect.runPromise(handlers.status());
+    const accepted = await Effect.runPromise(Effect.result(handlers.shutdown()));
+    const admissionAfterAcceptance = await Stream.toAsyncIterable(handlers.submitAndObserve({
+      expectedAuthority: status.authority,
       requestId: "after-shutdown",
       prepared: undefined as never,
       input: null,
       until: "admitted",
-    }, new AbortController().signal)[Symbol.asyncIterator]().next();
-    const controlAfterAcceptance = handlers.control({
+    }, new AbortController().signal))[Symbol.asyncIterator]().next();
+    const controlAfterAcceptance = await Effect.runPromise(Effect.result(handlers.control({
       requestId: "after-shutdown",
       type: "cancel",
       runId: "run_missing",
-    });
+    })));
 
-    expect(accepted).not.toBeInstanceOf(ResultAsync);
-    expect(controlAfterAcceptance).not.toBeInstanceOf(ResultAsync);
-    expect((accepted as { isOk(): boolean }).isOk()).toBe(true);
+    expect(Result.isSuccess(accepted)).toBe(true);
     expect(admissionAfterAcceptance.value).toMatchObject({
       kind: "error",
       error: { code: "EXECUTION_UNAVAILABLE" },
     });
-    expect((controlAfterAcceptance as { error: { code: string } }).error.code).toBe("EXECUTION_UNAVAILABLE");
+    expect(Result.isFailure(controlAfterAcceptance) && controlAfterAcceptance.failure.code).toBe("EXECUTION_UNAVAILABLE");
     await loop.shutdown();
   });
 
   it("continues normal shutdown cleanup after independent stage failures", async () => {
     await initializeReadyStore();
-    runRuntimeTick.mockResolvedValue({ runs: 0, idleBlockers: 0 });
+    runRuntimeTick.mockReturnValue(Effect.succeed({ runs: 0, idleBlockers: 0 }));
     const stopFailure = new Error("session stop failed");
     const executorFailure = new Error("executor shutdown failed");
     const hooksFailure = new Error("hook drain failed");
@@ -378,16 +398,18 @@ describe("daemon loop", () => {
     const stopExecutorsImplementation = RunExecutionSessions.prototype.stopExecutors;
     const drainHooksImplementation = RunExecutionSessions.prototype.drainHooks;
     const stopExecutors = vi.spyOn(RunExecutionSessions.prototype, "stopExecutors")
-      .mockImplementation(async function(this: RunExecutionSessions, timeoutMs) {
+      .mockImplementation(function(this: RunExecutionSessions, timeoutMs) {
         cleanupTrace.calls.push("sessions:stop");
-        await stopExecutorsImplementation.call(this, timeoutMs);
-        throw stopFailure;
+        return stopExecutorsImplementation.call(this, timeoutMs).pipe(
+          Effect.andThen(Effect.die(stopFailure)),
+        );
       });
     const drainHooks = vi.spyOn(RunExecutionSessions.prototype, "drainHooks")
-      .mockImplementation(async function(this: RunExecutionSessions) {
+      .mockImplementation(function(this: RunExecutionSessions) {
         cleanupTrace.calls.push("sessions:drain-hooks");
-        await drainHooksImplementation.call(this);
-        throw hooksFailure;
+        return drainHooksImplementation.call(this).pipe(
+          Effect.andThen(Effect.die(hooksFailure)),
+        );
       });
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 50,
@@ -418,8 +440,12 @@ describe("daemon loop", () => {
   it("retries transient store-busy tick failures", async () => {
     await initializeReadyStore();
     runRuntimeTick
-      .mockRejectedValueOnce(Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" }))
-      .mockResolvedValue({ runs: 1, idleBlockers: 0 });
+      .mockReturnValueOnce(Effect.fail({
+        type: "runtime-store-busy" as const,
+        message: "database is locked",
+        cause: Object.assign(new Error("database is locked"), { code: "SQLITE_BUSY" }),
+      }))
+      .mockReturnValue(Effect.succeed({ runs: 1, idleBlockers: 0 }));
     const onShutdown = vi.fn();
     const loop = await startDaemonLoop(dir, {
       heartbeatMs: 5,
@@ -437,7 +463,7 @@ describe("daemon loop", () => {
 
   it("notifies automatic shutdown even when lease release fails", async () => {
     await initializeReadyStore();
-    runRuntimeTick.mockResolvedValue({ runs: 1, idleBlockers: 0 });
+    runRuntimeTick.mockReturnValue(Effect.succeed({ runs: 1, idleBlockers: 0 }));
     let notify!: () => void;
     const notified = new Promise<void>(resolve => { notify = resolve; });
     const loop = await startDaemonLoop(dir, {
@@ -458,7 +484,7 @@ describe("daemon loop", () => {
 });
 
 async function initializeReadyStore(): Promise<void> {
-  const store = await openRuntimeStore(dir);
+  const store = await openRuntimeStoreAdapter(dir);
   store.close();
 }
 

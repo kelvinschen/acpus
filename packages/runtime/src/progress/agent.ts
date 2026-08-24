@@ -1,11 +1,11 @@
 import type {
-  AgentJsonValue,
   AgentToolCallSummary,
-  AgentTurnObservation,
-  AgentTurnProgress,
-  AgentTurnResult,
+  AgentTurnEvent,
+  AgentTurnSnapshot,
   AgentTurnSummary,
+  AcpEvent,
 } from "@acpus/agent-executor";
+type AcpJsonValue = Extract<AcpEvent, { type: "message" }>["content"];
 import type { JsonValue } from "@acpus/expression/ir";
 import { pruneUndefined } from "../stable-json.js";
 import type { WriteNodeProgressInput } from "../store/store.js";
@@ -34,12 +34,11 @@ export type AgentProgressTurnInput = {
 
 export type AgentProgressTurn = {
   callbacks: {
-    onProgress(progress: AgentTurnProgress): void;
-    onObservation(observation: AgentTurnObservation): void;
+    onEvent(event: AgentTurnEvent): void;
   };
   publishTerminal(
     status: AgentProgressTerminalStatus,
-    result: AgentTurnResult,
+    snapshot: AgentTurnSnapshot,
     message?: string,
   ): void;
   recordAcpActivity(observedAt: string): void;
@@ -51,23 +50,27 @@ type ObservationState = {
   toolOutputs: Map<string, JsonValue>;
 };
 
-type ProgressSample = Pick<AgentTurnProgress, "responses" | "summary">;
+type ProgressSample = Pick<AgentTurnSnapshot, "responses" | "summary">;
 
 export function createAgentProgressTurn(input: AgentProgressTurnInput): AgentProgressTurn {
   const observation: ObservationState = { toolOutputs: new Map() };
   let lastFlushAt: number | undefined;
   let lastSignature = "";
   let lastSample: ProgressSample = { responses: [], summary: emptySummary() };
+  let openResponse: number | undefined;
+  const tools = new Map<string, AgentToolCallSummary>();
   let acpActivityAt: string | undefined;
   let lastAcpActivityFlushAt: number | undefined;
 
   return {
     callbacks: {
-      onObservation: next => updateObservation(observation, next),
-      onProgress: progress => {
+      onEvent: event => {
+        updateObservation(observation, event);
         if (input.signal?.aborted) return;
-        lastSample = { responses: [...progress.responses], summary: progress.summary };
-        const next = progressSnapshot(input, progress, latestResponse(progress.responses), observation, "running", `turn ${input.turn}`, acpActivityAt);
+        const reduced = reduceProgressEvent(lastSample, tools, event, openResponse);
+        lastSample = reduced.sample;
+        openResponse = reduced.openResponse;
+        const next = progressSnapshot(input, lastSample, latestResponse(lastSample.responses), observation, "running", `turn ${input.turn}`, acpActivityAt);
         const signature = JSON.stringify([next.context, next.tokenUsage, next.tools, next.intent, next.acpActivityAt]);
         const now = Date.now();
         if (lastFlushAt !== undefined && signature === lastSignature && now - lastFlushAt < FLUSH_INTERVAL_MS) return;
@@ -76,13 +79,13 @@ export function createAgentProgressTurn(input: AgentProgressTurnInput): AgentPro
         lastSignature = signature;
       },
     },
-    publishTerminal: (status, result, message) => {
+    publishTerminal: (status, snapshot, message) => {
       if (input.signal?.aborted) return;
       acpActivityAt = undefined;
       input.writer.writeNodeProgress(progressSnapshot(
         input,
-        result,
-        terminalResponse(result),
+        snapshot,
+        latestResponse(snapshot.responses),
         observation,
         status,
         message ?? `turn ${input.turn} ${status}`,
@@ -138,10 +141,6 @@ function latestResponse(responses: readonly string[]): string {
   return responses.at(-1) ?? "";
 }
 
-function terminalResponse(result: AgentTurnResult): string {
-  return result.status === "completed" ? result.finalResponse : latestResponse(result.responses);
-}
-
 function emptySummary(): AgentTurnSummary {
   return {
     eventCount: 0,
@@ -184,13 +183,13 @@ function progressToolCall(call: AgentToolCallSummary, output?: JsonValue): JsonV
   }) as JsonValue;
 }
 
-function updateObservation(state: ObservationState, observation: AgentTurnObservation): void {
+function updateObservation(state: ObservationState, observation: AgentTurnEvent): void {
   const event = observation.event;
   if (event.type === "plan") {
     state.intent = {
       kind: "plan",
       value: boundedProgressValue(event.value),
-      updatedAt: event.observedAt,
+      updatedAt: observation.observedAt,
     };
     return;
   }
@@ -198,16 +197,66 @@ function updateObservation(state: ObservationState, observation: AgentTurnObserv
     state.intent = {
       kind: "reported-thought",
       value: boundedProgressValue(event.content),
-      updatedAt: event.observedAt,
+      updatedAt: observation.observedAt,
     };
     return;
   }
-  if (event.type !== "tool" || !event.toolCallId) return;
-  const output = event.rawOutput ?? event.content;
+  if (event.type !== "tool") return;
+  const output = event.output ?? event.content;
   if (output !== undefined) state.toolOutputs.set(event.toolCallId, boundedProgressValue(output));
 }
 
-function boundedProgressValue(value: AgentJsonValue): JsonValue {
+function reduceProgressEvent(
+  previous: ProgressSample,
+  tools: Map<string, AgentToolCallSummary>,
+  envelope: AgentTurnEvent,
+  currentOpenResponse: number | undefined,
+): { sample: ProgressSample; openResponse?: number } {
+  const responses = [...previous.responses];
+  const summary = { ...previous.summary };
+  const event = envelope.event;
+  let openResponse = currentOpenResponse;
+  if (event.type === "message") {
+    if (event.channel === "thought") openResponse = undefined;
+    else if (typeof event.content === "object" && event.content !== null && !Array.isArray(event.content)
+      && event.content.type === "text" && typeof event.content.text === "string") {
+      if (openResponse === undefined) openResponse = responses.push(event.content.text) - 1;
+      else responses[openResponse] = (responses[openResponse] ?? "") + event.content.text;
+    }
+  } else if (event.type === "tool") {
+    openResponse = undefined;
+    const prior = tools.get(event.toolCallId);
+    const status = event.status ?? prior?.status;
+    tools.set(event.toolCallId, {
+      toolCallId: event.toolCallId,
+      ...optionalStringValue("title", event.title ?? prior?.title),
+      ...optionalStringValue("toolName", event.name ?? prior?.toolName),
+      ...optionalStringValue("kind", event.kind ?? prior?.kind),
+      ...(status ? { status } : {}),
+      startedAt: prior?.startedAt ?? envelope.observedAt,
+      updatedAt: envelope.observedAt,
+      ...(["completed", "failed", "cancelled"].includes(status ?? "") ? { completedAt: envelope.observedAt } : {}),
+    });
+  } else if (event.type === "plan") {
+    openResponse = undefined;
+  } else if (event.type === "usage") {
+    if (event.context) summary.context = { ...event.context, updatedAt: envelope.observedAt };
+    if (event.tokens) summary.tokenUsage = { source: "usage_update", ...event.tokens };
+  }
+  summary.eventCount += 1;
+  summary.availability = {
+    context: summary.context ? "available" : "unavailable",
+    tokenUsage: summary.tokenUsage ? "available" : "unavailable",
+  };
+  summary.tools = { totalToolCallCount: tools.size, calls: [...tools.values()] };
+  return { sample: { responses, summary }, ...(openResponse === undefined ? {} : { openResponse }) };
+}
+
+function optionalStringValue<Key extends string>(key: Key, value: string | undefined): { [K in Key]?: string } {
+  return value === undefined ? {} : { [key]: value } as { [K in Key]: string };
+}
+
+function boundedProgressValue(value: AcpJsonValue): JsonValue {
   const json = JSON.stringify(value);
   const bytes = Buffer.byteLength(json, "utf8");
   if (bytes <= DETAIL_EDGE_BYTES * 2) return value as JsonValue;

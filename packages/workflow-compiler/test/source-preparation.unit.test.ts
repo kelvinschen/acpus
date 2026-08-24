@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import { link, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -25,9 +26,9 @@ describe("workflow source preparation", () => {
 
       const result = await preparePathSource(workspace, scratch, entry);
 
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected invalid projected path");
-      expect(result.error).toMatchObject({ type: "source-invalid", phase: "source" });
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected invalid projected path");
+      expect(result.failure).toMatchObject({ type: "source-invalid", phase: "source" });
     });
   });
 
@@ -42,9 +43,9 @@ describe("workflow source preparation", () => {
 
       const result = await preparePathSource(workspace, scratch, entry);
 
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected source change");
-      expect(result.error).toMatchObject({ type: "source-changed", phase: "source" });
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected source change");
+      expect(result.failure).toMatchObject({ type: "source-changed", phase: "source" });
     });
   });
 
@@ -59,9 +60,9 @@ describe("workflow source preparation", () => {
 
       const result = await preparePathSource(workspace, scratch, entry);
 
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected hard-link rejection");
-      expect(result.error).toMatchObject({ type: "source-invalid", phase: "source" });
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected hard-link rejection");
+      expect(result.failure).toMatchObject({ type: "source-invalid", phase: "source" });
     });
   });
 
@@ -73,9 +74,9 @@ describe("workflow source preparation", () => {
 
       const result = await preparePathSource(workspace, scratch, entry);
 
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected UTF-8 rejection");
-      expect(result.error).toMatchObject({ type: "source-invalid", phase: "source" });
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected UTF-8 rejection");
+      expect(result.failure).toMatchObject({ type: "source-invalid", phase: "source" });
     });
   });
 
@@ -88,10 +89,10 @@ describe("workflow source preparation", () => {
 
       const result = await preparePathSource(workspace, scratch, entry);
 
-      expect(result.isOk()).toBe(true);
-      if (result.isErr()) throw new Error(result.error.message);
-      if (result.value.source.kind !== "snapshot") throw new Error("expected snapshot source");
-      const bundle = result.value.sourceBundle;
+      expect(Result.isSuccess(result)).toBe(true);
+      if (Result.isFailure(result)) throw new Error(result.failure.message);
+      if (result.success.source.kind !== "snapshot") throw new Error("expected snapshot source");
+      const bundle = result.success.sourceBundle;
       if (!bundle) throw new Error("expected snapshot source bundle");
       expect(bundle.files).toContainEqual({ path: "workflow.ts", content });
     });
@@ -123,23 +124,23 @@ describe("workflow source preparation", () => {
       mockSnapshotChecks(secondEntry, secondScratch, [{ path: "workflow.ts", content }]);
       const second = await preparePathSource(workspace, secondScratch, secondEntry);
 
-      expect(first.isOk()).toBe(true);
-      expect(second.isOk()).toBe(true);
-      if (first.isErr() || second.isErr()) throw new Error("expected canonical source preparation");
-      if (first.value.source.kind !== "snapshot" || second.value.source.kind !== "snapshot") {
+      expect(Result.isSuccess(first)).toBe(true);
+      expect(Result.isSuccess(second)).toBe(true);
+      if (Result.isFailure(first) || Result.isFailure(second)) throw new Error("expected canonical source preparation");
+      if (first.success.source.kind !== "snapshot" || second.success.source.kind !== "snapshot") {
         throw new Error("expected snapshot sources");
       }
-      const firstBundle = first.value.sourceBundle;
-      const secondBundle = second.value.sourceBundle;
+      const firstBundle = first.success.sourceBundle;
+      const secondBundle = second.success.sourceBundle;
       if (!firstBundle || !secondBundle) throw new Error("expected snapshot source bundles");
-      expect(first.value.source.entry).toBe("workflow.ts");
-      expect(second.value.source.entry).toBe("workflow.ts");
+      expect(first.success.source.entry).toBe("workflow.ts");
+      expect(second.success.source.entry).toBe("workflow.ts");
       expect(firstBundle.files).toEqual([
         { path: "package.json", content: manifest },
         { path: "workflow.ts", content },
       ]);
       expect(secondBundle.files).toEqual(firstBundle.files);
-      expect(second.value.sourceGraphDigest).toBe(first.value.sourceGraphDigest);
+      expect(second.success.sourceGraphDigest).toBe(first.success.sourceGraphDigest);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -156,9 +157,9 @@ describe("workflow source preparation", () => {
 
       const result = await preparePathSource(workspace, scratch, entry);
 
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected symlink rejection");
-      expect(result.error).toMatchObject({
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected symlink rejection");
+      expect(result.failure).toMatchObject({
         type: "source-invalid",
         phase: "source",
         message: expect.stringContaining("regular, unlinked file"),
@@ -193,9 +194,9 @@ describe("workflow source preparation", () => {
 
       const first = await preparePathSource(workspace, scratch, entry);
 
-      expect(first.isOk()).toBe(true);
-      if (first.isErr()) throw new Error(first.error.message);
-      expect(first.value.sourceGraphDigest).toBe(sourceGraphDigest("workflow.ts", [
+      expect(Result.isSuccess(first)).toBe(true);
+      if (Result.isFailure(first)) throw new Error(first.failure.message);
+      expect(first.success.sourceGraphDigest).toBe(sourceGraphDigest("workflow.ts", [
         { path: "../package.json", content: manifest },
         { path: "../shared/task.ts", content: "export const value = 'one';\n" },
         { path: "workflow.ts", content: workflowContent },
@@ -206,9 +207,9 @@ describe("workflow source preparation", () => {
         { path: task, content: "export const value = 'two';\n" },
       ]));
       const second = await preparePathSource(workspace, scratch, entry);
-      expect(second.isOk()).toBe(true);
-      if (second.isErr()) throw new Error(second.error.message);
-      expect(second.value.sourceGraphDigest).not.toBe(first.value.sourceGraphDigest);
+      expect(Result.isSuccess(second)).toBe(true);
+      if (Result.isFailure(second)) throw new Error(second.failure.message);
+      expect(second.success.sourceGraphDigest).not.toBe(first.success.sourceGraphDigest);
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -216,14 +217,14 @@ describe("workflow source preparation", () => {
 
   it("detects authoritative graph growth and disappearance", async () => {
     const growth = await prepareChangedClosure(["workflow.ts", "helper.ts", "new.ts"]);
-    expect(growth.isErr()).toBe(true);
-    if (growth.isOk()) throw new Error("expected graph growth");
-    expect(growth.error.type).toBe("source-changed");
+    expect(Result.isFailure(growth)).toBe(true);
+    if (Result.isSuccess(growth)) throw new Error("expected graph growth");
+    expect(growth.failure.type).toBe("source-changed");
 
     const disappearance = await prepareChangedClosure(["workflow.ts"]);
-    expect(disappearance.isErr()).toBe(true);
-    if (disappearance.isOk()) throw new Error("expected graph disappearance");
-    expect(disappearance.error.type).toBe("source-changed");
+    expect(Result.isFailure(disappearance)).toBe(true);
+    if (Result.isSuccess(disappearance)) throw new Error("expected graph disappearance");
+    expect(disappearance.failure.type).toBe("source-changed");
   });
 });
 

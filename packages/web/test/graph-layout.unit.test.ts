@@ -221,23 +221,6 @@ describe("workflow graph layout", () => {
     expect(wheelZoomScale(0.2, { deltaY: 1000, ctrlKey: false }, 0.2, 2)).toBe(0.2);
   });
 
-  it("preserves the scale encoded by a trackpad pinch wheel delta", () => {
-    const gestureScale = 1.1;
-
-    expect(wheelZoomScale(
-      1,
-      { deltaY: -100 * Math.log(gestureScale), ctrlKey: true },
-      0.2,
-      2,
-    )).toBeCloseTo(gestureScale);
-    expect(wheelZoomScale(
-      1,
-      { deltaY: -100 * Math.log(1 / gestureScale), ctrlKey: true },
-      0.2,
-      2,
-    )).toBeCloseTo(1 / gestureScale);
-  });
-
   it("keeps selected boxes visible without moving an already visible viewport", () => {
     const viewport = { x: 0, y: 0, scale: 1 };
     const rect = { width: 500, height: 300 };

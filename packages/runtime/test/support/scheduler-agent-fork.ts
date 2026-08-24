@@ -1,4 +1,13 @@
-import type { AgentTurnRequest, AgentTurnResult, ManagedAcpExecutor } from "@acpus/agent-executor";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Result from "effect/Result";
+import { makeNodeProcessHost } from "@acpus/owned-process";
+import type { AgentSessionSupervisor } from "@acpus/agent-executor";
+import type {
+  FixtureAgentTurnRequest as AgentTurnRequest,
+  FixtureAgentTurnResult as AgentTurnResult,
+} from "./agent-turn.js";
 import { defineWorkflow, z } from "@acpus/core";
 import { template } from "@acpus/expression";
 import { vi } from "vitest";
@@ -6,8 +15,9 @@ import {
   advanceFrozenRun as advanceFrozenRunProduction,
   type AdvanceFrozenRunInput,
 } from "../../src/scheduler/runtime-runner.js";
-import { openRuntimeStore } from "../../src/store/store.js";
+import { openRuntimeStoreAdapter } from "../../src/store/store.js";
 import { createInlineTaskAttemptHarness, type TaskAttemptRunner } from "./task-attempt-harness.js";
+import { testAgentSessionSupervisor as createTestAgentSessionSupervisor } from "./agent-session-supervisor.js";
 
 const executorMocks = vi.hoisted(() => ({
   runTaskAttempt: vi.fn<TaskAttemptRunner>(),
@@ -22,30 +32,53 @@ const taskAttemptHarness = createInlineTaskAttemptHarness();
 executorMocks.runTaskAttempt.mockImplementation(input => taskAttemptHarness.runAttempt(input));
 
 export function advanceFrozenRun(
-  input: AdvanceFrozenRunInput & {
+  input: Omit<AdvanceFrozenRunInput, "processes"> & Partial<Pick<AdvanceFrozenRunInput, "processes">> & {
     executeAgentTurn?: (request: AgentTurnRequest) => Promise<AgentTurnResult>;
   },
 ) {
   const { executeAgentTurn, ...productionInput } = input;
-  return advanceFrozenRunProduction({
+  return Effect.runPromise(advanceFrozenRunProduction({
     ...productionInput,
-    managedAcpExecutor: testManagedAcpExecutor(executeAgentTurn),
-  });
+    processes: productionInput.processes ?? makeNodeProcessHost(),
+    agentSessionSupervisor: testAgentSessionSupervisor(executeAgentTurn),
+  }));
+}
+
+export function interruptFrozenRunWhen(
+  input: Parameters<typeof advanceFrozenRun>[0],
+  shouldInterrupt: () => boolean,
+) {
+  const reached = Deferred.makeUnsafe<void>();
+  const { executeAgentTurn, ...productionInput } = input;
+  return Effect.runPromise(Effect.scoped(Effect.gen(function* () {
+    const fiber = yield* Effect.forkChild(advanceFrozenRunProduction({
+      ...productionInput,
+      processes: productionInput.processes ?? makeNodeProcessHost(),
+      agentSessionSupervisor: testAgentSessionSupervisor(executeAgentTurn),
+      onCheckpoint: () => shouldInterrupt()
+        ? Deferred.succeed(reached, undefined).pipe(Effect.andThen(Effect.never))
+        : Effect.void,
+    }));
+    yield* Deferred.await(reached);
+    yield* Fiber.interrupt(fiber);
+  })));
 }
 
 export async function forkRuntimeRun(
-  store: Awaited<ReturnType<typeof openRuntimeStore>>,
+  store: Awaited<ReturnType<typeof openRuntimeStoreAdapter>>,
   runId: string,
-  options?: Parameters<Awaited<ReturnType<typeof openRuntimeStore>>["forkRun"]>[1],
+  options?: Parameters<Awaited<ReturnType<typeof openRuntimeStoreAdapter>>["forkRun"]>[1],
 ) {
-  const result = await store.forkRun(runId, options);
-  if (result.isErr()) throw Object.assign(new Error(result.error.message), { failure: result.error });
-  return result.value;
+  const result = await Effect.runPromise(Effect.result(store.forkRun(runId, options)));
+  if (Result.isFailure(result)) {
+    throw Object.assign(new Error(result.failure.message), { failure: result.failure });
+  }
+  return result.success;
 }
 
-export function overrideAgentWorkflow() {
+export function injectedAgentWorkflow() {
   return defineWorkflow({
-    name: "scheduler-node-executor-agent-override",
+    name: "scheduler-node-executor-agent-injection",
     description: "Review a change with configured agents.",
     agents: {
       reviewer: {
@@ -137,15 +170,10 @@ export function targetedForkCompletedSourceWorkflow() {
   });
 }
 
-function testManagedAcpExecutor(
+function testAgentSessionSupervisor(
   executeAgentTurn: ((request: AgentTurnRequest) => Promise<AgentTurnResult>) | undefined,
-): ManagedAcpExecutor {
-  return {
-    withAttempt: async (_input, use) => use({
-      runTurn: executeAgentTurn ?? (async request => {
-        throw new Error(`Unexpected Agent execution for '${request.sessionName}'.`);
-      }),
-    }),
-    shutdown: async () => {},
-  };
+): AgentSessionSupervisor {
+  return createTestAgentSessionSupervisor(executeAgentTurn ?? (async request => {
+    throw new Error(`Unexpected Agent execution for '${request.agentSessionId}'.`);
+  }));
 }

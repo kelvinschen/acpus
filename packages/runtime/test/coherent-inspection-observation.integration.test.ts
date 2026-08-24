@@ -1,15 +1,26 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
 import { defineWorkflow, z } from "@acpus/core";
 import type { WorkflowDefinition } from "@acpus/core/workflow";
-import type { AgentTurnObservation, AgentTurnRequest, AgentTurnResult } from "@acpus/agent-executor";
+import type {
+  FixtureAgentTurnObservation as AgentTurnObservation,
+  FixtureAgentTurnRequest as AgentTurnRequest,
+  FixtureAgentTurnResult as AgentTurnResult,
+} from "./support/agent-turn.js";
+import { fixtureEvent, type FixtureObservationEvent } from "./support/agent-turn.js";
 import type { JsonValue } from "@acpus/expression/ir";
-import { observeInspection, readInspection, type InspectionError, type InspectionObservation } from "@acpus/runtime";
-import type { Result } from "neverthrow";
+import {
+  observeInspection as observeInspectionStream,
+  readInspection as readInspectionEffect,
+} from "../src/inspection/use-cases.js";
+import type { InspectionError, InspectionObservation } from "../src/inspection/types.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bootstrapRootEvents } from "../src/scheduler/materialize.js";
 import { deriveOccurrenceRef } from "../src/scheduler/occurrence-ref.js";
 import { frozenRunScope } from "../src/scheduler/settle.js";
 import type { RunOwnerClaim } from "../src/scheduler/store-port.js";
-import { openRuntimeStore, type RuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter, type RuntimeStoreAdapter } from "../src/store/store.js";
 import type { InspectionTreeEntry } from "../src/inspection/types.js";
 import { dbRun } from "./support/store-port-fixtures.js";
 import { parallelSignalRaceWorkflow, prepareSyntheticWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
@@ -20,6 +31,14 @@ type ObservationBase = "schemaVersion" | "sequence" | "observedAt" | "elapsedMs"
 type ObservationEventInput = AgentTurnObservation["event"] extends infer Event
   ? Event extends unknown ? Omit<Event, ObservationBase> : never
   : never;
+
+function readInspection(...args: Parameters<typeof readInspectionEffect>) {
+  return Effect.runPromise(Effect.result(readInspectionEffect(...args)));
+}
+
+function observeInspection(...args: Parameters<typeof observeInspectionStream>) {
+  return Stream.toAsyncIterable(Stream.result(observeInspectionStream(...args)));
+}
 
 describe("coherent inspection observation boundaries", () => {
   afterEach(() => {
@@ -86,24 +105,41 @@ describe("coherent inspection observation boundaries", () => {
         const summary = await readInspection(workspace, {
           kind: "target", runId: started.runId, target: selector, detail: "summary",
         });
-        expect(summary.isOk() ? summary.value : undefined).toMatchObject({
+        expect(Result.isSuccess(summary) ? summary.success : undefined).toMatchObject({
           kind: "target",
           detail: "summary",
           acp: { silentForMs: expect.any(Number) },
         });
-        const summaryView = summary.isOk() && summary.value.kind === "target" && summary.value.detail === "summary"
-          ? summary.value
+        const summaryView = Result.isSuccess(summary) && summary.success.kind === "target" && summary.success.detail === "summary"
+          ? summary.success
           : undefined;
         expect(summaryView?.acp?.silentForMs).toBeGreaterThanOrEqual(14 * 60_000);
 
         const timeline = await readInspection(workspace, {
           kind: "target", runId: started.runId, target: selector, detail: "timeline",
         });
-        expect(timeline.isOk() ? timeline.value : undefined).not.toHaveProperty("acp");
+        expect(Result.isSuccess(timeline) ? timeline.success : undefined).not.toHaveProperty("acp");
         const root = await readInspection(workspace, {
           kind: "target", runId: started.runId, target: "root", detail: "summary",
         });
-        expect(root.isOk() ? root.value : undefined).not.toHaveProperty("acp");
+        expect(Result.isSuccess(root) ? root.success : undefined).not.toHaveProperty("acp");
+
+        throwingSchedulerStore(started.store.scheduler).commitAttemptResult({
+          runId: started.runId,
+          attemptId: attempt.attemptId,
+          ownerEpoch: started.claim.ownerEpoch,
+          result: { status: "completed", output: { accepted: true } },
+          idempotencyKey: "inspection-observation:acp-silence:complete",
+        });
+        const completed = await readInspection(workspace, {
+          kind: "target", runId: started.runId, target: selector, detail: "summary",
+        });
+        expect(Result.isSuccess(completed) ? completed.success : undefined).toMatchObject({
+          state: { status: "completed" },
+          result: { status: "accepted", value: { accepted: true } },
+        });
+        expect(Result.isSuccess(completed) ? completed.success : undefined).not.toHaveProperty("pulse");
+        expect(Result.isSuccess(completed) ? completed.success : undefined).not.toHaveProperty("acp");
       } finally {
         started.store.close();
       }
@@ -123,7 +159,8 @@ describe("coherent inspection observation boundaries", () => {
       const ready = new Promise<void>(resolve => {
         requestReady = resolve;
       });
-      let capture: Promise<AgentTurnResult> | undefined;
+      type CaptureTerminal = { status: "completed" | "cancelled"; finalResponse?: string; snapshot: { responses: readonly string[]; summary: AgentTurnResult["summary"]; timing: AgentTurnResult["timing"] } };
+      let capture: Promise<CaptureTerminal> | undefined;
       try {
         const review = instance(started.store, started.runId, "review");
         const attempt = Object.values(throwingSchedulerStore(started.store.scheduler).loadRunSnapshot(started.runId).projection.attempts)
@@ -134,7 +171,7 @@ describe("coherent inspection observation boundaries", () => {
           availability: { context: "unavailable", tokenUsage: "unavailable" },
           tools: { totalToolCallCount: 1, calls: [] },
         };
-        capture = started.store.observationLog.captureTurn({
+        capture = Effect.runPromise(started.store.observationLog.captureTurn({
           runId: started.runId,
           nodeId: review.nodeId,
           nodeKey: review.nodeKey,
@@ -143,45 +180,57 @@ describe("coherent inspection observation boundaries", () => {
           turn: 1,
           promptKind: "task",
         }, {
-          agent: { kind: "named", name: "mock" },
+          agent: { kind: "named" as const, name: "mock" },
           prompt: "Review.",
           cwd: workspace,
           env: {},
-          sessionName: attempt.attemptId,
-          permissionMode: "deny-all",
-        }, async value => {
+          agentSessionId: attempt.attemptId,
+          permissionMode: "deny-all" as const,
+        }, value => Effect.promise(async (): Promise<CaptureTerminal> => {
           request = value;
           requestReady();
           await providerRelease;
           return {
             status: "completed",
-            responses: ["done"],
             finalResponse: "done",
-            stderr: "",
+            snapshot: {
+              responses: ["done"],
+              summary,
+              timing: {
+                startedAt: "2026-08-03T00:00:00.000Z",
+                finishedAt: "2026-08-03T00:00:03.000Z",
+                elapsedMs: 3_000,
+              },
+            },
+          };
+        }), () => ({
+          status: "cancelled",
+          snapshot: {
+            responses: [],
             summary,
             timing: {
               startedAt: "2026-08-03T00:00:00.000Z",
-              finishedAt: "2026-08-03T00:00:03.000Z",
-              elapsedMs: 3_000,
+              finishedAt: "2026-08-03T00:00:00.000Z",
+              elapsedMs: 0,
             },
-          };
-        });
+          },
+        })));
         await ready;
         const selector = deriveOccurrenceRef(review.instancePath);
-        const treeSelector = `${selector}#${attempt.attemptNo}`;
         const observe = (
           sequence: number,
           payload: ObservationEventInput,
-        ) => request.onObservation?.({
-          event: {
+        ) => {
+          const observedAt = `2026-08-03T00:00:0${sequence + 1}.000Z`;
+          const projected = fixtureEvent({
             schemaVersion: 1,
             sequence,
-            observedAt: `2026-08-03T00:00:0${sequence + 1}.000Z`,
+            observedAt,
             elapsedMs: (sequence + 1) * 1_000,
             ...payload,
-          } as Parameters<NonNullable<AgentTurnRequest["onObservation"]>>[0]["event"],
-          progress: { responses: [], summary, updatedAt: `2026-08-03T00:00:0${sequence + 1}.000Z` },
-        });
+          } as FixtureObservationEvent);
+          if (projected) request.onEvent?.({ sequence, observedAt, elapsedMs: (sequence + 1) * 1_000, event: projected });
+        };
 
         const controller = new AbortController();
         const iterator = observeInspection(workspace, {
@@ -220,8 +269,8 @@ describe("coherent inspection observation boundaries", () => {
         expect(emitted).toBe(false);
 
         const thoughtRead = await readInspection(workspace, { kind: "run", runId: started.runId });
-        const thoughtView = thoughtRead.isOk() && thoughtRead.value.kind === "run" ? thoughtRead.value : undefined;
-        expect(inspectionTreeItem(thoughtView?.tree ?? [], treeSelector)?.pulse).toEqual({
+        const thoughtView = Result.isSuccess(thoughtRead) && thoughtRead.success.kind === "run" ? thoughtRead.success : undefined;
+        expect(inspectionTreeItem(thoughtView?.tree ?? [], selector)?.pulse).toEqual({
           phase: "reported-thought",
           turn: 1,
         });
@@ -248,8 +297,8 @@ describe("coherent inspection observation boundaries", () => {
         await expect(iterator.next()).resolves.toMatchObject({ done: true });
 
         const runRead = await readInspection(workspace, { kind: "run", runId: started.runId });
-        const runView = runRead.isOk() && runRead.value.kind === "run" ? runRead.value : undefined;
-        expect(inspectionTreeItem(runView?.tree ?? [], treeSelector)?.pulse).toEqual({
+        const runView = Result.isSuccess(runRead) && runRead.success.kind === "run" ? runRead.success : undefined;
+        expect(inspectionTreeItem(runView?.tree ?? [], selector)?.pulse).toEqual({
           phase: "tool",
           turn: 1,
           tool: { name: "Bash", title: "Run focused checks", state: "completed" },
@@ -258,16 +307,16 @@ describe("coherent inspection observation boundaries", () => {
         const summaryRead = await readInspection(workspace, {
           kind: "target", runId: started.runId, target: selector, detail: "summary",
         });
-        const summaryView = summaryRead.isOk() && summaryRead.value.kind === "target" && summaryRead.value.detail === "summary"
-          ? summaryRead.value
+        const summaryView = Result.isSuccess(summaryRead) && summaryRead.success.kind === "target" && summaryRead.success.detail === "summary"
+          ? summaryRead.success
           : undefined;
         expect(summaryView).not.toHaveProperty("pulse");
 
         const timelineRead = await readInspection(workspace, {
           kind: "target", runId: started.runId, target: selector, detail: "timeline",
         });
-        const timelineView = timelineRead.isOk() && timelineRead.value.kind === "target" && timelineRead.value.detail === "timeline"
-          ? timelineRead.value
+        const timelineView = Result.isSuccess(timelineRead) && timelineRead.success.kind === "target" && timelineRead.success.detail === "timeline"
+          ? timelineRead.success
           : undefined;
         expect(timelineView).not.toHaveProperty("current");
         expect(timelineView?.recent).toEqual(expect.arrayContaining([
@@ -300,7 +349,10 @@ describe("coherent inspection observation boundaries", () => {
 
         const next = iterator.next();
         await vi.advanceTimersByTimeAsync(0);
-        const fenced = fenceAndCompleteReplacement(started);
+        const replacedAttemptId = Object.values(throwingSchedulerStore(started.store.scheduler).loadRunSnapshot(started.runId).projection.attempts)
+          .find(candidate => candidate.status === "started")?.attemptId;
+        if (!replacedAttemptId) throw new Error("Expected started inspection observation Agent attempt.");
+        const replacement = automaticallyReplaceAndComplete(workspace, started);
         await vi.advanceTimersByTimeAsync(1_000);
 
         expect(observation(await next)).toMatchObject({
@@ -311,8 +363,8 @@ describe("coherent inspection observation boundaries", () => {
             state: { status: "cancelled" },
           },
         });
-        expect(fenced.replacement.attemptNo).toBe(2);
-        expect(fenced.fencedAttemptId).toBe(fenced.replacedAttemptId);
+        expect(replacement.attemptNo).toBe(2);
+        expect(replacement.attemptId).not.toBe(replacedAttemptId);
       } finally {
         started.store.close();
       }
@@ -431,8 +483,8 @@ describe("coherent inspection observation boundaries", () => {
         const runView = await readInspection(workspace, {
           kind: "run", runId: prepared.runId,
         });
-        const awaiting = runView.isOk() && runView.value.kind === "run"
-          ? inspectionTreeItem(runView.value.tree, selector)
+        const awaiting = Result.isSuccess(runView) && runView.success.kind === "run"
+          ? inspectionTreeItem(runView.success.tree, selector)
           : undefined;
         expect(awaiting).toMatchObject({ state: { status: "awaiting" } });
         expect(awaiting?.attention).toBeUndefined();
@@ -440,8 +492,8 @@ describe("coherent inspection observation boundaries", () => {
         const targetSummary = await readInspection(workspace, {
           kind: "target", runId: prepared.runId, target: selector, detail: "summary",
         });
-        const summaryView = targetSummary.isOk() && targetSummary.value.kind === "target"
-          ? targetSummary.value
+        const summaryView = Result.isSuccess(targetSummary) && targetSummary.success.kind === "target"
+          ? targetSummary.success
           : undefined;
         expect(summaryView).toMatchObject({ state: { status: "awaiting" } });
         expect(summaryView?.detail === "summary" ? summaryView.attention : undefined).toBeUndefined();
@@ -449,8 +501,8 @@ describe("coherent inspection observation boundaries", () => {
         const targetTimeline = await readInspection(workspace, {
           kind: "target", runId: prepared.runId, target: selector, detail: "timeline",
         });
-        const timelineView = targetTimeline.isOk() && targetTimeline.value.kind === "target"
-          ? targetTimeline.value
+        const timelineView = Result.isSuccess(targetTimeline) && targetTimeline.success.kind === "target"
+          ? targetTimeline.success
           : undefined;
         expect(timelineView).toMatchObject({ state: { status: "awaiting" } });
         expect(timelineView?.detail === "timeline" ? timelineView.current : undefined).toBeUndefined();
@@ -505,7 +557,7 @@ describe("coherent inspection observation boundaries", () => {
 });
 
 type ObservedRun = {
-  store: RuntimeStore;
+  store: RuntimeStoreAdapter;
   runId: string;
   claim: RunOwnerClaim;
 };
@@ -529,7 +581,7 @@ async function bootstrappedRun(
   input: JsonValue,
 ): Promise<ObservedRun> {
   const prepared = await prepareSyntheticWorkflow(workspace, workflow);
-  const store = await openRuntimeStore(workspace);
+  const store = await openRuntimeStoreAdapter(workspace);
   try {
     const run = await admitRunForTest(store, { prepared, input, cwd: workspace });
     const claim = store.scheduler.claimRun(run.id, "inspection-observation", 60_000);
@@ -580,39 +632,8 @@ function automaticallyReplaceAndComplete(workspace: string, started: ObservedRun
   return replacement;
 }
 
-function fenceAndCompleteReplacement(started: ObservedRun) {
-  const scheduler = throwingSchedulerStore(started.store.scheduler);
-  const review = instance(started.store, started.runId, "review");
-  const replaced = Object.values(scheduler.loadRunSnapshot(started.runId).projection.attempts)
-    .find(candidate => candidate.nodeKey === review.nodeKey && candidate.status === "started");
-  if (!replaced) throw new Error("Expected started inspection observation Agent attempt.");
-  const fenced = scheduler.steerAgent({
-    runId: started.runId,
-    ownerEpoch: started.claim.ownerEpoch,
-    idempotencyKey: "inspection-observation:fence",
-    steerId: "inspection-observation:fence",
-    target: replaced.attemptId,
-    instruction: "Use the supplied context.",
-  });
-  const replacement = scheduler.startAttempt({
-    runId: started.runId,
-    nodeKey: review.nodeKey,
-    nodeId: review.nodeId,
-    ownerEpoch: started.claim.ownerEpoch,
-    idempotencyKey: "inspection-observation:fence:replacement:start",
-  });
-  scheduler.commitAttemptResult({
-    runId: started.runId,
-    attemptId: replacement.attemptId,
-    ownerEpoch: started.claim.ownerEpoch,
-    result: { status: "completed", output: { ok: true } },
-    idempotencyKey: "inspection-observation:fence:replacement:complete",
-  });
-  return { replacement, fencedAttemptId: fenced.fencedAttemptId, replacedAttemptId: replaced.attemptId };
-}
-
 function awaitSignal(
-  store: RuntimeStore,
+  store: RuntimeStoreAdapter,
   runId: string,
   claim: RunOwnerClaim,
   nodeKey: string,
@@ -632,14 +653,14 @@ function awaitSignal(
   });
 }
 
-function instance(store: RuntimeStore, runId: string, nodeId: string) {
+function instance(store: RuntimeStoreAdapter, runId: string, nodeId: string) {
   const value = Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).projection.instances)
     .find(candidate => candidate.nodeId === nodeId);
   if (!value) throw new Error(`Expected '${nodeId}' inspection observation instance.`);
   return value;
 }
 
-function fanoutInstance(store: RuntimeStore, runId: string, nodeId: string, itemIndex: number) {
+function fanoutInstance(store: RuntimeStoreAdapter, runId: string, nodeId: string, itemIndex: number) {
   const value = Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(runId).projection.instances)
     .find(candidate => candidate.nodeId === nodeId
       && candidate.instancePath.some(segment => segment.kind === "fanout" && segment.itemIndex === itemIndex));
@@ -659,9 +680,9 @@ function inspectionTreeItem(
   return undefined;
 }
 
-function observation(result: IteratorResult<Result<InspectionObservation, InspectionError>>): InspectionObservation {
-  if (result.done || result.value.isErr()) throw new Error("Expected inspection observation to succeed.");
-  return result.value.value;
+function observation(result: IteratorResult<Result.Result<InspectionObservation, InspectionError>>): InspectionObservation {
+  if (result.done || Result.isFailure(result.value)) throw new Error("Expected inspection observation to succeed.");
+  return result.value.success;
 }
 
 function agentWorkflow() {

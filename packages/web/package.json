@@ -32,8 +32,8 @@
     "@acpus/runtime": "workspace:*",
     "@acpus/workflow-compiler": "workspace:*",
     "@hono/node-server": "^2.0.12",
-    "hono": "^4.8.0",
-    "neverthrow": "^8.2.0"
+    "effect": "4.0.0-rc.111",
+    "hono": "^4.8.0"
   },
   "devDependencies": {
     "@radix-ui/react-dialog": "^1.1.19",

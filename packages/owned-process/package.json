@@ -1,0 +1,40 @@
+{
+  "name": "@acpus/owned-process",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Effect-native ownership and recovery for Acpus child processes.",
+  "license": "MIT",
+  "engines": {
+    "node": "^22.18.0 || >=24.0.0"
+  },
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist tsconfig.build.tsbuildinfo"
+  },
+  "dependencies": {
+    "effect": "4.0.0-rc.111"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kelvinschen/acpus"
+  }
+}

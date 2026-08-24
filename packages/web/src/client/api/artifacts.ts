@@ -1,4 +1,5 @@
-import { err, ok, ResultAsync, type Result } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { workspaceRunUrl } from "./runs.js";
 import {
   errorMessage,
@@ -27,24 +28,27 @@ export async function getArtifactPreview(
   artifactId: string,
 ): Promise<ArtifactPreview> {
   const url = `${workspaceRunUrl(workspaceKey, runId)}/artifacts/${encodeURIComponent(artifactId)}/preview`;
-  const result: ResultAsync<ArtifactPreview, WebApiFailure> = requestArtifactResponse(url).andThen(response => {
+  const effect = Effect.gen(function*() {
+    const response = yield* requestArtifactResponse(url);
     const metadata = parseArtifactMetadata(response, true);
-    if (metadata.isErr()) return err(metadata.error);
-    return ResultAsync.fromPromise(response.arrayBuffer(), cause => ({
-      type: "network-failed" as const,
-      message: errorMessage(cause, "Artifact preview body could not be read."),
-    })).andThen(buffer => {
-      const expectedLength = Math.min(metadata.value.size, 128 * 1024);
-      if (buffer.byteLength !== expectedLength || metadata.value.truncated !== (metadata.value.size > expectedLength)) {
-        return invalidArtifactMetadata<ArtifactPreview>(
-          response,
-          "Artifact preview body did not match its metadata.",
-        );
-      }
-      return ok({ text: new TextDecoder().decode(buffer), ...metadata.value });
+    const value = yield* Effect.fromResult(metadata);
+    const buffer = yield* Effect.tryPromise({
+      try: () => response.arrayBuffer(),
+      catch: cause => ({
+        type: "network-failed" as const,
+        message: errorMessage(cause, "Artifact preview body could not be read."),
+      }),
     });
+    const expectedLength = Math.min(value.size, 128 * 1024);
+    if (buffer.byteLength !== expectedLength || value.truncated !== (value.size > expectedLength)) {
+      return yield* Effect.fromResult(invalidArtifactMetadata<ArtifactPreview>(
+        response,
+        "Artifact preview body did not match its metadata.",
+      ));
+    }
+    return { text: new TextDecoder().decode(buffer), ...value };
   });
-  return toWebApiPromise(result);
+  return toWebApiPromise(effect);
 }
 
 export async function getArtifactContent(
@@ -54,71 +58,80 @@ export async function getArtifactContent(
   signal?: AbortSignal,
 ): Promise<ArtifactContent> {
   const url = `${workspaceRunUrl(workspaceKey, runId)}/artifacts/${encodeURIComponent(artifactId)}/content`;
-  const result: ResultAsync<ArtifactContent, WebApiFailure> = requestArtifactResponse(url, signal).andThen(response => {
+  const effect = Effect.gen(function*() {
+    const response = yield* requestArtifactResponse(url, signal);
     const metadata = parseArtifactMetadata(response, false);
-    if (metadata.isErr()) return err(metadata.error);
-    return ResultAsync.fromPromise(response.arrayBuffer(), cause => ({
-      type: "network-failed" as const,
-      message: errorMessage(cause, "Artifact content body could not be read."),
-    })).andThen(buffer => buffer.byteLength === metadata.value.size
-      ? ok({ bytes: new Uint8Array(buffer), ...metadata.value })
-      : invalidArtifactMetadata<ArtifactContent>(
+    const value = yield* Effect.fromResult(metadata);
+    const buffer = yield* Effect.tryPromise({
+      try: () => response.arrayBuffer(),
+      catch: cause => ({
+        type: "network-failed" as const,
+        message: errorMessage(cause, "Artifact content body could not be read."),
+      }),
+    });
+    return buffer.byteLength === value.size
+      ? { bytes: new Uint8Array(buffer), ...value }
+      : yield* Effect.fromResult(invalidArtifactMetadata<ArtifactContent>(
           response,
           "Artifact content byte length did not match its metadata.",
         ));
   });
-  return toWebApiPromise(result);
+  return toWebApiPromise(effect);
 }
 
-function requestArtifactResponse(url: string, signal?: AbortSignal): ResultAsync<Response, WebApiFailure> {
-  return ResultAsync.fromPromise(fetch(url, signal === undefined ? undefined : { signal }), cause => ({
-    type: "network-failed" as const,
-    message: errorMessage(cause, "Artifact request failed."),
-  })).andThen(response => {
-    if (response.ok) return ok(response);
-    return ResultAsync.fromPromise(response.text(), cause => ({
-      type: "network-failed" as const,
-      message: errorMessage(cause, "Artifact error body could not be read."),
-    })).andThen(text => {
-      let body: unknown;
-      try {
-        body = JSON.parse(text) as unknown;
-      } catch {
-        return err({
-          type: "response-invalid-json" as const,
-          status: response.status,
-          message: "Artifact error response was not valid JSON.",
-        });
-      }
-      const failure = isRecord(body) && body.ok === false && isRecord(body.error) ? body.error : undefined;
-      return typeof failure?.code === "string" && typeof failure.message === "string"
-        ? err({
-            type: "request-failed" as const,
-            status: response.status,
-            code: failure.code,
-            message: failure.message,
-          })
-        : err({
-            type: "response-invalid-envelope" as const,
-            status: response.status,
-            message: "Artifact error response did not contain a valid error envelope.",
-          });
+function requestArtifactResponse(url: string, signal?: AbortSignal): Effect.Effect<Response, WebApiFailure> {
+  return Effect.gen(function*() {
+    const response = yield* Effect.tryPromise({
+      try: () => fetch(url, signal === undefined ? undefined : { signal }),
+      catch: cause => ({
+        type: "network-failed" as const,
+        message: errorMessage(cause, "Artifact request failed."),
+      }),
     });
+    if (response.ok) return response;
+    const text = yield* Effect.tryPromise({
+      try: () => response.text(),
+      catch: cause => ({
+        type: "network-failed" as const,
+        message: errorMessage(cause, "Artifact error body could not be read."),
+      }),
+    });
+    const body = yield* Effect.try({
+      try: () => JSON.parse(text) as unknown,
+      catch: () => ({
+        type: "response-invalid-json" as const,
+        status: response.status,
+        message: "Artifact error response was not valid JSON.",
+      }),
+    });
+    const failure = isRecord(body) && body.ok === false && isRecord(body.error) ? body.error : undefined;
+    return yield* Effect.fail(typeof failure?.code === "string" && typeof failure.message === "string"
+      ? {
+          type: "request-failed" as const,
+          status: response.status,
+          code: failure.code,
+          message: failure.message,
+        }
+      : {
+          type: "response-invalid-envelope" as const,
+          status: response.status,
+          message: "Artifact error response did not contain a valid error envelope.",
+        });
   });
 }
 
 function parseArtifactMetadata(
   response: Response,
   preview: true,
-): Result<Omit<ArtifactPreview, "text">, WebApiFailure>;
+): Result.Result<Omit<ArtifactPreview, "text">, WebApiFailure>;
 function parseArtifactMetadata(
   response: Response,
   preview: false,
-): Result<Omit<ArtifactContent, "bytes">, WebApiFailure>;
+): Result.Result<Omit<ArtifactContent, "bytes">, WebApiFailure>;
 function parseArtifactMetadata(
   response: Response,
   preview: boolean,
-): Result<Omit<ArtifactPreview, "text"> | Omit<ArtifactContent, "bytes">, WebApiFailure> {
+): Result.Result<Omit<ArtifactPreview, "text"> | Omit<ArtifactContent, "bytes">, WebApiFailure> {
   const mediaType = response.headers.get("content-type");
   const sizeText = response.headers.get("x-acpus-artifact-size");
   if (!mediaType?.trim() || sizeText === null || !/^(0|[1-9]\d*)$/.test(sizeText)) {
@@ -133,7 +146,7 @@ function parseArtifactMetadata(
     if (truncated !== "true" && truncated !== "false") {
       return invalidArtifactMetadata(response, "Artifact preview truncation metadata was invalid.");
     }
-    return ok({ mediaType, size, truncated: truncated === "true" });
+    return Result.succeed({ mediaType, size, truncated: truncated === "true" });
   }
   const encodedName = response.headers.get("x-acpus-artifact-name");
   if (encodedName === null) {
@@ -148,9 +161,9 @@ function parseArtifactMetadata(
   if (!fileName || fileName === "." || fileName === ".." || /[\\/\u0000-\u001f\u007f]/.test(fileName)) {
     return invalidArtifactMetadata(response, "Artifact content filename metadata was invalid.");
   }
-  return ok({ mediaType, size, fileName });
+  return Result.succeed({ mediaType, size, fileName });
 }
 
-function invalidArtifactMetadata<T>(response: Response, message: string): Result<T, WebApiFailure> {
-  return err({ type: "response-invalid-envelope", status: response.status, message });
+function invalidArtifactMetadata<T>(response: Response, message: string): Result.Result<T, WebApiFailure> {
+  return Result.fail({ type: "response-invalid-envelope", status: response.status, message });
 }

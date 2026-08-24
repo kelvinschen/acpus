@@ -1,6 +1,7 @@
 import { defineWorkflow, z } from "@acpus/core";
+import { makeNodeProcessHost } from "@acpus/owned-process";
+import * as Effect from "effect/Effect";
 import { lift, template } from "@acpus/expression";
-import { ResultAsync } from "neverthrow";
 import { beforeEach, vi } from "vitest";
 import { advanceFrozenRun as advanceFrozenRunProduction } from "../../src/scheduler/runtime-runner.js";
 import { createInlineTaskAttemptHarness, type TaskAttemptRunner } from "./task-attempt-harness.js";
@@ -21,7 +22,14 @@ beforeEach(() => {
   taskAttemptHarness = createInlineTaskAttemptHarness();
   hoistedTaskMocks.runTaskAttempt.mockReset().mockImplementation(input => taskAttemptHarness.runAttempt(input));
 });
-export const advanceFrozenRun = advanceFrozenRunProduction;
+type TestAdvanceFrozenRunInput = Omit<Parameters<typeof advanceFrozenRunProduction>[0], "processes">
+  & Partial<Pick<Parameters<typeof advanceFrozenRunProduction>[0], "processes">>;
+
+export const advanceFrozenRun = (input: TestAdvanceFrozenRunInput) =>
+  Effect.runPromise(advanceFrozenRunProduction({
+    ...input,
+    processes: input.processes ?? makeNodeProcessHost(),
+  }));
 
 export function holdFirstTaskAttempt() {
   let releaseFirst!: () => void;
@@ -31,21 +39,15 @@ export function holdFirstTaskAttempt() {
   let calls = 0;
   let active = 0;
   let peak = 0;
-  taskMocks.runTaskAttempt.mockImplementation(input => {
+  taskMocks.runTaskAttempt.mockImplementation(input => Effect.gen(function* () {
     calls += 1;
     active += 1;
     peak = Math.max(peak, active);
-    return ResultAsync.fromSafePromise(calls === 1 ? firstGate : Promise.resolve())
-      .andThen(() => taskAttemptHarness.runAttempt(input))
-      .map(value => {
-        active -= 1;
-        return value;
-      })
-      .mapErr(error => {
-        active -= 1;
-        return error;
-      });
-  });
+    return yield* (calls === 1 ? Effect.promise(() => firstGate) : Effect.void).pipe(
+      Effect.andThen(taskAttemptHarness.runAttempt(input)),
+      Effect.ensuring(Effect.sync(() => { active -= 1; })),
+    );
+  }));
   return { releaseFirst, peak: () => peak };
 }
 

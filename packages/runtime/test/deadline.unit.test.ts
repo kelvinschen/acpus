@@ -1,11 +1,11 @@
-import { err, ok } from "neverthrow";
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import { requirePersistedDeadline, tryCreateDeadline, tryParsePersistedDeadline } from "../src/deadline.js";
 
 describe("persisted deadlines", () => {
   it("creates canonical four-digit-year ISO dates", () => {
     expect(tryCreateDeadline(new Date("2026-01-01T00:00:00.000Z"), 1_000))
-      .toEqual(ok(new Date("2026-01-01T00:00:01.000Z")));
+      .toEqual(Result.succeed(new Date("2026-01-01T00:00:01.000Z")));
   });
 
   it.each([
@@ -14,18 +14,18 @@ describe("persisted deadlines", () => {
     [new Date("2026-01-01T00:00:00.000Z"), -1],
     [new Date("2026-01-01T00:00:00.000Z"), 0.5],
   ])("rejects unsupported persisted deadline inputs", (now, milliseconds) => {
-    expect(tryCreateDeadline(now, milliseconds)).toEqual(err({ type: "deadline-out-of-range" }));
+    expect(tryCreateDeadline(now, milliseconds)).toEqual(Result.fail({ type: "deadline-out-of-range" }));
   });
 
   it("parses only canonical four-digit-year ISO timestamps", () => {
     const value = "2026-01-01T00:00:00.000Z";
-    expect(tryParsePersistedDeadline(value)).toEqual(ok(new Date(value)));
+    expect(tryParsePersistedDeadline(value)).toEqual(Result.succeed(new Date(value)));
     for (const invalid of [
       "2026-01-01T00:00:00Z",
       "+010000-01-01T00:00:00.000Z",
       "not-a-deadline",
     ]) {
-      expect(tryParsePersistedDeadline(invalid)).toEqual(err({ type: "invalid-persisted-deadline", value: invalid }));
+      expect(tryParsePersistedDeadline(invalid)).toEqual(Result.fail({ type: "invalid-persisted-deadline", value: invalid }));
     }
   });
 

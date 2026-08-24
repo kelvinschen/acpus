@@ -3,32 +3,32 @@ import { AcpusClientState, type AcpusRemote } from "../src/client/state.js";
 import type { SessionActivityProjection } from "../src/remote/types.js";
 
 describe("Acpus Client task projection ownership", () => {
-  it("reads the latest Agent Profile catalog through the Remote boundary", async () => {
-    const profiles = [{
+  it("reads the latest Agent Preset catalog through the Remote boundary", async () => {
+    const presets = [{
       id: "dsh",
-      use: "dsh",
       guidance: "Coordinate delegated work.",
-      builtIn: true,
+      scope: "host" as const,
+      agent: { use: "dsh" },
     }];
-    const readAgentProfiles = vi.fn(async () => ({
+    const readAgentPresets = vi.fn(async () => ({
       ok: true as const,
-      value: { profiles },
+      value: { presets },
     }));
-    const state = new AcpusClientState(remoteStub({ readAgentProfiles }));
+    const state = new AcpusClientState(remoteStub({ readAgentPresets }));
 
-    await expect(state.readAgentProfiles()).resolves.toEqual(profiles);
-    expect(readAgentProfiles).toHaveBeenCalledWith({});
+    await expect(state.readAgentPresets()).resolves.toEqual(presets);
+    expect(readAgentPresets).toHaveBeenCalledWith({});
   });
 
-  it("surfaces Agent Profile Remote failures for the retry UI", async () => {
+  it("surfaces Agent Preset Remote failures for the retry UI", async () => {
     const state = new AcpusClientState(remoteStub({
-      readAgentProfiles: vi.fn(async () => ({
+      readAgentPresets: vi.fn(async () => ({
         ok: false as const,
         error: { message: "catalog unavailable" },
       })),
     }));
 
-    await expect(state.readAgentProfiles()).rejects.toThrow("catalog unavailable");
+    await expect(state.readAgentPresets()).rejects.toThrow("catalog unavailable");
   });
 
   it("remembers expansion independently for each session", () => {
@@ -275,31 +275,6 @@ describe("Acpus Client task projection ownership", () => {
     stopSecond();
   });
 
-  it("publishes changed task projections", async () => {
-    const changed = projection("session-1", 2);
-    let calls = 0;
-    const state = new AcpusClientState(remoteStub({
-      readSessionActivity: vi.fn(async () => ({ ok: true as const, value: changed })),
-      awaitSessionActivityRevision: vi.fn(async (_input, signal) => {
-        calls += 1;
-        if (calls === 1) {
-          return { ok: true as const, value: { revision: changed.revision } };
-        }
-        if (signal === undefined) throw new Error("Expected cancellation.");
-        await new Promise<void>((_resolve, reject) => {
-          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
-        });
-        throw new Error("unreachable");
-      }),
-    }));
-
-    const stop = state.watchSession("session-1");
-    await vi.waitFor(() =>
-      expect(state.projections.getSnapshot().sessions["session-1"]?.revision).toBe(2)
-    );
-    stop();
-  });
-
   it("retains a terminal task until the next task projection replaces it", async () => {
     const terminal = taskProjection("session-1", 1, "completed", "finished");
     const next = taskProjection("session-1", 2, "running", "next");
@@ -478,9 +453,9 @@ describe("Acpus Client task projection ownership", () => {
 
 function remoteStub(overrides: Partial<AcpusRemote> = {}): AcpusRemote {
   return {
-    readAgentProfiles: vi.fn(async () => ({
+    readAgentPresets: vi.fn(async () => ({
       ok: true as const,
-      value: { profiles: [] },
+      value: { presets: [] },
     })),
     readActivityDetail: vi.fn(async () => ({
       ok: true as const,

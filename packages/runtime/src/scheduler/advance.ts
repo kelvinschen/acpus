@@ -1,16 +1,23 @@
 import type { JsonObject, JsonValue } from "@acpus/expression/ir";
-import { ok, type Result } from "neverthrow";
+import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as FiberSet from "effect/FiberSet";
+import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
 import { tryNormalizeWorkflowData } from "../evaluation/admissible.js";
 import { selectNextAdmission } from "./admission.js";
 import type { SchedulerEvent } from "./events.js";
 import {
-  throwSchedulerStoreResult,
+  SchedulerStoreException,
+  schedulerStoreError,
   type AttemptCommitInput,
   type RunOwnerClaim,
   type SchedulerSnapshot,
   type SchedulerStoreError,
   type SchedulerStorePort,
-  type SchedulerStoreResult,
 } from "./store-port.js";
 import { nextSchedulerTransitionEvents } from "./settle.js";
 import type { NodeInstance, SchedulerProjection } from "./types.js";
@@ -27,11 +34,11 @@ export type NodeAttemptContext = {
   deadlineAt?: string;
   attemptStartReason?: "control_retry" | "pause_resume";
   steer?: { steerId: string; instruction: string };
-  signal: AbortSignal;
+  interrupt?(reason: "steer"): void;
 };
 
 export type NodeExecutor = {
-  execute(context: NodeAttemptContext): Promise<AttemptCommitInput["result"]>;
+  execute(context: NodeAttemptContext): Effect.Effect<AttemptCommitInput["result"]>;
 };
 
 type AttemptDeadlineFailure = { status: "failed"; reason: string; error?: JsonObject };
@@ -60,17 +67,15 @@ export type AdvanceRunInput = {
   replayEvaluationFor?: (instance: NodeInstance, projection: SchedulerProjection) => ReplayEvaluation;
   replayCandidates?: ReturnType<SchedulerStorePort["listReplayCandidates"]>;
   tryCommitReplay?: SchedulerStorePort["tryCommitReplay"];
-  deadlineAtFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => Result<Date | undefined, AttemptDeadlineFailure>;
+  deadlineAtFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => Result.Result<Date | undefined, AttemptDeadlineFailure>;
   awaitableEventsFor?: (instance: NodeInstance, projection: SchedulerProjection, now: Date) => SchedulerEvent[];
   bootstrap?: (snapshot: SchedulerSnapshot) => SchedulerEvent[];
   materialize?: (snapshot: SchedulerSnapshot) => SchedulerEvent[];
   wakeup?: VersionedWakeup;
-  shouldStop?: () => boolean;
   onClaim?: (claim: RunOwnerClaim) => void;
   onRelease?: (claim: RunOwnerClaim) => void;
-  onCheckpoint?: (snapshot: SchedulerSnapshot) => void;
-  afterOwnershipRecovery?: () => Promise<void>;
-  now?: () => Date;
+  onCheckpoint?: (snapshot: SchedulerSnapshot) => Effect.Effect<void>;
+  afterOwnershipRecovery?: () => Effect.Effect<void>;
 };
 
 type ActiveAttempt = {
@@ -80,7 +85,6 @@ type ActiveAttempt = {
   attemptId: string;
   attemptNo: number;
   ownerEpoch: number;
-  controller: AbortController;
 };
 
 export type AdvanceRunSummary = {
@@ -105,274 +109,244 @@ type ActiveExecution = {
   attempt: ActiveAttempt;
   instance: NodeInstance;
   executorResource?: string;
-  settlement?: Promise<void>;
-  outcome?: ActiveExecutionOutcome;
+  fiber: Fiber.Fiber<AttemptCommitInput["result"]>;
 };
-
-type ActiveExecutionOutcome =
-  | { type: "result"; value: AttemptCommitInput["result"] }
-  | { type: "rejection"; error: unknown };
 
 type SchedulerStepResult =
   | { status: "quiescent"; snapshot: SchedulerSnapshot }
   | { status: "lease_lost"; snapshot: SchedulerSnapshot };
-
-type DerivedTransitionDrainResult = SchedulerStepResult
-  | { status: "stopped"; snapshot: SchedulerSnapshot };
 
 const DEFAULT_LEASE_MS = 30_000;
 const UNCOORDINATED_CONTROL_POLL_MS = 250;
 const COOPERATIVE_YIELD_QUANTUM = 256;
 export const DEFAULT_MAX_LEAF_CONCURRENCY = 32;
 
-export async function advanceRun(input: AdvanceRunInput): Promise<AdvanceRunSummary> {
-  const leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
-  const claim = input.store.claimRun(input.runId, input.ownerId, leaseMs);
-  if (!claim) return summary(input.runId, "lease_lost");
+export function advanceRun(input: AdvanceRunInput): Effect.Effect<AdvanceRunSummary> {
+  return Effect.suspend(() => {
+    const leaseMs = input.leaseMs ?? DEFAULT_LEASE_MS;
+    const claim = input.store.claimRun(input.runId, input.ownerId, leaseMs);
+    if (!claim) return Effect.succeed(summary(input.runId, "lease_lost"));
 
-  const wakeup = input.wakeup ?? createVersionedWakeup();
-  const coordinatedWakeup = input.wakeup !== undefined;
-  const now = input.now ?? (() => new Date());
-  const counters: Counters = { started: 0, completed: 0, failed: 0, cancelled: 0 };
-  const replayCandidates = new Map((input.replayCandidates ?? []).map(candidate => [candidate.nodeKey, candidate]));
-  const active = new Map<string, ActiveExecution>();
-  const settledAttemptIds: string[] = [];
-  let leaseLost = false;
-  let executionFailed = false;
-  let executionFailure: unknown;
-  const stopHeartbeat = startRunHeartbeat(input.store, claim, leaseMs, active, () => {
-    leaseLost = true;
-    wakeup.wake();
-  });
-
-  try {
-    safeObserver(() => input.onClaim?.(claim));
-    const bootstrap = appendBootstrapEvents(input, claim);
-    if (bootstrap === "lease_lost") return withCounters(summary(input.runId, "lease_lost"), claim, counters);
-
-    let drained = await drainDerivedTransitions(input, claim, leaseMs, now);
-    if (drained.status === "stopped") {
-      await stopLocalExecutions(active);
-      return withCounters(summary(input.runId, "lease_lost"), claim, counters);
-    }
-    if (drained.status === "lease_lost") return withCounters(summary(input.runId, "lease_lost"), claim, counters);
-    checkpoint(input, drained.snapshot);
-    let recovered = await recoverExpiredOwnerAttempts(input, claim, drained.snapshot);
-    if (recovered.status === "lease_lost") return withCounters(summary(input.runId, "lease_lost"), claim, counters);
-    await input.afterOwnershipRecovery?.();
-
-    let pumpTurns = 0;
-    for (;;) {
-      if (leaseLost) {
-        abortAll(active);
-        return withCounters(summary(input.runId, "lease_lost"), claim, counters);
-      }
-      if (input.shouldStop?.()) {
-        await stopLocalExecutions(active);
-        return withCounters(summary(input.runId, "lease_lost"), claim, counters);
-      }
-      pumpTurns += 1;
-      if (pumpTurns % COOPERATIVE_YIELD_QUANTUM === 0) {
-        if (!input.store.heartbeatRun(claim, leaseMs)) {
-          leaseLost = true;
-          continue;
-        }
-        await yieldToEventLoop();
-        continue;
-      }
-      const observedWakeVersion = wakeup.current();
-
-      drained = await drainDerivedTransitions(input, claim, leaseMs, now);
-      if (drained.status === "stopped") {
-        await stopLocalExecutions(active);
-        return withCounters(summary(input.runId, "lease_lost"), claim, counters);
-      }
-      if (drained.status === "lease_lost") {
+    return Effect.acquireUseRelease(
+      Effect.succeed(claim),
+      () => Effect.scoped(Effect.gen(function* () {
+      const attempts = yield* FiberSet.make<AttemptCommitInput["result"]>();
+      const wakeup = input.wakeup ?? createVersionedWakeup();
+      const coordinatedWakeup = input.wakeup !== undefined;
+      const counters: Counters = { started: 0, completed: 0, failed: 0, cancelled: 0 };
+      const replayCandidates = new Map((input.replayCandidates ?? []).map(candidate => [candidate.nodeKey, candidate]));
+      const active = new Map<string, ActiveExecution>();
+      let leaseLost = false;
+      const onLeaseLost = () => {
         leaseLost = true;
-        continue;
-      }
-      let snapshot = drained.snapshot;
-      checkpoint(input, snapshot);
-      if (input.shouldStop?.()) {
-        await stopLocalExecutions(active);
-        return withCounters(summary(input.runId, "lease_lost"), claim, counters);
-      }
-      abortDurablyInterruptedExecutions(snapshot.projection, active);
+        wakeup.wake();
+      };
 
-      const settledAttemptId = settledAttemptIds.shift();
-      if (settledAttemptId !== undefined) {
-        const execution = active.get(settledAttemptId);
-        if (!execution?.outcome) continue;
-        if (execution.outcome.type === "rejection") {
-          active.delete(settledAttemptId);
-          throw execution.outcome.error;
+      const execution = Effect.gen(function* () {
+      yield* startRunHeartbeat(input.store, claim, leaseMs, active, onLeaseLost);
+      safeObserver(() => input.onClaim?.(claim));
+      const bootstrap = yield* appendBootstrapEvents(input, claim);
+      if (bootstrap === "lease_lost") return withCounters(summary(input.runId, "lease_lost"), claim, counters);
+
+      let drained = yield* drainDerivedTransitions(input, claim, leaseMs, () => leaseLost);
+      if (drained.status === "lease_lost") return withCounters(summary(input.runId, "lease_lost"), claim, counters);
+      yield* checkpoint(input, drained.snapshot);
+      const recovered = yield* recoverExpiredOwnerAttempts(input, claim, drained.snapshot);
+      if (recovered.status === "lease_lost") return withCounters(summary(input.runId, "lease_lost"), claim, counters);
+      if (input.afterOwnershipRecovery) yield* input.afterOwnershipRecovery();
+
+      let pumpTurns = 0;
+      for (;;) {
+        if (leaseLost) {
+          abortAll(active);
+          return withCounters(summary(input.runId, "lease_lost"), claim, counters);
         }
-        const commit = commitExecutionResult(input, claim, execution, counters);
-        active.delete(settledAttemptId);
-        if (commit.status === "lease_lost") {
-          leaseLost = true;
-          continue;
-        }
-        snapshot = commit.snapshot;
-        checkpoint(input, snapshot);
-        continue;
-      }
-
-      const terminal = terminalSummary(snapshot.projection, claim);
-      if (terminal) {
-        abortAll(active);
-        if (active.size > 0) {
-          await waitForPump({ wakeup, observedWakeVersion, active, projection: snapshot.projection, now, coordinatedWakeup });
-          continue;
-        }
-        if (wakeup.current() !== observedWakeVersion) continue;
-        return withCounters(terminal, claim, counters);
-      }
-
-      const replay = replayReadyInstance(input, claim, snapshot, replayCandidates);
-      if (replay === "lease_lost") {
-        leaseLost = true;
-        continue;
-      }
-      if (replay) {
-        counters.completed += 1;
-        checkpoint(input, replay);
-        continue;
-      }
-
-      const admission = selectNextAdmission({
-        projection: snapshot.projection,
-        maxLeafConcurrency: input.maxLeafConcurrency ?? DEFAULT_MAX_LEAF_CONCURRENCY,
-        ownerLocalUnsettled: unresolvedExecutionCount(active),
-        ownerLocalUnsettledExecutorResources: unsettledExecutorResources(active),
-        ...(input.executorResourceFor === undefined
-          ? {}
-          : { executorResourceFor: instance => input.executorResourceFor!(instance, snapshot.projection) }),
-        signalNodeIds: input.signalNodeIds ?? new Set(),
-      });
-      if (admission?.kind === "signal") {
-        const replayIdentity = input.replayEvaluationFor?.(admission.instance, snapshot.projection).replayIdentity;
-        const events = (input.awaitableEventsFor?.(admission.instance, snapshot.projection, now()) ?? []).map(event =>
-          event.type === "instance.awaiting" && replayIdentity !== undefined
-            ? { ...event, payload: { ...event.payload, replayIdentity } }
-            : event
-        );
-        if (events.length === 0) throw new Error(`Signal instance '${admission.instance.nodeKey}' produced no awaiting transition.`);
-        const appended = input.store.tryAppendSchedulerEvents({
-          runId: input.runId,
-          expectedVersion: snapshot.version,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: `scheduler:await:${input.runId}:${admission.instance.nodeKey}:${snapshot.version}`,
-          events,
-        });
-        if (appended.isErr()) {
-          if (isVersionMismatchError(appended.error)) continue;
-          if (isLeaseLostError(appended.error)) {
+        pumpTurns += 1;
+        if (pumpTurns % COOPERATIVE_YIELD_QUANTUM === 0) {
+          if (!input.store.heartbeatRun(claim, leaseMs)) {
             leaseLost = true;
             continue;
           }
-          unwrapStoreResult(appended);
-        } else {
-          checkpoint(input, appended.value);
+          yield* Effect.yieldNow;
+          continue;
         }
-        continue;
-      }
+        const observedWakeVersion = wakeup.current();
 
-      if (admission?.kind === "executor") {
-        const replay = input.replayEvaluationFor?.(admission.instance, snapshot.projection);
-        const replayIdentity = replay?.replayIdentity;
-        const deadline = input.deadlineAtFor?.(admission.instance, snapshot.projection, now()) ?? ok(undefined);
-        const deadlineAt = deadline.isOk() ? deadline.value?.toISOString() : undefined;
-        const executorResource = input.executorResourceFor?.(admission.instance, snapshot.projection);
-        const started = input.store.tryStartAttempt({
-          runId: input.runId,
-          nodeKey: admission.instance.nodeKey,
-          nodeId: admission.instance.nodeId,
-          ownerEpoch: claim.ownerEpoch,
-          expectedVersion: snapshot.version,
-          ...(deadlineAt === undefined ? {} : { deadlineAt }),
-          ...(replayIdentity === undefined ? {} : { replayIdentity }),
-          ...(replay?.sessionGroupDigest === undefined ? {} : { sessionGroupDigest: replay.sessionGroupDigest }),
-          idempotencyKey: `scheduler:start:${input.runId}:${admission.instance.nodeKey}:${snapshot.version}`,
-        });
-        if (started.isErr()) {
-          if (isVersionMismatchError(started.error) || isInstanceNotReadyError(started.error) || isPausedError(started.error)) continue;
-          if (isLeaseLostError(started.error)) {
-            leaseLost = true;
-            continue;
-          }
-          unwrapStoreResult(started);
-        } else {
-          if (started.value.invalidatedSessionGroupDigest !== undefined) {
-            for (const [nodeKey, candidate] of replayCandidates) {
-              if (candidate.sessionGroupDigest === started.value.invalidatedSessionGroupDigest) replayCandidates.delete(nodeKey);
+        drained = yield* drainDerivedTransitions(input, claim, leaseMs, () => leaseLost);
+        if (drained.status === "lease_lost") {
+          leaseLost = true;
+          continue;
+        }
+        let snapshot = drained.snapshot;
+        yield* checkpoint(input, snapshot);
+        abortDurablyInterruptedExecutions(snapshot.projection, active);
+
+        const settled = firstSettledExecution(active);
+        if (settled !== undefined) {
+          active.delete(settled.execution.attempt.attemptId);
+          if (Exit.isFailure(settled.exit)) {
+            if (Cause.hasInterruptsOnly(settled.exit.cause)
+              && snapshot.projection.attempts[settled.execution.attempt.attemptId]?.status !== "started") {
+              countDurableTerminalAttempt(snapshot.projection, settled.execution.attempt.attemptId, counters);
+              continue;
             }
+            return yield* Effect.failCause(settled.exit.cause);
           }
-          if (started.value.disposition === "existing") continue;
-          counters.started += 1;
-          if (deadline.isErr()) {
-            const committed = commitImmediateResult(input, claim, started.value.attemptId, deadline.error, counters);
-            if (committed.status === "lease_lost") leaseLost = true;
-            else checkpoint(input, committed.snapshot);
+          const commit = commitExecutionResult(input, claim, settled.execution, settled.exit.value, counters);
+          if (commit.status === "lease_lost") {
+            leaseLost = true;
             continue;
           }
-          launchExecution({
-            input,
-            claim,
-            instance: admission.instance,
-            attemptId: started.value.attemptId,
-            attemptNo: started.value.attemptNo,
-            deadlineAt,
-            ...(started.value.steer === undefined ? {} : { steer: started.value.steer }),
-            ...(executorResource === undefined ? {} : { executorResource }),
-            active,
-            settledAttemptIds,
-            wakeup,
-          });
+          snapshot = commit.snapshot;
+          yield* checkpoint(input, snapshot);
+          continue;
         }
-        continue;
-      }
 
-      if (active.size > 0) {
-        await waitForPump({ wakeup, observedWakeVersion, active, projection: snapshot.projection, now, coordinatedWakeup });
-        continue;
-      }
+        const terminal = terminalSummary(snapshot.projection, claim);
+        if (terminal) {
+          abortAll(active);
+          if (active.size > 0) {
+            yield* waitForPump({ wakeup, observedWakeVersion, active, projection: snapshot.projection, coordinatedWakeup });
+            continue;
+          }
+          if (wakeup.current() !== observedWakeVersion) continue;
+          return withCounters(terminal, claim, counters);
+        }
 
-      if (wakeup.current() !== observedWakeVersion) continue;
-      const idle = idleSummary(snapshot.projection, claim);
-      return withCounters(idle, claim, counters);
-    }
-  } catch (error) {
-    executionFailed = true;
-    executionFailure = error;
-    throw error;
-  } finally {
-    const cleanupFailures: unknown[] = [];
-    try {
-      if (leaseLost) abortAll(active);
-      else await stopLocalExecutions(active);
-    } catch (error) {
-      cleanupFailures.push(error);
-    }
-    try {
-      stopHeartbeat();
-    } catch (error) {
-      cleanupFailures.push(error);
-    }
-    try {
-      input.store.releaseRun(claim);
-    } catch (error) {
-      cleanupFailures.push(error);
-    }
-    safeObserver(() => input.onRelease?.(claim));
-    if (cleanupFailures.length > 0) {
-      const failures = executionFailed ? [executionFailure, ...cleanupFailures] : cleanupFailures;
-      if (failures.length === 1) throw failures[0];
-      throw new AggregateError(failures, executionFailed
-        ? `Run '${input.runId}' execution and cleanup both failed.`
-        : `Run '${input.runId}' cleanup failed.`);
-    }
-  }
+        const replay = replayReadyInstance(input, claim, snapshot, replayCandidates);
+        if (replay === "lease_lost") {
+          leaseLost = true;
+          continue;
+        }
+        if (replay) {
+          counters.completed += 1;
+          yield* checkpoint(input, replay);
+          continue;
+        }
+
+        const admission = selectNextAdmission({
+          projection: snapshot.projection,
+          maxLeafConcurrency: input.maxLeafConcurrency ?? DEFAULT_MAX_LEAF_CONCURRENCY,
+          ownerLocalUnsettled: unresolvedExecutionCount(active),
+          ownerLocalUnsettledExecutorResources: unsettledExecutorResources(active),
+          ...(input.executorResourceFor === undefined
+            ? {}
+            : { executorResourceFor: instance => input.executorResourceFor!(instance, snapshot.projection) }),
+          signalNodeIds: input.signalNodeIds ?? new Set(),
+        });
+        if (admission?.kind === "signal") {
+          const now = yield* currentDate;
+          const replayIdentity = input.replayEvaluationFor?.(admission.instance, snapshot.projection).replayIdentity;
+          const events = (input.awaitableEventsFor?.(admission.instance, snapshot.projection, now) ?? []).map(event =>
+            event.type === "instance.awaiting" && replayIdentity !== undefined
+              ? { ...event, payload: { ...event.payload, replayIdentity } }
+              : event
+          );
+          if (events.length === 0) throw new Error(`Signal instance '${admission.instance.nodeKey}' produced no awaiting transition.`);
+          const appended = captureStore(() => input.store.tryAppendSchedulerEvents({
+            runId: input.runId,
+            expectedVersion: snapshot.version,
+            ownerEpoch: claim.ownerEpoch,
+            idempotencyKey: `scheduler:await:${input.runId}:${admission.instance.nodeKey}:${snapshot.version}`,
+            events,
+          }));
+          if (Result.isFailure(appended)) {
+            if (isVersionMismatchError(appended.failure)) continue;
+            if (isLeaseLostError(appended.failure)) {
+              leaseLost = true;
+              continue;
+            }
+            storeValue(appended);
+          } else {
+            yield* checkpoint(input, appended.success);
+          }
+          continue;
+        }
+
+        if (admission?.kind === "executor") {
+          const now = yield* currentDate;
+          const replay = input.replayEvaluationFor?.(admission.instance, snapshot.projection);
+          const replayIdentity = replay?.replayIdentity;
+          const deadline = input.deadlineAtFor?.(admission.instance, snapshot.projection, now) ?? Result.succeed(undefined);
+          const deadlineAt = Result.isSuccess(deadline) ? deadline.success?.toISOString() : undefined;
+          const executorResource = input.executorResourceFor?.(admission.instance, snapshot.projection);
+          const started = captureStore(() => input.store.tryStartAttempt({
+            runId: input.runId,
+            nodeKey: admission.instance.nodeKey,
+            nodeId: admission.instance.nodeId,
+            ownerEpoch: claim.ownerEpoch,
+            expectedVersion: snapshot.version,
+            ...(deadlineAt === undefined ? {} : { deadlineAt }),
+            ...(replayIdentity === undefined ? {} : { replayIdentity }),
+            ...(replay?.sessionGroupDigest === undefined ? {} : { sessionGroupDigest: replay.sessionGroupDigest }),
+            idempotencyKey: `scheduler:start:${input.runId}:${admission.instance.nodeKey}:${snapshot.version}`,
+          }));
+          if (Result.isFailure(started)) {
+            if (isVersionMismatchError(started.failure) || isInstanceNotReadyError(started.failure) || isPausedError(started.failure)) continue;
+            if (isLeaseLostError(started.failure)) {
+              leaseLost = true;
+              continue;
+            }
+            storeValue(started);
+          } else {
+            if (started.success.invalidatedSessionGroupDigest !== undefined) {
+              for (const [nodeKey, candidate] of replayCandidates) {
+                if (candidate.sessionGroupDigest === started.success.invalidatedSessionGroupDigest) replayCandidates.delete(nodeKey);
+              }
+            }
+            if (started.success.disposition === "existing") continue;
+            counters.started += 1;
+            if (Result.isFailure(deadline)) {
+              const committed = commitImmediateResult(input, claim, started.success.attemptId, deadline.failure, counters);
+              if (committed.status === "lease_lost") leaseLost = true;
+              else yield* checkpoint(input, committed.snapshot);
+              continue;
+            }
+            yield* launchExecution({
+              input,
+              claim,
+              instance: admission.instance,
+              attemptId: started.success.attemptId,
+              attemptNo: started.success.attemptNo,
+              deadlineAt,
+              ...(started.success.steer === undefined ? {} : { steer: started.success.steer }),
+              ...(executorResource === undefined ? {} : { executorResource }),
+              active,
+              attempts,
+            });
+          }
+          continue;
+        }
+
+        if (active.size > 0) {
+          yield* waitForPump({ wakeup, observedWakeVersion, active, projection: snapshot.projection, coordinatedWakeup });
+          continue;
+        }
+
+        if (wakeup.current() !== observedWakeVersion) continue;
+        const idle = idleSummary(snapshot.projection, claim);
+        return withCounters(idle, claim, counters);
+      }
+      });
+      return yield* execution;
+      })),
+      ownedClaim => Effect.sync(() => input.store.releaseRun(ownedClaim)).pipe(
+        Effect.ensuring(Effect.sync(() => safeObserver(() => input.onRelease?.(ownedClaim)))),
+        Effect.asVoid,
+      ),
+    );
+  });
+}
+
+function countDurableTerminalAttempt(
+  projection: SchedulerProjection,
+  attemptId: string,
+  counters: Counters,
+): void {
+  const status = projection.attempts[attemptId]?.status;
+  if (status === "completed") counters.completed += 1;
+  else if (status === "cancelled" || status === "superseded") counters.cancelled += 1;
+  else if (status === "failed" || status === "timed_out") counters.failed += 1;
 }
 
 function replayReadyInstance(
@@ -398,130 +372,135 @@ function replayReadyInstance(
     const instance = snapshot.projection.instances[candidate.nodeKey];
     if (instance?.status !== "ready") continue;
     const replayIdentity = input.replayEvaluationFor(instance, snapshot.projection).replayIdentity;
-    const replayed = input.tryCommitReplay({
+    const replayed = captureStore(() => input.tryCommitReplay!({
       runId: input.runId,
       nodeKey: instance.nodeKey,
       ownerEpoch: claim.ownerEpoch,
       expectedVersion: snapshot.version,
       ...(replayIdentity === undefined ? {} : { replayIdentity }),
       ...(candidate.sessionGroupDigest === undefined ? {} : { expectedSessionGroupDigest: candidate.sessionGroupDigest }),
-    });
-    if (replayed.isErr()) {
-      if (isVersionMismatchError(replayed.error) || isInstanceNotReadyError(replayed.error) || isPausedError(replayed.error)) return undefined;
-      if (isLeaseLostError(replayed.error)) return "lease_lost";
-      unwrapStoreResult(replayed);
+    }));
+    if (Result.isFailure(replayed)) {
+      if (isVersionMismatchError(replayed.failure) || isInstanceNotReadyError(replayed.failure) || isPausedError(replayed.failure)) return undefined;
+      if (isLeaseLostError(replayed.failure)) return "lease_lost";
+      storeValue(replayed);
       continue;
     }
-    if (replayed.value.disposition === "replayed") {
+    if (replayed.success.disposition === "replayed") {
       candidates.delete(candidate.nodeKey);
-      return replayed.value.snapshot;
+      return replayed.success.snapshot;
     }
-    for (const nodeKey of replayed.value.invalidatedNodeKeys) candidates.delete(nodeKey);
+    for (const nodeKey of replayed.success.invalidatedNodeKeys) candidates.delete(nodeKey);
   }
   return undefined;
 }
 
-function appendBootstrapEvents(input: AdvanceRunInput, claim: RunOwnerClaim): "appended" | "quiescent" | "lease_lost" {
-  if (!input.bootstrap) return "quiescent";
-  for (;;) {
-    const snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
-    const events = input.bootstrap(snapshot);
-    if (events.length === 0) return "quiescent";
-    const appended = input.store.tryAppendSchedulerEvents({
-      runId: input.runId,
-      expectedVersion: snapshot.version,
-      ownerEpoch: claim.ownerEpoch,
-      idempotencyKey: `scheduler:bootstrap:${input.runId}:${snapshot.version}`,
-      events,
-    });
-    if (appended.isOk()) {
-      checkpoint(input, appended.value);
-      return "appended";
+function appendBootstrapEvents(
+  input: AdvanceRunInput,
+  claim: RunOwnerClaim,
+): Effect.Effect<"appended" | "quiescent" | "lease_lost"> {
+  return Effect.gen(function* () {
+    if (!input.bootstrap) return "quiescent";
+    for (;;) {
+      const snapshot = input.store.tryLoadRunSnapshot(input.runId);
+      const events = input.bootstrap(snapshot);
+      if (events.length === 0) return "quiescent";
+      const appended = captureStore(() => input.store.tryAppendSchedulerEvents({
+        runId: input.runId,
+        expectedVersion: snapshot.version,
+        ownerEpoch: claim.ownerEpoch,
+        idempotencyKey: `scheduler:bootstrap:${input.runId}:${snapshot.version}`,
+        events,
+      }));
+      if (Result.isSuccess(appended)) {
+        yield* checkpoint(input, appended.success);
+        return "appended";
+      }
+      if (isLeaseLostError(appended.failure)) return "lease_lost";
+      if (!isVersionMismatchError(appended.failure)) storeValue(appended);
     }
-    if (isLeaseLostError(appended.error)) return "lease_lost";
-    if (!isVersionMismatchError(appended.error)) unwrapStoreResult(appended);
-  }
+  });
 }
 
-async function recoverExpiredOwnerAttempts(
+function recoverExpiredOwnerAttempts(
   input: AdvanceRunInput,
   claim: RunOwnerClaim,
   initial: SchedulerSnapshot,
-): Promise<SchedulerStepResult> {
-  let snapshot = initial;
-  for (;;) {
-    const expiredOwnerEpoch = Object.values(snapshot.projection.attempts)
-      .find(attempt => attempt.status === "started" && attempt.ownerEpoch !== claim.ownerEpoch)?.ownerEpoch;
-    if (expiredOwnerEpoch === undefined) return { status: "quiescent", snapshot };
-    const superseded = input.store.tryMarkExpiredOwnerAttemptsSuperseded({
-      runId: input.runId,
-      currentOwnerEpoch: claim.ownerEpoch,
-      expiredOwnerEpoch,
-      expectedVersion: snapshot.version,
-    });
-    if (superseded.isOk()) {
-      snapshot = superseded.value;
-      checkpoint(input, snapshot);
-      continue;
+): Effect.Effect<SchedulerStepResult> {
+  return Effect.gen(function* () {
+    let snapshot = initial;
+    for (;;) {
+      const expiredOwnerEpoch = Object.values(snapshot.projection.attempts)
+        .find(attempt => attempt.status === "started" && attempt.ownerEpoch !== claim.ownerEpoch)?.ownerEpoch;
+      if (expiredOwnerEpoch === undefined) return { status: "quiescent", snapshot };
+      const superseded = captureStore(() => input.store.tryMarkExpiredOwnerAttemptsSuperseded({
+        runId: input.runId,
+        currentOwnerEpoch: claim.ownerEpoch,
+        expiredOwnerEpoch,
+        expectedVersion: snapshot.version,
+      }));
+      if (Result.isSuccess(superseded)) {
+        snapshot = superseded.success;
+        yield* checkpoint(input, snapshot);
+        continue;
+      }
+      if (isLeaseLostError(superseded.failure)) return { status: "lease_lost", snapshot };
+      if (isVersionMismatchError(superseded.failure)) {
+        snapshot = input.store.tryLoadRunSnapshot(input.runId);
+        continue;
+      }
+      snapshot = storeValue(superseded);
     }
-    if (isLeaseLostError(superseded.error)) return { status: "lease_lost", snapshot };
-    if (isVersionMismatchError(superseded.error)) {
-      snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
-      continue;
-    }
-    snapshot = unwrapStoreResult(superseded);
-  }
+  });
 }
 
-async function drainDerivedTransitions(
+function drainDerivedTransitions(
   input: AdvanceRunInput,
   claim: RunOwnerClaim,
   leaseMs: number,
-  now: () => Date,
-): Promise<DerivedTransitionDrainResult> {
-  let snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
-  let progressedBatches = 0;
-  for (;;) {
-    if (input.shouldStop?.()) return { status: "stopped", snapshot };
-    const events = nextSchedulerTransitionEvents(
-      snapshot.projection,
-      () => input.materialize?.(snapshot) ?? [],
-      now(),
-    );
-    if (events.length === 0) return { status: "quiescent", snapshot };
-    if (!input.store.heartbeatRun(claim, leaseMs)) return { status: "lease_lost", snapshot };
-
-    const beforeVersion = snapshot.version;
-    const appended = input.store.tryAppendSchedulerEvents({
-      runId: input.runId,
-      expectedVersion: snapshot.version,
-      ownerEpoch: claim.ownerEpoch,
-      idempotencyKey: `scheduler:derived:${input.runId}:${snapshot.version}`,
-      events,
-    });
-    if (appended.isErr()) {
-      if (isLeaseLostError(appended.error)) return { status: "lease_lost", snapshot };
-      if (isVersionMismatchError(appended.error)) {
-        snapshot = unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId));
-        continue;
-      }
-      snapshot = unwrapStoreResult(appended);
-    } else {
-      snapshot = appended.value;
-      if (snapshot.version <= beforeVersion) throw new Error(`Run '${input.runId}' appended derived transitions without advancing its durable version.`);
-      checkpoint(input, snapshot);
-    }
-
-    progressedBatches += 1;
-    if (progressedBatches % COOPERATIVE_YIELD_QUANTUM === 0) {
+  isLeaseLost: () => boolean,
+): Effect.Effect<SchedulerStepResult> {
+  return Effect.gen(function* () {
+    let snapshot = input.store.tryLoadRunSnapshot(input.runId);
+    let progressedBatches = 0;
+    for (;;) {
+      if (isLeaseLost()) return { status: "lease_lost", snapshot };
+      const events = nextSchedulerTransitionEvents(
+        snapshot.projection,
+        () => input.materialize?.(snapshot) ?? [],
+        yield* currentDate,
+      );
+      if (events.length === 0) return { status: "quiescent", snapshot };
       if (!input.store.heartbeatRun(claim, leaseMs)) return { status: "lease_lost", snapshot };
-      await yieldToEventLoop();
-    }
-  }
-}
 
-function yieldToEventLoop(): Promise<void> {
-  return new Promise(resolve => setImmediate(resolve));
+      const beforeVersion = snapshot.version;
+      const appended = captureStore(() => input.store.tryAppendSchedulerEvents({
+        runId: input.runId,
+        expectedVersion: snapshot.version,
+        ownerEpoch: claim.ownerEpoch,
+        idempotencyKey: `scheduler:derived:${input.runId}:${snapshot.version}`,
+        events,
+      }));
+      if (Result.isFailure(appended)) {
+        if (isLeaseLostError(appended.failure)) return { status: "lease_lost", snapshot };
+        if (isVersionMismatchError(appended.failure)) {
+          snapshot = input.store.tryLoadRunSnapshot(input.runId);
+          continue;
+        }
+        snapshot = storeValue(appended);
+      } else {
+        snapshot = appended.success;
+        if (snapshot.version <= beforeVersion) throw new Error(`Run '${input.runId}' appended derived transitions without advancing its durable version.`);
+        yield* checkpoint(input, snapshot);
+      }
+
+      progressedBatches += 1;
+      if (progressedBatches % COOPERATIVE_YIELD_QUANTUM === 0) {
+        if (!input.store.heartbeatRun(claim, leaseMs)) return { status: "lease_lost", snapshot };
+        yield* Effect.yieldNow;
+      }
+    }
+  });
 }
 
 function launchExecution(input: {
@@ -534,10 +513,8 @@ function launchExecution(input: {
   steer?: { steerId: string; instruction: string };
   executorResource?: string;
   active: Map<string, ActiveExecution>;
-  settledAttemptIds: string[];
-  wakeup: VersionedWakeup;
-}): void {
-  const controller = new AbortController();
+  attempts: FiberSet.FiberSet<AttemptCommitInput["result"]>;
+}): Effect.Effect<void> {
   const attempt: ActiveAttempt = {
     runId: input.input.runId,
     nodeKey: input.instance.nodeKey,
@@ -545,17 +522,10 @@ function launchExecution(input: {
     attemptId: input.attemptId,
     attemptNo: input.attemptNo,
     ownerEpoch: input.claim.ownerEpoch,
-    controller,
   };
-  const execution: ActiveExecution = {
-    attempt,
-    instance: input.instance,
-    ...(input.executorResource === undefined ? {} : { executorResource: input.executorResource }),
-  };
-  input.active.set(input.attemptId, execution);
   const startReason = attemptStartReason(input.instance);
-  execution.settlement = Promise.resolve()
-    .then(() => input.input.executor.execute({
+  let fiber: Fiber.Fiber<AttemptCommitInput["result"]> | undefined;
+  return FiberSet.run(input.attempts, input.input.executor.execute({
       runId: input.input.runId,
       nodeKey: input.instance.nodeKey,
       nodeId: input.instance.nodeId,
@@ -565,35 +535,34 @@ function launchExecution(input: {
       ...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
       ...(startReason === undefined ? {} : { attemptStartReason: startReason }),
       ...(input.steer === undefined ? {} : { steer: input.steer }),
-      signal: controller.signal,
-    }))
-    .then(
-      result => {
-        execution.outcome = { type: "result", value: result };
-      },
-      error => {
-        execution.outcome = { type: "rejection", error };
-      },
-    )
-    .finally(() => {
-      input.settledAttemptIds.push(input.attemptId);
-      input.wakeup.wake();
-    });
+      interrupt: () => fiber?.interruptUnsafe(),
+    }), { startImmediately: true }).pipe(
+      Effect.tap(started => Effect.sync(() => {
+        fiber = started;
+        input.active.set(input.attemptId, {
+          attempt,
+          instance: input.instance,
+          ...(input.executorResource === undefined ? {} : { executorResource: input.executorResource }),
+          fiber: started,
+        });
+      })),
+      Effect.asVoid,
+    );
 }
 
 function commitExecutionResult(
   input: AdvanceRunInput,
   claim: RunOwnerClaim,
   execution: ActiveExecution,
+  resultValue: AttemptCommitInput["result"],
   counters: Counters,
 ): SchedulerStepResult {
-  if (execution.outcome?.type !== "result") throw new Error(`Attempt '${execution.attempt.attemptId}' has no committable executor result.`);
-  let result = execution.outcome.value;
+  let result = resultValue;
   if (result.status === "completed" && result.output !== undefined) {
     const normalized = tryNormalizeWorkflowData(result.output, `Node '${execution.instance.nodeId}' output`);
-    result = normalized.isErr()
-      ? { status: "failed", reason: normalized.error.message }
-      : { ...result, output: normalized.value as JsonValue };
+    result = Result.isFailure(normalized)
+      ? { status: "failed", reason: normalized.failure.message }
+      : { ...result, output: normalized.success as JsonValue };
   }
   return commitImmediateResult(input, claim, execution.attempt.attemptId, result, counters);
 }
@@ -605,60 +574,54 @@ function commitImmediateResult(
   result: AttemptCommitInput["result"],
   counters: Counters,
 ): SchedulerStepResult {
-  const committed = input.store.tryCommitAttemptResult({
+  const committed = captureStore(() => input.store.tryCommitAttemptResult({
     runId: input.runId,
     attemptId,
     ownerEpoch: claim.ownerEpoch,
     result,
     idempotencyKey: `scheduler:commit:${input.runId}:${attemptId}`,
-  });
-  if (committed.isErr()) {
-    if (isLeaseLostError(committed.error)) {
-      return { status: "lease_lost", snapshot: unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId)) };
+  }));
+  if (Result.isFailure(committed)) {
+    if (isLeaseLostError(committed.failure)) {
+      return { status: "lease_lost", snapshot: input.store.tryLoadRunSnapshot(input.runId) };
     }
-    const staleTerminal = staleTerminalStatus(committed.error);
+    const staleTerminal = staleTerminalStatus(committed.failure);
     if (staleTerminal) {
       if (staleTerminal === "failed") counters.failed += 1;
       else counters.cancelled += 1;
-      return { status: "quiescent", snapshot: unwrapStoreResult(input.store.tryLoadRunSnapshot(input.runId)) };
+      return { status: "quiescent", snapshot: input.store.tryLoadRunSnapshot(input.runId) };
     }
-    return { status: "quiescent", snapshot: unwrapStoreResult(committed) };
+    return { status: "quiescent", snapshot: storeValue(committed) };
   }
   if (result.status === "completed") counters.completed += 1;
   else if (result.status === "cancelled") counters.cancelled += 1;
   else counters.failed += 1;
-  return { status: "quiescent", snapshot: committed.value };
+  return { status: "quiescent", snapshot: committed.success };
 }
 
-async function waitForPump(input: {
+function waitForPump(input: {
   wakeup: VersionedWakeup;
   observedWakeVersion: number;
   active: ReadonlyMap<string, ActiveExecution>;
   projection: SchedulerProjection;
-  now: () => Date;
   coordinatedWakeup: boolean;
-}): Promise<void> {
-  const waits: Promise<unknown>[] = [input.wakeup.waitForChange(input.observedWakeVersion)];
-  for (const execution of input.active.values()) {
-    if (execution.outcome === undefined && execution.settlement) waits.push(execution.settlement);
-  }
+}): Effect.Effect<void> {
+  return Effect.gen(function* () {
+    const waits: Effect.Effect<unknown>[] = [input.wakeup.waitForChange(input.observedWakeVersion)];
+    for (const execution of input.active.values()) {
+      waits.push(Fiber.await(execution.fiber));
+    }
 
-  const nearestDeadline = nearestWakeDeadline(input.projection, input.active);
-  const deadlineDelay = nearestDeadline === undefined ? undefined : Math.max(0, nearestDeadline - input.now().getTime());
-  const fallbackDelay = input.coordinatedWakeup ? undefined : UNCOORDINATED_CONTROL_POLL_MS;
-  const delay = minimumDefined(deadlineDelay, fallbackDelay);
-  let timer: NodeJS.Timeout | undefined;
-  if (delay !== undefined) {
-    waits.push(new Promise<void>(resolve => {
-      timer = setTimeout(resolve, Math.min(delay, 2_147_483_647));
-      timer.unref?.();
-    }));
-  }
-  try {
-    await Promise.race(waits);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+    const nearestDeadline = nearestWakeDeadline(input.projection, input.active);
+    const now = yield* Clock.currentTimeMillis;
+    const deadlineDelay = nearestDeadline === undefined ? undefined : Math.max(0, nearestDeadline - now);
+    const fallbackDelay = input.coordinatedWakeup ? undefined : UNCOORDINATED_CONTROL_POLL_MS;
+    const delay = minimumDefined(deadlineDelay, fallbackDelay);
+    if (delay !== undefined) {
+      waits.push(Effect.sleep(Math.min(delay, 2_147_483_647)));
+    }
+    yield* Effect.raceAll(waits);
+  });
 }
 
 function nearestWakeDeadline(projection: SchedulerProjection, active: ReadonlyMap<string, ActiveExecution>): number | undefined {
@@ -693,15 +656,32 @@ function startRunHeartbeat(
   leaseMs: number,
   active: ReadonlyMap<string, ActiveExecution>,
   onLeaseLost: () => void,
-): () => void {
-  const heartbeat = setInterval(() => {
-    if (store.heartbeatRun(claim, leaseMs)) return;
-    abortAll(active);
-    onLeaseLost();
-  }, heartbeatIntervalMs(leaseMs));
-  heartbeat.unref?.();
-  return () => clearInterval(heartbeat);
+): Effect.Effect<void, never, Scope.Scope> {
+  const heartbeat = Effect.sleep(heartbeatIntervalMs(leaseMs)).pipe(
+    Effect.andThen(Effect.sync(() => {
+      if (store.heartbeatRun(claim, leaseMs)) return true;
+      onLeaseLost();
+      abortAll(active);
+      return false;
+    })),
+    Effect.catchCause(cause => {
+      if (Cause.hasInterruptsOnly(cause)) return Effect.failCause(cause);
+      return Effect.sync(() => {
+        onLeaseLost();
+        abortAll(active);
+        return false;
+      });
+    }),
+    Effect.repeat({ while: ownsLease => ownsLease }),
+    Effect.asVoid,
+  );
+  return heartbeat.pipe(
+    Effect.forkScoped({ startImmediately: true }),
+    Effect.asVoid,
+  );
 }
+
+const currentDate = Clock.currentTimeMillis.pipe(Effect.map(milliseconds => new Date(milliseconds)));
 
 function heartbeatIntervalMs(leaseMs: number): number {
   return Math.max(1, Math.floor(leaseMs / 3));
@@ -709,36 +689,37 @@ function heartbeatIntervalMs(leaseMs: number): number {
 
 function abortDurablyInterruptedExecutions(projection: SchedulerProjection, active: ReadonlyMap<string, ActiveExecution>): void {
   for (const [attemptId, execution] of active) {
-    if (projection.attempts[attemptId]?.status !== "started") execution.attempt.controller.abort();
+    if (projection.attempts[attemptId]?.status !== "started") execution.fiber.interruptUnsafe();
   }
 }
 
 function abortAll(active: ReadonlyMap<string, ActiveExecution>): void {
-  for (const execution of active.values()) execution.attempt.controller.abort();
-}
-
-async function stopLocalExecutions(active: Map<string, ActiveExecution>): Promise<void> {
-  abortAll(active);
-  await Promise.all([...active.values()].flatMap(execution => execution.settlement ? [execution.settlement] : []));
-  active.clear();
+  for (const execution of active.values()) execution.fiber.interruptUnsafe();
 }
 
 function unresolvedExecutionCount(active: ReadonlyMap<string, ActiveExecution>): number {
-  let count = 0;
-  for (const execution of active.values()) {
-    if (execution.outcome === undefined) count += 1;
-  }
-  return count;
+  return active.size;
 }
 
 function unsettledExecutorResources(active: ReadonlyMap<string, ActiveExecution>): ReadonlySet<string> {
   const resources = new Set<string>();
   for (const execution of active.values()) {
-    if (execution.outcome === undefined && execution.executorResource !== undefined) {
+    if (execution.executorResource !== undefined) {
       resources.add(execution.executorResource);
     }
   }
   return resources;
+}
+
+function firstSettledExecution(active: ReadonlyMap<string, ActiveExecution>): {
+  execution: ActiveExecution;
+  exit: Exit.Exit<AttemptCommitInput["result"]>;
+} | undefined {
+  for (const execution of active.values()) {
+    const exit = execution.fiber.pollUnsafe();
+    if (exit !== undefined) return { execution, exit };
+  }
+  return undefined;
 }
 
 function attemptStartReason(instance: NodeInstance): NodeAttemptContext["attemptStartReason"] | undefined {
@@ -790,8 +771,10 @@ function hasAwaitingWork(projection: SchedulerProjection): boolean {
   return Object.values(projection.signalWaits).some(wait => wait.status === "awaiting");
 }
 
-function checkpoint(input: AdvanceRunInput, snapshot: SchedulerSnapshot): void {
-  safeObserver(() => input.onCheckpoint?.(snapshot));
+function checkpoint(input: AdvanceRunInput, snapshot: SchedulerSnapshot): Effect.Effect<void> {
+  return Effect.suspend(() => input.onCheckpoint?.(snapshot) ?? Effect.void).pipe(
+    Effect.ignoreCause,
+  );
 }
 
 function safeObserver(observer: () => void): void {
@@ -802,8 +785,19 @@ function safeObserver(observer: () => void): void {
   }
 }
 
-function unwrapStoreResult<T>(result: SchedulerStoreResult<T>): T {
-  return throwSchedulerStoreResult(result);
+function captureStore<Success>(operation: () => Success): Result.Result<Success, SchedulerStoreError> {
+  try {
+    return Result.succeed(operation());
+  } catch (error) {
+    const failure = schedulerStoreError(error);
+    if (failure) return Result.fail(failure);
+    throw error;
+  }
+}
+
+function storeValue<Success>(result: Result.Result<Success, SchedulerStoreError>): Success {
+  if (Result.isFailure(result)) throw new SchedulerStoreException(result.failure);
+  return result.success;
 }
 
 function isLeaseLostError(error: SchedulerStoreError): boolean {

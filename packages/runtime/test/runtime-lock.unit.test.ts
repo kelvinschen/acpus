@@ -1,11 +1,18 @@
 import { mkdir, readdir, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import { describe, expect, it } from "vitest";
+import {
+  openRuntimeExclusiveLock,
+  openRuntimeSharedLock,
+  RuntimeLockTimeoutError,
+  type RuntimeLockDependencies,
+} from "../src/runtime-lock-adapter.js";
 import {
   acquireRuntimeExclusiveLock,
   acquireRuntimeSharedLock,
-  RuntimeLockTimeoutError,
-  type RuntimeLockDependencies,
 } from "../src/runtime-lock.js";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
 import { withStorageWorkspace } from "./support/storage-workspace.js";
@@ -16,8 +23,8 @@ describe("runtime maintenance lock", () => {
       const layout = resolveRuntimeLayout(workspace);
 
       const locks = await Promise.all([
-        acquireRuntimeSharedLock(layout),
-        acquireRuntimeSharedLock(layout),
+        openRuntimeSharedLock(layout),
+        openRuntimeSharedLock(layout),
       ]);
       try {
         const holders = join(layout.home, "tmp", "runtime-locks", layout.workspaceKey, "holders");
@@ -31,7 +38,7 @@ describe("runtime maintenance lock", () => {
   it("serializes maintenance owners without using a real polling delay", async () => {
     await withStorageWorkspace("runtime-lock-maintenance", async workspace => {
       const layout = resolveRuntimeLayout(workspace);
-      const first = await acquireRuntimeExclusiveLock(layout);
+      const first = await openRuntimeExclusiveLock(layout);
       let released = false;
       const clock = fakeClock(async () => {
         if (released) return;
@@ -39,7 +46,7 @@ describe("runtime maintenance lock", () => {
         await first.release();
       });
 
-      const second = await acquireRuntimeExclusiveLock(layout, clock.dependencies);
+      const second = await openRuntimeExclusiveLock(layout, clock.dependencies);
 
       expect(released).toBe(true);
       expect(clock.now()).toBe(25);
@@ -50,11 +57,11 @@ describe("runtime maintenance lock", () => {
   it("reports runtime users as a distinct blocker with controlled time", async () => {
     await withStorageWorkspace("runtime-lock-users", async workspace => {
       const layout = resolveRuntimeLayout(workspace);
-      const shared = await acquireRuntimeSharedLock(layout);
+      const shared = await openRuntimeSharedLock(layout);
       const clock = fakeClock();
       let failure: unknown;
       try {
-        await acquireRuntimeExclusiveLock(layout, clock.dependencies);
+        await openRuntimeExclusiveLock(layout, clock.dependencies);
       } catch (error) {
         failure = error;
       } finally {
@@ -72,7 +79,7 @@ describe("runtime maintenance lock", () => {
   it.skipIf(process.platform !== "linux")("reclaims a holder whose PID was reused", async () => {
     await withStorageWorkspace("runtime-lock-reused-pid", async workspace => {
       const layout = resolveRuntimeLayout(workspace);
-      const shared = await acquireRuntimeSharedLock(layout);
+      const shared = await openRuntimeSharedLock(layout);
       shared.release();
       const holders = join(layout.home, "tmp", "runtime-locks", layout.workspaceKey, "holders");
       await writeFile(join(holders, "stale.json"), `${JSON.stringify({
@@ -82,7 +89,7 @@ describe("runtime maintenance lock", () => {
         createdAt: "2026-08-16T00:00:00.000Z",
       })}\n`);
 
-      const exclusive = await acquireRuntimeExclusiveLock(layout);
+      const exclusive = await openRuntimeExclusiveLock(layout);
       try {
         expect(await readdir(holders)).toEqual([]);
       } finally {
@@ -101,8 +108,60 @@ describe("runtime maintenance lock", () => {
       ]);
       await symlink(outside, join(layout.home, "tmp"), "dir");
 
-      await expect(acquireRuntimeExclusiveLock(layout)).rejects.toBeInstanceOf(Error);
+      await expect(openRuntimeExclusiveLock(layout)).rejects.toBeInstanceOf(Error);
       await expect(readdir(outside)).resolves.toEqual([]);
+    });
+  });
+
+  it("releases a scoped shared holder when its use is interrupted", async () => {
+    await withStorageWorkspace("runtime-lock-scoped-shared-interruption", async workspace => {
+      const layout = resolveRuntimeLayout(workspace);
+      const acquired = Deferred.makeUnsafe<void>();
+      const fiber = Effect.runFork(Effect.scoped(Effect.gen(function* () {
+        yield* acquireRuntimeSharedLock(layout);
+        Deferred.doneUnsafe(acquired, Effect.void);
+        yield* Effect.never;
+      })));
+
+      await Effect.runPromise(Deferred.await(acquired));
+      const holders = join(layout.home, "tmp", "runtime-locks", layout.workspaceKey, "holders");
+      expect(await readdir(holders)).toHaveLength(1);
+      await Effect.runPromise(Fiber.interrupt(fiber));
+      expect(await readdir(holders)).toEqual([]);
+    });
+  });
+
+  it("releases a scoped exclusive marker when its use is interrupted", async () => {
+    await withStorageWorkspace("runtime-lock-scoped-exclusive-interruption", async workspace => {
+      const layout = resolveRuntimeLayout(workspace);
+      const acquired = Deferred.makeUnsafe<void>();
+      const fiber = Effect.runFork(Effect.scoped(Effect.gen(function* () {
+        yield* acquireRuntimeExclusiveLock(layout);
+        Deferred.doneUnsafe(acquired, Effect.void);
+        yield* Effect.never;
+      })));
+
+      await Effect.runPromise(Deferred.await(acquired));
+      const root = join(layout.home, "tmp", "runtime-locks", layout.workspaceKey);
+      expect(await readdir(root)).toContain("exclusive.json");
+      await Effect.runPromise(Fiber.interrupt(fiber));
+      expect(await readdir(root)).not.toContain("exclusive.json");
+    });
+  });
+
+  it("releases scoped locks after successful and failed uses", async () => {
+    await withStorageWorkspace("runtime-lock-scoped-exits", async workspace => {
+      const layout = resolveRuntimeLayout(workspace);
+      const holders = join(layout.home, "tmp", "runtime-locks", layout.workspaceKey, "holders");
+      const root = join(layout.home, "tmp", "runtime-locks", layout.workspaceKey);
+
+      await Effect.runPromise(Effect.scoped(acquireRuntimeSharedLock(layout)));
+      expect(await readdir(holders)).toEqual([]);
+
+      await Effect.runPromise(Effect.result(Effect.scoped(
+        acquireRuntimeExclusiveLock(layout).pipe(Effect.andThen(Effect.fail("use failed"))),
+      )));
+      expect(await readdir(root)).not.toContain("exclusive.json");
     });
   });
 });

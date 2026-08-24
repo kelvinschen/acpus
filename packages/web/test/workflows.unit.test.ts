@@ -1,22 +1,24 @@
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import type { WorkflowIR } from "@acpus/core/ir";
 import type { WorkflowVisualizationResult } from "../src/api-types.js";
 import { renderWorkflowVizHtml } from "../src/server/workflows/offline-html.js";
 import { tryVisualizeWorkflowSource } from "../src/server/workflows/visualization.js";
+import { settle } from "./effect.js";
 
 describe("workflow visualization helpers", () => {
   it("classifies a workspace path escape as a source failure before preparation", async () => {
-    const result = await tryVisualizeWorkflowSource("/workspace", {
+    const result = await settle(tryVisualizeWorkflowSource("/workspace", {
       kind: "file",
       path: "../outside.workflow.ts",
-    });
+    }));
 
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected source failure");
-    expect(result.error).toMatchObject({
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("expected source failure");
+    expect(result.failure).toMatchObject({
       type: "workflow-source-invalid",
       reason: "outside-workspace",
       phase: "source",
@@ -33,14 +35,14 @@ describe("workflow visualization helpers", () => {
       await writeFile(target, "throw new Error('outside source must not be imported');\n");
       await symlink(target, join(cwd, "release.workflow.ts"));
 
-      const result = await tryVisualizeWorkflowSource(cwd, {
+      const result = await settle(tryVisualizeWorkflowSource(cwd, {
         kind: "file",
         path: "release.workflow.ts",
-      });
+      }));
 
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected source failure");
-      expect(result.error).toMatchObject({
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected source failure");
+      expect(result.failure).toMatchObject({
         type: "workflow-source-invalid",
         reason: "outside-workspace",
         phase: "source",
@@ -67,14 +69,14 @@ describe("workflow visualization helpers", () => {
       await mkdir(join(cwd, ".acpus"));
       await symlink(outside, join(cwd, ".acpus", "workflows"), "dir");
 
-      const result = await tryVisualizeWorkflowSource(cwd, {
+      const result = await settle(tryVisualizeWorkflowSource(cwd, {
         kind: "catalog",
         name: "release",
-      });
+      }));
 
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected source failure");
-      expect(result.error).toMatchObject({
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected source failure");
+      expect(result.failure).toMatchObject({
         type: "workflow-source-invalid",
         reason: "outside-workspace",
         phase: "source",
@@ -99,7 +101,7 @@ describe("workflow visualization helpers", () => {
       agents: {
         reviewer: { kind: "agent_definition", use: "codex", model: "gpt-5" },
       },
-      irVersion: 7,
+      irVersion: 8,
       nodeCount: 3,
     });
     expect(bundle.contract).toEqual({
@@ -120,6 +122,33 @@ describe("workflow visualization helpers", () => {
       ["fallback", "assert"],
     ]));
     expect(bundle.sourceGraphDigest).toBe(sourceGraphDigest);
+  });
+
+  it("preserves an unbound Agent slot in static visualization", () => {
+    const ir = workflowIr();
+    ir.agents = {
+      reviewer: { kind: "agent_slot", model: "gpt-5.6-luna" },
+    };
+    ir.root.nodes = [{
+      id: "review",
+      kind: "agent",
+      run: {
+        agent: "reviewer",
+        prompt: { kind: "literal", value: "Review." },
+      },
+    }];
+
+    const bundle = embeddedVisualization(renderWorkflowVizHtml({ ir, sourceGraphDigest }));
+
+    expect(bundle.workflow.agents).toEqual({
+      reviewer: { kind: "agent_slot", model: "gpt-5.6-luna" },
+    });
+    expect(bundle.graph.nodes[0]?.detail).toMatchObject({
+      kind: "agent",
+      agent: "reviewer",
+      model: "gpt-5.6-luna",
+      unbound: true,
+    });
   });
 
   it("renders an offline HTML shell that fences authored and embedded raw text", () => {
@@ -146,7 +175,7 @@ const hostileDescription = "Prepared </script><script>globalThis.compromised = t
 
 function workflowIr(): WorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: hostileName,
     description: hostileDescription,
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },

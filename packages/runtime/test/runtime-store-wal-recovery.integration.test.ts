@@ -1,11 +1,12 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { spawn } from "node:child_process";
-import { once } from "node:events";
 import { lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 import { readInspection, repairRuntimeStore } from "../src/index.js";
 import { resolveRuntimeLayout, resolveRuntimeWorkspaceLayout } from "../src/runtime-layout.js";
-import { openRuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
 import { withStorageWorkspace } from "./support/storage-workspace.js";
 
 describe("Runtime store WAL repair", () => {
@@ -15,11 +16,13 @@ describe("Runtime store WAL repair", () => {
       await commitRunUpdateThenKill(databasePath);
       expect((await lstat(`${databasePath}-wal`)).size).toBeGreaterThan(0);
 
-      const repaired = await repairRuntimeStore(workspace);
-      const archived = await readInspection(workspace, { kind: "run", runId: "run_crash_wal" });
+      const repaired = await Effect.runPromise(Effect.result(repairRuntimeStore(workspace)));
+      const archived = await Effect.runPromise(Effect.result(
+        readInspection(workspace, { kind: "run", runId: "run_crash_wal" }),
+      ));
 
-      expect(repaired.isOk() && repaired.value).toEqual({ changed: true });
-      expect(archived.isOk() && archived.value).toMatchObject({
+      expect(Result.isSuccess(repaired) && repaired.success).toEqual({ changed: true });
+      expect(Result.isSuccess(archived) && archived.success).toMatchObject({
         kind: "archived-run",
         run: {
           id: "run_crash_wal",
@@ -33,7 +36,7 @@ describe("Runtime store WAL repair", () => {
 });
 
 async function createLegacyStore(workspace: string): Promise<string> {
-  const store = await openRuntimeStore(workspace);
+  const store = await openRuntimeStoreAdapter(workspace);
   store.close();
   const current = resolveRuntimeLayout(workspace);
   const database = new DatabaseSync(current.databasePath);
@@ -75,13 +78,22 @@ async function commitRunUpdateThenKill(databasePath: string): Promise<void> {
     env: { ...process.env, ACPUS_TEST_WAL_DATABASE: databasePath },
     stdio: ["ignore", "pipe", "inherit"],
   });
+  const exited = new Promise<void>((resolve, reject) => {
+    child.once("exit", () => resolve());
+    child.once("error", reject);
+  });
   let output = "";
   child.stdout!.setEncoding("utf8");
   child.stdout!.on("data", chunk => { output += String(chunk); });
-  for (let attempt = 0; attempt < 100 && !output.includes("committed"); attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, 10));
+  try {
+    for (let attempt = 0; attempt < 100 && !output.includes("committed"); attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 10));
+    }
+    expect(output).toContain("committed");
+    child.kill("SIGKILL");
+    await exited;
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    await exited.catch(() => undefined);
   }
-  expect(output).toContain("committed");
-  child.kill("SIGKILL");
-  await once(child, "exit");
 }

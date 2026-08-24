@@ -1,9 +1,10 @@
-import { ok } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { describe, expect, it, vi } from "vitest";
 import type { HookRunner } from "../src/hooks/runner.js";
 import { dispatchCommittedHooksForRun } from "../src/hooks/dispatch.js";
 import { createSchedulerProjection } from "../src/scheduler/transitions.js";
-import type { FrozenRun, RuntimeStore } from "../src/store/store.js";
+import type { FrozenRun, RuntimeStoreAdapter } from "../src/store/store.js";
 
 const runId = "run_hooks";
 const busy = { code: "SQLITE_BUSY", message: "database is locked" };
@@ -24,7 +25,7 @@ describe("durable hook dispatch", () => {
       ...(stage === "load-metadata" ? { hookRunner: hookRunner() } : {}),
     });
 
-    expect(result.isErr() && result.error).toEqual({
+    expect(Result.isFailure(result) && result.failure).toEqual({
       type: "hook-dispatch-retry",
       runId,
       stage,
@@ -39,7 +40,7 @@ describe("durable hook dispatch", () => {
       getHookDispatchCursor: () => 1,
       readHookDispatchEvents: () => ({ lastSequence: 3, events: [committedRow(3)] }),
       compareAndSetHookDispatchCursor: advance,
-    } as RuntimeStore;
+    } as RuntimeStoreAdapter;
 
     expect(() => dispatchCommittedHooksForRun({ cwd: "/workspace", runId, store }))
       .toThrow("hook dispatch event sequence jumps from 1 to 3");
@@ -53,15 +54,42 @@ describe("durable hook dispatch", () => {
       getHookDispatchCursor: () => 2,
       readHookDispatchEvents: () => ({ lastSequence: 1, events: [] }),
       compareAndSetHookDispatchCursor: advance,
-    } as RuntimeStore;
+    } as RuntimeStoreAdapter;
 
     expect(() => dispatchCommittedHooksForRun({ cwd: "/workspace", runId, store }))
       .toThrow("hook dispatch cursor 2 exceeds committed event sequence 1");
     expect(advance).not.toHaveBeenCalled();
   });
+
+  it("advances a mapped event without loading hook context when no runner exists", () => {
+    let cursor = 0;
+    const advance = vi.fn((_runId: string, expected: number, next: number) => {
+      if (cursor !== expected) return false;
+      cursor = next;
+      return true;
+    });
+    const store = {
+      ...fakeStore(),
+      getHookDispatchCursor: () => cursor,
+      readHookDispatchEvents: () => ({
+        lastSequence: 1,
+        events: cursor === 0 ? [committedRow(1, true)] : [],
+      }),
+      scheduler: { tryLoadRunSnapshot: () => { throw new Error("projection must not load"); } },
+      getExecutionMetadata: () => { throw new Error("metadata must not load"); },
+      compareAndSetHookDispatchCursor: advance,
+    } as unknown as RuntimeStoreAdapter;
+
+    expect(Result.getOrThrow(dispatchCommittedHooksForRun({ cwd: "/workspace", runId, store }))).toEqual({
+      runId,
+      eventSequence: 1,
+      dispatched: 0,
+    });
+    expect(advance).toHaveBeenCalledWith(runId, 0, 1);
+  });
 });
 
-function fakeStore(stage?: "read-cursor" | "read-events" | "load-projection" | "load-metadata" | "advance-cursor"): RuntimeStore {
+function fakeStore(stage?: "read-cursor" | "read-events" | "load-projection" | "load-metadata" | "advance-cursor"): RuntimeStoreAdapter {
   const projection = createSchedulerProjection(runId);
   const mapped = stage === "load-metadata";
   return {
@@ -79,7 +107,7 @@ function fakeStore(stage?: "read-cursor" | "read-events" | "load-projection" | "
     },
     scheduler: {
       tryLoadRunSnapshot() {
-        return ok({ runId, version: 1, projection });
+        return Result.succeed({ runId, version: 1, projection });
       },
     },
     getExecutionMetadata() {
@@ -90,7 +118,7 @@ function fakeStore(stage?: "read-cursor" | "read-events" | "load-projection" | "
       if (stage === "advance-cursor") throw busy;
       return true;
     },
-  } as unknown as RuntimeStore;
+  } as unknown as RuntimeStoreAdapter;
 }
 
 function committedRow(sequence: number, mapped = false) {
@@ -108,14 +136,14 @@ function committedRow(sequence: number, mapped = false) {
 function frozenRun(): FrozenRun {
   return {
     ir: {
-      irVersion: 7,
+      irVersion: 8,
       name: "hooks",
       agents: {},
       root: { nodes: [], output: { kind: "literal", value: null } },
       diagnostics: [],
     },
     input: {},
-    agentOverrides: {},
+    agentBindings: {},
     meta: { runId, workflowName: "hooks", workflowPath: "workflow.ts", workspaceDir: "/workspace" },
   };
 }
@@ -123,7 +151,7 @@ function frozenRun(): FrozenRun {
 function hookRunner(): HookRunner {
   return {
     trigger() {},
-    async drain() {},
+    drain: () => Effect.void,
     activeCount: () => 0,
   };
 }

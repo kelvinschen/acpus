@@ -1,5 +1,6 @@
 import { lstat, readFile, readdir } from "node:fs/promises";
 import { basename, join } from "node:path";
+import * as Result from "effect/Result";
 import {
   resolveRuntimeLayout,
   runtimeLayoutFromManifest,
@@ -82,7 +83,7 @@ export async function resolveAvailableWorkspaceLayout(
     throw new Error(`Workspace '${shard.layout.workspaceKey}' no longer belongs to this Acpus home.`);
   }
   const validation = validateWorkspaceManifest(shard.manifest, current);
-  if (validation.isErr()) throw new Error(validation.error.message);
+  if (Result.isFailure(validation)) throw new Error(validation.failure.message);
   await validateRuntimeLayoutBoundary(current);
   return current;
 }
@@ -147,7 +148,7 @@ async function readWorkspaceShard(
   const manifest = value;
   const layout = runtimeLayoutFromManifest(home, workspaceRoot, manifest);
   const validated = validateWorkspaceManifest(manifest, layout);
-  if (validated.isErr()) throw new Error(validated.error.message);
+  if (Result.isFailure(validated)) throw new Error(validated.failure.message);
   if (basename(workspaceRoot) !== layout.workspaceKey) {
     throw new Error(`Workspace shard '${workspaceRoot}' does not match manifest key '${layout.workspaceKey}'.`);
   }

@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { startDaemonLoop } from "../src/index.js";
+import { startDaemonLoop } from "./support/daemon-loop.js";
 import {
   admitSyntheticWorkflow,
   prepareSyntheticWorkflow,
@@ -23,12 +23,12 @@ describe.concurrent("daemon lease hooks", () => {
     await withDaemonLeaseWorkspace(async ({ dir, store }) => {
       const sideEffectPath = join(dir, "active-cancel-hook-side-effect.marker");
       await mkdir(join(dir, ".acpus"), { recursive: true });
-      await writeFile(join(dir, ".acpus", "hooks.json"), JSON.stringify({
+      await writeFile(join(dir, ".acpus", "config.json"), JSON.stringify({ hooks: {
         "run.canceled": [{
           id: "active-canceled",
           command: `${process.execPath} -e 'let s="";process.stdin.on("data",d=>s+=d);process.stdin.on("end",()=>{require("node:fs").appendFileSync(${JSON.stringify(sideEffectPath)},"fired\\n");process.stdout.write(JSON.parse(s).run.status)})'`,
         }],
-      }));
+      } }));
       const markerPath = join(dir, "active-cancel-hook.marker");
       const prepared = await prepareSyntheticWorkflow(dir, activeTaskWorkflow());
       const loop = await startDaemonLoop(dir, {
@@ -73,12 +73,12 @@ describe.concurrent("daemon lease hooks", () => {
   it("runs configured project hooks from daemon-owned execution", async () => {
     await withDaemonLeaseWorkspace(async ({ dir, store }) => {
       await mkdir(join(dir, ".acpus"), { recursive: true });
-      await writeFile(join(dir, ".acpus", "hooks.json"), JSON.stringify({
+      await writeFile(join(dir, ".acpus", "config.json"), JSON.stringify({ hooks: {
         "run.completed": [{
           id: "print-run",
           command: `${process.execPath} -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(JSON.parse(s).run.id))"`,
         }],
-      }));
+      } }));
       const prepared = await prepareSyntheticWorkflow(dir, validWorkflow());
       const loop = await startDaemonLoop(dir, {
         heartbeatMs: 10,
@@ -109,13 +109,13 @@ describe.concurrent("daemon lease hooks", () => {
   it("runs hooks for short-session signal controls", async () => {
     await withDaemonLeaseWorkspace(async ({ dir, store }) => {
       await mkdir(join(dir, ".acpus"), { recursive: true });
-      await writeFile(join(dir, ".acpus", "hooks.json"), JSON.stringify({
+      await writeFile(join(dir, ".acpus", "config.json"), JSON.stringify({ hooks: {
         "node.completed": [{
           id: "signal-completed",
           match: { nodeId: "^approve$" },
           command: `${process.execPath} -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(JSON.parse(s).node.key))"`,
         }],
-      }));
+      } }));
       const awaiting = await admitSyntheticWorkflow(dir, signalWorkflow());
       const loop = await startDaemonLoop(dir, {
         heartbeatMs: 10,
@@ -132,7 +132,7 @@ describe.concurrent("daemon lease hooks", () => {
           type: "signal",
           state: "consumed",
           requestedTarget: "approve",
-          target: expect.stringMatching(/^approve~[0-9a-f]{12}$/),
+          target: expect.stringMatching(/^approve~[0-9a-f]{8}$/),
           validation: { kind: "schema", schemaSummary: "{ ok: boolean }" },
           run: { id: awaiting.run.id },
         });
@@ -154,12 +154,12 @@ describe.concurrent("daemon lease hooks", () => {
   it("runs hooks for daemon-created fork runs", async () => {
     await withDaemonLeaseWorkspace(async ({ dir, store }) => {
       await mkdir(join(dir, ".acpus"), { recursive: true });
-      await writeFile(join(dir, ".acpus", "hooks.json"), JSON.stringify({
+      await writeFile(join(dir, ".acpus", "config.json"), JSON.stringify({ hooks: {
         "run.completed": [{
           id: "fork-completed",
           command: `${process.execPath} -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>process.stdout.write(JSON.parse(s).run.id))"`,
         }],
-      }));
+      } }));
       const source = await admitSyntheticWorkflow(dir, validWorkflow(), { ready: true });
       const loop = await startDaemonLoop(dir, {
         heartbeatMs: 10,
@@ -195,9 +195,9 @@ describe.concurrent("daemon lease hooks", () => {
   it("fails daemon startup for invalid hooks config without claiming the daemon", async () => {
     await withDaemonLeaseWorkspace(async ({ dir, store }) => {
       await mkdir(join(dir, ".acpus"), { recursive: true });
-      await writeFile(join(dir, ".acpus", "hooks.json"), JSON.stringify({
+      await writeFile(join(dir, ".acpus", "config.json"), JSON.stringify({ hooks: {
         "run.completed": [{ command: "" }],
-      }));
+      } }));
 
       await expect(startDaemonLoop(dir, {
         heartbeatMs: 10,

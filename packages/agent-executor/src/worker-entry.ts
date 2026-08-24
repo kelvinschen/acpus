@@ -1,445 +1,370 @@
-import { createHash, randomUUID } from "node:crypto";
+import { NodeRuntime } from "@effect/platform-node";
 import {
-  createAcpRuntime,
-  createAgentRegistry,
-  type AcpRuntime,
-  type AcpRuntimeEvent,
-  type AcpRuntimeHandle,
-  type AcpRuntimeTurnResult,
-  type AcpRuntimeUsageBreakdown,
-} from "acpx/runtime";
-import type {
-  AgentBackendFailure,
-  AgentJsonValue,
-  AgentObservationEvent,
-  AgentToolCallSummary,
-  AgentTurnProgress,
-  AgentTurnRequest,
-  AgentTurnResult,
-  AgentTurnSummary,
-} from "./types.js";
-import { observationEventFromRuntime, toAgentJsonValue } from "./runtime-event.js";
-import { createAcpusSessionStore } from "./session-store.js";
-import { createTurnResponseCollector } from "./turn-responses.js";
-import { failureFromAcpRuntime, type AcpRuntimeOperation } from "./worker-failure.js";
+  openAcpSession,
+  type AcpSession,
+  type AcpSessionConfiguration,
+} from "@acpus/acp";
+import { AcpTransportNodeLive, type AcpTransport } from "@acpus/acp/transport";
+import type { ProcessHost } from "@acpus/owned-process";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
+import * as FiberSet from "effect/FiberSet";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
+import type * as Scope from "effect/Scope";
+import type { ProcessCapsuleError } from "./types.js";
 import {
   ACP_WORKER_PROTOCOL_VERSION,
   isAcpWorkerParentMessage,
   type AcpWorkerChildMessage,
   type AcpWorkerParentMessage,
+  type ProcessCapsuleTerminal,
 } from "./worker-protocol.js";
 
-type InitializedWorker = {
-  workerId: string;
-  attemptId: string;
-  cwd: string;
-  agentName: string;
-  model?: string;
-  runtime: AcpRuntime;
+const INHERIT_PROCESS_GROUP_ENV = "ACPUS_INTERNAL_ACP_INHERIT_PROCESS_GROUP";
+
+type WorkerIdentity = { hostId: string; sessionLeaseId: string };
+
+type InitializedWorker = WorkerIdentity & {
+  configuration: Readonly<{ model?: string; options: Readonly<Record<string, string>> }>;
+  session: AcpSession;
 };
 
 type ActiveTurn = {
-  turnId: string;
-  controller: AbortController;
-  cancel: () => Promise<void>;
-  abortReason?: "aborted" | "timeout" | "inactivity";
+  readonly turnId: string;
+  readonly fiber: Fiber.Fiber<void>;
 };
 
-type WorkerTurnRequest = Omit<AgentTurnRequest, "signal" | "onProgress" | "onObservation">;
-
-type TurnAccumulator = {
-  startedAt: string;
-  startedAtMonotonic: number;
-  sequence: number;
-  responses: ReturnType<typeof createTurnResponseCollector>;
-  context?: AgentTurnSummary["context"];
-  tokenUsage?: AgentTurnSummary["tokenUsage"];
-  tools: Map<string, AgentToolCallSummary>;
-  eventCount: number;
-  acpxRecordId?: string;
+type WorkerState = {
+  identity?: WorkerIdentity;
+  initialized?: InitializedWorker;
+  active?: ActiveTurn;
+  closing: boolean;
 };
 
-let initialized: InitializedWorker | undefined;
-let handle: AcpRuntimeHandle | undefined;
-let active: ActiveTurn | undefined;
-let closing = false;
+type WorkerStop = {
+  readonly exitCode: 0 | 1;
+  readonly reason: string;
+  readonly report?: ProcessCapsuleError;
+};
 
-process.on("message", raw => {
-  if (!isAcpWorkerParentMessage(raw)) return;
-  void receive(raw).catch(error => fail(error));
-});
+type WorkerEvent =
+  | Readonly<{ type: "parent"; message: AcpWorkerParentMessage }>
+  | Readonly<{ type: "disconnect" }>
+  | Readonly<{ type: "stop"; stop: WorkerStop }>;
 
-process.once("disconnect", () => {
-  void closeWorker("parent disconnected");
-});
+const main = Effect.scoped(Effect.gen(function*() {
+  const events = yield* Queue.unbounded<WorkerEvent>();
+  const children = yield* FiberSet.make<void>();
+  const state: WorkerState = { closing: false };
+  yield* observeParent(events);
 
-async function receive(message: AcpWorkerParentMessage): Promise<void> {
-  if (message.type === "initialize") {
-    if (initialized) throw new Error("ACP worker received duplicate initialization.");
-    applyEnvironment(message.env);
-    if (message.agent.kind === "named" && message.agent.name === "claude" && process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS === undefined) {
-      process.env.ACPX_CLAUDE_INCLUDE_USER_SETTINGS = "1";
-    }
-    const agentName = workerAgentName(message.agent);
-    initialized = {
-      workerId: message.workerId,
-      attemptId: message.attemptId,
-      cwd: message.cwd,
-      agentName,
-      ...(message.model === undefined ? {} : { model: message.model }),
-      runtime: createAcpRuntime({
-        cwd: message.cwd,
-        sessionStore: createAcpusSessionStore(message.sessionStateDirectory),
-        agentRegistry: createAgentRegistry({ overrides: { [agentName]: message.resolvedLaunch } }),
-        permissionMode: message.permissionMode,
-      }),
-    };
-    send({ type: "ready", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: message.workerId, attemptId: message.attemptId });
-    return;
-  }
-
-  const state = requireInitialized(message);
-  if (message.type === "run-turn") {
-    if (active) throw new Error("ACP worker received a second active turn.");
-    await runTurn(state, message.turnId, message.request);
-    return;
-  }
-  if (message.type === "abort-turn") {
-    if (active?.turnId !== message.turnId) return;
-    active.abortReason = message.reason;
-    active.controller.abort();
-    await active.cancel().catch(() => {});
-    return;
-  }
-  await closeWorker(message.reason);
-}
-
-async function runTurn(
-  state: InitializedWorker,
-  turnId: string,
-  request: Omit<AgentTurnRequest, "signal" | "onProgress" | "onObservation">,
-): Promise<void> {
-  const accumulator = createAccumulator();
-  let operation: AcpRuntimeOperation = "sessions.ensure";
-  try {
-    handle ??= await state.runtime.ensureSession({
-      sessionKey: request.sessionName,
-      agent: state.agentName,
-      mode: "persistent",
-      cwd: state.cwd,
-      ...(state.model === undefined ? {} : { sessionOptions: { model: state.model } }),
+  const loop = yield* Effect.exit(workerLoop(state, events, children));
+  const stop = Exit.isSuccess(loop)
+    ? loop.value
+    : stopFromCause(state, loop.cause);
+  state.closing = true;
+  if (stop.report !== undefined && state.identity !== undefined) {
+    send({
+      type: "failed",
+      protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
+      ...state.identity,
+      error: stop.report,
     });
-    if (handle.acpxRecordId !== undefined) accumulator.acpxRecordId = handle.acpxRecordId;
-    for (const [key, value] of Object.entries(request.config ?? {}).filter(([key]) => key !== "model").sort(([left], [right]) => left.localeCompare(right))) {
-      operation = "session.set_config_option";
-      await state.runtime.setConfigOption?.({ handle, key, value });
-    }
-
-    const usageBefore = await readPerRequestUsage(state.runtime, handle);
-    operation = "prompt";
-    const controller = new AbortController();
-    const turn = state.runtime.startTurn({
-      handle,
-      text: request.prompt,
-      mode: "prompt",
-      requestId: randomUUID(),
-      ...(request.timeoutMs === undefined ? {} : { timeoutMs: request.timeoutMs }),
-      signal: controller.signal,
-    });
-    active = {
-      turnId,
-      controller,
-      cancel: () => turn.cancel({ reason: "acpus attempt cleanup" }),
-    };
-    emitActivity(state, turnId);
-    for await (const event of turn.events) emitRuntimeEvent(state, turnId, accumulator, event);
-    const terminal = await turn.result;
-    await applyPromptResponseUsage(state.runtime, handle, usageBefore, accumulator);
-    const result = terminalResult(accumulator, terminal, active?.abortReason);
-    emitTurnEnd(state, turnId, accumulator, result);
-    send({ type: "turn-result", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: state.workerId, attemptId: state.attemptId, turnId, result });
-  } catch (error) {
-    const result = failedResult(accumulator, failureFromAcpRuntime(error, operation));
-    emitTurnEnd(state, turnId, accumulator, result);
-    send({ type: "turn-result", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: state.workerId, attemptId: state.attemptId, turnId, result });
-  } finally {
-    active = undefined;
   }
-}
-
-async function readPerRequestUsage(
-  runtime: AcpRuntime,
-  runtimeHandle: AcpRuntimeHandle,
-): Promise<Map<string, AcpRuntimeUsageBreakdown> | undefined> {
-  if (!runtime.getStatus) return undefined;
-  try {
-    const status = await runtime.getStatus({ handle: runtimeHandle });
-    return new Map(Object.entries(status.usage?.perRequest ?? {}));
-  } catch {
-    return undefined;
-  }
-}
-
-async function applyPromptResponseUsage(
-  runtime: AcpRuntime,
-  runtimeHandle: AcpRuntimeHandle,
-  before: Map<string, AcpRuntimeUsageBreakdown> | undefined,
-  accumulator: TurnAccumulator,
-): Promise<void> {
-  if (before === undefined) return;
-  const after = await readPerRequestUsage(runtime, runtimeHandle);
-  if (after === undefined) return;
-  const additions = [...after].filter(([id]) => !before.has(id));
-  if (additions.length !== 1) return;
-  accumulator.tokenUsage = { source: "prompt_response", ...additions[0]![1] };
-}
-
-function emitRuntimeEvent(state: InitializedWorker, turnId: string, accumulator: TurnAccumulator, event: AcpRuntimeEvent): void {
-  const observedAt = new Date().toISOString();
-  const elapsedMs = elapsed(accumulator);
-  accumulator.eventCount += 1;
-  updateAccumulator(accumulator, event, observedAt);
-  const projected = observationEventFromRuntime(event, accumulator.sequence++, observedAt, elapsedMs);
-  if (projected) {
-    const observation = {
-      event: projected,
-      progress: progress(accumulator, observedAt),
-    };
-    send({ type: "turn-observation", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: state.workerId, attemptId: state.attemptId, turnId, observation });
-  }
-  emitActivity(state, turnId, observedAt);
-}
-
-function emitTurnEnd(state: InitializedWorker, turnId: string, accumulator: TurnAccumulator, result: AgentTurnResult): void {
-  const observedAt = new Date().toISOString();
-  const event: AgentObservationEvent = {
-    schemaVersion: 1,
-    sequence: accumulator.sequence++,
-    observedAt,
-    elapsedMs: elapsed(accumulator),
-    type: "turn_end",
-    status: result.status === "failed" && result.failure.kind === "timeout" ? "timed_out" : result.status,
-    ...(result.summary.stopReason === undefined ? {} : { stopReason: result.summary.stopReason }),
-    ...(result.status === "failed" ? { failure: result.failure as unknown as AgentJsonValue, message: result.failure.message } : {}),
-    ...(result.status === "cancelled" ? { message: result.message } : {}),
-  };
-  send({
-    type: "turn-observation",
-    protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
-    workerId: state.workerId,
-    attemptId: state.attemptId,
-    turnId,
-    observation: { event, progress: progress(accumulator, observedAt) },
+  yield* Effect.sync(() => {
+    process.exitCode = stop.exitCode;
   });
-}
+  yield* closeWorker(state, children, stop.reason);
+}).pipe(Effect.provide(AcpTransportNodeLive)));
 
-function updateAccumulator(accumulator: TurnAccumulator, event: AcpRuntimeEvent, observedAt: string): void {
-  accumulator.responses.observe(event);
-  if (event.type === "text_delta") return;
-  if (event.type === "status") {
-    if (event.used !== undefined && event.size !== undefined) {
-      accumulator.context = { used: event.used, size: event.size, updatedAt: observedAt };
-    }
-    if (event.breakdown) {
-      accumulator.tokenUsage = {
-        source: "usage_update",
-        ...event.breakdown,
+NodeRuntime.runMain(main, { disableErrorReporting: true });
+
+function observeParent(events: Queue.Queue<WorkerEvent>): Effect.Effect<void, never, Scope.Scope> {
+  return Effect.acquireRelease(
+    Effect.sync(() => {
+      const onMessage = (raw: unknown): void => {
+        if (isAcpWorkerParentMessage(raw)) {
+          Queue.offerUnsafe(events, { type: "parent", message: raw });
+        }
       };
+      const onDisconnect = (): void => {
+        Queue.offerUnsafe(events, { type: "disconnect" });
+      };
+      process.on("message", onMessage);
+      process.once("disconnect", onDisconnect);
+      return { onMessage, onDisconnect };
+    }),
+    handlers => Effect.sync(() => {
+      process.off("message", handlers.onMessage);
+      process.off("disconnect", handlers.onDisconnect);
+    }),
+  ).pipe(Effect.asVoid);
+}
+
+function workerLoop(
+  state: WorkerState,
+  events: Queue.Queue<WorkerEvent>,
+  children: FiberSet.FiberSet<void>,
+): Effect.Effect<
+  WorkerStop,
+  ProcessCapsuleError,
+  AcpTransport | ProcessHost | Scope.Scope
+> {
+  return Effect.gen(function*() {
+    while (true) {
+      const event = yield* Queue.take(events);
+      if (event.type === "disconnect") {
+        return { exitCode: 0, reason: "parent disconnected" };
+      }
+      if (event.type === "stop") return event.stop;
+      const message = event.message;
+      if (message.type === "open") {
+        if (state.identity !== undefined) {
+          return yield* Effect.fail(capsuleFailure(
+            state,
+            "worker_exception",
+            new Error("ACP worker received duplicate initialization."),
+          ));
+        }
+        state.identity = identityOfMessage(message.input);
+        yield* FiberSet.run(children, openWorker(state, events, message));
+        continue;
+      }
+      if (message.type === "close") {
+        return { exitCode: 0, reason: message.reason };
+      }
+      const initialized = requireInitialized(state, message);
+      if (message.type === "run") {
+        if (state.active !== undefined) {
+          return yield* Effect.fail(capsuleFailure(
+            state,
+            "worker_exception",
+            new Error("ACP worker received a second active Turn."),
+          ));
+        }
+        const fiber = yield* FiberSet.run(
+          children,
+          runTurn(state, events, initialized, message.turnId, message.prompt),
+        );
+        state.active = { turnId: message.turnId, fiber };
+        continue;
+      }
+      if (state.active?.turnId === message.turnId) {
+        yield* Fiber.interrupt(state.active.fiber);
+      }
     }
-    return;
-  }
-  if (event.type !== "tool_call") return;
-  const id = event.toolCallId ?? `tool-${accumulator.eventCount}`;
-  const previous = accumulator.tools.get(id);
-  const startedAt = previous?.startedAt ?? observedAt;
-  accumulator.tools.set(id, {
-    toolCallId: id,
-    ...(event.title === undefined ? {} : { title: event.title }),
-    ...(event.kind === undefined ? {} : { kind: event.kind }),
-    ...(event.status === undefined ? {} : { status: event.status }),
-    ...(event.rawInput === undefined ? {} : { input: preview(event.rawInput) }),
-    startedAt,
-    updatedAt: observedAt,
-    ...(terminalToolStatus(event.status) ? { completedAt: observedAt } : {}),
   });
 }
 
-function terminalResult(
-  accumulator: TurnAccumulator,
-  terminal: AcpRuntimeTurnResult,
-  abortReason: ActiveTurn["abortReason"],
-): AgentTurnResult {
-  return terminalResultFromRuntime(accumulator, terminal, abortReason);
+function openWorker(
+  state: WorkerState,
+  events: Queue.Queue<WorkerEvent>,
+  message: Extract<AcpWorkerParentMessage, { type: "open" }>,
+): Effect.Effect<void, never, AcpTransport | ProcessHost | Scope.Scope> {
+  const input = message.input;
+  return Effect.gen(function*() {
+    const opened = yield* Effect.result(openAcpSession({
+      agentSessionId: input.agentSessionId,
+      sessionOpenMode: input.sessionOpenMode,
+      stateDirectory: input.sessionStateDirectory,
+      launch: input.resolvedLaunch,
+      cwd: input.cwd,
+      env: {
+        ...input.env,
+        ...(process.env[INHERIT_PROCESS_GROUP_ENV] === undefined
+          ? {}
+          : { [INHERIT_PROCESS_GROUP_ENV]: process.env[INHERIT_PROCESS_GROUP_ENV] }),
+      },
+      permissionMode: input.permissionMode,
+      configuration: {
+        model: input.configuration.model ?? null,
+        options: input.configuration.options,
+      },
+    }));
+    if (Result.isFailure(opened)) {
+      if (!state.closing) {
+        send({
+          type: "open_failed",
+          protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
+          ...identityOfMessage(input),
+          error: opened.failure,
+        });
+        Queue.offerUnsafe(events, {
+          type: "stop",
+          stop: { exitCode: 1, reason: "worker failure" },
+        });
+      }
+      return;
+    }
+    state.initialized = {
+      ...identityOfMessage(input),
+      configuration: input.configuration,
+      session: opened.success,
+    };
+    if (!state.closing) {
+      send({
+        type: "ready",
+        protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
+        ...identityOfMessage(input),
+        projectionRef: opened.success.projectionPath,
+        ...(opened.success.reportedVersion === undefined
+          ? {}
+          : { reportedVersion: opened.success.reportedVersion }),
+      });
+    }
+  }).pipe(Effect.catchCause(cause => childFailed(state, events, cause)));
 }
 
-function terminalResultFromRuntime(
-  accumulator: TurnAccumulator,
-  terminal: AcpRuntimeTurnResult,
-  abortReason: ActiveTurn["abortReason"],
-): AgentTurnResult {
-  if (abortReason === "inactivity") return staleResult(accumulator);
-  if (abortReason === "timeout") return failedResult(accumulator, { kind: "timeout", origin: "runtime", message: "Agent turn exceeded its authored timeout." });
-  if (abortReason === "aborted" || terminal.status === "cancelled") {
-    return cancelledResult(accumulator, "Agent turn was aborted.", terminal.status === "cancelled" ? terminal.stopReason : undefined);
-  }
-  if (terminal.status === "failed") {
-    return failedResult(accumulator, {
-      kind: terminal.error?.code === "ACP_TURN_FAILED" ? "provider_exit" : "spawn",
-      origin: "provider",
-      message: terminal.error?.message ?? "ACP agent turn failed.",
-      ...(terminal.error?.retryable === undefined ? {} : { retryable: terminal.error.retryable }),
-      ...(terminal.error?.code === undefined ? {} : { upstream: { source: "acpx", operation: "prompt", code: terminal.error.code } }),
+function runTurn(
+  state: WorkerState,
+  events: Queue.Queue<WorkerEvent>,
+  initialized: InitializedWorker,
+  turnId: string,
+  prompt: string,
+): Effect.Effect<void> {
+  return Effect.gen(function*() {
+    const configuration = turnConfiguration(initialized);
+    const result = yield* Effect.result(initialized.session.runTurn({
+      prompt,
+      ...(configuration === undefined ? {} : { configuration }),
+      onEvent: event => send({
+        type: "event",
+        protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
+        ...identityOf(initialized),
+        turnId,
+        event,
+      }),
+    }));
+    const terminal: ProcessCapsuleTerminal = Result.isSuccess(result)
+      ? { type: "provider_result", result: result.success }
+      : result.failure.providerEvidence === "terminal_response"
+        ? { type: "provider_error_response", error: result.failure }
+        : { type: "local_error", error: result.failure };
+    send({
+      type: "terminal",
+      protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
+      ...identityOf(initialized),
+      turnId,
+      terminal,
     });
+    if (state.active?.turnId === turnId) delete state.active;
+  }).pipe(Effect.catchCause(cause => {
+    if (state.active?.turnId === turnId) delete state.active;
+    return childFailed(state, events, cause);
+  }));
+}
+
+function childFailed(
+  state: WorkerState,
+  events: Queue.Queue<WorkerEvent>,
+  cause: Cause.Cause<never>,
+): Effect.Effect<void> {
+  if (state.closing && Cause.hasInterruptsOnly(cause)) return Effect.void;
+  return Effect.sync(() => {
+    Queue.offerUnsafe(events, {
+      type: "stop",
+      stop: {
+        exitCode: 1,
+        reason: "worker failure",
+        report: capsuleFailure(state, "worker_exception", Cause.squash(cause)),
+      },
+    });
+  });
+}
+
+function closeWorker(
+  state: WorkerState,
+  children: FiberSet.FiberSet<void>,
+  reason: string,
+): Effect.Effect<void> {
+  return Effect.uninterruptible(Effect.gen(function*() {
+    yield* FiberSet.clear(children);
+    yield* FiberSet.awaitEmpty(children);
+    if (state.initialized !== undefined) {
+      yield* Effect.result(state.initialized.session.close(reason));
+    }
+    if (state.identity !== undefined) {
+      send({
+        type: "closed",
+        protocolVersion: ACP_WORKER_PROTOCOL_VERSION,
+        ...state.identity,
+      });
+    }
+    yield* Effect.sync(() => {
+      process.disconnect?.();
+    });
+  }));
+}
+
+function stopFromCause(state: WorkerState, cause: Cause.Cause<ProcessCapsuleError>): WorkerStop {
+  if (Cause.hasInterruptsOnly(cause)) {
+    return { exitCode: 0, reason: "worker interrupted" };
   }
-  return completedResult(accumulator, terminal.stopReason);
-}
-
-function createAccumulator(): TurnAccumulator {
+  const typed = Cause.findErrorOption(cause);
   return {
-    startedAt: new Date().toISOString(),
-    startedAtMonotonic: performance.now(),
-    sequence: 0,
-    responses: createTurnResponseCollector(),
-    tools: new Map(),
-    eventCount: 0,
-    ...(handle?.acpxRecordId === undefined ? {} : { acpxRecordId: handle.acpxRecordId }),
+    exitCode: 1,
+    reason: "worker failure",
+    report: Option.isSome(typed)
+      ? typed.value
+      : capsuleFailure(state, "worker_exception", Cause.squash(cause)),
   };
 }
 
-function completedResult(accumulator: TurnAccumulator, stopReason?: string): AgentTurnResult {
+function turnConfiguration(state: InitializedWorker): AcpSessionConfiguration | undefined {
+  if (state.configuration.model === undefined
+    && Object.keys(state.configuration.options).length === 0) return undefined;
   return {
-    status: "completed",
-    ...accumulator.responses.complete(),
-    stderr: "",
-    summary: summary(accumulator, stopReason),
-    timing: timing(accumulator),
+    ...(state.configuration.model === undefined ? {} : { model: state.configuration.model }),
+    ...(Object.keys(state.configuration.options).length === 0
+      ? {}
+      : { options: state.configuration.options }),
   };
-}
-
-function cancelledResult(accumulator: TurnAccumulator, message: string, stopReason?: string): AgentTurnResult {
-  return {
-    status: "cancelled",
-    message,
-    responses: accumulator.responses.snapshot(),
-    stderr: "",
-    summary: summary(accumulator, stopReason),
-    timing: timing(accumulator),
-  };
-}
-
-function failedResult(accumulator: TurnAccumulator, failure: AgentBackendFailure, stopReason?: string): AgentTurnResult {
-  return {
-    status: "failed",
-    failure,
-    responses: accumulator.responses.snapshot(),
-    stderr: "",
-    summary: summary(accumulator, stopReason),
-    timing: timing(accumulator),
-  };
-}
-
-function staleResult(accumulator: TurnAccumulator): AgentTurnResult {
-  const silentForMs = Math.max(0, Math.round(performance.now() - accumulator.startedAtMonotonic));
-  return failedResult(accumulator, {
-    kind: "inactivity_stale",
-    origin: "runtime",
-    retryable: true,
-    message: "ACP agent was silent for the configured inactivity limit.",
-    evidence: {
-      failAfterMs: 0,
-      silentForMs,
-      silenceStartedAt: accumulator.startedAt,
-    },
-  }, undefined);
-}
-
-function progress(accumulator: TurnAccumulator, updatedAt: string): AgentTurnProgress {
-  return { responses: accumulator.responses.snapshot(), summary: summary(accumulator), updatedAt };
-}
-
-function summary(accumulator: TurnAccumulator, stopReason?: string): AgentTurnSummary {
-  return {
-    eventCount: accumulator.eventCount,
-    availability: {
-      context: accumulator.context ? "available" : "unavailable",
-      tokenUsage: accumulator.tokenUsage ? "available" : "unavailable",
-    },
-    ...(stopReason === undefined ? {} : { stopReason }),
-    ...(accumulator.context === undefined ? {} : { context: accumulator.context }),
-    ...(accumulator.tokenUsage === undefined ? {} : { tokenUsage: accumulator.tokenUsage }),
-    tools: { totalToolCallCount: accumulator.tools.size, calls: [...accumulator.tools.values()] },
-    ...(initialized?.cwd === undefined ? {} : { cwd: initialized.cwd }),
-    ...(accumulator.acpxRecordId === undefined ? {} : { acpxRecordId: accumulator.acpxRecordId }),
-  };
-}
-
-function timing(accumulator: TurnAccumulator) {
-  const finishedAt = new Date().toISOString();
-  return { startedAt: accumulator.startedAt, finishedAt, elapsedMs: elapsed(accumulator) };
-}
-
-function elapsed(accumulator: TurnAccumulator): number {
-  return Math.max(0, Math.round(performance.now() - accumulator.startedAtMonotonic));
-}
-
-function emitActivity(state: InitializedWorker, turnId: string, observedAt = new Date().toISOString()): void {
-  send({ type: "acp-activity", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: state.workerId, attemptId: state.attemptId, turnId, observedAt });
-}
-
-async function closeWorker(reason: string): Promise<void> {
-  if (closing) return;
-  closing = true;
-  active?.controller.abort();
-  await active?.cancel().catch(() => {});
-  if (initialized && handle) {
-    await initialized.runtime.cancel({ handle, reason }).catch(() => {});
-    await initialized.runtime.close({ handle, reason, discardPersistentState: false }).catch(() => {});
-  }
-  if (initialized) send({ type: "closed", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: initialized.workerId, attemptId: initialized.attemptId });
-  process.disconnect?.();
-  process.exit(process.exitCode ?? 0);
-}
-
-function fail(error: unknown): void {
-  const message = error instanceof Error ? error.message : String(error);
-  if (initialized) send({ type: "worker-failure", protocolVersion: ACP_WORKER_PROTOCOL_VERSION, workerId: initialized.workerId, attemptId: initialized.attemptId, message });
-  process.exitCode = 1;
-  void closeWorker("worker failure");
 }
 
 function send(message: AcpWorkerChildMessage): void {
-  if (!process.connected) return;
-  process.send?.(message);
+  if (process.connected) process.send?.(message);
 }
 
-function requireInitialized(message: AcpWorkerParentMessage): InitializedWorker {
-  if (!initialized || initialized.workerId !== message.workerId || initialized.attemptId !== message.attemptId) {
+function requireInitialized(
+  state: WorkerState,
+  message: Exclude<AcpWorkerParentMessage, { type: "open" | "close" }>,
+): InitializedWorker {
+  const initialized = state.initialized;
+  if (initialized === undefined
+    || initialized.hostId !== message.hostId
+    || initialized.sessionLeaseId !== message.sessionLeaseId) {
     throw new Error("ACP worker received a message before initialization.");
   }
   return initialized;
 }
 
-function applyEnvironment(env: Record<string, string | undefined>): void {
-  for (const [key, value] of Object.entries(env)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
+function identityOf(state: InitializedWorker): WorkerIdentity {
+  return { hostId: state.hostId, sessionLeaseId: state.sessionLeaseId };
 }
 
-function workerAgentName(agent: WorkerTurnRequest["agent"]): string {
-  if (agent.kind === "named") return agent.name;
-  return `acpus-command-${createHash("sha256").update(agent.command).digest("hex").slice(0, 16)}`;
+function identityOfMessage(message: WorkerIdentity): WorkerIdentity {
+  return { hostId: message.hostId, sessionLeaseId: message.sessionLeaseId };
 }
 
-function terminalToolStatus(status: string | undefined): boolean {
-  return status === "completed" || status === "failed" || status === "cancelled";
-}
-
-function preview(value: unknown) {
-  const rendered = JSON.stringify(toAgentJsonValue(value));
-  const originalBytes = Buffer.byteLength(rendered, "utf8");
-  const limit = 4 * 1024;
-  if (originalBytes <= limit) return { preview: rendered, truncated: false, originalBytes, headBytes: originalBytes };
-  const preview = Buffer.from(rendered, "utf8").subarray(0, limit).toString("utf8");
-  return { preview, truncated: true, originalBytes, headBytes: Buffer.byteLength(preview, "utf8") };
+function capsuleFailure(
+  state: WorkerState,
+  code: ProcessCapsuleError["code"],
+  error: unknown,
+): ProcessCapsuleError {
+  return {
+    type: "process_capsule",
+    phase: state.initialized
+      ? state.active
+        ? "running"
+        : "ready"
+      : state.identity
+        ? "opening"
+        : "bootstrap",
+    code,
+    message: error instanceof Error ? error.message : String(error),
+  };
 }

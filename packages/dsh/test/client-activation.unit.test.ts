@@ -1,10 +1,6 @@
 import { Context, Service } from "@deepseek-ai/cordis";
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("@deepseek-ai/dsh-client-ui-primitives", () => ({
-  IconUserOutline16: () => null,
-}));
-
 import * as client from "@acpus/dsh/client";
 
 describe("Acpus Client activation", () => {

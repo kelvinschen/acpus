@@ -9,6 +9,7 @@
     { "path": "../agent-executor/tsconfig.build.json" },
     { "path": "../core/tsconfig.build.json" },
     { "path": "../expression/tsconfig.build.json" },
-    { "path": "../loader/tsconfig.build.json" }
+    { "path": "../loader/tsconfig.build.json" },
+    { "path": "../owned-process/tsconfig.build.json" }
   ]
 }

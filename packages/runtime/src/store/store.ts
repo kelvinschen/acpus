@@ -4,22 +4,33 @@ import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, writeFile
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { isSha256Digest, sha256Digest, sha256DigestHex } from "@acpus/core/content-identity";
-import { walkNodes, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
+import { walkNodes, type AdmittedWorkflowIR, type ScopeIR, type WorkflowIR } from "@acpus/core/ir";
 import { staticExprShape, type JsonValue, type StaticExprShape } from "@acpus/expression/ir";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import type * as Scope from "effect/Scope";
 import { resolveArtifactRegistrationPath } from "../artifacts/registration-path.js";
 import { parseArtifactUri } from "../artifacts/reference.js";
 import type { ArtifactRecord, RegisterArtifactInput } from "../artifacts/types.js";
 import { rewriteArtifactValue, type ArtifactRewriteFailure } from "../artifacts/rewrite.js";
 import {
-  normalizeAgentOverrides,
-  parseAgentOverrideMap,
-  tryParseAgentOverrideMap,
-  tryValidateAgentOverrides,
-  withAgentOverrides,
-  type AgentOverrideMap,
-  type AgentOverrideValidationFailure,
-} from "../control/agent-overrides.js";
+  finalizeAgentBindings,
+  hasPresetInjections,
+  parseFrozenAgentBindingMap,
+  rebuildFrozenAgentBindings,
+  tryParseAgentInjectionMap,
+  withAgentBindings,
+  type AgentBindingFailure,
+  type AgentInjectionMap,
+  type FinalizedAgentBindings,
+  type FrozenAgentBindingMap,
+} from "../agents/injections.js";
+import {
+  loadAgentPresetCatalog,
+  type AgentPresetCatalog,
+  type AgentPresetCatalogFailure,
+  type AgentPresetProvider,
+} from "../acpus-config.js";
 import { requirePersistedDeadline } from "../deadline.js";
 import { AgentObservationLog } from "../observations/log.js";
 import type { HookJournalEntry } from "../hooks/journal.js";
@@ -30,7 +41,7 @@ import { resolveOccurrenceRef } from "../scheduler/occurrence-ref.js";
 import { createSchedulerProjection } from "../scheduler/transitions.js";
 import { ancestorGroupMembersForNode } from "../scheduler/membership.js";
 import { planForkReplay } from "../scheduler/fork-replay-plan.js";
-import { SchedulerStoreException, schedulerStoreResult, throwSchedulerStoreResult, type SchedulerStorePort, type SchedulerStoreResult } from "../scheduler/store-port.js";
+import { SchedulerStoreException, type SchedulerStorePort, type WriteExecutionMetadataInput } from "../scheduler/store-port.js";
 import type { SchedulerProjection, SchedulerRunStatus } from "../scheduler/types.js";
 import { nextFrozenRunTransitionEvents } from "../scheduler/settle.js";
 import { decodeSchedulerPayload } from "../scheduler/event-codec.js";
@@ -59,7 +70,7 @@ import {
   type WorkflowSourceRef,
 } from "../admission/prepared-workflow.js";
 import {
-  ensureRuntimeLayout,
+  ensureRuntimeLayoutValue,
   RUNTIME_LAYOUT_VERSION,
   resolveRuntimeLayout,
   resolveRuntimeWorkspaceLayout,
@@ -69,7 +80,7 @@ import {
   type AnyWorkspaceManifest,
   type RuntimeLayout,
 } from "../runtime-layout.js";
-import { acquireRuntimeSharedLock, RuntimeLockTimeoutError, type RuntimeSharedLock } from "../runtime-lock.js";
+import { openRuntimeSharedLock, RuntimeLockTimeoutError, type RuntimeSharedLock } from "../runtime-lock-adapter.js";
 import { inspectRuntimeGeneration, PartialRuntimeGenerationError } from "../storage/generation.js";
 import { readGenerationMetadataForRecovery } from "../storage/generation-metadata.js";
 import {
@@ -105,7 +116,8 @@ export type RunStatus = SchedulerRunStatus;
 
 export type AdmitRunFailure = PreparedRunValidationFailure
   | SchemaNormalizationFailure
-  | AgentOverrideValidationFailure
+  | AgentBindingFailure
+  | AgentPresetCatalogFailure
   | { type: "admission-request-conflict"; requestId: string; message: string };
 
 export type RuntimeReadFailure =
@@ -116,14 +128,14 @@ export type RuntimeReadFailure =
   | { type: "runtime-store-unsupported"; message: string }
   | { type: "runtime-store-unavailable"; message: string };
 
-export type RuntimeReadSession = {
+export type RuntimeReadAdapterSession = {
   layout: RuntimeLayout;
-  store: RuntimeStore;
-  close(): void;
+  store: RuntimeStoreAdapter;
 };
 
 export type ForkRunFailure = PreparedRunValidationFailure
-  | AgentOverrideValidationFailure
+  | AgentBindingFailure
+  | AgentPresetCatalogFailure
   | SchemaNormalizationFailure
   | ForkReplayFailure
   | ArtifactRewriteFailure
@@ -202,22 +214,22 @@ export type RunStoreSummary = {
   lastRunUpdatedAt?: string;
 };
 
-export type RuntimeStore = {
+export type RuntimeStoreAdapter = {
   readonly runsRoot: string;
   scheduler: SchedulerStorePort;
   observationLog: AgentObservationLog;
   close(): void;
-  admitRun(input: AdmitRunInput): ResultAsync<RunRecord, AdmitRunFailure>;
+  admitRun(input: AdmitRunInput): Effect.Effect<RunRecord, AdmitRunFailure>;
   lookupAdmission(requestId: string): RunRecord | undefined;
   getFrozenRun(runId: string): FrozenRun | undefined;
-  claimRuntimeAuthority(input: ClaimRuntimeAuthorityInput): Result<RuntimeAuthorityLease, RuntimeAuthorityBusy>;
+  claimRuntimeAuthority(input: ClaimRuntimeAuthorityInput): Result.Result<RuntimeAuthorityLease, RuntimeAuthorityBusy>;
   heartbeatRuntimeAuthority(input: RuntimeAuthorityFence): boolean;
   setRuntimeAuthorityIdleState(input: RuntimeAuthorityIdleStateInput): boolean;
   releaseRuntimeAuthority(input: RuntimeAuthorityFence): boolean;
   listRuntimeWork(now?: Date): RuntimeWork;
-  forkRun(runId: string, options?: ControlOptions): ResultAsync<ForkRunRecord, ForkRunFailure>;
+  forkRun(runId: string, options?: ControlOptions): Effect.Effect<ForkRunRecord, ForkRunFailure>;
   cleanupStagedRunDirectories(): Promise<void>;
-  deleteRun(runId: string): ResultAsync<RunRecord | undefined, RunDeleteFailure>;
+  deleteRun(runId: string): Promise<Result.Result<RunRecord | undefined, RunDeleteFailure>>;
   writeHookJournal(entry: HookJournalEntry): void;
   getHookJournal(runId: string): HookJournalEntry[];
   pruneHookJournal(cutoff: Date): number;
@@ -232,7 +244,7 @@ export type RuntimeStore = {
   readRunInspection(runId: string, afterEventSequence?: number): RunInspectionStoreRead;
   getRunDir(runId: string): string | undefined;
   getRunDirectoryToken(runId: string): RunDirectoryToken | undefined;
-  registerArtifact(input: RegisterArtifactInput): SchedulerStoreResult<void>;
+  registerArtifact(input: RegisterArtifactInput): void;
   getArtifact(runId: string, artifactId: string): ArtifactRecord | undefined;
   listArtifacts(runId: string, limit?: number): ArtifactRecord[];
   writeExecutionMetadata(input: WriteExecutionMetadataInput): void;
@@ -255,6 +267,7 @@ export type RunInspectionStoreRead = {
     observationVersion: number;
   };
   events: CommittedRuntimeEventRow[];
+  agentControl: import("../scheduler/store-port.js").RuntimeAgentControlInspection;
 };
 
 /**
@@ -279,11 +292,11 @@ type RuntimeWork = {
   idleBlockers: number;
 };
 
-type AdmitRunInput = {
+export type AdmitRunInput = {
   prepared: PreparedRunWorkflow;
   input: JsonValue;
   cwd: string;
-  agentOverrides?: AgentOverrideMap;
+  agentInjections?: AgentInjectionMap;
   requestId?: string;
 };
 
@@ -299,14 +312,13 @@ export type RunRecord = {
   progressUpdatedAt?: string;
 };
 
-type ForkRunRecord = RunRecord & {
+export type ForkRunRecord = RunRecord & {
   forkCreated: boolean;
 };
 
 export type RunDetails = RunRecord & {
   input: JsonValue;
   output?: JsonValue;
-  agentOverrides?: AgentOverrideMap;
   fork?: RunForkInfo;
   hooks: HookJournalEntry[];
   eventCount: number;
@@ -365,9 +377,9 @@ export type RuntimeAuthorityDiagnostics = {
 };
 
 export type FrozenRun = {
-  ir: WorkflowIR;
+  ir: AdmittedWorkflowIR;
   input: JsonValue;
-  agentOverrides: AgentOverrideMap;
+  agentBindings: FrozenAgentBindingMap;
   sourceRoot?: string;
   meta: Record<string, string>;
 };
@@ -409,20 +421,14 @@ export type RuntimeAuthorityBusy = {
   message: string;
 };
 
-type ControlOptions = {
+export type ControlOptions = {
   requestId?: string;
   prepared?: PreparedRunWorkflow;
   input?: JsonValue;
-  agentOverrides?: AgentOverrideMap;
+  agentInjections?: AgentInjectionMap;
   target?: string;
 };
 
-type WriteExecutionMetadataInput = {
-  runId: string;
-  attemptId?: string;
-  kind: string;
-  metadata: JsonValue;
-};
 export type WriteNodeProgressInput = {
   runId: string;
   nodeKey: string;
@@ -455,7 +461,7 @@ type RunInputRow = {
   workflow_ir_path: string;
   workflow_ir_digest: string;
   input_json: string;
-  agent_overrides_json: string;
+  agent_bindings_json: string;
   lock_path: string;
   lock_digest: string;
   output_json: string | null;
@@ -466,8 +472,8 @@ type RunInputRow = {
 type FrozenSourceRow =
   & Pick<RunInputRow, "workflow_ir_path" | "workflow_ir_digest" | "lock_path" | "lock_digest" | "source_json">
   & Pick<RunRow, "id" | "name" | "workflow_entry" | "source_graph_digest">;
-type FrozenWorkflowRow = FrozenSourceRow & Pick<RunInputRow, "input_json" | "agent_overrides_json">;
-type RunDetailsInputRow = Pick<RunInputRow, "input_json" | "agent_overrides_json" | "output_json">;
+type FrozenWorkflowRow = FrozenSourceRow & Pick<RunInputRow, "input_json" | "agent_bindings_json">;
+type RunDetailsInputRow = Pick<RunInputRow, "input_json" | "output_json">;
 
 type CountRow = {
   count: number;
@@ -484,7 +490,7 @@ type ArtifactRow = {
   relative_path: unknown;
 };
 
-export async function openRuntimeStore(cwd: string): Promise<RuntimeStore> {
+export async function openRuntimeStoreAdapter(cwd: string): Promise<RuntimeStoreAdapter> {
   let layout = resolveRuntimeLayout(cwd);
   await validateRuntimeLayoutBoundary(layout);
   const generation = await inspectRuntimeGeneration(layout);
@@ -494,13 +500,20 @@ export async function openRuntimeStore(cwd: string): Promise<RuntimeStore> {
   } else {
     layout = await requireRuntimeLayout(cwd);
   }
-  return openRuntimeStoreAtLayout(layout, { prevalidated: true });
+  return openRuntimeStoreAdapterAtLayout(layout, { prevalidated: true });
 }
 
-export async function openRuntimeStoreAtLayout(
+export type RuntimeStoreAdapterOpenOptions = {
+  lock?: boolean | RuntimeSharedLock;
+  prevalidated?: boolean;
+  unpublished?: boolean;
+  agentPresetProvider?: AgentPresetProvider;
+};
+
+export async function openRuntimeStoreAdapterAtLayout(
   layout: RuntimeLayout,
-  options: { lock?: boolean | RuntimeSharedLock; prevalidated?: boolean; unpublished?: boolean } = {},
-): Promise<RuntimeStore> {
+  options: RuntimeStoreAdapterOpenOptions = {},
+): Promise<RuntimeStoreAdapter> {
   if (!options.prevalidated) {
     await inspectRuntimeGeneration(layout);
     await validateDatabaseFileIfPresent(layout.databasePath);
@@ -509,7 +522,7 @@ export async function openRuntimeStoreAtLayout(
     ? undefined
     : typeof options.lock === "object"
       ? options.lock
-      : await acquireRuntimeSharedLock(layout);
+      : await openRuntimeSharedLock(layout);
   let db: DatabaseSync | undefined;
   try {
     await inspectRuntimeGeneration(layout);
@@ -517,7 +530,7 @@ export async function openRuntimeStoreAtLayout(
     db = await openRuntimeDatabase(layout.databasePath);
     await setPrivateFileMode(layout.databasePath, layout.platform);
     initializeRuntimeDatabase(db, layout.databasePath);
-    const store = new SqliteRuntimeStore(db, layout, lock);
+    const store = new SqliteRuntimeStore(db, layout, lock, options.agentPresetProvider);
     await reconcileTrash(store, db);
     return store;
   } catch (error) {
@@ -527,37 +540,55 @@ export async function openRuntimeStoreAtLayout(
   }
 }
 
-export async function openExistingRuntimeStore(cwd: string): Promise<RuntimeStore | undefined> {
+export async function initializeRuntimeStoreAdapterAtLayout(
+  layout: RuntimeLayout,
+  options: RuntimeStoreAdapterOpenOptions = {},
+): Promise<void> {
+  const store = await openRuntimeStoreAdapterAtLayout(layout, options);
+  try {
+    return;
+  } finally {
+    store.close();
+  }
+}
+
+export async function openExistingRuntimeStoreAdapter(cwd: string): Promise<RuntimeStoreAdapter | undefined> {
   return (await openBoundRuntimeReadSessionValue(cwd))?.store;
 }
 
-export async function openExistingWritableRuntimeStore(cwd: string): Promise<RuntimeStore | undefined> {
+export async function openExistingWritableRuntimeStoreAdapter(cwd: string): Promise<RuntimeStoreAdapter | undefined> {
   return openExistingStore(cwd, false);
 }
 
-async function openExistingStore(cwd: string, readOnly: boolean): Promise<RuntimeStore | undefined> {
-  return openExistingRuntimeStoreAtLayout(resolveRuntimeLayout(cwd), readOnly);
+async function openExistingStore(cwd: string, readOnly: boolean): Promise<RuntimeStoreAdapter | undefined> {
+  return openExistingRuntimeStoreAdapterAtLayout(resolveRuntimeLayout(cwd), readOnly);
 }
 
-export function openBoundRuntimeReadSession(
+export function acquireBoundRuntimeReadSessionAdapter(
   cwd: string,
-): ResultAsync<RuntimeReadSession | undefined, RuntimeReadFailure> {
-  return ResultAsync.fromPromise(
-    openBoundRuntimeReadSessionValue(cwd),
-    runtimeReadOpenFailureFromError,
+): Effect.Effect<RuntimeReadAdapterSession | undefined, RuntimeReadFailure, Scope.Scope> {
+  return Effect.acquireRelease(
+    Effect.tryPromise({
+      try: () => openBoundRuntimeReadSessionValue(cwd),
+      catch: runtimeReadOpenFailureFromError,
+    }),
+    session => session === undefined ? Effect.void : Effect.sync(() => session.store.close()),
   );
 }
 
-export function openRuntimeReadSessionAtLayout(
+export function acquireRuntimeReadSessionAdapterAtLayout(
   layout: RuntimeLayout,
-): ResultAsync<RuntimeReadSession, RuntimeReadFailure> {
-  return ResultAsync.fromPromise(
-    openRuntimeReadSessionAtLayoutValue(layout),
-    runtimeReadOpenFailureFromError,
+): Effect.Effect<RuntimeReadAdapterSession, RuntimeReadFailure, Scope.Scope> {
+  return Effect.acquireRelease(
+    Effect.tryPromise({
+      try: () => openRuntimeReadSessionAtLayoutValue(layout),
+      catch: runtimeReadOpenFailureFromError,
+    }),
+    session => Effect.sync(() => session.store.close()),
   );
 }
 
-async function openBoundRuntimeReadSessionValue(cwd: string): Promise<RuntimeReadSession | undefined> {
+async function openBoundRuntimeReadSessionValue(cwd: string): Promise<RuntimeReadAdapterSession | undefined> {
   const workspace = resolveRuntimeWorkspaceLayout(cwd);
   const before = await readRuntimeReadManifest(workspace);
   if (!before) return undefined;
@@ -565,7 +596,7 @@ async function openBoundRuntimeReadSessionValue(cwd: string): Promise<RuntimeRea
     throwRuntimeReadFailure(runtimeStoreRepairRequired("Runtime store layout requires repair for this version of Acpus."));
   }
   const layout = runtimeLayoutForGeneration(workspace, before.activeGenerationId);
-  const lock = await acquireRuntimeSharedLock(layout);
+  const lock = await openRuntimeSharedLock(layout);
   const after = await readRuntimeReadManifest(workspace).catch(error => {
     lock.release();
     throw error;
@@ -584,8 +615,8 @@ async function openBoundRuntimeReadSessionValue(cwd: string): Promise<RuntimeRea
 async function openRuntimeReadSessionAtLayoutValue(
   layout: RuntimeLayout,
   boundLock?: RuntimeSharedLock,
-): Promise<RuntimeReadSession> {
-  const lock = boundLock ?? await acquireRuntimeSharedLock(layout);
+): Promise<RuntimeReadAdapterSession> {
+  const lock = boundLock ?? await openRuntimeSharedLock(layout);
   try {
     await validateRuntimeReadManifestBinding(layout);
     await validateCurrentRuntimeReadGeneration(layout);
@@ -593,14 +624,13 @@ async function openRuntimeReadSessionAtLayoutValue(
     lock.release();
     throw error;
   }
-  const store = await openExistingRuntimeStoreAtLayout(layout, true, { lock });
+  const store = await openExistingRuntimeStoreAdapterAtLayout(layout, true, { lock });
   if (!store) {
     throwRuntimeReadFailure(runtimeStoreRepairRequired("The active Runtime database is missing."));
   }
   return {
     layout,
     store,
-    close: () => store.close(),
   };
 }
 
@@ -683,8 +713,8 @@ async function readRuntimeReadManifest(
     });
   }
   const manifest = validateWorkspaceManifest(value, workspace);
-  if (manifest.isErr()) throwRuntimeReadFailure(runtimeStoreRepairRequired(manifest.error.message));
-  return manifest.value;
+  if (Result.isFailure(manifest)) throwRuntimeReadFailure(runtimeStoreRepairRequired(manifest.failure.message));
+  return manifest.success;
 }
 
 function runtimeStoreRepairRequired(message: string): Extract<RuntimeReadFailure, { type: "runtime-store-repair-required" }> {
@@ -764,17 +794,17 @@ function isRuntimeReadSqliteBoundaryError(error: unknown): boolean {
   return [8, 10, 14].includes(candidate.errcode & 0xff);
 }
 
-export async function openExistingRuntimeStoreAtLayout(
+export async function openExistingRuntimeStoreAdapterAtLayout(
   layout: RuntimeLayout,
   readOnly: boolean,
   options: { lock?: boolean | RuntimeSharedLock; immutable?: boolean } = {},
-): Promise<RuntimeStore | undefined> {
+): Promise<RuntimeStoreAdapter | undefined> {
   if (readOnly) {
     const lock = options.lock === false
       ? undefined
       : typeof options.lock === "object"
         ? options.lock
-        : await acquireRuntimeSharedLock(layout);
+        : await openRuntimeSharedLock(layout);
     let db: DatabaseSync | undefined;
     try {
       if (!await validateRuntimeDatabasePaths(layout.databasePath)) {
@@ -803,7 +833,7 @@ export async function openExistingRuntimeStoreAtLayout(
     ? undefined
     : typeof options.lock === "object"
       ? options.lock
-      : await acquireRuntimeSharedLock(layout);
+      : await openRuntimeSharedLock(layout);
   let db: DatabaseSync | undefined;
   try {
     await inspectRuntimeGeneration(layout);
@@ -829,9 +859,7 @@ export async function openExistingRuntimeStoreAtLayout(
 }
 
 async function requireRuntimeLayout(cwd: string): Promise<RuntimeLayout> {
-  const layout = await ensureRuntimeLayout(cwd);
-  if (layout.isErr()) throw new Error(layout.error.message);
-  return layout.value;
+  return ensureRuntimeLayoutValue(cwd, {});
 }
 
 async function validateExistingLayout(layout: RuntimeLayout): Promise<void> {
@@ -877,7 +905,7 @@ async function validateExistingLayout(layout: RuntimeLayout): Promise<void> {
     throw new Error(`Runtime workspace manifest '${layout.manifestPath}' is not valid JSON.`);
   }
   const manifest = validateWorkspaceManifest(value, layout);
-  if (manifest.isErr()) throw new Error(manifest.error.message);
+  if (Result.isFailure(manifest)) throw new Error(manifest.failure.message);
 }
 
 async function setPrivateFileMode(path: string, platform: NodeJS.Platform): Promise<void> {
@@ -958,10 +986,9 @@ async function reconcileTrash(store: SqliteRuntimeStore, db: DatabaseSync): Prom
   }
 }
 
-class SqliteRuntimeStore implements RuntimeStore {
+class SqliteRuntimeStore implements RuntimeStoreAdapter {
   private schedulerPort?: SqliteSchedulerStorePort;
   private observationLogInstance?: AgentObservationLog;
-  private inspectionSnapshotTail: Promise<void> = Promise.resolve();
   private readonly inspectionReadModel: SqliteRuntimeInspectionReadModel;
   private readonly cwd: string;
   private readonly generation: OpenedRuntimeGeneration;
@@ -970,6 +997,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     private readonly db: DatabaseSync,
     private readonly layout: RuntimeLayout,
     private readonly runtimeLock?: RuntimeSharedLock,
+    private readonly agentPresetProvider?: AgentPresetProvider,
   ) {
     this.cwd = layout.canonicalPath;
     this.generation = new OpenedRuntimeGeneration(layout);
@@ -989,26 +1017,16 @@ class SqliteRuntimeStore implements RuntimeStore {
     return this.observationLogInstance;
   }
 
-  async withInspectionSnapshot<T>(read: () => Promise<T>): Promise<T> {
-    const previous = this.inspectionSnapshotTail;
-    let release!: () => void;
-    this.inspectionSnapshotTail = new Promise<void>(resolve => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      this.db.exec("BEGIN");
-      try {
-        const result = await read();
-        this.db.exec("COMMIT");
-        return result;
-      } catch (error) {
-        this.db.exec("ROLLBACK");
-        throw error;
-      }
-    } finally {
-      release();
-    }
+  beginInspectionSnapshot(): void {
+    this.db.exec("BEGIN");
+  }
+
+  commitInspectionSnapshot(): void {
+    this.db.exec("COMMIT");
+  }
+
+  rollbackInspectionSnapshot(): void {
+    this.db.exec("ROLLBACK");
   }
 
   private schedulerStore(): SqliteSchedulerStorePort {
@@ -1036,55 +1054,53 @@ class SqliteRuntimeStore implements RuntimeStore {
     }
   }
 
-  admitRun(input: AdmitRunInput): ResultAsync<RunRecord, AdmitRunFailure> {
-    return new ResultAsync(this.admitRunResult(input));
+  admitRun(input: AdmitRunInput): Effect.Effect<RunRecord, AdmitRunFailure> {
+    const store = this;
+    return Effect.gen(function*() {
+      const prepared = yield* Effect.fromResult(tryValidatePreparedRunWorkflow(store.cwd, input.prepared));
+      const normalizedInput = yield* Effect.fromResult(tryNormalizeWorkflowInput(prepared.ir, input.input));
+      const agentInjections = yield* Effect.fromResult(
+        tryParseAgentInjectionMap(input.agentInjections ?? {}, prepared.ir.agents),
+      );
+      if (realpathSync(resolve(input.cwd)) !== realpathSync(resolve(store.cwd))) {
+        return yield* Effect.die(new Error("Admission workspace does not match the runtime store workspace."));
+      }
+      const replay = store.findAdmissionReplay(input, prepared, normalizedInput, agentInjections);
+      if (replay !== undefined) return yield* Effect.fromResult(replay);
+      const finalized = yield* store.resolveAgentBindings(prepared.ir, agentInjections);
+      return yield* Effect.promise(() => store.admitRunResult(
+        input,
+        prepared,
+        normalizedInput,
+        agentInjections,
+        finalized,
+      )).pipe(Effect.flatMap(Effect.fromResult), Effect.uninterruptible);
+    });
   }
 
-  private async admitRunResult(input: AdmitRunInput): Promise<Result<RunRecord, AdmitRunFailure>> {
-    const prepared = tryValidatePreparedRunWorkflow(this.cwd, input.prepared);
-    if (prepared.isErr()) return err(prepared.error);
-    const normalizedInput = tryNormalizeWorkflowInput(prepared.value.ir, input.input);
-    if (normalizedInput.isErr()) return err(normalizedInput.error);
-    const agentOverrides = tryValidateAgentOverrides(prepared.value.ir, input.agentOverrides);
-    if (agentOverrides.isErr()) return err(agentOverrides.error);
-    if (realpathSync(resolve(input.cwd)) !== realpathSync(resolve(this.cwd))) {
-      throw new Error("Admission workspace does not match the runtime store workspace.");
-    }
+  private async admitRunResult(
+    input: AdmitRunInput,
+    prepared: PreparedRunWorkflow,
+    normalizedInput: JsonValue,
+    agentInjections: AgentInjectionMap,
+    finalized: FinalizedAgentBindings,
+  ): Promise<Result.Result<RunRecord, AdmitRunFailure>> {
     const requestKey = input.requestId === undefined ? undefined : `admission-request:${input.requestId}`;
     const requestFingerprint = admissionRequestFingerprint(
-      prepared.value,
-      normalizedInput.value,
-      agentOverrides.value,
+      prepared,
+      normalizedInput,
+      agentInjections,
     );
-    if (requestKey) {
-      const existing = this.db.prepare(`
-        SELECT run_id, payload_json
-        FROM run_events
-        WHERE idempotency_key = ? AND type = 'run.admitted'
-      `).get(requestKey) as { run_id: string; payload_json: string } | undefined;
-      if (existing) {
-        const payload = JSON.parse(existing.payload_json) as Record<string, unknown>;
-        if (payload.requestFingerprint !== requestFingerprint) {
-          return err({
-            type: "admission-request-conflict",
-            requestId: input.requestId!,
-            message: `Admission request '${input.requestId}' conflicts with a different prepared run.`,
-          });
-        }
-        const admitted = this.getRunRecord(existing.run_id);
-        if (!admitted) throw new Error(`Admission request '${input.requestId}' refers to a missing run.`);
-        return ok(admitted);
-      }
-    }
-    await publishWorkflowSource(prepared.value, this.layout, this.generation.sourcesRoot);
+    const replay = this.findAdmissionReplay(input, prepared, normalizedInput, agentInjections);
+    if (replay !== undefined) return replay;
+    await publishWorkflowSource(prepared, this.layout, this.generation.sourcesRoot);
     const runId = newRunId();
     const now = new Date().toISOString();
-    const workflowEntry = prepared.value.source.entry;
-    const lockJson = stableJsonLine(prepared.value.lock);
+    const workflowEntry = prepared.source.entry;
+    const lockJson = stableJsonLine(prepared.lock);
     const eventPayload = {
-      workflow: summarizeWorkflowForEvent(prepared.value.ir),
-      input: normalizedInput.value,
-      ...(Object.keys(agentOverrides.value).length > 0 ? { agentOverrides: agentOverrides.value } : {}),
+      workflow: summarizeWorkflowForEvent(prepared.ir),
+      input: normalizedInput,
       ...(requestKey ? { requestFingerprint } : {}),
     };
     const publishedRun = await publishRunDirectory({
@@ -1092,7 +1108,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       runId,
       platform: this.layout.platform,
       populate: async (runDir, assertCurrent) => {
-        await writeFrozenRunFiles(runDir, prepared.value.irJson, lockJson, assertCurrent);
+        await writeFrozenRunFiles(runDir, prepared.irJson, lockJson, assertCurrent);
       },
     });
     const run = this.generation.run(runId);
@@ -1105,22 +1121,22 @@ class SqliteRuntimeStore implements RuntimeStore {
       this.db.prepare(`
         INSERT INTO runs (id, name, status, workflow_entry, source_graph_digest, created_at, updated_at)
         VALUES (?, ?, 'pending', ?, ?, ?, ?)
-      `).run(runId, prepared.value.ir.name, workflowEntry, prepared.value.sourceGraphDigest, now, now);
+      `).run(runId, prepared.ir.name, workflowEntry, prepared.sourceGraphDigest, now, now);
       this.db.prepare(`
         INSERT INTO run_inputs (
-          run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, lock_path, lock_digest, package_lock_digest, source_json
+          run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_bindings_json, lock_path, lock_digest, package_lock_digest, source_json
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
         runId,
         "workflow.ir.json",
-        sha256Digest(prepared.value.irJson),
-        stableJsonLine(normalizedInput.value),
-        stableJsonLine(agentOverrides.value),
+        sha256Digest(prepared.irJson),
+        stableJsonLine(normalizedInput),
+        stableJsonLine(finalized.bindings),
         "lock.json",
         sha256Digest(lockJson),
-        prepared.value.packageLockDigest ?? null,
-        stableJsonLine(prepared.value.source),
+        prepared.packageLockDigest ?? null,
+        stableJsonLine(prepared.source),
       );
       this.db.prepare(`
         INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
@@ -1131,7 +1147,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         VALUES (?, 1, ?, ?)
       `).run(runId, stableJsonLine(createSchedulerProjection(runId) as unknown as JsonValue), now);
       this.db.prepare("INSERT INTO hook_dispatch_cursors (run_id, event_sequence) VALUES (?, 0)").run(runId);
-      for (const nodeId of collectNodeIds(prepared.value.ir.root)) {
+      for (const nodeId of collectNodeIds(prepared.ir.root)) {
         this.db.prepare(`
           INSERT INTO node_states (run_id, node_key, node_id, status)
           VALUES (?, ?, ?, 'pending')
@@ -1151,7 +1167,57 @@ class SqliteRuntimeStore implements RuntimeStore {
 
     const record = this.getRunRecord(runId);
     if (!record) throw new Error(`Admitted run ${runId} was not persisted.`);
-    return ok(record);
+    return Result.succeed(record);
+  }
+
+  private findAdmissionReplay(
+    input: AdmitRunInput,
+    prepared: PreparedRunWorkflow,
+    normalizedInput: JsonValue,
+    agentInjections: AgentInjectionMap,
+  ): Result.Result<RunRecord, AdmitRunFailure> | undefined {
+    if (input.requestId === undefined) return undefined;
+    const requestKey = `admission-request:${input.requestId}`;
+    const existing = this.db.prepare(`
+      SELECT run_id, payload_json
+      FROM run_events
+      WHERE idempotency_key = ? AND type = 'run.admitted'
+    `).get(requestKey) as { run_id: string; payload_json: string } | undefined;
+    if (!existing) return undefined;
+    const requestFingerprint = admissionRequestFingerprint(prepared, normalizedInput, agentInjections);
+    const payload = JSON.parse(existing.payload_json) as Record<string, unknown>;
+    if (payload.requestFingerprint !== requestFingerprint) {
+      return Result.fail({
+        type: "admission-request-conflict",
+        requestId: input.requestId,
+        message: `Admission request '${input.requestId}' conflicts with a different prepared run.`,
+      });
+    }
+    const admitted = this.getRunRecord(existing.run_id);
+    if (!admitted) throw new Error(`Admission request '${input.requestId}' refers to a missing run.`);
+    return Result.succeed(admitted);
+  }
+
+  private resolveAgentBindings(
+    ir: WorkflowIR,
+    agentInjections: AgentInjectionMap,
+    inherited?: FrozenAgentBindingMap,
+  ): Effect.Effect<FinalizedAgentBindings, AgentBindingFailure | AgentPresetCatalogFailure> {
+    const store = this;
+    return Effect.gen(function*() {
+      const presetCatalog = hasPresetInjections(agentInjections)
+        ? yield* loadAgentPresetCatalog({
+          workspaceDir: store.cwd,
+          ...(store.agentPresetProvider === undefined ? {} : { hostProvider: store.agentPresetProvider }),
+        })
+        : undefined;
+      return yield* Effect.fromResult(finalizeAgentBindings({
+        declarations: ir.agents,
+        injections: agentInjections,
+        ...(inherited === undefined ? {} : { inherited }),
+        ...(presetCatalog === undefined ? {} : { presetCatalog }),
+      }));
+    });
   }
 
   getFrozenRun(runId: string): FrozenRun | undefined {
@@ -1179,7 +1245,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     const row = this.db.prepare(`
       SELECT runs.id, runs.name, runs.workflow_entry, runs.source_graph_digest,
         run_inputs.workflow_ir_path, run_inputs.workflow_ir_digest, run_inputs.input_json,
-        run_inputs.agent_overrides_json, run_inputs.lock_path, run_inputs.lock_digest, run_inputs.source_json
+        run_inputs.agent_bindings_json, run_inputs.lock_path, run_inputs.lock_digest, run_inputs.source_json
       FROM run_inputs
       JOIN runs ON runs.id = run_inputs.run_id
       WHERE run_inputs.run_id = ?
@@ -1197,7 +1263,7 @@ class SqliteRuntimeStore implements RuntimeStore {
 
   claimRuntimeAuthority(
     input: ClaimRuntimeAuthorityInput,
-  ): Result<RuntimeAuthorityLease, RuntimeAuthorityBusy> {
+  ): Result.Result<RuntimeAuthorityLease, RuntimeAuthorityBusy> {
     const now = new Date().toISOString();
     let transactionStarted = false;
     try {
@@ -1220,7 +1286,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         }) !== "dead")) {
         this.db.exec("ROLLBACK");
         transactionStarted = false;
-        return err({
+        return Result.fail({
           type: "runtime-authority-busy",
           ...(existing.pid === null ? {} : { pid: existing.pid }),
           message: "Workspace Runtime is already owned by a live process.",
@@ -1264,7 +1330,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       );
       this.db.exec("COMMIT");
       transactionStarted = false;
-      return ok({
+      return Result.succeed({
         workspaceRealpath: input.workspaceRealpath,
         ownerId: input.ownerId,
         epoch,
@@ -1382,7 +1448,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       )
       ORDER BY created_at ASC
     `).all(nowIso).map(toRunRecord).filter(run => {
-      const snapshot = throwSchedulerStoreResult(this.scheduler.tryLoadRunSnapshot(run.id));
+      const snapshot = this.scheduler.tryLoadRunSnapshot(run.id);
       const frozen = this.getFrozenRun(run.id);
       if (!frozen) throw new Error(`Run '${run.id}' has no frozen workflow.`);
       if (nextFrozenRunTransitionEvents(frozen, snapshot.projection, now).length > 0) return true;
@@ -1444,20 +1510,46 @@ class SqliteRuntimeStore implements RuntimeStore {
     return Number(row.count);
   }
 
-  forkRun(runId: string, options: ControlOptions = {}): ResultAsync<ForkRunRecord, ForkRunFailure> {
-    return new ResultAsync(this.forkRunResult(runId, options));
+  forkRun(runId: string, options: ControlOptions = {}): Effect.Effect<ForkRunRecord, ForkRunFailure> {
+    const store = this;
+    return Effect.gen(function*() {
+      const parsedInjections = options.agentInjections === undefined
+        ? undefined
+        : yield* Effect.fromResult(tryParseAgentInjectionMap(options.agentInjections));
+      const presetCatalog = parsedInjections !== undefined && hasPresetInjections(parsedInjections)
+        ? yield* loadAgentPresetCatalog({
+          workspaceDir: store.cwd,
+          ...(store.agentPresetProvider === undefined ? {} : { hostProvider: store.agentPresetProvider }),
+        })
+        : undefined;
+      return yield* Effect.promise(() => store.forkRunResult(runId, options, presetCatalog)).pipe(
+        Effect.flatMap(Effect.fromResult),
+        Effect.uninterruptible,
+      );
+    });
   }
 
-  private async forkRunResult(runId: string, options: ControlOptions): Promise<Result<ForkRunRecord, ForkRunFailure>> {
+  private async forkRunResult(
+    runId: string,
+    initialOptions: ControlOptions,
+    presetCatalog?: AgentPresetCatalog,
+  ): Promise<Result.Result<ForkRunRecord, ForkRunFailure>> {
+    const store = this;
+    let options = initialOptions;
     if (options.prepared) {
-      const prepared = tryValidatePreparedRunWorkflow(this.cwd, options.prepared);
-      if (prepared.isErr()) return err(prepared.error);
-      options = { ...options, prepared: prepared.value };
+      const prepared = tryValidatePreparedRunWorkflow(store.cwd, options.prepared);
+      if (Result.isFailure(prepared)) return Result.fail(prepared.failure);
+      options = { ...options, prepared: prepared.success };
+    }
+    if (options.agentInjections !== undefined) {
+      const parsed = tryParseAgentInjectionMap(options.agentInjections);
+      if (Result.isFailure(parsed)) return Result.fail(parsed.failure);
+      options = { ...options, agentInjections: parsed.success };
     }
     const forkRequestKey = options.requestId === undefined ? undefined : `fork-request:${options.requestId}`;
     const requestFingerprint = forkRequestFingerprint(runId, options);
     if (forkRequestKey) {
-      const existing = this.db.prepare(`
+      const existing = store.db.prepare(`
         SELECT run_id, payload_json
         FROM run_events
         WHERE idempotency_key = ? AND type = 'run.forked'
@@ -1465,40 +1557,33 @@ class SqliteRuntimeStore implements RuntimeStore {
       if (existing) {
         const payload = JSON.parse(existing.payload_json) as Record<string, unknown>;
         if (payload.requestFingerprint !== requestFingerprint) {
-          return err({
-            type: "fork-request-conflict",
+          return Result.fail({
+            type: "fork-request-conflict" as const,
             requestId: options.requestId!,
             message: `Fork request '${options.requestId}' conflicts with a different fork input.`,
           });
         }
-        return ok({ ...this.requireRun(existing.run_id), forkCreated: false });
+        return Result.succeed({ ...store.requireRun(existing.run_id), forkCreated: false });
       }
     }
-    const matchingFork = (this.db.prepare(`
-      SELECT run_id, payload_json
-      FROM run_events
-      WHERE type = 'run.forked'
-    `).all() as Array<{ run_id: string; payload_json: string }>)
-      .find(row => (JSON.parse(row.payload_json) as Record<string, unknown>).requestFingerprint === requestFingerprint);
-    if (matchingFork) return ok({ ...this.requireRun(matchingFork.run_id), forkCreated: false });
-    const sourceSnapshotResult = this.scheduler.tryLoadRunSnapshot(runId);
-    if (sourceSnapshotResult.isErr()) {
-      if (sourceSnapshotResult.error.type === "run-not-found") return err(sourceSnapshotResult.error);
-      throw new SchedulerStoreException(sourceSnapshotResult.error);
+    let sourceSnapshot;
+    try {
+      sourceSnapshot = store.scheduler.tryLoadRunSnapshot(runId);
+    } catch (error) {
+      if (error instanceof SchedulerStoreException && error.failure.type === "run-not-found") {
+        return Result.fail(error.failure);
+      }
+      throw error;
     }
-    const sourceSnapshot = sourceSnapshotResult.value;
-    const source = this.getRunRecord(runId);
-    if (!source) return err({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
-    const input = this.db.prepare(`
-      SELECT workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, lock_path, lock_digest, output_json, package_lock_digest, source_json
+    const source = store.getRunRecord(runId);
+    if (!source) return Result.fail({ type: "run-not-found", runId, message: `Run '${runId}' was not found.` });
+    const input = store.db.prepare(`
+      SELECT workflow_ir_path, workflow_ir_digest, input_json, agent_bindings_json, lock_path, lock_digest, output_json, package_lock_digest, source_json
       FROM run_inputs
       WHERE run_id = ?
     `).get(runId) as RunInputRow | undefined;
     if (!input) throw new Error(`Run '${runId}' has no frozen input.`);
-    if (options.prepared) {
-      await publishWorkflowSource(options.prepared, this.layout, this.generation.sourcesRoot);
-    }
-    const sourceRun = this.generation.run(runId);
+    const sourceRun = store.generation.run(runId);
     const sourceRunDir = sourceRun.verify();
     const sourceWorkflowIrJson = frozenWorkflowIrJson(sourceRunDir, input);
     const persisted = verifiedFrozenWorkflowSource(sourceRunDir, {
@@ -1511,13 +1596,16 @@ class SqliteRuntimeStore implements RuntimeStore {
     const sourceLockJson = persisted.lockJson;
     const forkIrJson = options.prepared?.irJson ?? sourceWorkflowIrJson;
     const forkIr = options.prepared?.ir ?? JSON.parse(forkIrJson) as WorkflowIR;
-    if (options.agentOverrides !== undefined) {
-      const agentOverrides = tryParseAgentOverrideMap(options.agentOverrides, forkIr.agents);
-      if (agentOverrides.isErr()) return err(agentOverrides.error);
-      options = { ...options, agentOverrides: agentOverrides.value };
-    }
-    const sourceAgentOverrides = parseAgentOverrides(input.agent_overrides_json);
-    const forkAgentOverrides = normalizeAgentOverrides(forkIr, options.agentOverrides, sourceAgentOverrides);
+    const agentInjections = tryParseAgentInjectionMap(options.agentInjections ?? {}, forkIr.agents);
+    if (Result.isFailure(agentInjections)) return Result.fail(agentInjections.failure);
+    const sourceAgentBindings = parseAgentBindings(input.agent_bindings_json);
+    const finalized = finalizeAgentBindings({
+      declarations: forkIr.agents,
+      injections: agentInjections.success,
+      inherited: sourceAgentBindings,
+      ...(presetCatalog === undefined ? {} : { presetCatalog }),
+    });
+    if (Result.isFailure(finalized)) return Result.fail(finalized.failure);
     let forkInput = options.input;
     if (forkInput !== undefined || options.prepared) {
       const normalized = tryNormalizeWorkflowInput(
@@ -1525,10 +1613,24 @@ class SqliteRuntimeStore implements RuntimeStore {
         forkInput === undefined ? JSON.parse(input.input_json) as JsonValue : forkInput,
         "Fork input",
       );
-      if (normalized.isErr()) return err(normalized.error);
-      forkInput = normalized.value;
+      if (Result.isFailure(normalized)) return Result.fail(normalized.failure);
+      forkInput = normalized.success;
     }
     const forkInputJson = forkInput === undefined ? input.input_json : stableJsonLine(forkInput);
+    const semanticFingerprint = forkSemanticFingerprint({
+      runId,
+      ...(options.prepared === undefined ? {} : { prepared: options.prepared }),
+      input: JSON.parse(forkInputJson) as JsonValue,
+      agentBindings: finalized.success.bindings,
+      ...(options.target === undefined ? {} : { target: options.target }),
+    });
+    const matchingFork = (store.db.prepare(`
+      SELECT run_id, payload_json
+      FROM run_events
+      WHERE type = 'run.forked'
+    `).all() as Array<{ run_id: string; payload_json: string }>)
+      .find(row => (JSON.parse(row.payload_json) as Record<string, unknown>).semanticFingerprint === semanticFingerprint);
+    if (matchingFork) return Result.succeed({ ...store.requireRun(matchingFork.run_id), forkCreated: false });
     const forkLockJson = options.prepared ? stableJsonLine(options.prepared.lock) : sourceLockJson;
     const forkPackageLockDigest = options.prepared?.packageLockDigest ?? input.package_lock_digest ?? null;
     const forkSource = options.prepared?.source ?? persisted.source;
@@ -1537,15 +1639,15 @@ class SqliteRuntimeStore implements RuntimeStore {
     const forkSourceGraphDigest = options.prepared?.sourceGraphDigest ?? source.sourceGraphDigest;
     const forkId = newRunId();
     const now = new Date().toISOString();
-    const checkpoint = resolveForkCheckpoint(this.db, sourceSnapshot.projection, runId, options.target);
-    if (checkpoint.isErr()) return err(checkpoint.error);
-    const sourceFrozen = this.getFrozenRun(runId);
+    const checkpoint = resolveForkCheckpoint(store.db, sourceSnapshot.projection, runId, options.target);
+    if (Result.isFailure(checkpoint)) return Result.fail(checkpoint.failure);
+    const sourceFrozen = store.getFrozenRun(runId);
     if (!sourceFrozen) throw new Error(`Fork source run '${runId}' has no frozen workflow.`);
     const sourceReplayFacts = completedReplayFacts(
-      this.db,
+      store.db,
       runId,
       sourceSnapshot.projection,
-      checkpoint.value.replayBeforeSequence,
+      checkpoint.success.replayBeforeSequence,
     );
     const sourceArtifactIdsByNode = new Map<string, string[]>();
     const candidateArtifactIds = new Set<string>();
@@ -1563,7 +1665,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       id,
       join("artifacts", ".fork-replay", childId),
     ]));
-    const candidateArtifacts = (this.db.prepare(`
+    const candidateArtifacts = (store.db.prepare(`
       SELECT id, node_key, attempt, media_type, digest, size, relative_path
       FROM artifacts
       WHERE run_id = ?
@@ -1575,8 +1677,8 @@ class SqliteRuntimeStore implements RuntimeStore {
       let output: JsonValue | undefined;
       if (fact.output !== undefined) {
         const rewritten = rewriteArtifactValue(fact.output, runId, forkId, artifactIdMap);
-        if (rewritten.isErr()) return err(rewritten.error);
-        output = rewritten.value;
+        if (Result.isFailure(rewritten)) return Result.fail(rewritten.failure);
+        output = rewritten.success;
       }
       stagedReplayFacts.push({
         ...fact,
@@ -1589,26 +1691,26 @@ class SqliteRuntimeStore implements RuntimeStore {
         projection: sourceSnapshot.projection,
         artifactDigest: uri => {
           const parsed = parseArtifactUri(uri);
-          if (parsed.isErr() || parsed.value.runId !== runId) return undefined;
-          return this.getArtifact(runId, parsed.value.artifactId)?.digest;
+          if (Result.isFailure(parsed) || parsed.success.runId !== runId) return undefined;
+          return store.getArtifact(runId, parsed.success.artifactId)?.digest;
         },
       },
       child: {
         runId: forkId,
         frozen: {
-          ir: withAgentOverrides(forkIr, forkAgentOverrides),
+          ir: withAgentBindings(forkIr, finalized.success),
           input: JSON.parse(forkInputJson) as JsonValue,
           meta: {
             runId: forkId,
             workflowPath: forkWorkflowEntry,
             workflowName: forkName,
-            workspaceDir: resolve(this.cwd),
+            workspaceDir: resolve(store.cwd),
           },
         },
         artifactDigest: uri => {
           const parsed = parseArtifactUri(uri);
-          if (parsed.isErr() || parsed.value.runId !== forkId) return undefined;
-          const sourceId = sourceIdByChildId.get(parsed.value.artifactId);
+          if (Result.isFailure(parsed) || parsed.success.runId !== forkId) return undefined;
+          const sourceId = sourceIdByChildId.get(parsed.success.artifactId);
           const artifact = sourceId === undefined ? undefined : artifactById.get(sourceId);
           return artifact === undefined ? undefined : String(artifact.digest);
         },
@@ -1622,7 +1724,7 @@ class SqliteRuntimeStore implements RuntimeStore {
     }
     const missingArtifactId = [...reachableArtifactIds].sort().find(id => !artifactById.has(id));
     if (missingArtifactId !== undefined) {
-      return err({
+      return Result.fail({
         type: "artifact-rewrite-failure",
         artifactId: missingArtifactId,
         message: `Missing source artifact metadata for '${missingArtifactId}'.`,
@@ -1646,11 +1748,14 @@ class SqliteRuntimeStore implements RuntimeStore {
           })),
       });
     }
+    if (options.prepared) {
+      await publishWorkflowSource(options.prepared, store.layout, store.generation.sourcesRoot);
+    }
     sourceRun.verify();
     const publishedFork = await publishRunDirectory({
-      runsRoot: this.generation.runsRoot,
+      runsRoot: store.generation.runsRoot,
       runId: forkId,
-      platform: this.layout.platform,
+      platform: store.layout.platform,
       populate: async (runDir, assertCurrent) => {
         sourceRun.verify();
         await writeFrozenRunFiles(runDir, forkIrJson, forkLockJson, assertCurrent);
@@ -1661,15 +1766,15 @@ class SqliteRuntimeStore implements RuntimeStore {
         sourceRun.verify();
       },
     });
-    const forkRun = this.generation.run(forkId);
+    const forkRun = store.generation.run(forkId);
     assertSameDirectory(publishedFork, forkRun.token().runDirectory, `Run directory '${forkId}' changed after publication.`);
     let transactionStarted = false;
     try {
       sourceRun.verify();
       forkRun.verify();
-      this.db.exec("BEGIN IMMEDIATE");
+      store.db.exec("BEGIN IMMEDIATE");
       transactionStarted = true;
-      const currentSourceSnapshot = throwSchedulerStoreResult(this.scheduler.tryLoadRunSnapshot(runId));
+      const currentSourceSnapshot = store.scheduler.tryLoadRunSnapshot(runId);
       if (currentSourceSnapshot.version !== sourceSnapshot.version) {
         throw new ForkSourceVersionMismatchError({
           type: "fork-source-version-mismatch",
@@ -1679,18 +1784,18 @@ class SqliteRuntimeStore implements RuntimeStore {
           message: `Fork source run '${runId}' changed while the fork was preparing.`,
         });
       }
-      const currentCheckpoint = resolveForkCheckpoint(this.db, currentSourceSnapshot.projection, runId, options.target);
-      if (currentCheckpoint.isErr()
-        || stableJsonLine(currentCheckpoint.value) !== stableJsonLine(checkpoint.value)) {
+      const currentCheckpoint = resolveForkCheckpoint(store.db, currentSourceSnapshot.projection, runId, options.target);
+      if (Result.isFailure(currentCheckpoint)
+        || stableJsonLine(currentCheckpoint.success) !== stableJsonLine(checkpoint.success)) {
         throw new Error(`Fork source target '${options.target}' changed without a scheduler version change.`);
       }
-      this.db.prepare(`
+      store.db.prepare(`
         INSERT INTO runs (id, name, status, workflow_entry, source_graph_digest, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `).run(forkId, forkName, "pending", forkWorkflowEntry, forkSourceGraphDigest, now, now);
-      this.db.prepare(`
+      store.db.prepare(`
         INSERT INTO run_inputs (
-          run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_overrides_json, output_json, lock_path, lock_digest, package_lock_digest, source_json
+          run_id, workflow_ir_path, workflow_ir_digest, input_json, agent_bindings_json, output_json, lock_path, lock_digest, package_lock_digest, source_json
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `).run(
@@ -1698,38 +1803,38 @@ class SqliteRuntimeStore implements RuntimeStore {
         "workflow.ir.json",
         sha256Digest(forkIrJson),
         forkInputJson,
-        stableJsonLine(forkAgentOverrides),
+        stableJsonLine(finalized.success.bindings),
         null,
         "lock.json",
         sha256Digest(forkLockJson),
         forkPackageLockDigest,
         stableJsonLine(forkSource),
       );
-      this.db.prepare(`
+      store.db.prepare(`
         INSERT INTO run_events (run_id, sequence, type, node_key, payload_json, created_at, idempotency_key)
         VALUES (?, 1, 'run.forked', NULL, ?, ?, ?)
       `).run(forkId, stableJsonLine({
         sourceRunId: runId,
         requestFingerprint,
+        semanticFingerprint,
         ...(options.target === undefined ? {} : {
           target: options.target,
-          replayBeforeSequence: checkpoint.value.replayBeforeSequence,
+          replayBeforeSequence: checkpoint.success.replayBeforeSequence,
         }),
-        ...(Object.keys(forkAgentOverrides).length > 0 ? { agentOverrides: forkAgentOverrides } : {}),
       }), now, forkRequestKey ?? `fork:${forkId}:${runId}`);
-      this.db.prepare(`
+      store.db.prepare(`
         INSERT INTO scheduler_projection_checkpoints (run_id, event_sequence, projection_json, updated_at)
         VALUES (?, 1, ?, ?)
       `).run(forkId, stableJsonLine(createSchedulerProjection(forkId) as unknown as JsonValue), now);
-      this.db.prepare("INSERT INTO hook_dispatch_cursors (run_id, event_sequence) VALUES (?, 0)").run(forkId);
+      store.db.prepare("INSERT INTO hook_dispatch_cursors (run_id, event_sequence) VALUES (?, 0)").run(forkId);
       for (const nodeId of collectNodeIds(forkIr.root)) {
-        this.db.prepare(`
+        store.db.prepare(`
           INSERT INTO node_states (run_id, node_key, node_id, status)
           VALUES (?, ?, ?, 'pending')
         `).run(forkId, nodeId, nodeId);
       }
       for (const group of replayPlan.sessionGroups) {
-        this.db.prepare(`
+        store.db.prepare(`
           INSERT INTO fork_replay_session_groups (
             run_id, session_group_digest, member_count, replayed_count
           )
@@ -1737,7 +1842,7 @@ class SqliteRuntimeStore implements RuntimeStore {
         `).run(forkId, group.sessionGroupDigest, group.memberCount);
       }
       for (const fact of rewrittenFacts) {
-        this.db.prepare(`
+        store.db.prepare(`
           INSERT INTO fork_replay_facts (
             run_id, node_key, source_run_id, source_sequence,
             operation_digest, input_digest, session_group_digest, output_json, artifacts_json
@@ -1757,22 +1862,22 @@ class SqliteRuntimeStore implements RuntimeStore {
       }
       sourceRun.verify();
       forkRun.verify();
-      this.db.exec("COMMIT");
+      store.db.exec("COMMIT");
       transactionStarted = false;
     } catch (error) {
-      this.generation.forgetRun(forkId);
+      store.generation.forgetRun(forkId);
       try {
         await removeOwnedDirectoryAfterFailure(
-          this.generation.runsRoot,
+          store.generation.runsRoot,
           publishedFork,
-          rollbackDatabaseTransaction(this.db, transactionStarted, error),
+          rollbackDatabaseTransaction(store.db, transactionStarted, error),
         );
       } catch (failure) {
-        if (failure instanceof ForkSourceVersionMismatchError) return err(failure.failure);
+        if (failure instanceof ForkSourceVersionMismatchError) return Result.fail(failure.failure);
         throw failure;
       }
     }
-    return ok({ ...this.requireRun(forkId), forkCreated: true });
+    return Result.succeed({ ...store.requireRun(forkId), forkCreated: true });
   }
 
   async cleanupStagedRunDirectories(): Promise<void> {
@@ -1825,11 +1930,11 @@ class SqliteRuntimeStore implements RuntimeStore {
     }
   }
 
-  deleteRun(runId: string): ResultAsync<RunRecord | undefined, RunDeleteFailure> {
-    return new ResultAsync(this.deleteRunResult(runId));
+  deleteRun(runId: string): Promise<Result.Result<RunRecord | undefined, RunDeleteFailure>> {
+    return this.deleteRunResult(runId);
   }
 
-  private async deleteRunResult(runId: string): Promise<Result<RunRecord | undefined, RunDeleteFailure>> {
+  private async deleteRunResult(runId: string): Promise<Result.Result<RunRecord | undefined, RunDeleteFailure>> {
     let transactionStarted = false;
     let runDirectory: RunDirectoryFence | undefined;
     let sourceDirectoryIdentity: DirectoryIdentity | undefined;
@@ -1843,12 +1948,12 @@ class SqliteRuntimeStore implements RuntimeStore {
       if (!existing) {
         this.db.exec("ROLLBACK");
         transactionStarted = false;
-        return ok(undefined);
+        return Result.succeed(undefined);
       }
       if (this.getRunExecutionState(existing).state === "active") {
         this.db.exec("ROLLBACK");
         transactionStarted = false;
-        return err({
+        return Result.fail({
           type: "run-delete-active",
           runId,
           message: `Run '${runId}' is active and cannot be deleted.`,
@@ -1862,7 +1967,7 @@ class SqliteRuntimeStore implements RuntimeStore {
       if (lease && lease.lease_expires_at > new Date().toISOString()) {
         this.db.exec("ROLLBACK");
         transactionStarted = false;
-        return err({
+        return Result.fail({
           type: "run-delete-active",
           runId,
           message: `Run '${runId}' has an active lease and cannot be deleted.`,
@@ -1911,17 +2016,17 @@ class SqliteRuntimeStore implements RuntimeStore {
     this.generation.forgetRun(runId);
     if (!trashedDirectory) throw new Error(`Run '${runId}' deletion committed without an owned trash entry.`);
     await removeOwnedDirectory(this.generation.trashRoot, trashedDirectory);
-    return ok(run);
+    return Result.succeed(run);
   }
 
   writeHookJournal(entry: HookJournalEntry): void {
     this.db.prepare(`
       INSERT INTO hook_journal (
-        run_id, event_sequence, trigger_order, event, source, source_path, handler_id, definition_hash,
+        run_id, event_sequence, trigger_order, event, source, source_path, handler_id,
         node_key, status, exit_code, stdout, stderr, duration_ms, error, triggered_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(run_id, event_sequence, definition_hash) DO NOTHING
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(run_id, event_sequence, trigger_order) DO NOTHING
     `).run(
       entry.runId,
       entry.eventSequence,
@@ -1930,7 +2035,6 @@ class SqliteRuntimeStore implements RuntimeStore {
       entry.source,
       entry.sourcePath,
       entry.handlerId,
-      entry.definitionHash,
       entry.nodeKey ?? null,
       entry.status,
       entry.exitCode ?? null,
@@ -2104,6 +2208,9 @@ class SqliteRuntimeStore implements RuntimeStore {
       const events = run && afterEventSequence !== undefined
         ? this.getCommittedRuntimeEventsAfter(runId, afterEventSequence)
         : [];
+      const agentControl = run
+        ? this.scheduler.readAgentControlInspection(runId)
+        : { agentSessions: [], steers: [], turnProofs: [] };
       if (ownsTransaction) this.db.exec("COMMIT");
       return {
         ...(run ? { run } : {}),
@@ -2115,6 +2222,7 @@ class SqliteRuntimeStore implements RuntimeStore {
           observationVersion: observation?.observation_version ?? 0,
         },
         events,
+        agentControl,
       };
     } catch (error) {
       if (ownsTransaction && this.db.isTransaction) this.db.exec("ROLLBACK");
@@ -2136,8 +2244,8 @@ class SqliteRuntimeStore implements RuntimeStore {
     return this.generation.run(runId).token();
   }
 
-  registerArtifact(input: RegisterArtifactInput): SchedulerStoreResult<void> {
-    return schedulerStoreResult(() => this.insertArtifact(input));
+  registerArtifact(input: RegisterArtifactInput): void {
+    this.insertArtifact(input);
   }
 
   private insertArtifact(input: RegisterArtifactInput): void {
@@ -2236,16 +2344,57 @@ class SqliteRuntimeStore implements RuntimeStore {
   }
 
   writeExecutionMetadata(input: WriteExecutionMetadataInput): void {
-    this.db.prepare(`
-      INSERT INTO execution_metadata (run_id, attempt_id, kind, metadata_json, created_at)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(
-      input.runId,
-      input.attemptId ?? null,
-      input.kind,
-      stableJsonLine(input.metadata),
-      new Date().toISOString(),
-    );
+    this.insertExecutionMetadata(input);
+  }
+
+  private insertExecutionMetadata(input: WriteExecutionMetadataInput): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const attempt = this.db.prepare(`
+        SELECT run_id, owner_epoch, status
+        FROM node_attempts
+        WHERE attempt_id = ?
+      `).get(input.attemptId) as { run_id: string; owner_epoch: number; status: string } | undefined;
+      if (!attempt || attempt.run_id !== input.runId) {
+        throwSchedulerStoreError({
+          type: "attempt-not-found",
+          attemptId: input.attemptId,
+          message: `Attempt '${input.attemptId}' does not match execution metadata for run '${input.runId}'.`,
+        });
+      }
+      if (attempt.owner_epoch !== input.ownerEpoch) {
+        throwSchedulerStoreError({
+          type: "owner-epoch-stale",
+          runId: input.runId,
+          attemptId: input.attemptId,
+          ownerEpoch: input.ownerEpoch,
+          message: `Attempt '${input.attemptId}' owner epoch is stale.`,
+        });
+      }
+      requireActiveOwnerEpoch(this.db, input.runId, input.ownerEpoch);
+      if (attempt.status !== "started") {
+        throwSchedulerStoreError({
+          type: "terminal-attempt",
+          attemptId: input.attemptId,
+          status: attempt.status,
+          message: `Attempt '${input.attemptId}' is already ${attempt.status}.`,
+        });
+      }
+      this.db.prepare(`
+        INSERT INTO execution_metadata (run_id, attempt_id, kind, metadata_json, created_at)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(
+        input.runId,
+        input.attemptId,
+        input.kind,
+        stableJsonLine(input.metadata),
+        new Date().toISOString(),
+      );
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   getExecutionMetadata(runId: string): RunExecutionMetadata[] {
@@ -2353,12 +2502,11 @@ class SqliteRuntimeStore implements RuntimeStore {
     const run = this.getRunRecord(runId);
     if (!run) return undefined;
     const input = this.db.prepare(`
-      SELECT input_json, agent_overrides_json, output_json
+      SELECT input_json, output_json
       FROM run_inputs
       WHERE run_id = ?
     `).get(runId) as RunDetailsInputRow | undefined;
     if (!input) throw new Error(`Run '${runId}' has no frozen input.`);
-    const agentOverrides = parseAgentOverrides(input.agent_overrides_json);
     const eventCount = this.count("run_events", runId);
     const nodeCount = this.count("node_states", runId);
     const dynamic = this.inspectionReadModel.getDynamicDetails(runId);
@@ -2367,7 +2515,6 @@ class SqliteRuntimeStore implements RuntimeStore {
       ...run,
       input: JSON.parse(input.input_json) as JsonValue,
       ...(input.output_json ? { output: JSON.parse(input.output_json) as JsonValue } : {}),
-      ...(Object.keys(agentOverrides).length > 0 ? { agentOverrides } : {}),
       ...(fork ? { fork } : {}),
       hooks: isTerminalRunStatus(run.status) ? this.getHookJournal(runId) : [],
       eventCount,
@@ -2570,11 +2717,23 @@ class SqliteRuntimeStore implements RuntimeStore {
 
 }
 
-export function withRunInspectionSnapshot<T>(store: RuntimeStore, read: () => Promise<T>): Promise<T> {
+export function beginRunInspectionSnapshot(store: RuntimeStoreAdapter): void {
+  sqliteRuntimeStore(store).beginInspectionSnapshot();
+}
+
+export function commitRunInspectionSnapshot(store: RuntimeStoreAdapter): void {
+  sqliteRuntimeStore(store).commitInspectionSnapshot();
+}
+
+export function rollbackRunInspectionSnapshot(store: RuntimeStoreAdapter): void {
+  sqliteRuntimeStore(store).rollbackInspectionSnapshot();
+}
+
+function sqliteRuntimeStore(store: RuntimeStoreAdapter): SqliteRuntimeStore {
   if (!(store instanceof SqliteRuntimeStore)) {
     throw new Error("Run inspection snapshots require the SQLite runtime store.");
   }
-  return store.withInspectionSnapshot(read);
+  return store;
 }
 
 function withoutUndefined(input: Record<string, unknown>): Record<string, unknown> {
@@ -2589,8 +2748,8 @@ function isTerminalRunStatus(status: RunStatus): boolean {
   return status === "completed" || status === "failed" || status === "canceled";
 }
 
-function parseAgentOverrides(json: string): AgentOverrideMap {
-  return parseAgentOverrideMap(JSON.parse(json) as unknown);
+function parseAgentBindings(json: string): FrozenAgentBindingMap {
+  return parseFrozenAgentBindingMap(JSON.parse(json) as unknown);
 }
 
 
@@ -3098,11 +3257,18 @@ function decodeFrozenRun(
 ): FrozenRun {
   const workflowIrJson = frozenWorkflowIrJson(runDir, row);
   const { source } = verifiedFrozenWorkflowSource(runDir, row);
-  const agentOverrides = parseAgentOverrides(row.agent_overrides_json);
+  const authoredIr = JSON.parse(workflowIrJson) as WorkflowIR;
+  const agentBindings = parseAgentBindings(row.agent_bindings_json);
+  const declaredNames = Object.keys(authoredIr.agents).sort();
+  const boundNames = Object.keys(agentBindings).sort();
+  if (stableJsonLine(declaredNames) !== stableJsonLine(boundNames)) {
+    throw new Error("Frozen Agent bindings do not match the authored workflow declarations.");
+  }
+  const rebuilt = rebuildFrozenAgentBindings(authoredIr.agents, agentBindings);
   return {
-    ir: withAgentOverrides(JSON.parse(workflowIrJson) as WorkflowIR, agentOverrides),
+    ir: withAgentBindings(authoredIr, rebuilt),
     input: JSON.parse(row.input_json) as JsonValue,
-    agentOverrides,
+    agentBindings,
     ...(resolveSourceRoot === undefined ? {} : { sourceRoot: resolveSourceRoot(source) }),
     meta: {
       runId: row.id,
@@ -3181,10 +3347,10 @@ function resolveForkCheckpoint(
   projection: SchedulerProjection,
   runId: string,
   target: string | undefined,
-): Result<{ nodeKey?: string; replayBeforeSequence: number }, ForkReplayFailure> {
+): Result.Result<{ nodeKey?: string; replayBeforeSequence: number }, ForkReplayFailure> {
   if (target === undefined) {
     const row = db.prepare("SELECT COALESCE(MAX(sequence), 0) + 1 AS count FROM run_events WHERE run_id = ?").get(runId) as CountRow;
-    return ok({ replayBeforeSequence: Number(row.count) });
+    return Result.succeed({ replayBeforeSequence: Number(row.count) });
   }
   let nodeKey: string | undefined;
   if (projection.instances[target]) {
@@ -3193,11 +3359,11 @@ function resolveForkCheckpoint(
     const occurrence = resolveOccurrenceRef(projection, target, { attempt: "reject" });
     if (occurrence && !occurrence.ok) {
       if (occurrence.error.type === "occurrence-ref-collision") {
-        return err({ type: "dynamic-target-ambiguity", target, message: `Fork target '${target}' is ambiguous.` });
+        return Result.fail({ type: "dynamic-target-ambiguity", target, message: `Fork target '${target}' is ambiguous.` });
       }
       if (occurrence.error.type === "occurrence-ref-attempt-not-allowed") {
         const occurrenceTarget = target.slice(0, target.lastIndexOf("#"));
-        return err({
+        return Result.fail({
           type: "target-resolution-failure",
           target,
           message: `Fork target '${target}' selects attempt ${occurrence.error.attemptNo}; use occurrence target '${occurrenceTarget}' without the attempt suffix.`,
@@ -3210,12 +3376,12 @@ function resolveForkCheckpoint(
       .filter(instance => instance.nodeId === target)
       .sort((left, right) => left.nodeKey.localeCompare(right.nodeKey));
     if (matches.length > 1) {
-      return err({ type: "dynamic-target-ambiguity", target, message: `Fork target '${target}' matches multiple source occurrences.` });
+      return Result.fail({ type: "dynamic-target-ambiguity", target, message: `Fork target '${target}' matches multiple source occurrences.` });
     }
     nodeKey = matches[0]?.nodeKey;
   }
   if (!nodeKey) {
-    return err({ type: "target-resolution-failure", target, message: `Fork target '${target}' is not a materialized source leaf.` });
+    return Result.fail({ type: "target-resolution-failure", target, message: `Fork target '${target}' is not a materialized source leaf.` });
   }
   const ready = db.prepare(`
     SELECT sequence
@@ -3225,9 +3391,9 @@ function resolveForkCheckpoint(
     LIMIT 1
   `).get(runId, nodeKey) as { sequence: number } | undefined;
   if (!ready) {
-    return err({ type: "target-resolution-failure", target, message: `Fork target '${target}' has no durable ready checkpoint.` });
+    return Result.fail({ type: "target-resolution-failure", target, message: `Fork target '${target}' has no durable ready checkpoint.` });
   }
-  return ok({ nodeKey, replayBeforeSequence: Number(ready.sequence) });
+  return Result.succeed({ nodeKey, replayBeforeSequence: Number(ready.sequence) });
 }
 
 function completedReplayFacts(
@@ -3290,7 +3456,7 @@ function acceptedForkCompletion(projection: SchedulerProjection, nodeKey: string
 }
 
 function forkRequestFingerprint(runId: string, options: ControlOptions): string {
-  return stableJsonLine({
+  return sha256Digest(stableJsonLine({
     runId,
     ...(options.prepared === undefined ? {} : {
       prepared: {
@@ -3300,15 +3466,15 @@ function forkRequestFingerprint(runId: string, options: ControlOptions): string 
       },
     }),
     ...(options.input === undefined ? {} : { input: options.input }),
-    ...(options.agentOverrides === undefined ? {} : { agentOverrides: options.agentOverrides }),
+    ...(options.agentInjections === undefined ? {} : { agentInjections: options.agentInjections }),
     ...(options.target === undefined ? {} : { target: options.target }),
-  });
+  }));
 }
 
 function admissionRequestFingerprint(
   prepared: PreparedRunWorkflow,
   input: JsonValue,
-  agentOverrides: AgentOverrideMap,
+  agentInjections: AgentInjectionMap,
 ): string {
   return sha256Digest(stableJsonLine({
     prepared: {
@@ -3318,7 +3484,29 @@ function admissionRequestFingerprint(
       ...(prepared.packageLockDigest === undefined ? {} : { packageLockDigest: prepared.packageLockDigest }),
     },
     input,
-    agentOverrides,
+    agentInjections,
+  }));
+}
+
+function forkSemanticFingerprint(semantic: {
+  runId: string;
+  prepared?: PreparedRunWorkflow;
+  input: JsonValue;
+  agentBindings: FrozenAgentBindingMap;
+  target?: string;
+}): string {
+  return sha256Digest(stableJsonLine({
+    runId: semantic.runId,
+    ...(semantic.prepared === undefined ? {} : {
+      prepared: {
+        source: semantic.prepared.source,
+        irFileDigest: semantic.prepared.lock.ir.digest,
+        sourceGraphDigest: semantic.prepared.sourceGraphDigest,
+      },
+    }),
+    input: semantic.input,
+    agentBindings: semantic.agentBindings,
+    ...(semantic.target === undefined ? {} : { target: semantic.target }),
   }));
 }
 

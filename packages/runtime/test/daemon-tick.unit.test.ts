@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vitest";
 import { runRuntimeTick } from "../src/daemon/tick.js";
 import type { RunRecord } from "../src/store/store.js";
@@ -6,7 +7,7 @@ describe("daemon tick", () => {
   it("propagates non-busy hook journal prune failures after starting runnable work", async () => {
     const started: string[] = [];
 
-    await expect(runRuntimeTick(fakeStore(undefined, true), { startSession: runId => {
+    await expect(runTick(fakeStore(undefined, true), { startSession: runId => {
       started.push(runId);
       return "started";
     } })).rejects.toThrow("hook journal unavailable");
@@ -17,7 +18,7 @@ describe("daemon tick", () => {
     const dispatched: string[] = [];
     const store = fakeStore({ hookDispatchRunIds: ["run_2"], idleBlockers: 1 });
 
-    await expect(runRuntimeTick(store, {
+    await expect(runTick(store, {
       startSession: () => "terminal",
       dispatchHooks: runId => {
         dispatched.push(runId);
@@ -31,7 +32,7 @@ describe("daemon tick", () => {
     const dispatched: string[] = [];
     const store = fakeStore({ hookDispatchRunIds: ["run_1"], idleBlockers: 1 });
 
-    await expect(runRuntimeTick(store, {
+    await expect(runTick(store, {
       startSession: () => "started",
       dispatchHooks: runId => {
         dispatched.push(runId);
@@ -45,13 +46,30 @@ describe("daemon tick", () => {
 function fakeStore(work = { hookDispatchRunIds: [] as string[], idleBlockers: 0 }, failPrune = false): Parameters<typeof runRuntimeTick>[0] {
   return {
     listRuntimeWork() {
-      return { startableRuns: [runRecord()], ...work };
+      return Effect.succeed({ startableRuns: [runRecord()], ...work });
     },
     pruneHookJournal() {
-      if (failPrune) throw new Error("hook journal unavailable");
-      return 0;
+      return Effect.sync(() => {
+        if (failPrune) throw new Error("hook journal unavailable");
+        return 0;
+      });
     },
   };
+}
+
+function runTick(
+  store: Parameters<typeof runRuntimeTick>[0],
+  options: {
+    startSession: (runId: string) => "started" | "already-active" | "terminal" | "quarantined";
+    dispatchHooks?: (runId: string) => "dispatched" | "retry" | "quarantined";
+  },
+) {
+  return Effect.runPromise(runRuntimeTick(store, {
+    startSession: runId => Effect.sync(() => options.startSession(runId)),
+    ...(options.dispatchHooks === undefined
+      ? {}
+      : { dispatchHooks: (runId: string) => Effect.sync(() => options.dispatchHooks!(runId)) }),
+  }));
 }
 
 function runRecord(): RunRecord {

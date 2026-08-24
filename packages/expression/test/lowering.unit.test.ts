@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { and, eq, gt, gte, lift, lt, lte, ne, not, or } from "@acpus/expression";
 import { refExpr, staticExprShape, tryValueToExprIR, valueToExprIR } from "@acpus/expression/ir";
-import { err } from "neverthrow";
+import * as Result from "effect/Result";
 
 describe("expression lowering", () => {
   it("lowers workflow values and refs through the package seam", () => {
@@ -32,37 +32,31 @@ describe("expression lowering", () => {
     expect(staticExprShape({ kind: "call", fn: "lift", args: [] })).toEqual({ kind: "dynamic" });
   });
 
-  it("rejects unsupported literal values", () => {
-    expect(() => valueToExprIR(undefined)).toThrow("Unsupported expression value: undefined.");
-    expect(() => valueToExprIR([, true])).toThrow("Unsupported expression value: sparse array hole.");
-    expect(() => valueToExprIR({ value: undefined })).toThrow("Unsupported expression value at key 'value': undefined.");
-    expect(() => valueToExprIR(new Date())).toThrow("Unsupported expression value: non-plain object.");
-  });
-
   it("returns tagged errors for unsupported authoring values", () => {
-    expect(tryValueToExprIR(undefined)).toEqual(err({
+    expect(() => valueToExprIR(undefined)).toThrow("Unsupported expression value: undefined.");
+    expect(tryValueToExprIR(undefined)).toEqual(Result.fail({
       type: "unsupported-expression-value",
       path: "$",
       valueType: "undefined",
       message: "Unsupported expression value: undefined.",
     }));
-    expect(tryValueToExprIR([, true])).toEqual(err({
+    expect(tryValueToExprIR([, true])).toEqual(Result.fail({
       type: "sparse-array-hole",
       path: "$[0]",
       message: "Unsupported expression value: sparse array hole.",
     }));
-    expect(tryValueToExprIR({ value: undefined })).toEqual(err({
+    expect(tryValueToExprIR({ value: undefined })).toEqual(Result.fail({
       type: "unsupported-expression-value",
       path: "$.value",
       valueType: "undefined",
       message: "Unsupported expression value at key 'value': undefined.",
     }));
-    expect(tryValueToExprIR(new Date())).toEqual(err({
+    expect(tryValueToExprIR(new Date())).toEqual(Result.fail({
       type: "non-plain-object",
       path: "$",
       message: "Unsupported expression value: non-plain object.",
     }));
-    expect(tryValueToExprIR(Number.NaN)).toEqual(err({
+    expect(tryValueToExprIR(Number.NaN)).toEqual(Result.fail({
       type: "unsupported-expression-value",
       path: "$",
       valueType: "non-finite number",
@@ -73,7 +67,7 @@ describe("expression lowering", () => {
   it("returns tagged errors for cyclic and uninspectable object graphs", () => {
     const cyclic: Record<string, unknown> = {};
     cyclic.self = cyclic;
-    expect(tryValueToExprIR(cyclic)).toEqual(err({
+    expect(tryValueToExprIR(cyclic)).toEqual(Result.fail({
       type: "cyclic-value",
       path: "$.self",
       message: "Unsupported expression value: cyclic reference.",
@@ -84,7 +78,7 @@ describe("expression lowering", () => {
         throw new Error("blocked");
       },
     });
-    expect(tryValueToExprIR(uninspectable)).toEqual(err({
+    expect(tryValueToExprIR(uninspectable)).toEqual(Result.fail({
       type: "uninspectable-value",
       path: "$",
       message: "Unsupported expression value: object could not be inspected.",

@@ -1,9 +1,11 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import { makeNodeProcessHost } from "@acpus/owned-process";
 import { mkdirSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { TaskNodeIR } from "@acpus/core/ir";
-import { ok } from "neverthrow";
 import {
   executeTaskNode as executeTaskNodeResult,
   type TaskExecutorOptions,
@@ -44,19 +46,18 @@ export async function withTaskExecutorWorkspace<T>(
           attemptId: `attempt_${runId}`,
           attemptNo: 1,
           ownerEpoch: 1,
+          processes: makeNodeProcessHost(),
           store: {
-            runsRoot: dirname(runDir),
-            getRunDirectoryToken: () => ({
+            getRunDirectoryToken: () => Effect.succeed({
               runId,
               runsRoot: captureDirectoryIdentity(dirname(runDir), "Runtime runs root"),
               runDirectory: captureDirectoryIdentity(runDir, `Run directory '${runId}'`),
             }),
-            getArtifact: () => undefined,
-            registerArtifact: input => {
+            registerArtifact: input => Effect.sync(() => {
               registerArtifact(input);
-              return ok(undefined);
-            },
-            writeExecutionMetadata: () => {},
+            }),
+            writeExecutionMetadata: () => Effect.void,
+            resolveArtifactRef: () => Effect.die(new Error("Unexpected ArtifactRef resolution.")),
           },
         };
       },
@@ -73,11 +74,11 @@ export async function withTaskExecutorWorkspace<T>(
 export async function executeTaskNode(
   ...args: Parameters<typeof executeTaskNodeResult>
 ) {
-  const result = await executeTaskNodeResult(...args);
-  if (result.isErr()) {
-    throw Object.assign(new Error(result.error.message), { failure: result.error });
+  const result = await Effect.runPromise(executeTaskNodeResult(...args));
+  if (Result.isFailure(result)) {
+    throw Object.assign(new Error(result.failure.message), { failure: result.failure });
   }
-  return result.value;
+  return result.success;
 }
 
 export function inlineTask(

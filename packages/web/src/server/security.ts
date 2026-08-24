@@ -1,10 +1,9 @@
-import { randomBytes, createHash } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { MiddlewareHandler } from "hono";
 import { apiError } from "./errors.js";
 
 export type AccessPolicy = {
   token?: string;
-  tokenHash?: string;
 };
 
 export type AccessPolicyOptions = {
@@ -14,12 +13,12 @@ export type AccessPolicyOptions = {
 export function createAccessPolicy(options: AccessPolicyOptions = {}): AccessPolicy {
   if (!options.enabled) return {};
   const token = randomBytes(24).toString("base64url");
-  return { token, tokenHash: sha256(token) };
+  return { token };
 }
 
 export function requireToken(policy: AccessPolicy): MiddlewareHandler {
   return async (context, next) => {
-    if (!policy.tokenHash) {
+    if (!policy.token) {
       await next();
       return;
     }
@@ -30,7 +29,7 @@ export function requireToken(policy: AccessPolicy): MiddlewareHandler {
       cookieToken(context.req.header("cookie")),
     ].find(value => value !== undefined);
 
-    if (token === undefined || sha256(token) !== policy.tokenHash)
+    if (token === undefined || !sameToken(token, policy.token))
       apiError(401, "unauthorized", "Bearer token is required.");
 
     const shouldSetCookie = context.req.query("token") === token;
@@ -41,8 +40,11 @@ export function requireToken(policy: AccessPolicy): MiddlewareHandler {
   };
 }
 
-function sha256(value: string): string {
-  return createHash("sha256").update(value).digest("hex");
+function sameToken(candidate: string, expected: string): boolean {
+  const candidateBytes = Buffer.from(candidate);
+  const expectedBytes = Buffer.from(expected);
+  return candidateBytes.length === expectedBytes.length
+    && timingSafeEqual(candidateBytes, expectedBytes);
 }
 
 function cookieToken(cookie: string | undefined): string | undefined {

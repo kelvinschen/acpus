@@ -2,7 +2,7 @@
 
 Read this only for Forensics, inspection candidate-selection/follow mechanics, detailed runtime
 controls, catalogs, import, static visualization, WebUI, bundled-skill
-management, run deletion, or CLI automation. Use
+management, run deletion, or version lookup. Use
 `acpus <cmd> --help` for exact options.
 
 If the CLI is unavailable, ask before suggesting `npm install -g acpus`.
@@ -15,7 +15,9 @@ Use `workflow check` only when validation without execution is the goal:
 acpus workflow check <workflow> [--input <json|file.json>] [--agents <json|file.json>]
 ```
 
-Use the same selected path, catalog, or `-` stdin source as `workflow run`. `workflow check` typechecks, compiles, and validates in memory. `--input` and `--agents` accepts strict inline JSON or a `.json` file resolved from the CLI working directory.
+- **Source:** Accept the same path, catalog, or `-` stdin source as `workflow run`.
+- **Effect:** Typecheck, compile, and validate without creating a run.
+- **Input:** Pass strict inline JSON or a CLI-working-directory `.json` file through `--input` and Agent injections through `--agents`.
 
 ## Inspection details
 
@@ -23,7 +25,7 @@ Start with the Summary path in [CLI Operations](cli-operations.md).
 - A repeated authored target returns every occurrence in stable path order; choose one candidate `@ref` before following or inspecting its details.
 - Candidate Select commands preserve Timeline or Forensics detail. Timeline always shows its fixed recent window.
 - `--follow` waits until the fixed subject is terminal. `--await-decision` waits until that subject needs external input, is paused, or is terminal.
-- For settled turn artifacts or the run-local acpx session projection, see [Agent Records](agent-records.md).
+- For settled turn artifacts or the run-local ACP session projection, see [Agent Records](agent-records.md).
 
 ### Forensics
 
@@ -35,7 +37,10 @@ acpus runs inspect <run-id> [--target <nodeId|@ref|@ref#attemptNo>] --forensics
 
 Omitting `--target` inspects `root`. Forensics is one-shot and cannot be combined with `--timeline`, `--follow`, or `--await-decision`. 
 
-Definition comes from the run's frozen effective workflow, Invocation reports values durably resolved for the selected occurrence or attempt, and Result contains only scheduler-accepted output or its explicit terminal state. Values are complete and may contain sensitive business data.
+- **Definition:** Frozen effective workflow.
+- **Invocation:** Values resolved for the selected occurrence or Attempt.
+- **Result:** Accepted output or explicit terminal state.
+- **Sensitivity:** Values are complete and may contain sensitive business data.
 
 ## Runtime control details
 
@@ -43,7 +48,9 @@ This section describes command mechanics. [Runtime Recovery](runtime-recovery.md
 
 Inspect before controlling a run and use its displayed public selector rather than reconstructing an internal occurrence identity.
 
-Mutating controls start or wake the workspace daemon and wait up to 30 seconds for a durable effect. Success confirms that effect, not downstream completion. A control timeout reports unconfirmed application; inspect again before repeating it.
+- Mutating controls start or wake the workspace daemon and wait up to 30 seconds.
+- Success confirms the requested control, not downstream completion.
+- A timeout means application is unconfirmed. Inspect before repeating the control.
 
 ### Signal
 
@@ -53,7 +60,9 @@ acpus runs signal <run-id> --target <signal-target> --payload '<json>'
 
 Schema-backed Signals validate the supplied JSON. Schema-less Signals require a JSON string such as `--payload '"approved"'`; Runtime passes its decoded string value through unchanged.
 
-An invalid payload does not consume the wait and may return `RUN_NOT_CONTROLLABLE` with a schema path. Success confirms validation, not downstream completion. A timed-out wait is closed; inspect it, then use retry or fork instead of signaling it again.
+- **Invalid payload:** Leaves the wait open and may return `RUN_NOT_CONTROLLABLE` with a schema path.
+- **Success:** Confirms validation, not downstream completion.
+- **Timed-out wait:** Is closed. Inspect it, then Retry or Fork instead of signaling again.
 
 ### Steer
 
@@ -63,7 +72,11 @@ acpus runs steer <run-id> --target <exact-agent-target> --instruction '<update>'
 
 Apply the [Recovery decision](runtime-recovery.md#recovery-decision) rules before use.
 
-Success durably fences the old attempt and queues `<steering>…</steering>` in the same Agent session. It does not mean the updated work has completed. Receipts and inspection output do not echo the instruction, but inline instructions remain visible in shell history and process listings.
+- **Delivery:** Interrupt & Continue. Fence the exact active Attempt, drain its current Turn, then queue `<steering>…</steering>` for a replacement Turn in the same Agent Session.
+- **Success means:** The instruction was accepted for delivery.
+- **Success does not mean:** The Provider consumed it or completed the updated work.
+- **Side effects:** Already-performed tools and side effects are not rolled back.
+- **Privacy:** Receipts and inspection do not echo the instruction or raw Agent binding inputs. Inline text remains visible in shell history and process listings.
 
 ### Pause and resume
 
@@ -72,19 +85,22 @@ acpus runs pause <run-id>
 acpus runs resume <run-id>
 ```
 
-Pause records a durable gate and requests best-effort abort of active attempts. Resume clears the gate and re-drives eligible work. These controls return after their immediate durable effect is confirmed, not after later work becomes terminal.
-
-Pause and resume are idempotent. Pause fences active attempts from late commits and waits for bounded executor cleanup before reporting `paused`; resume continues through a newly claimed execution session. Signal timeout budgets are suspended while paused and restored on resume.
+- **Pause:** Stop admitting new work, request cancellation of active Attempts, and reject their late results. Report `paused` after bounded cleanup.
+- **Resume:** Clear the pause and continue eligible work.
+- **Signals:** Suspend timeout budgets while paused and restore them on resume.
+- Both controls are idempotent and confirm only their immediate effect, not later completion.
 
 ### Retry
 
 ```sh
-acpus runs retry <run-id> [--target <target>]
+acpus runs retry <run-id> --target <task-agent-or-frame-target>
 ```
 
-Omitting `--target` resets eligible failed work across the run. A target must resolve to one failed node or frame. Runtime reopens only its required ancestor path and `parent_failed` completion dependencies, without broadening to independent failures.
-
-Retry rejects completed/canceled blockers, incompatible composite state, and targets that cannot make work admissible; rejection leaves durable state unchanged. Dynamic targets come from the source run's frozen workflow. Retry a pre-execution configuration-resolution failure through its containing frame or the whole run.
+- **Target:** One failed or timed-out Task, Agent, or frame. There is no run-level Retry.
+- **Reopens:** The complete required path, including parents that failed only because required descendants failed. Independent failures stay unchanged.
+- **Rejects:** Completed/canceled blockers, incompatible composite state, or a target that cannot make work admissible. Rejection leaves the run unchanged.
+- **Local Agent:** Clean up affected Sessions; start the next Attempt in a new generation with the authored prompt.
+- **Shared `sessionKey`:** Reject without changes and print the exact Fork command. Retry cannot split shared conversation continuity.
 
 ### Fork
 
@@ -95,11 +111,12 @@ acpus runs fork <run-id> \
   [--target <source-target>]
 ```
 
-Use fork when the workflow, input, Agent mapping, or Task definition must change. It creates a child run, leaves the source unchanged, and inherits every option you do not replace. Continue inspection on the child id from the receipt.
-
-Use `--target` for a restart point; omit it for compatibility-based reuse. It is a replay checkpoint, not a reuse override: the target and work completed after it became ready rerun, as does any explicit `sessionKey` conversation intersecting the checkpoint. Earlier compatible results remain reusable when their definitions and resolved inputs are unchanged.
-
-Without `--target`, Acpus reuses compatible ordinary results by occurrence, operation, and resolved workflow values; ambient state and randomness are outside that comparison, and an earlier change does not invalidate a later match. Occurrences sharing an explicit `sessionKey` are one atomic conversation: Acpus reuses its complete closed source history in source order or reruns it entirely in a fresh child session. Artifacts follow reused results.
+- **Use Fork when:** Workflow, input, Agent binding, or Task definition must change.
+- **Child:** Leave the source unchanged, inherit every option not replaced, then inspect the child id from the receipt.
+- **With `--target`:** Rerun the target and work completed after it became ready. Rerun any intersecting explicit `sessionKey` conversation as one unit.
+- **Without `--target`:** Reuse compatible completed results. Ambient state and randomness are outside compatibility matching.
+- **Shared `sessionKey`:** Reuse the complete closed conversation or rerun it entirely in a fresh child Session.
+- **Artifacts:** Follow reused results.
 
 To rewind, such as re-asking a consumed Signal, copy its `@ref` (without `#1`) from source inspection.
 
@@ -111,22 +128,27 @@ To rewind, such as re-asking a consumed Signal, copy its `@ref` (without `#1`) f
 acpus runs cancel <run-id> [--target <target>]
 ```
 
-Run-level cancel is idempotent. A targeted cancel must resolve unambiguously to one non-terminal node or frame; it terminalizes that scheduler subtree as `operator_cancelled`. Both forms durably fence late result, artifact, and progress commits.
+Run-level cancel is idempotent. A targeted cancel must resolve unambiguously to one non-terminal node or frame and cancels that subtree. Late results, artifacts, and progress from canceled work are not accepted.
 
 Treat cancel as destructive and ask before using it unless cancellation was already explicitly requested.
 
 ## Catalog and import
 
-Catalog and import are for named or reusable workflows, not disposable heredoc runs. Project entries live under `.acpus/workflows/<name>/workflow.ts`; global entries under `$HOME/.acpus/workflows/<name>/workflow.ts`. The direct lower-kebab `defineWorkflow({ name })` must equal the package directory. Catalog names work with check, run, and viz; pass `--project` or `--global` when names collide. Discovery is static: invalid first-level packages remain listable but cannot be used.
+- Use catalog/import for named or reusable workflows, not disposable heredoc runs.
+- Store project entries at `.acpus/workflows/<name>/workflow.ts` and global entries at `$HOME/.acpus/workflows/<name>/workflow.ts`.
+- Match the direct lower-kebab `defineWorkflow({ name })` to the package directory.
+- Pass `--project` or `--global` when catalog names collide.
+- Invalid first-level packages remain listable but cannot be used.
 
 ```
 acpus workflow catalog [name] [--project | --global]
 acpus workflow import <file|directory|zip|tgz|http-url> [--project | --global] [--check]
 ```
 
-Omit `name` in an interactive terminal to select an available workflow; piped text lists compact scope/status/name rows without paths. Provide a name to inspect its unique available entry; its TTY detail view uses restrained semantic color and honors `NO_COLOR`. Use a scope flag when project and global catalogs contain the same name.
-
-Import copies one snapshot: it does not install dependencies, track the source, update, or overwrite. Default import reads metadata statically. `--check` executes trusted module top-level code and commits only after preparation succeeds; a global check proves compatibility only in the current workspace.
+- **Browse:** Omit `name` in a terminal to select a workflow; piped output groups names and statuses by scope.
+- **Inspect:** Provide `name`; add a scope flag when project and global entries collide.
+- **Import:** Copy one snapshot. Do not install dependencies, track updates, or overwrite.
+- **`--check`:** Use only with trusted modules because it executes module top-level code. A global check proves compatibility only in the current workspace.
 
 ## Static visualization
 
@@ -135,7 +157,10 @@ acpus workflow viz <workflow> [--out <file.html> [--force]]
 ```
 
 This accepts the same path, catalog, or `-` stdin source as run and prepares it without creating a run. 
-With no `--out`, it prints a compact semantic tree to stdout; `--out` writes self-contained HTML instead. Both show the authored graph, while fanout items and loop rounds materialize only at runtime. Existing HTML output is rejected unless `--force` is explicit.
+- Without `--out`, print a compact semantic tree.
+- With `--out`, write self-contained HTML.
+- Show the authored graph only; fanout items and loop rounds appear during execution.
+- Require `--force` to replace existing HTML.
 
 ## Web operator console
 
@@ -143,7 +168,9 @@ With no `--out`, it prints a compact semantic tree to stdout; `--out` writes sel
 acpus web [--host <host>] [--port <port>] [--token]
 ```
 
-The command starts the Web server without starting the workspace daemon, binds to localhost and a random port by default, and stops on `Ctrl-C`. Runtime actions start the daemon only when needed. Use `--token` when access needs protection.
+- Bind to localhost and a random port by default.
+- Stop with `Ctrl-C`.
+- Use `--token` when access needs protection.
 
 ## Bundled skill and version
 
@@ -153,10 +180,14 @@ acpus skill uninstall [--project | --global | --dir <skills-root>] [--agent <uni
 acpus --version
 ```
 
-Skill commands manage the Acpus skill bundled with this CLI and refuse targets not identifiable as Acpus skills. In a terminal they prompt only for missing scope or Agent selections. Scoped automation must provide `--project` or `--global` and `--agent`; selected roots are `.agents/skills/acpus` for universal agents and `.claude/skills/acpus` for Claude under the project or home directory. Install creates missing selected roots. They do not install or remove the npm package.
-
-Alternatively, `--dir <skills-root>` selects one custom skills root without an Agent selection and installs or uninstalls `<skills-root>/acpus`. 
+- Manage only the Acpus Skill bundled with this CLI, not the npm package.
+- In a terminal, prompt for missing scope or Agent selections.
+- Outside a terminal, require `--project` or `--global` plus `--agent`.
+- Use `--dir <skills-root>` for one custom root without `--agent`.
 
 ## Run maintenance
 
-`acpus runs delete [run-id]` hard-deletes durable state and run-local artifacts without starting the daemon. It rejects active live runs and opens a multi-select picker when run id is omitted. Ask before deleting unless already explicitly requested.
+- `runs delete [run-id]` removes run state and artifacts; without an id, open a multi-select picker.
+- Reject active runs.
+- Use `runs prune --dry-run` to preview age-based terminal-run cleanup.
+- Ask before deleting unless the user already requested it.

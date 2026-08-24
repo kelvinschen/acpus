@@ -1,7 +1,12 @@
 import { isJsonValue, type JsonValue } from "@acpus/expression/ir";
 import { isPreparedRunWorkflow, type PreparedRunWorkflow } from "../admission/prepared-workflow.js";
-import type { AgentOverrideMap } from "../control/agent-overrides.js";
-import type { InspectionObservation } from "../inspection/types.js";
+import type { AgentInjectionMap } from "../agents/injections.js";
+import type {
+  InspectionCandidates,
+  InspectionObservation,
+  InspectionView,
+  ObservableInspectionViewQuery,
+} from "../inspection/types.js";
 import { RUNTIME_LAYOUT_VERSION } from "../runtime-layout.js";
 import { RUNTIME_STORAGE_VERSION } from "../storage/database.js";
 import type { RunDetails } from "../store/store.js";
@@ -14,7 +19,7 @@ import {
 
 export type { RuntimeAuthorityIdentity };
 
-export const DAEMON_PROTOCOL_VERSION = 4;
+export const DAEMON_PROTOCOL_VERSION = 10;
 
 export type DaemonStatus = {
   status: "ok";
@@ -45,13 +50,23 @@ export type DaemonSubmitAndObserveInput = {
   requestId: string;
   prepared: PreparedRunWorkflow;
   input: JsonValue;
-  agentOverrides?: AgentOverrideMap;
+  agentInjections?: AgentInjectionMap;
   until: DaemonRunObservationUntil;
 };
 
 type DaemonSubmitAndObserveRequest = {
   method: "submitAndObserve";
 } & DaemonSubmitAndObserveInput;
+
+export type DaemonInspectInput = {
+  view: ObservableInspectionViewQuery;
+};
+
+type DaemonInspectRequest = {
+  method: "inspect";
+} & DaemonInspectInput;
+
+export type DaemonInspectionResult = InspectionView | InspectionCandidates;
 
 export type DaemonRunStreamFrame =
   | { kind: "admitted"; authority: RuntimeAuthorityIdentity; run: RunDetails }
@@ -71,13 +86,14 @@ export type DaemonRequest = {
 } | {
   method: "control";
   control: DaemonControlIntent;
-} | DaemonSubmitAndObserveRequest;
+} | DaemonSubmitAndObserveRequest
+  | DaemonInspectRequest;
 
 export type DaemonControlResult = RuntimeControlResult;
 export type DaemonControlIntent = RuntimeControlIntent;
 
 export type DaemonResponse =
-  | { ok: true; result: DaemonStatus | DaemonShutdownResult | DaemonControlResult }
+  | { ok: true; result: DaemonStatus | DaemonShutdownResult | DaemonControlResult | DaemonInspectionResult }
   | { ok: false; error: { code: DaemonErrorCode; message: string; ambiguity?: true } };
 
 const DAEMON_ERROR_CODES = ["INVALID_REQUEST", "AUTHORITY_MISMATCH", "RUN_NOT_FOUND", "RUN_NOT_CONTROLLABLE", "CONTROL_CONFLICT", "EXECUTION_UNAVAILABLE", "STORE_BUSY", "STORE_ERROR", "INTERNAL_ERROR"] as const;
@@ -128,6 +144,11 @@ export function parseDaemonRequest(raw: string):
         ? { ok: true, value: { method: value.method } }
         : { ok: false, response: failedDaemonResponse("INVALID_REQUEST", "Invalid daemon request."), stream: false };
     }
+    if (value.method === "inspect") {
+      return isInspectRequest(value)
+        ? { ok: true, value }
+        : { ok: false, response: failedDaemonResponse("INVALID_REQUEST", "Invalid daemon inspection request."), stream: false };
+    }
     if (value.method === "submitAndObserve") {
       if (!isSubmitAndObserveRequest(value)) {
         return { ok: false, response: failedDaemonResponse("INVALID_REQUEST", "Invalid daemon submission request."), stream: true };
@@ -154,6 +175,7 @@ export function failedDaemonResponse(code: DaemonErrorCode, message: string, amb
 export function describeDaemonRequest(request: DaemonRequest): string {
   if (request.method === "submitAndObserve") return "run submission";
   if (request.method === "control") return `${request.control.type} control for run '${request.control.runId}'`;
+  if (request.method === "inspect") return `inspection for run '${request.view.runId}'`;
   return request.method;
 }
 
@@ -162,6 +184,7 @@ export function daemonFailureMessage(request: DaemonRequest, code: DaemonErrorCo
   if (request.method === "status") return "Daemon status is unavailable.";
   if (request.method === "submitAndObserve") return "Run submission failed.";
   if (request.method === "control") return `Control '${request.control.type}' could not be applied to run '${request.control.runId}'.`;
+  if (request.method === "inspect") return `Run '${request.view.runId}' could not be inspected.`;
   return "Daemon shutdown failed.";
 }
 
@@ -229,6 +252,10 @@ export function isDaemonShutdownResult(value: unknown): value is DaemonShutdownR
   return isPlainRecord(value) && hasExactKeys(value, ["status"]) && value.status === "shutdown";
 }
 
+export function isDaemonInspectionResult(value: unknown): value is DaemonInspectionResult {
+  return isObservableInspectionView(value) || isInspectionCandidates(value);
+}
+
 function isRunDetails(value: unknown): value is RunDetails {
   if (!isPlainRecord(value)
     || !hasExactKeys(
@@ -248,7 +275,7 @@ function isRunDetails(value: unknown): value is RunDetails {
         "nodeCount",
         "execution",
       ],
-      ["progressUpdatedAt", "output", "agentOverrides", "fork", "dynamic"],
+      ["progressUpdatedAt", "output", "fork", "dynamic"],
     )
     || typeof value.id !== "string"
     || typeof value.name !== "string"
@@ -261,7 +288,6 @@ function isRunDetails(value: unknown): value is RunDetails {
     || (value.progressUpdatedAt !== undefined && typeof value.progressUpdatedAt !== "string")
     || !isJsonValue(value.input)
     || (value.output !== undefined && !isJsonValue(value.output))
-    || (value.agentOverrides !== undefined && (!isPlainRecord(value.agentOverrides) || !isJsonValue(value.agentOverrides)))
     || (value.fork !== undefined && !isRunForkInfo(value.fork))
     || !Array.isArray(value.hooks)
     || !isJsonValue(value.hooks)
@@ -282,14 +308,20 @@ export function isDaemonControlResult(
   if (value.type === "pause" || value.type === "resume") {
     return hasExactKeys(value, ["type", "state", "run"]) && value.state === "applied";
   }
-  if (value.type === "retry" || value.type === "cancel") {
+  if (value.type === "retry") {
+    return hasExactKeys(value, ["type", "state", "run", "target"])
+      && value.state === "applied"
+      && typeof value.target === "string" && value.target.length > 0;
+  }
+  if (value.type === "cancel") {
     return hasExactKeys(value, ["type", "state", "run"], ["target"])
       && value.state === "applied"
       && (value.target === undefined || typeof value.target === "string" && value.target.length > 0);
   }
   if (value.type === "steer") {
-    return hasExactKeys(value, ["type", "state", "run", "steerId", "requestedTarget", "target", "fencedAttemptId", "continuation"])
+    return hasExactKeys(value, ["type", "state", "run", "steerId", "requestedTarget", "target", "delivery", "fencedAttemptId", "continuation"])
       && value.state === "applied"
+      && value.delivery === "interrupt_continue"
       && value.continuation === "queued"
       && typeof value.steerId === "string" && value.steerId.length > 0
       && typeof value.requestedTarget === "string" && value.requestedTarget.length > 0
@@ -374,11 +406,18 @@ function isSignalValidation(value: unknown): value is Extract<DaemonControlResul
 }
 
 function isControlIntent(value: unknown): value is DaemonControlIntent {
-  if (!isPlainRecord(value) || typeof value.requestId !== "string" || typeof value.type !== "string" || typeof value.runId !== "string") return false;
+  if (!isPlainRecord(value)
+    || typeof value.requestId !== "string" || value.requestId.trim().length === 0
+    || typeof value.type !== "string"
+    || typeof value.runId !== "string" || value.runId.trim().length === 0) return false;
   if (value.type === "pause" || value.type === "resume") return hasExactKeys(value, ["requestId", "type", "runId"]);
-  if (value.type === "retry" || value.type === "cancel") {
+  if (value.type === "retry") {
+    return hasExactKeys(value, ["requestId", "type", "runId", "target"])
+      && typeof value.target === "string" && value.target.trim().length > 0;
+  }
+  if (value.type === "cancel") {
     return hasExactKeys(value, ["requestId", "type", "runId"], ["target"])
-      && (value.target === undefined || typeof value.target === "string" && value.target.length > 0);
+      && (value.target === undefined || typeof value.target === "string" && value.target.trim().length > 0);
   }
   if (value.type === "steer") {
     return hasExactKeys(value, ["requestId", "type", "runId", "target", "instruction"])
@@ -394,11 +433,11 @@ function isControlIntent(value: unknown): value is DaemonControlIntent {
       && isJsonValue(value.payload);
   }
   if (value.type !== "fork"
-    || !hasExactKeys(value, ["requestId", "type", "runId"], ["target", "prepared", "input", "agentOverrides"])) return false;
+    || !hasExactKeys(value, ["requestId", "type", "runId"], ["target", "prepared", "input", "agentInjections"])) return false;
   return (value.target === undefined || typeof value.target === "string" && value.target.length > 0)
     && (value.prepared === undefined || isPreparedRunWorkflow(value.prepared))
     && (value.input === undefined || isJsonValue(value.input))
-    && (value.agentOverrides === undefined || isPlainRecord(value.agentOverrides));
+    && (value.agentInjections === undefined || isPlainRecord(value.agentInjections));
 }
 
 function isSubmitAndObserveRequest(value: Record<string, unknown>): value is DaemonSubmitAndObserveRequest {
@@ -406,27 +445,44 @@ function isSubmitAndObserveRequest(value: Record<string, unknown>): value is Dae
     && hasExactKeys(
       value,
       ["method", "expectedAuthority", "requestId", "prepared", "input", "until"],
-      ["agentOverrides"],
+      ["agentInjections"],
     )
     && isRuntimeAuthorityWireIdentity(value.expectedAuthority)
     && typeof value.requestId === "string" && value.requestId.length > 0
     && isPreparedRunWorkflow(value.prepared)
     && hasOwn(value, "input")
     && isJsonValue(value.input)
-    && (value.agentOverrides === undefined || isPlainRecord(value.agentOverrides))
+    && (value.agentInjections === undefined || isPlainRecord(value.agentInjections))
     && (value.until === "admitted" || value.until === "subject-terminal" || value.until === "decision-boundary");
+}
+
+function isInspectRequest(value: Record<string, unknown>): value is DaemonInspectRequest {
+  return value.method === "inspect"
+    && hasExactKeys(value, ["method", "view"])
+    && isObservableInspectionViewQuery(value.view);
+}
+
+function isObservableInspectionViewQuery(value: unknown): value is ObservableInspectionViewQuery {
+  if (!isPlainRecord(value) || !isNonBlankString(value.runId)) return false;
+  if (value.kind === "run") {
+    return hasExactKeys(value, ["kind", "runId"], ["structure"])
+      && (value.structure === undefined || value.structure === "materialized");
+  }
+  return value.kind === "target"
+    && hasExactKeys(value, ["kind", "runId", "target", "detail"])
+    && isNonBlankString(value.target)
+    && (value.detail === "summary" || value.detail === "timeline");
 }
 
 function isRuntimeAuthorityWireIdentity(value: unknown): value is RuntimeAuthorityIdentity {
   return isPlainRecord(value)
-    && hasExactKeys(value, ["workspaceKey", "runtimeAbi", "layoutVersion", "storageVersion", "authorityId", "storeBinding", "leaseGeneration"])
+    && hasExactKeys(value, ["workspaceKey", "runtimeAbi", "layoutVersion", "storageVersion", "authorityId", "leaseGeneration"])
     && typeof value.workspaceKey === "string" && /^[a-f0-9]{32}$/.test(value.workspaceKey)
     && Number.isInteger(value.runtimeAbi) && Number(value.runtimeAbi) > 0
     && Number.isInteger(value.layoutVersion) && Number(value.layoutVersion) > 0
     && Number.isInteger(value.storageVersion) && Number(value.storageVersion) > 0
     && typeof value.authorityId === "string"
     && /^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/.test(value.authorityId)
-    && typeof value.storeBinding === "string" && /^sha256:[a-f0-9]{64}$/.test(value.storeBinding)
     && Number.isInteger(value.leaseGeneration) && Number(value.leaseGeneration) > 0;
 }
 
@@ -449,7 +505,7 @@ function isInspectionObservation(value: unknown): value is InspectionObservation
     && isObservableInspectionView(value.view);
 }
 
-function isObservableInspectionView(value: unknown): boolean {
+function isObservableInspectionView(value: unknown): value is InspectionView {
   if (!isPlainRecord(value) || typeof value.kind !== "string") return false;
   if (value.kind === "run") {
     return hasExactKeys(value, ["kind", "run", "counts", "tree"], ["output"])
@@ -464,16 +520,21 @@ function isObservableInspectionView(value: unknown): boolean {
     return hasExactKeys(
       value,
       ["kind", "detail", "run", "subject", "state"],
-      ["pulse", "acp", "attention", "visibility", "occurrences"],
+      ["result", "pulse", "acp", "attention", "visibility", "occurrences", "agentSession", "steer", "availableControls"],
     )
       && isInspectionRunRef(value.run)
       && isInspectionSubject(value.subject)
       && isInspectionVisibleState(value.state)
+      && (value.result === undefined || isInspectionTargetResult(value.result))
       && (value.pulse === undefined || isInspectionPulse(value.pulse))
       && (value.acp === undefined || isAcpSilence(value.acp))
       && (value.attention === undefined || isInspectionAttention(value.attention))
       && (value.visibility === undefined || isInspectionVisibility(value.visibility))
-      && (value.occurrences === undefined || isInspectionCounts(value.occurrences));
+      && (value.occurrences === undefined || isInspectionCounts(value.occurrences))
+      && (value.agentSession === undefined || isAgentSessionInspection(value.agentSession))
+      && (value.steer === undefined || isSteerProjection(value.steer))
+      && (value.availableControls === undefined || Array.isArray(value.availableControls)
+        && value.availableControls.every(isInspectionControl));
   }
   return value.detail === "timeline"
     && hasExactKeys(
@@ -490,9 +551,26 @@ function isObservableInspectionView(value: unknown): boolean {
     && value.recent.every(isTimelineEntry);
 }
 
+function isInspectionCandidates(value: unknown): value is InspectionCandidates {
+  return isPlainRecord(value)
+    && hasExactKeys(value, ["kind", "run", "target", "entries"])
+    && value.kind === "candidates"
+    && isPlainRecord(value.run)
+    && hasExactKeys(value.run, ["id", "status"])
+    && isNonBlankString(value.run.id)
+    && isRunStatus(value.run.status)
+    && typeof value.target === "string"
+    && Array.isArray(value.entries)
+    && value.entries.every(entry => isPlainRecord(entry)
+      && hasExactKeys(entry, ["selector", "status", "breadcrumb"])
+      && isNonBlankString(entry.selector)
+      && isInspectionStatus(entry.status)
+      && typeof entry.breadcrumb === "string");
+}
+
 function isInspectionRun(value: unknown): boolean {
   if (!isPlainRecord(value)
-    || !hasExactKeys(value, ["id", "name", "status", "createdAt", "updatedAt"], ["durationMs", "liveness", "failure", "fork"])
+    || !hasExactKeys(value, ["id", "name", "status", "createdAt", "updatedAt"], ["durationMs", "liveness", "failure", "fork", "agentSessions"])
     || typeof value.id !== "string"
     || typeof value.name !== "string"
     || !isRunStatus(value.status)
@@ -500,11 +578,83 @@ function isInspectionRun(value: unknown): boolean {
     || typeof value.updatedAt !== "string"
     || (value.durationMs !== undefined && !isNonNegativeNumber(value.durationMs))
     || (value.liveness !== undefined && !isStringEnum(value.liveness, ["active", "inactive", "stale", "terminal", "unknown"]))
-    || (value.failure !== undefined && !isInspectionFailure(value.failure))) return false;
+    || (value.failure !== undefined && !isInspectionFailure(value.failure))
+    || (value.agentSessions !== undefined && (!Array.isArray(value.agentSessions)
+      || !value.agentSessions.every(isAgentSessionInspection)))) return false;
   return value.fork === undefined
     || isPlainRecord(value.fork)
       && hasExactKeys(value.fork, ["sourceRunId"])
       && typeof value.fork.sourceRunId === "string";
+}
+
+function isInspectionControl(value: unknown): boolean {
+  if (!isPlainRecord(value) || typeof value.type !== "string") return false;
+  if (value.type === "retry") {
+    return hasExactKeys(value, ["type", "target"]) && isNonBlankString(value.target);
+  }
+  if (value.type === "steer") {
+    return hasExactKeys(value, ["type", "target", "delivery", "effect"])
+      && isNonBlankString(value.target)
+      && value.delivery === "interrupt_continue"
+      && value.effect === "cancel_drain_then_continue";
+  }
+  return value.type === "cancel"
+    && hasExactKeys(value, ["type"], ["target"])
+    && (value.target === undefined || isNonBlankString(value.target));
+}
+
+function isAgentSessionInspection(value: unknown): boolean {
+  if (!isPlainRecord(value)
+    || !isStringEnum(value.scope, ["node", "shared"])
+    || !isNonNegativeInteger(value.generation)) return false;
+  return hasExactKeys(value, [
+      "scope", "agentSessionId", "generation", "lifecycle", "currentBinding", "checkpoint",
+    ], ["ownershipHealth", "reportedVersion"])
+    && isNonBlankString(value.agentSessionId)
+    && (value.reportedVersion === undefined
+      || isNonBlankString(value.reportedVersion) && value.reportedVersion.length <= 256)
+    && isStringEnum(value.lifecycle, ["active", "abandoned"])
+    && (value.ownershipHealth === undefined
+      || isStringEnum(value.ownershipHealth, ["healthy", "quarantined", "unverified"]))
+    && isPlainRecord(value.currentBinding)
+    && hasExactKeys(value.currentBinding, ["attemptId", "operation", "promptOrigin"])
+    && isNonBlankString(value.currentBinding.attemptId)
+    && isStringEnum(value.currentBinding.operation, ["start", "continue", "safe_retry"])
+    && isPromptOrigin(value.currentBinding.promptOrigin)
+    && isPlainRecord(value.checkpoint)
+    && hasExactKeys(value.checkpoint, ["value", "attemptId", "promptOrigin"], ["turnId"])
+    && isStringEnum(value.checkpoint.value, [
+      "not_dispatched", "dispatch_intent", "owned_in_flight", "provider_observed",
+      "terminal_observed", "acceptance_unknown", "terminal_unknown",
+    ])
+    && isNonBlankString(value.checkpoint.attemptId)
+    && (value.checkpoint.turnId === undefined || isNonBlankString(value.checkpoint.turnId))
+    && isPromptOrigin(value.checkpoint.promptOrigin);
+}
+
+function isPromptOrigin(value: unknown): boolean {
+  return isStringEnum(value, ["authored", "steering", "repair"]);
+}
+
+function isSteerProjection(value: unknown): boolean {
+  if (!isPlainRecord(value)
+    || !isNonBlankString(value.steerId)
+    || value.delivery !== "interrupt_continue"
+    || !isNonBlankString(value.fencedAttemptId)) return false;
+  if (value.phase === "draining" || value.phase === "queued") {
+    return hasExactKeys(value, ["steerId", "delivery", "fencedAttemptId", "phase"]);
+  }
+  if (value.phase === "replacement_started") {
+    return hasExactKeys(value, ["steerId", "delivery", "fencedAttemptId", "phase", "replacementAttemptId"])
+      && isNonBlankString(value.replacementAttemptId);
+  }
+  return value.phase === "blocked"
+    && hasExactKeys(value, ["steerId", "delivery", "fencedAttemptId", "phase", "blockedCheckpoint"])
+    && isStringEnum(value.blockedCheckpoint, ["acceptance_unknown", "terminal_unknown"]);
+}
+
+function isNonBlankString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
 }
 
 function isInspectionRunRef(value: unknown): boolean {
@@ -539,6 +689,15 @@ function isInspectionVisibleState(value: unknown): boolean {
     && isInspectionStatus(value.status)
     && (value.durationMs === undefined || isNonNegativeNumber(value.durationMs))
     && (value.failure === undefined || isInspectionFailure(value.failure));
+}
+
+function isInspectionTargetResult(value: unknown): boolean {
+  if (!isPlainRecord(value) || typeof value.status !== "string") return false;
+  if (value.status === "accepted") {
+    return hasExactKeys(value, ["status", "value"]) && isJsonValue(value.value);
+  }
+  return (value.status === "completed_without_output" || value.status === "not_accepted")
+    && hasExactKeys(value, ["status"]);
 }
 
 function isInspectionFailure(value: unknown): boolean {

@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import type { DiagnosticIR } from "@acpus/core/ir";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
@@ -555,8 +556,8 @@ async function checkAuthoring(source: string, options: { taskAnalysis?: Workflow
         taskAnalysis: options.taskAnalysis ?? new Map(),
       }),
     );
-    if (result.isErr()) throw new Error(result.error.message);
-    return result.value;
+    if (Result.isFailure(result)) throw new Error(result.failure.message);
+    return result.success;
   } finally {
     rmSync(scratchDir, { recursive: true, force: true });
   }

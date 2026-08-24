@@ -135,7 +135,7 @@ describe("workflow visualization overlay", () => {
 
 function compositePathWorkflow(): WorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "composite-paths",
     agents: {},
     root: {
@@ -182,7 +182,7 @@ function compositePathWorkflow(): WorkflowIR {
 
 function detailWorkflow(): WorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "detail-test",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: { reviewer: { kind: "agent_definition", use: "codex", model: "sonnet", config: { model: "opus" } } },
@@ -261,7 +261,7 @@ function call(fn: string, ...args: ExprIR[]): ExprIR {
 
 function workflow(): WorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "overlay-test",
     inputSchema: { kind: "object", fields: {}, required: [], additionalProperties: false },
     agents: {},

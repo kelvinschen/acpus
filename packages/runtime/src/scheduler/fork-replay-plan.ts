@@ -1,5 +1,6 @@
 import { walkNodes, type AgentNodeIR, type NodeChildScope } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
+import * as Result from "effect/Result";
 import type { EvaluationScope } from "../evaluation/evaluator.js";
 import { resolveAgentSessionGroupDigest } from "../execution/agent-session.js";
 import { replayEvaluation } from "./fork-replay.js";
@@ -130,8 +131,8 @@ function sessionTopology(
     if (visit.node.kind !== "agent" || visit.node.run.sessionKey === undefined) continue;
     for (const scope of potentialScopes(visit.node, visit.ancestry, frozen, projection)) {
       const digest = resolveAgentSessionGroupDigest(visit.node, scope);
-      if (digest.isErr() || digest.value === undefined) unknownPotential = true;
-      else potentialDigests.add(digest.value);
+      if (Result.isFailure(digest) || digest.success === undefined) unknownPotential = true;
+      else potentialDigests.add(digest.success);
     }
   }
   return { members, potentialDigests, unknownPotential };

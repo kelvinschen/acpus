@@ -41,6 +41,17 @@ export type AgentDefinitionIR =
       env?: Record<string, string>;
     };
 
+export type AgentSlotIR = {
+  kind: "agent_slot";
+  model?: string;
+  config?: Record<string, string>;
+  permissionMode?: "approve-reads" | "approve-all" | "deny-all";
+  cwd?: string;
+  env?: Record<string, string>;
+};
+
+export type AgentDeclarationIR = AgentDefinitionIR | AgentSlotIR;
+
 export type NodeIR =
   | AgentNodeIR
   | TaskNodeIR
@@ -179,13 +190,17 @@ export type SourceLocationIR = {
 };
 
 export type WorkflowIR = {
-  irVersion: 7;
+  irVersion: 8;
   name: string;
   description?: string;
   inputSchema?: SchemaIR;
-  agents: Record<string, AgentDefinitionIR>;
+  agents: Record<string, AgentDeclarationIR>;
   root: ScopeIR;
   diagnostics: DiagnosticIR[];
+};
+
+export type AdmittedWorkflowIR = Omit<WorkflowIR, "agents"> & {
+  agents: Record<string, AgentDefinitionIR>;
 };
 
 export type DiagnosticIR = {

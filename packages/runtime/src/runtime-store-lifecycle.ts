@@ -9,17 +9,19 @@ import {
   rm,
 } from "node:fs/promises";
 import { join } from "node:path";
-import { err, ok, ResultAsync } from "neverthrow";
+import * as Clock from "effect/Clock";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import {
-  requestDaemonShutdownAtEndpoint,
-  requestDaemonStatusAtEndpoint,
-  requestDaemonStatusProbeAtEndpoint,
-  requestPredecessorDaemonShutdownAtEndpoint,
+  requestDaemonShutdownAtEndpointResult,
+  requestDaemonStatusAtEndpointResult,
+  requestDaemonStatusProbeAtEndpointResult,
+  requestPredecessorDaemonShutdownAtEndpointResult,
 } from "./daemon/client.js";
 import { probeProcessIdentity } from "./process-liveness.js";
 import {
   RUNTIME_LAYOUT_VERSION,
-  ensureRuntimeLayoutAtWorkspace,
+  ensureRuntimeLayoutAtWorkspaceValue,
   isGenerationId,
   isWorkspaceManifest,
   resolveRuntimeLayoutAtWorkspace,
@@ -36,7 +38,7 @@ import {
   type RuntimeGenerationSummary,
 } from "./runtime-history.js";
 import { acquireRuntimeExclusiveLock, RuntimeLockTimeoutError } from "./runtime-lock.js";
-import { openRuntimeStoreAtLayout } from "./store/store.js";
+import { initializeRuntimeStoreAdapterAtLayout } from "./store/store.js";
 import {
   hasNoPendingRuntimeDatabaseWal,
   openRuntimeDatabase,
@@ -228,206 +230,211 @@ async function assertAcpOwnershipClear(layout: RuntimeLayout): Promise<void> {
 
 export function inspectRuntimeStore(
   cwd: string,
-): ResultAsync<RuntimeStoreStatus, RuntimeStoreFailure> {
-  return new ResultAsync((async () => {
-    const inspected = await inspectRuntimeStoreInternal(cwd);
-    if (inspected.isErr()) return err({
-      type: inspected.error.reason,
-      message: inspected.error.reason === "busy" || inspected.error.reason === "unreadable"
-        ? inspected.error.message
+): Effect.Effect<RuntimeStoreStatus, RuntimeStoreFailure> {
+  return Effect.gen(function* () {
+    const inspected = yield* inspectRuntimeStoreInternal(cwd);
+    if (Result.isFailure(inspected)) return yield* Effect.fail({
+      type: inspected.failure.reason,
+      message: inspected.failure.reason === "busy" || inspected.failure.reason === "unreadable"
+        ? inspected.failure.message
         : "The Runtime store could not be inspected.",
     });
-    const current = inspected.value.current;
-    if (current.state === "absent" || current.state === "ready") return ok({ state: "ready" as const });
-    if (current.state === "unsupported") return ok({
+    const current = inspected.success.current;
+    if (current.state === "absent" || current.state === "ready") return { state: "ready" as const };
+    if (current.state === "unsupported") return {
       state: "unsupported" as const,
       message: current.detail,
-    });
-    return ok({
+    };
+    return {
       state: "repairable" as const,
       message: "The Runtime store needs repair for this version of Acpus.",
-    });
-  })());
+    };
+  });
 }
 
 export function repairRuntimeStore(
   cwd: string,
-): ResultAsync<{ changed: boolean }, RuntimeStoreFailure> {
-  return repairRuntimeStoreInternal(cwd);
+): Effect.Effect<{ changed: boolean }, RuntimeStoreFailure> {
+  return repairRuntimeStoreInternal(cwd).pipe(Effect.flatMap(Effect.fromResult));
 }
 
 export function repairRuntimeStoreInternal(
   cwd: string,
   options: RuntimeLayoutOptions = {},
-): ResultAsync<{ changed: boolean }, RuntimeStoreFailure> {
-  return ResultAsync.fromPromise(repairRuntimeStoreValue(cwd, options), error => ({
-    type: error instanceof RuntimeStoreBusyError || error instanceof RuntimeDatabaseProbeChangedError ? "busy"
-      : error instanceof RuntimeStoreUnreadableError ? "unreadable"
-        : error instanceof RuntimeStoreUnsupportedError ? "unsupported"
-          : "failed",
-    message: error instanceof RuntimeDatabaseProbeChangedError
-      ? error.message
-      : error instanceof RuntimeStoreUnreadableError
+): Effect.Effect<Result.Result<{ changed: boolean }, RuntimeStoreFailure>> {
+  return Effect.result(repairRuntimeStoreValue(cwd, options)).pipe(Effect.map(result => Result.mapError(result, error => ({
+      type: error instanceof RuntimeStoreBusyError || error instanceof RuntimeDatabaseProbeChangedError ? "busy"
+        : error instanceof RuntimeStoreUnreadableError ? "unreadable"
+          : error instanceof RuntimeStoreUnsupportedError ? "unsupported"
+            : "failed",
+      message: error instanceof RuntimeDatabaseProbeChangedError
         ? error.message
-        : error instanceof RuntimeStoreBusyError
-          ? "The Runtime store is busy. Stop active runs and try again."
-          : error instanceof RuntimeStoreUnsupportedError
-            ? error.message
-            : "The Runtime store could not be repaired.",
-  }));
+        : error instanceof RuntimeStoreUnreadableError
+          ? error.message
+          : error instanceof RuntimeStoreBusyError
+            ? "The Runtime store is busy. Stop active runs and try again."
+            : error instanceof RuntimeStoreUnsupportedError
+              ? error.message
+              : "The Runtime store could not be repaired.",
+    }))));
 }
 
 export function inspectRuntimeStoreInternal(
   cwd: string,
   options: RuntimeLayoutOptions = {},
-): ResultAsync<RuntimeStoreAssessment, RuntimeStoreInspectFailure> {
-  return ResultAsync.fromPromise(
-    inspectRuntimeStoreValue(cwd, options),
-    error => ({
+): Effect.Effect<Result.Result<RuntimeStoreAssessment, RuntimeStoreInspectFailure>> {
+  return Effect.result(inspectRuntimeStoreValue(cwd, options)).pipe(Effect.map(result => Result.mapError(result, error => ({
       type: "inspect-failed",
       reason: error instanceof RuntimeDatabaseProbeChangedError ? "busy"
         : error instanceof RuntimeStoreUnreadableError ? "unreadable"
           : "failed",
       message: errorMessage(error),
-    }),
-  );
+    }))));
 }
 
-export async function initializeRuntimeStoreIfAbsent(
+export function initializeRuntimeStoreIfAbsent(
   cwd: string,
   options: RuntimeLayoutOptions = {},
-): Promise<void> {
+): Effect.Effect<void, unknown> {
   const target = resolveRuntimeStoreTarget(cwd, options);
   const workspace = target.workspace;
-  await ensurePrivateDirectory(workspace.home, workspace.platform);
-  const lock = await acquireRuntimeExclusiveLock(workspace);
-  try {
-    const assessment = await inspectRuntimeStoreAtTarget(target);
-    if (assessment.current.state === "absent") await initializeCurrentStore(target);
-  } finally {
-    await lock.release();
-  }
+  return Effect.scoped(Effect.gen(function*() {
+    yield* promise(() => ensurePrivateDirectory(workspace.home, workspace.platform));
+    yield* acquireRuntimeExclusiveLock(workspace);
+    const assessment = yield* inspectRuntimeStoreAtTarget(target);
+    if (assessment.current.state === "absent") yield* initializeCurrentStore(target);
+  }));
 }
 
 export function awaitRuntimeStoreOffline(
   cwd: string,
-): ResultAsync<void, RuntimeStoreOfflineFailure> {
-  return ResultAsync.fromPromise(
-    awaitRuntimeStoreOfflineValue(cwd),
-    error => ({
+): Effect.Effect<void, RuntimeStoreOfflineFailure> {
+  return awaitRuntimeStoreOfflineValue(cwd).pipe(Effect.mapError(error => ({
       type: error instanceof RuntimeStoreBusyError || error instanceof RuntimeLockTimeoutError
         ? "busy"
         : "unavailable",
       message: errorMessage(error),
-    }),
-  );
+    })));
 }
 
-async function awaitRuntimeStoreOfflineValue(cwd: string): Promise<void> {
+function awaitRuntimeStoreOfflineValue(cwd: string): Effect.Effect<void, unknown> {
   const target = resolveRuntimeStoreTarget(cwd);
-  const status = await requestDaemonStatusAtEndpoint(target.workspace.daemonEndpoint);
-  if (status.isOk()) throw new RuntimeStoreBusyError("Runtime store has a live Runtime authority.");
-  if (status.error.type !== "transport"
-    || status.error.reason !== "not-found" && status.error.reason !== "refused") {
-    throw new Error(`Runtime daemon activity cannot be proven offline: ${status.error.message}`);
-  }
   const workspace = target.workspace;
-  const lock = await acquireOfflineExclusiveLock(workspace);
-  try {
-    let layout: RuntimeLayout;
-    try {
-      layout = resolveRuntimeLayoutAtWorkspace(workspace);
-    } catch (error) {
-      if (!await pathExists(workspace.workspaceRoot)) return;
-      throw error;
+  return Effect.gen(function*() {
+    const status = yield* requestDaemonStatusAtEndpointResult(target.workspace.daemonEndpoint);
+    if (Result.isSuccess(status)) {
+      return yield* Effect.fail(new RuntimeStoreBusyError("Runtime store has a live Runtime authority."));
     }
-    if (!await pathExists(layout.runtimeRoot)) return;
-    await assertRuntimeGenerationSealSafe(layout);
-  } catch (error) {
-    if (error instanceof RuntimeGenerationActiveError) throw new RuntimeStoreBusyError(error.message);
-    throw error;
-  } finally {
-    await lock.release();
-  }
+    if (status.failure.type !== "transport"
+      || status.failure.reason !== "not-found" && status.failure.reason !== "refused") {
+      return yield* Effect.fail(new Error(`Runtime daemon activity cannot be proven offline: ${status.failure.message}`));
+    }
+    yield* Effect.scoped(Effect.gen(function*() {
+      yield* acquireOfflineExclusiveLock(workspace);
+      yield* promise(async () => {
+        let layout: RuntimeLayout;
+        try {
+          layout = resolveRuntimeLayoutAtWorkspace(workspace);
+        } catch (error) {
+          if (!await pathExists(workspace.workspaceRoot)) return;
+          throw error;
+        }
+        if (!await pathExists(layout.runtimeRoot)) return;
+        try {
+          await assertRuntimeGenerationSealSafe(layout);
+        } catch (error) {
+          if (error instanceof RuntimeGenerationActiveError) throw new RuntimeStoreBusyError(error.message);
+          throw error;
+        }
+      });
+    }));
+  });
 }
 
-async function acquireOfflineExclusiveLock(layout: RuntimeLayout) {
-  const deadline = Date.now() + runtimeOfflineWaitMs;
-  while (true) {
-    try {
-      return await acquireRuntimeExclusiveLock(layout);
-    } catch (error) {
-      if (!(error instanceof RuntimeLockTimeoutError)) throw error;
-      if (Date.now() >= deadline) throw new RuntimeStoreBusyError(error.message);
-      await new Promise(resolve => setTimeout(resolve, 100));
+function acquireOfflineExclusiveLock(layout: RuntimeLayout) {
+  return Effect.gen(function*() {
+    const deadline = (yield* Clock.currentTimeMillis) + runtimeOfflineWaitMs;
+    while (true) {
+      const acquired = yield* Effect.result(acquireRuntimeExclusiveLock(layout));
+      if (Result.isSuccess(acquired)) return acquired.success;
+      const error = acquired.failure;
+      if (!(error instanceof RuntimeLockTimeoutError)) return yield* Effect.fail(error);
+      if ((yield* Clock.currentTimeMillis) >= deadline) {
+        return yield* Effect.fail(new RuntimeStoreBusyError(error.message));
+      }
+      yield* Effect.sleep(100);
     }
-  }
+  });
 }
 
-async function repairRuntimeStoreValue(
+function repairRuntimeStoreValue(
   cwd: string,
   options: RuntimeLayoutOptions,
-): Promise<{ changed: boolean }> {
-  const target = resolveRuntimeStoreTarget(cwd, options);
-  let first: RuntimeStoreAssessment | undefined;
-  try {
-    first = await inspectRuntimeStoreAtTarget(target);
-  } catch (error) {
+): Effect.Effect<{ changed: boolean }, unknown> {
+  return Effect.scoped(Effect.gen(function*() {
+    const target = resolveRuntimeStoreTarget(cwd, options);
+    let first: RuntimeStoreAssessment | undefined;
+    const inspected = yield* Effect.result(inspectRuntimeStoreAtTarget(target));
+    if (Result.isSuccess(inspected)) first = inspected.success;
     // An online WAL probe is only a no-op/unsupported preflight. If it races a
     // writer, retire the daemon and make the authoritative decision offline.
-    if (!(error instanceof RuntimeDatabaseProbeChangedError)) throw error;
-  }
-  if (first?.current.state === "absent" || first?.current.state === "ready") return { changed: false };
-  if (first?.current.state === "unsupported") throw new RuntimeStoreUnsupportedError(first.current.detail);
-  await stopDaemonGracefully(target.workspace);
-  const workspace = target.workspace;
-  let lock;
-  try {
-    lock = await acquireRuntimeExclusiveLock(workspace);
-  } catch (error) {
-    if (error instanceof RuntimeLockTimeoutError) {
-      try {
-        const latest = await inspectRuntimeStoreAtTarget(target);
-        if (latest.current.state === "absent" || latest.current.state === "ready") {
-          return { changed: false };
-        }
-        if (latest.current.state === "unsupported") {
-          throw new RuntimeStoreUnsupportedError(latest.current.detail);
-        }
-      } catch (latestError) {
-        if (latestError instanceof RuntimeStoreUnsupportedError) throw latestError;
-      }
-      throw new RuntimeStoreBusyError(error.message);
+    else if (!(inspected.failure instanceof RuntimeDatabaseProbeChangedError)) {
+      return yield* Effect.fail(inspected.failure);
     }
-    throw error;
-  }
-
-  try {
-    const checked = await inspectRuntimeStoreAtTarget(target);
+    if (first?.current.state === "absent" || first?.current.state === "ready") return { changed: false };
+    if (first?.current.state === "unsupported") {
+      return yield* Effect.fail(new RuntimeStoreUnsupportedError(first.current.detail));
+    }
+    yield* stopDaemonGracefully(target.workspace);
+    const workspace = target.workspace;
+    const acquired = yield* Effect.result(acquireRuntimeExclusiveLock(workspace));
+    if (Result.isFailure(acquired)) {
+      const error = acquired.failure;
+      if (error instanceof RuntimeLockTimeoutError) {
+        const latest = yield* Effect.result(inspectRuntimeStoreAtTarget(target));
+        if (Result.isSuccess(latest)) {
+          const current = latest.success.current;
+          if (current.state === "absent" || current.state === "ready") return { changed: false };
+          if (current.state === "unsupported") {
+            return yield* Effect.fail(new RuntimeStoreUnsupportedError(current.detail));
+          }
+        }
+        return yield* Effect.fail(new RuntimeStoreBusyError(error.message));
+      }
+      return yield* Effect.fail(error);
+    }
+    const checked = yield* inspectRuntimeStoreAtTarget(target);
     if (checked.current.state === "absent" || checked.current.state === "ready") return { changed: false };
-    if (checked.current.state === "unsupported") throw new RuntimeStoreUnsupportedError(checked.current.detail);
-    const resolved = await resolveWalUnderLock(workspace, checked);
+    if (checked.current.state === "unsupported") {
+      return yield* Effect.fail(new RuntimeStoreUnsupportedError(checked.current.detail));
+    }
+    const resolved = yield* promise(() => resolveWalUnderLock(workspace, checked));
     if (resolved.blockers.length > 0) {
-      throw new RuntimeStoreBusyError(resolved.blockers.map(blocker => blocker.message).join(" "));
+      return yield* Effect.fail(
+        new RuntimeStoreBusyError(resolved.blockers.map(blocker => blocker.message).join(" ")),
+      );
     }
     const assessment = resolved.assessment;
-    if (assessment.current.state === "unsupported") throw new RuntimeStoreUnsupportedError(assessment.current.detail);
-
-    for (const path of [workspace.home, join(workspace.home, "workspaces"), workspace.workspaceRoot]) {
-      await ensurePrivateDirectory(path, workspace.platform);
+    if (assessment.current.state === "unsupported") {
+      return yield* Effect.fail(new RuntimeStoreUnsupportedError(assessment.current.detail));
     }
-    const existingJournal = await readTransitionJournal(workspace.transitionJournalPath);
-    if (existingJournal) return await resumeTransition(target, existingJournal);
+    yield* promise(async () => {
+      for (const directory of [workspace.home, join(workspace.home, "workspaces"), workspace.workspaceRoot]) {
+        await ensurePrivateDirectory(directory, workspace.platform);
+      }
+    });
+    const existingJournal = yield* promise(() => readTransitionJournal(workspace.transitionJournalPath));
+    if (existingJournal) return yield* promise(() => resumeTransition(target, existingJournal));
     if (assessment.transition.type === "initialize" && assessment.current.state !== "absent") {
-      return await initializeCurrentStore(target);
+      return yield* initializeCurrentStore(target);
     }
-    if (assessment.transition.type === "none") throw new Error("Runtime store does not need repair.");
-    const journal = await createTransitionJournal(workspace, assessment);
-    await writePrivateJsonAtomically(workspace.transitionJournalPath, journal);
-    return await resumeTransition(target, journal);
-  } finally {
-    await lock.release();
-  }
+    if (assessment.transition.type === "none") {
+      return yield* Effect.fail(new Error("Runtime store does not need repair."));
+    }
+    const journal = yield* promise(() => createTransitionJournal(workspace, assessment));
+    yield* promise(() => writePrivateJsonAtomically(workspace.transitionJournalPath, journal));
+    return yield* promise(() => resumeTransition(target, journal));
+  }));
 }
 
 class RuntimeStoreBusyError extends Error {}
@@ -480,29 +487,28 @@ function canReassessCrashWal(assessment: RuntimeStoreAssessment): boolean {
       && blocker.message.includes("write-ahead log"));
 }
 
-async function inspectRuntimeStoreValue(
+function inspectRuntimeStoreValue(
   cwd: string,
   options: RuntimeLayoutOptions = {},
-): Promise<RuntimeStoreAssessment> {
+): Effect.Effect<RuntimeStoreAssessment, unknown> {
   return inspectRuntimeStoreAtTarget(resolveRuntimeStoreTarget(cwd, options));
 }
 
-async function inspectRuntimeStoreAtTarget(
+function inspectRuntimeStoreAtTarget(
   target: RuntimeStoreTarget,
-): Promise<RuntimeStoreAssessment> {
-  const workspace = target.workspace;
-  await validateRuntimeLayoutBoundary(workspace);
-  const journal = await readTransitionJournal(workspace.transitionJournalPath);
-  let generations: RuntimeGenerationSummary[] = [];
-  let generationFailure: string | undefined;
-  try {
-    generations = await listRuntimeGenerationsAtLayout(workspace);
-  } catch (error) {
-    generationFailure = errorMessage(error);
-  }
-  let current: RuntimeStoreCurrent;
-  let transition: RuntimeStoreTransition;
-  let blockers: RuntimeStoreBlocker[] = [];
+): Effect.Effect<RuntimeStoreAssessment, unknown> {
+  return Effect.gen(function*() {
+    const workspace = target.workspace;
+    yield* promise(() => validateRuntimeLayoutBoundary(workspace));
+    const journal = yield* promise(() => readTransitionJournal(workspace.transitionJournalPath));
+    let generations: RuntimeGenerationSummary[] = [];
+    let generationFailure: string | undefined;
+    const listed = yield* Effect.result(promise(() => listRuntimeGenerationsAtLayout(workspace)));
+    if (Result.isSuccess(listed)) generations = listed.success;
+    else generationFailure = errorMessage(listed.failure);
+    let current: RuntimeStoreCurrent;
+    let transition: RuntimeStoreTransition;
+    let blockers: RuntimeStoreBlocker[] = [];
 
   if (journal) {
     current = {
@@ -512,13 +518,13 @@ async function inspectRuntimeStoreAtTarget(
     };
     transition = { type: "recover" };
   } else {
-    const manifestRead = await readManifest(workspace.manifestPath);
+    const manifestRead = yield* promise(() => readManifest(workspace.manifestPath));
     if (!manifestRead) {
-      const stateExists = await anyPathExists([
+      const stateExists = yield* promise(() => anyPathExists([
         workspace.legacyRuntimeRoot,
         workspace.legacyArchivesRoot,
         workspace.generationsRoot,
-      ]);
+      ]));
       if (stateExists) {
         current = {
           state: "recovery-required",
@@ -549,17 +555,17 @@ async function inspectRuntimeStoreAtTarget(
       }
     } else {
       const validation = validateWorkspaceManifest(manifestRead.value, workspace);
-      if (validation.isErr()) {
+      if (Result.isFailure(validation)) {
         current = {
           state: "recovery-required",
           layoutVersion: manifestRead.value.manifestVersion,
-          detail: validation.error.message,
+          detail: validation.failure.message,
         };
         transition = { type: "recover" };
-      } else if (validation.value.manifestVersion === 1) {
-        ({ current, transition } = await inspectLegacyStore(workspace));
+      } else if (validation.success.manifestVersion === 1) {
+        ({ current, transition } = yield* promise(() => inspectLegacyStore(workspace)));
       } else {
-        ({ current, transition } = await inspectGenerationStore(workspace));
+        ({ current, transition } = yield* promise(() => inspectGenerationStore(workspace)));
       }
     }
   }
@@ -582,28 +588,29 @@ async function inspectRuntimeStoreAtTarget(
     transition = { type: "recover" };
   }
   if (journal) {
-    const incompatible = await inspectJournalSourceCompatibility(workspace, journal);
+    const incompatible = yield* promise(() => inspectJournalSourceCompatibility(workspace, journal));
     if (incompatible) ({ current, transition } = incompatible);
   } else if (current.state === "recovery-required") {
-    const incompatible = await inspectRecoverySourceCompatibility(workspace, generations);
+    const incompatible = yield* promise(() => inspectRecoverySourceCompatibility(workspace, generations));
     if (incompatible) ({ current, transition } = incompatible);
   }
   if (transition.type !== "none" && current.state !== "absent") {
-    blockers = await inspectActivityBlockers(activityLayout(workspace, current));
+    blockers = yield* inspectActivityBlockers(activityLayout(workspace, current));
     for (const generation of generations.filter(candidate => candidate.state === "partial"
       && candidate.id !== current.generationId)) {
-      blockers.push(...await inspectActivityBlockers(runtimeLayoutForGeneration(workspace, generation.id)));
+      blockers.push(...(yield* inspectActivityBlockers(runtimeLayoutForGeneration(workspace, generation.id))));
     }
   }
   if (generationFailure) blockers.push({ type: "activity-unproven", message: generationFailure });
   blockers = blockers.filter((blocker, index) => blockers.findIndex(candidate => candidate.type === blocker.type
     && candidate.message === blocker.message) === index);
-  return {
-    current,
-    transition,
-    blockers,
-    generations,
-  };
+    return {
+      current,
+      transition,
+      blockers,
+      generations,
+    };
+  });
 }
 
 async function inspectLegacyStore(
@@ -1017,12 +1024,11 @@ async function resumeTransition(
       createdAt: journal.startedAt,
     });
   }
-  const store = await openRuntimeStoreAtLayout(next, {
+  await initializeRuntimeStoreAdapterAtLayout(next, {
     lock: false,
     prevalidated: true,
     unpublished: true,
   });
-  store.close();
   const nextFormat = await readRuntimeDatabaseFormat(next.databasePath);
   if (nextFormat?.applicationId !== RUNTIME_APPLICATION_ID
     || nextFormat.userVersion !== RUNTIME_STORAGE_VERSION) {
@@ -1126,32 +1132,36 @@ async function sealTransitionSource(
   if (runs !== undefined) await writeRunIndex(destination.runIndexPath, runs);
 }
 
-async function initializeCurrentStore(
+function initializeCurrentStore(
   target: RuntimeStoreTarget,
-): Promise<{ changed: boolean }> {
-  const ensured = await ensureRuntimeLayoutAtWorkspace(target.workspace, target.options);
-  if (ensured.isErr()) throw new Error(ensured.error.message);
-  const store = await openRuntimeStoreAtLayout(ensured.value, { lock: false, prevalidated: true });
-  store.close();
-  const after = await inspectRuntimeStoreAtTarget(target);
-  if (after.current.state !== "ready") throw new Error("Initialized runtime generation did not become ready.");
-  return { changed: true };
+): Effect.Effect<{ changed: boolean }, unknown> {
+  return Effect.gen(function*() {
+    const ensured = yield* promise(() => ensureRuntimeLayoutAtWorkspaceValue(target.workspace, target.options));
+    yield* promise(() => initializeRuntimeStoreAdapterAtLayout(ensured, { lock: false, prevalidated: true }));
+    const after = yield* inspectRuntimeStoreAtTarget(target);
+    if (after.current.state !== "ready") {
+      return yield* Effect.fail(new Error("Initialized runtime generation did not become ready."));
+    }
+    return { changed: true };
+  });
 }
 
-async function inspectActivityBlockers(layout: RuntimeLayout): Promise<RuntimeStoreBlocker[]> {
-  const blockers: RuntimeStoreBlocker[] = [];
-  try {
-    const daemonStatus = await requestDaemonStatusAtEndpoint(layout.daemonEndpoint);
-    if (daemonStatus.isOk()) {
+function inspectActivityBlockers(layout: RuntimeLayout): Effect.Effect<RuntimeStoreBlocker[], unknown> {
+  return Effect.gen(function*() {
+    const daemonStatus = yield* requestDaemonStatusAtEndpointResult(layout.daemonEndpoint);
+    return yield* promise(async (): Promise<RuntimeStoreBlocker[]> => {
+      const blockers: RuntimeStoreBlocker[] = [];
+      try {
+    if (Result.isSuccess(daemonStatus)) {
       blockers.push({
         type: "runtime-authority",
         message: "Runtime store has a live Runtime authority.",
       });
-    } else if (daemonStatus.error.type !== "transport"
-      || daemonStatus.error.reason !== "not-found" && daemonStatus.error.reason !== "refused") {
+    } else if (daemonStatus.failure.type !== "transport"
+      || daemonStatus.failure.reason !== "not-found" && daemonStatus.failure.reason !== "refused") {
       blockers.push({
         type: "activity-unproven",
-        message: `Runtime daemon activity cannot be proven safe: ${daemonStatus.error.message}`,
+        message: `Runtime daemon activity cannot be proven safe: ${daemonStatus.failure.message}`,
       });
     }
     if (!await pathExists(layout.runtimeRoot)) return blockers;
@@ -1232,34 +1242,42 @@ async function inspectActivityBlockers(layout: RuntimeLayout): Promise<RuntimeSt
       type: "activity-unproven",
       message: `Runtime store activity cannot be proven safe: ${errorMessage(error)}`,
     }];
-  }
+      }
+    });
+  });
 }
 
-async function stopDaemonGracefully(
+function stopDaemonGracefully(
   workspace: RuntimeLayout,
-): Promise<void> {
-  const endpoint = workspace.daemonEndpoint;
-  const status = await requestDaemonStatusProbeAtEndpoint(endpoint);
-  if (status.isErr()) {
-    if (status.error.type === "transport"
-      && (status.error.reason === "not-found" || status.error.reason === "refused")) return;
-    throw new RuntimeStoreBusyError(status.error.message);
-  }
-  if (status.value.kind === "unknown") {
-    throw new RuntimeStoreBusyError("The live daemon is not compatible with this version of Acpus and was left unchanged.");
-  }
-  const shutdown = await (status.value.kind === "predecessor"
-    ? requestPredecessorDaemonShutdownAtEndpoint(endpoint)
-    : requestDaemonShutdownAtEndpoint(endpoint));
-  if (shutdown.isErr()) throw new RuntimeStoreBusyError(shutdown.error.message);
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    const polled = await requestDaemonStatusProbeAtEndpoint(endpoint);
-    if (polled.isErr() && polled.error.type === "transport"
-      && (polled.error.reason === "not-found" || polled.error.reason === "refused")) return;
-    await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  throw new RuntimeStoreBusyError("The daemon did not stop within 30 seconds.");
+): Effect.Effect<void, unknown> {
+  return Effect.gen(function*() {
+    const endpoint = workspace.daemonEndpoint;
+    const status = yield* requestDaemonStatusProbeAtEndpointResult(endpoint);
+    if (Result.isFailure(status)) {
+      if (status.failure.type === "transport"
+        && (status.failure.reason === "not-found" || status.failure.reason === "refused")) return;
+      return yield* Effect.fail(new RuntimeStoreBusyError(status.failure.message));
+    }
+    if (status.success.kind === "unknown") {
+      return yield* Effect.fail(
+        new RuntimeStoreBusyError("The live daemon is not compatible with this version of Acpus and was left unchanged."),
+      );
+    }
+    const shutdown = yield* (status.success.kind === "predecessor"
+      ? requestPredecessorDaemonShutdownAtEndpointResult(endpoint)
+      : requestDaemonShutdownAtEndpointResult(endpoint));
+    if (Result.isFailure(shutdown)) {
+      return yield* Effect.fail(new RuntimeStoreBusyError(shutdown.failure.message));
+    }
+    const deadline = (yield* Clock.currentTimeMillis) + 30_000;
+    while ((yield* Clock.currentTimeMillis) < deadline) {
+      const polled = yield* requestDaemonStatusProbeAtEndpointResult(endpoint);
+      if (Result.isFailure(polled) && polled.failure.type === "transport"
+        && (polled.failure.reason === "not-found" || polled.failure.reason === "refused")) return;
+      yield* Effect.sleep(100);
+    }
+    return yield* Effect.fail(new RuntimeStoreBusyError("The daemon did not stop within 30 seconds."));
+  });
 }
 
 async function extractPortableRunIndex(
@@ -1542,6 +1560,10 @@ async function pathExists(path: string): Promise<boolean> {
     if (isMissing(error)) return false;
     throw error;
   }
+}
+
+function promise<A>(operation: () => Promise<A>): Effect.Effect<A, unknown> {
+  return Effect.tryPromise({ try: operation, catch: error => error });
 }
 
 function archiveVersion(name: string): number | null {

@@ -6,6 +6,7 @@ allowBuilds:
   '@google/genai': false
   esbuild: true
   koffi: true
+  msgpackr-extract: false
   node-pty: true
   protobufjs: false
 blockExoticSubdeps: true

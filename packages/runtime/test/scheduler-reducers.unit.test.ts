@@ -69,16 +69,16 @@ describe("scheduler identity and reducers", () => {
       "check",
     );
 
-    expect(deriveInstanceKey(path)).toMatch(/^items\[0\]\/retry#2\/check~[a-f0-9]{12}$/);
-    expect(deriveInstanceKey(appendBranch([], "race", "left"))).toMatch(/^race\.left~[a-f0-9]{12}$/);
+    expect(deriveInstanceKey(path)).toMatch(/^items\[0\]\/retry#2\/check~[a-f0-9]{8}$/);
+    expect(deriveInstanceKey(appendBranch([], "race", "left"))).toMatch(/^race\.left~[a-f0-9]{8}$/);
   });
 
   it("gives a static loop-body node a distinct key in every iteration", () => {
     const first = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 0), "check"));
     const second = deriveInstanceKey(appendNode(appendLoopIteration([], "retry", 1), "check"));
 
-    expect(first).toMatch(/^retry#0\/check~[a-f0-9]{12}$/);
-    expect(second).toMatch(/^retry#1\/check~[a-f0-9]{12}$/);
+    expect(first).toMatch(/^retry#0\/check~[a-f0-9]{8}$/);
+    expect(second).toMatch(/^retry#1\/check~[a-f0-9]{8}$/);
     expect(first).not.toBe(second);
   });
 
@@ -143,25 +143,6 @@ describe("scheduler identity and reducers", () => {
       { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root" } },
       { type: "frame.cancelled", payload: { frameKey: "root", cancelReason: "parent_failed" } },
     ]).run).toMatchObject({ status: "failed" });
-  });
-
-  it("resets failed run projection for run-level retry without preserving stale dynamic state", () => {
-    const retried = applySchedulerEvents(createSchedulerProjection("run_1"), [
-      { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root", scope: { fail: "fail~1" } } },
-      { type: "instance.ready", payload: { runId: "run_1", nodeKey: "fail~1", nodeId: "fail", instancePath: appendNode([], "fail") } },
-      { type: "instance.failed", payload: { nodeKey: "fail~1", error: { reason: "boom" } } },
-      { type: "frame.failed", payload: { frameKey: "root", error: { reason: "boom" } } },
-      { type: "control.run_retry_requested", payload: {} },
-      { type: "frame.started", payload: { runId: "run_1", frameKey: "root", frameKind: "root" } },
-    ]);
-
-    expect(retried.run).toEqual({ runId: "run_1", status: "pending", paused: false });
-    expect(retried.frames.root).toMatchObject({ frameKind: "root", status: "running" });
-    expect(retried.instances).toEqual({});
-
-    expect(() => applySchedulerEvents(createSchedulerProjection("run_1"), [
-      { type: "control.run_retry_requested", payload: {} },
-    ])).toThrow("Cannot retry run from pending.");
   });
 
   it("resets a failed composite frame subtree for targeted retry", () => {

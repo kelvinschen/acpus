@@ -1,6 +1,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { ToolDefinition } from "@deepseek-ai/dsh-tools";
 import { describe, expect, it, vi } from "vitest";
+import * as Effect from "effect/Effect";
 import { registerSupervisorTools } from "../src/host/tools.js";
 
 describe("Acpus Supervisor tool contract", () => {
@@ -28,10 +29,12 @@ describe("Acpus Supervisor tool contract", () => {
 
     const fork = branches.find(branch => branch.properties.type.const === "fork");
     if (fork === undefined) throw new Error("Expected the fork action schema.");
-    expect(fork).toMatchObject({ required: ["type", "workflow", "input", "restart"] });
+    expect(fork).toMatchObject({ required: ["type", "workflow", "input", "agents", "restart"] });
     expect(nestedTags(fork, "workflow"))
       .toEqual(["inherit", "replace"]);
     expect(nestedTags(fork, "input"))
+      .toEqual(["inherit", "replace"]);
+    expect(nestedTags(fork, "agents"))
       .toEqual(["inherit", "replace"]);
     expect(nestedTags(fork, "restart"))
       .toEqual(["compatible", "target"]);
@@ -39,7 +42,7 @@ describe("Acpus Supervisor tool contract", () => {
 
   it("treats read-only placeholder values as omitted", async () => {
     const tasks = vi.fn(async () => ({ tasks: [], truncated: false }));
-    const inspect = vi.fn(async () => success({
+    const inspect = vi.fn(() => success({
       kind: "archived-run",
       run: { status: "completed" },
     }));
@@ -61,23 +64,12 @@ describe("Acpus Supervisor tool contract", () => {
     });
     expect(resolveTask).toHaveBeenCalledWith("session", undefined);
     expect(inspect).toHaveBeenCalledWith({ kind: "run", runId: "run-1" });
-  });
-
-  it("treats zero timeline as Target summary detail", async () => {
-    const inspect = vi.fn(async () => success({
-      kind: "archived-run",
-      run: { status: "completed" },
-    }));
-    const { tools } = registerTools({
-      resolveTask: vi.fn(async () => selected({ inspect })),
-    });
 
     await tool(tools, "acpus_inspect").execute(
       { target: "@target", timeline: 0 },
       execution(),
     );
-
-    expect(inspect).toHaveBeenCalledWith({
+    expect(inspect).toHaveBeenLastCalledWith({
       kind: "target",
       runId: "run-1",
       target: "@target",
@@ -85,40 +77,89 @@ describe("Acpus Supervisor tool contract", () => {
     });
   });
 
-  it("maps explicit task and Target retry scopes without broadening", async () => {
-    const control = vi.fn(async () => success({ type: "retry" }));
+  it("preserves target result tags and bounds only accepted values", async () => {
+    const inspect = vi.fn()
+      .mockReturnValueOnce(success(targetSummary({ status: "accepted", value: "x".repeat(64 * 1024 + 1) })))
+      .mockReturnValueOnce(success(targetSummary({ status: "completed_without_output" })))
+      .mockReturnValueOnce(success(targetSummary({ status: "not_accepted" })));
+    const { tools } = registerTools({
+      resolveTask: vi.fn(async () => selected({ inspect })),
+    });
+    const runtimeInspect = tool(tools, "acpus_inspect");
+
+    const accepted = await runtimeInspect.execute({ target: "@target" }, execution());
+    const outputless = await runtimeInspect.execute({ target: "@target" }, execution());
+    const notAccepted = await runtimeInspect.execute({ target: "@target" }, execution());
+
+    expect(accepted).toMatchObject({
+      result: { status: "accepted", value: { text: expect.any(String), truncated: true } },
+    });
+    expect(outputless).toMatchObject({ result: { status: "completed_without_output" } });
+    expect(notAccepted).toMatchObject({ result: { status: "not_accepted" } });
+  });
+
+  it("passes explicit input and Preset Agent injection separately from workflow source", async () => {
+    const run = vi.fn(async () => ({
+      status: "admitted" as const,
+      runId: "private-run",
+      task: { name: "workflow", occurrence: 1 },
+    }));
+    const { tools } = registerTools({ run });
+
+    await expect(tool(tools, "acpus_run").execute({
+      workflow: "export default workflow;",
+      input: null,
+      agents: { worker: { preset: "dsh" } },
+    }, execution("admit"))).resolves.toEqual({
+      status: "admitted",
+      task: { name: "workflow", occurrence: 1 },
+    });
+    expect(run).toHaveBeenCalledWith(expect.objectContaining({
+      workspace: "/workspace",
+      sessionId: "session",
+      toolCallId: "admit",
+      workflow: "export default workflow;",
+      input: null,
+      agents: { worker: { preset: "dsh" } },
+    }));
+  });
+
+  it("maps generic Retry and Agent Steer without aliases", async () => {
+    const control = vi.fn((intent: { type: string }) => success({ type: intent.type }));
     const reconcileTask = vi.fn(async () => undefined);
     const { tools } = registerTools({
       resolveTask: vi.fn(async () => selected({ control })),
       reconcileTask,
     });
-    const retry = tool(tools, "acpus_control");
+    const runtimeControl = tool(tools, "acpus_control");
 
-    await retry.execute({
+    await runtimeControl.execute({
       task: { name: "workflow", occurrence: 1 },
-      action: { type: "retry", scope: "task" },
-    }, execution("task-retry"));
-    await retry.execute({
-      task: { name: "workflow", occurrence: 1 },
-      action: { type: "retry", scope: "target", target: "@target" },
+      action: { type: "retry", scope: "target", target: "@task" },
     }, execution("target-retry"));
+    await runtimeControl.execute({
+      task: { name: "workflow", occurrence: 1 },
+      action: { type: "steer", target: "@active-agent", instruction: "Focus on the failure." },
+    }, execution("agent-steer"));
 
     expect(control).toHaveBeenNthCalledWith(1, {
-      requestId: "dsh-control:task-retry",
-      type: "retry",
-      runId: "run-1",
-    });
-    expect(control).toHaveBeenNthCalledWith(2, {
       requestId: "dsh-control:target-retry",
       type: "retry",
       runId: "run-1",
-      target: "@target",
+      target: "@task",
+    });
+    expect(control).toHaveBeenNthCalledWith(2, {
+      requestId: "dsh-control:agent-steer",
+      type: "steer",
+      runId: "run-1",
+      target: "@active-agent",
+      instruction: "Focus on the failure.",
     });
     expect(reconcileTask).toHaveBeenCalledTimes(2);
   });
 
   it("preserves an explicit null fork input replacement", async () => {
-    const control = vi.fn(async () => success({
+    const control = vi.fn(() => success({
       type: "fork",
       run: { id: "run-2", name: "workflow" },
     }));
@@ -134,6 +175,10 @@ describe("Acpus Supervisor tool contract", () => {
         type: "fork",
         workflow: { type: "inherit" },
         input: { type: "replace", value: null },
+        agents: {
+          type: "replace",
+          value: { worker: { preset: "deep-coder" } },
+        },
         restart: { type: "compatible" },
       },
     }, execution("fork-null"))).resolves.toEqual({
@@ -145,12 +190,13 @@ describe("Acpus Supervisor tool contract", () => {
       type: "fork",
       runId: "run-1",
       input: null,
+      agentInjections: { worker: { preset: "deep-coder" } },
     });
   });
 
   it("uses the artifact read limit when maxBytes is zero", async () => {
     const bytes = Buffer.alloc(64 * 1024 + 1, "a");
-    const readArtifact = vi.fn(async () => success({
+    const readArtifact = vi.fn(() => success({
       artifact: { id: "artifact", size: bytes.length, mediaType: "text/plain" },
       bytes,
     }));
@@ -223,8 +269,19 @@ function selected(runtime: Record<string, unknown>) {
   };
 }
 
+function targetSummary(result: unknown) {
+  return {
+    kind: "target",
+    detail: "summary",
+    run: { id: "run-1", status: "completed" },
+    subject: { label: "work", kind: "task", selector: "@target" },
+    state: { status: "completed" },
+    result,
+  };
+}
+
 function success(value: unknown) {
-  return { isErr: () => false, value };
+  return Effect.succeed(value);
 }
 
 function execution(callId = "call") {

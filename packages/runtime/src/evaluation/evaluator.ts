@@ -1,6 +1,6 @@
 import { evaluateExpr as evaluateExpression, ExpressionEvaluationError } from "@acpus/expression/evaluator";
 import type { ExprIR } from "@acpus/expression/ir";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 
 export type EvaluationOptions = {
   formatTemplateValue?(value: unknown): string | undefined;
@@ -26,12 +26,12 @@ export function evaluateExpr(expr: ExprIR, scope: EvaluationScope, options?: Eva
   });
 }
 
-export function tryEvaluateExpr(expr: ExprIR, scope: EvaluationScope, options?: EvaluationOptions): Result<unknown, ExpressionEvaluationFailure> {
+export function tryEvaluateExpr(expr: ExprIR, scope: EvaluationScope, options?: EvaluationOptions): Result.Result<unknown, ExpressionEvaluationFailure> {
   try {
-    return ok(evaluateExpr(expr, scope, options));
+    return Result.succeed(evaluateExpr(expr, scope, options));
   } catch (error) {
     if (!(error instanceof ExpressionEvaluationError)) throw error;
-    return err({ type: "expression-evaluation", message: error.message });
+    return Result.fail({ type: "expression-evaluation", message: error.message });
   }
 }
 

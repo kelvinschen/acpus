@@ -1,6 +1,10 @@
-import type { WorkflowIR } from "@acpus/core/ir";
+import type { AgentDefinitionIR, WorkflowIR } from "@acpus/core/ir";
 import type { JsonObject, JsonValue, StaticExprShape } from "@acpus/expression/ir";
-import type { RunInspectionStatus } from "@acpus/runtime";
+import type {
+  RunInspectionControl,
+  RunInspectionNodeDocument,
+  RunInspectionStatus,
+} from "@acpus/runtime";
 import type { WorkflowPreparationFailure } from "@acpus/workflow-compiler";
 import type { WebGraph } from "./graph-types.js";
 
@@ -28,16 +32,21 @@ export type WebControlCommand =
   | { type: "pause" }
   | { type: "resume" }
   | { type: "retry"; target: string }
+  | { type: "steer"; target: string; instruction: string }
   | { type: "cancel"; target?: string }
   | { type: "signal"; target: string; payload: JsonValue };
 
-export type WorkflowContext = Pick<WorkflowIR, "name" | "description" | "agents">;
+export type WorkflowContext = Pick<WorkflowIR, "name" | "description"> & {
+  agents: Record<string, AgentDefinitionIR>;
+};
+
+export type WorkflowVisualizationContext = Pick<WorkflowIR, "name" | "description" | "agents">;
 
 export type WorkflowVisualizationResult =
   | {
     status: "ready";
     graph: WebGraph;
-    workflow: WorkflowContext & { irVersion: number; nodeCount: number };
+    workflow: WorkflowVisualizationContext & { irVersion: number; nodeCount: number };
     contract: {
       inputSchema?: WorkflowIR["inputSchema"];
       output: WorkflowIR["root"]["output"];
@@ -56,7 +65,7 @@ export type NodeInspectionFailure = {
   code?: string;
   message: string;
   upstream?: {
-    source: "acpx";
+    source: "acp";
     operation?: string;
     exitCode?: number;
     code?: string;
@@ -75,6 +84,9 @@ export type NodeInspection = {
   nodeKey?: string;
   frameKey?: string;
   cancelTarget?: string;
+  availableControls: RunInspectionControl[];
+  agentSession?: RunInspectionNodeDocument["summary"]["agentSession"];
+  steer?: RunInspectionNodeDocument["summary"]["steer"];
   staticKind?: string;
   timing?: {
     startedAt: string;
@@ -146,7 +158,7 @@ export type NodeExecutionInspection = ({
 }) & {
   summary: {
     status: RunInspectionStatus;
-    sessionName?: string;
+    agentSessionId?: string;
     turnCount?: number;
     message?: string;
   };

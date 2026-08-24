@@ -10,6 +10,8 @@ import { extractWorkflowImportArchive, PathInventory } from "./archive.js";
 import { abortImport, WorkflowImportAbort } from "./failure.js";
 import type { AcquiredWorkflowImportSource } from "./source.js";
 import { resolveWorkflowSourceForCli } from "../preparation.js";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 
 export type CheckedWorkflowImportPackage = Pick<
   PreparedWorkflow,
@@ -25,9 +27,11 @@ export async function prepareWorkflowImportPackage(
 ): Promise<{ name: string }> {
   await materializePackage(source, stagingRoot, stagedPackage);
   const entryPath = join(stagedPackage, "workflow.ts");
-  const metadata = await extractWorkflowMetadata(await readFile(entryPath, "utf8"), entryPath);
-  if (metadata.isErr()) abortImport("IMPORT_METADATA_INVALID", metadata.error.message);
-  return { name: metadata.value.name };
+  const metadata = await Effect.runPromise(Effect.result(
+    extractWorkflowMetadata(await readFile(entryPath, "utf8"), entryPath),
+  ));
+  if (Result.isFailure(metadata)) abortImport("IMPORT_METADATA_INVALID", metadata.failure.message);
+  return { name: metadata.success.name };
 }
 
 export async function checkWorkflowImportPackage(
@@ -39,16 +43,16 @@ export async function checkWorkflowImportPackage(
     workspaceDir: cwd,
     workflow: join(stagedPackage, "workflow.ts"),
   });
-  const prepared = await tryPrepareWorkflow({
+  const prepared = await Effect.runPromise(Effect.result(tryPrepareWorkflow({
     workspaceDir: cwd,
     source: resolved.source,
-  });
-  if (prepared.isErr()) throw new WorkflowImportAbort({ type: "preparation", failure: prepared.error });
-  if (prepared.value.ir.name !== expectedName) {
-    abortImport("IMPORT_CHECK_NAME_MISMATCH", `Prepared workflow name '${prepared.value.ir.name}' does not match static authored name '${expectedName}'.`);
+  })));
+  if (Result.isFailure(prepared)) throw new WorkflowImportAbort({ type: "preparation", failure: prepared.failure });
+  if (prepared.success.ir.name !== expectedName) {
+    abortImport("IMPORT_CHECK_NAME_MISMATCH", `Prepared workflow name '${prepared.success.ir.name}' does not match static authored name '${expectedName}'.`);
   }
   return {
-    diagnostics: prepared.value.ir.diagnostics.map(diagnostic => {
+    diagnostics: prepared.success.ir.diagnostics.map(diagnostic => {
       const file = diagnostic.source?.file;
       if (!file) return diagnostic;
       const packagePath = relative(stagedPackage, resolve(cwd, file));
@@ -58,7 +62,7 @@ export async function checkWorkflowImportPackage(
         source: { ...diagnostic.source, file: packagePath.split(sep).join("/") },
       };
     }),
-    sourceGraphDigest: prepared.value.sourceGraphDigest,
+    sourceGraphDigest: prepared.success.sourceGraphDigest,
   };
 }
 

@@ -3,7 +3,8 @@ import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { sha256Digest, type Sha256Digest } from "@acpus/core/content-identity";
 import type { DiagnosticIR, WorkflowIR } from "@acpus/core/ir";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import type { WorkflowCheckResult } from "../check/runner.js";
 import { compileWorkflow, type CompileWorkerFailure } from "../compiler/worker.js";
 import {
@@ -84,45 +85,36 @@ export class WorkflowPreparationError extends Error {
 }
 
 export async function prepareWorkflow(options: WorkflowPreparationOptions): Promise<PreparedWorkflow> {
-  const result = await tryPrepareWorkflow(options);
-  return result.match(
-    prepared => prepared,
-    failure => {
-      throw new WorkflowPreparationError(failure);
-    },
-  );
+  const result = await Effect.runPromise(Effect.result(tryPrepareWorkflow(options)));
+  return Result.match(result, {
+    onSuccess: prepared => prepared,
+    onFailure: failure => { throw new WorkflowPreparationError(failure); },
+  });
 }
 
 export function tryPrepareWorkflow(
   options: WorkflowPreparationOptions,
-): ResultAsync<PreparedWorkflow, WorkflowPreparationFailure> {
-  return new ResultAsync(prepareWorkflowResult(options));
+): Effect.Effect<PreparedWorkflow, WorkflowPreparationFailure> {
+  return Effect.scoped(Effect.gen(function* () {
+    const input = yield* Effect.fromResult(validatePreparationOptions(options));
+    const scratchDir = yield* Effect.acquireRelease(
+      Effect.promise(createScratchDir),
+      path => Effect.promise(() => rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 })),
+    );
+    const source = yield* Effect.promise(() => prepareWorkflowSource({
+      workspaceDir: input.workspaceDir,
+      scratchDir,
+      source: input.source,
+    })).pipe(Effect.flatMap(Effect.fromResult));
+    return yield* compilePreparedWorkflow({
+      workspaceDir: input.workspaceDir,
+      scratchDir,
+      ...source,
+    });
+  }));
 }
 
-async function prepareWorkflowResult(
-  options: WorkflowPreparationOptions,
-): Promise<Result<PreparedWorkflow, WorkflowPreparationFailure>> {
-  const input = validatePreparationOptions(options);
-  if (input.isErr()) return err(input.error);
-  const scratchDir = await createScratchDir();
-  try {
-    const source = await prepareWorkflowSource({
-      workspaceDir: input.value.workspaceDir,
-      scratchDir,
-      source: input.value.source,
-    });
-    if (source.isErr()) return err(source.error);
-    return await compilePreparedWorkflow({
-      workspaceDir: input.value.workspaceDir,
-      scratchDir,
-      ...source.value,
-    });
-  } finally {
-    await rm(scratchDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 25 });
-  }
-}
-
-async function compilePreparedWorkflow(input: {
+function compilePreparedWorkflow(input: {
   workspaceDir: string;
   scratchDir: string;
   check: WorkflowCheckResult;
@@ -133,98 +125,101 @@ async function compilePreparedWorkflow(input: {
   sourceGraphDigest: Sha256Digest;
   diagnosticSourceRoot?: string;
   displayEntry?: string;
-}): Promise<Result<PreparedWorkflow, WorkflowPreparationFailure>> {
-  if (input.check.sourceDigest === undefined) {
-    throw new Error("Workflow check succeeded without a source digest.");
-  }
-  const compiled = await compileWorkflow(input.entryPath, input.sourceRoot, input.scratchDir, {
-    dependencyRoot: input.workspaceDir,
-    expectedSourceDigest: input.check.sourceDigest,
-  });
-  if (compiled.isErr()) {
-    const failure = remapCompileFailure(compiled.error, {
-      scratchDir: input.scratchDir,
-      sourceRoot: input.sourceRoot,
-      entryPath: input.entryPath,
-      displayEntry: input.displayEntry ?? input.entryPath,
-      snapshot: input.source.kind === "snapshot",
-    });
-    return err({
-      type: "compile-failed",
-      phase: "compile",
-      message: failure.message,
-      failure,
-    });
-  }
+}): Effect.Effect<PreparedWorkflow, WorkflowPreparationFailure> {
+  return Effect.gen(function* () {
+    if (input.check.sourceDigest === undefined) {
+      return yield* Effect.die(new Error("Workflow check succeeded without a source digest."));
+    }
+    const compiled = yield* compileWorkflow(input.entryPath, input.sourceRoot, input.scratchDir, {
+      dependencyRoot: input.workspaceDir,
+      expectedSourceDigest: input.check.sourceDigest,
+    }).pipe(Effect.mapError(rawFailure => {
+      const failure = remapCompileFailure(rawFailure, {
+        scratchDir: input.scratchDir,
+        sourceRoot: input.sourceRoot,
+        entryPath: input.entryPath,
+        displayEntry: input.displayEntry ?? input.entryPath,
+        snapshot: input.source.kind === "snapshot",
+      });
+      return {
+        type: "compile-failed" as const,
+        phase: "compile" as const,
+        message: failure.message,
+        failure,
+      };
+    }));
 
-  const rawCompilerDiagnostics = input.diagnosticSourceRoot
-    ? remapSourceDiagnostics(compiled.value.ir.diagnostics, input.diagnosticSourceRoot)
-    : compiled.value.ir.diagnostics;
-  const compilerDiagnostics = sanitizeDiagnostics(rawCompilerDiagnostics, input.scratchDir);
-  const ir: WorkflowIR = {
-    ...compiled.value.ir,
-    diagnostics: mergeSourceDiagnostics(
-      input.check.diagnostics.filter(diagnostic => diagnostic.severity === "warning"),
-      compilerDiagnostics,
-    ),
-  };
-  if (input.source.kind === "snapshot" && containsPrivateMaterializationPath(ir, input.scratchDir)) {
-    return err({
-      type: "source-invalid",
-      phase: "source",
-      message: "Snapshot workflow IR must not reference the compiler's private source materialization.",
-    });
-  }
-  if (ir.diagnostics.some(diagnostic => diagnostic.severity === "error")) {
-    return err({
-      type: "validate-failed",
-      phase: "validate",
-      message: "Workflow validation failed.",
-      diagnostics: ir.diagnostics,
+    const rawCompilerDiagnostics = input.diagnosticSourceRoot
+      ? remapSourceDiagnostics(compiled.ir.diagnostics, input.diagnosticSourceRoot)
+      : compiled.ir.diagnostics;
+    const compilerDiagnostics = sanitizeDiagnostics(rawCompilerDiagnostics, input.scratchDir);
+    const ir: WorkflowIR = {
+      ...compiled.ir,
+      diagnostics: mergeSourceDiagnostics(
+        input.check.diagnostics.filter(diagnostic => diagnostic.severity === "warning"),
+        compilerDiagnostics,
+      ),
+    };
+    if (input.source.kind === "snapshot" && containsPrivateMaterializationPath(ir, input.scratchDir)) {
+      return yield* Effect.fail({
+        type: "source-invalid" as const,
+        phase: "source" as const,
+        message: "Snapshot workflow IR must not reference the compiler's private source materialization.",
+      });
+    }
+    if (ir.diagnostics.some(diagnostic => diagnostic.severity === "error")) {
+      return yield* Effect.fail({
+        type: "validate-failed" as const,
+        phase: "validate" as const,
+        message: "Workflow validation failed.",
+        diagnostics: ir.diagnostics,
+        ir,
+      });
+    }
+
+    const irJson = `${JSON.stringify(ir, null, 2)}\n`;
+    const irFileDigest = sha256Digest(irJson);
+    const packageLockDigest = yield* tryReadPackageLockDigest(input.workspaceDir).pipe(
+      Effect.mapError(failure => ({ ...failure, phase: "lock" as const })),
+    );
+    const lock = buildLock(
+      input.source,
+      compiled.sourceDigest,
+      irFileDigest,
+      input.sourceGraphDigest,
+      packageLockDigest,
+    );
+    const base: PreparedWorkflowBase = {
       ir,
-    });
-  }
-
-  const irJson = `${JSON.stringify(ir, null, 2)}\n`;
-  const irFileDigest = sha256Digest(irJson);
-  const packageLockResult = await tryReadPackageLockDigest(input.workspaceDir);
-  if (packageLockResult.isErr()) return err({ ...packageLockResult.error, phase: "lock" });
-  const packageLockDigest = packageLockResult.value;
-  const lock = buildLock(
-    input.source,
-    compiled.value.sourceDigest,
-    irFileDigest,
-    input.sourceGraphDigest,
-    packageLockDigest,
-  );
-  const base: PreparedWorkflowBase = {
-    ir,
-    irJson,
-    sourceGraphDigest: input.sourceGraphDigest,
-    ...(packageLockDigest ? { packageLockDigest } : {}),
-    lock,
-  };
-  if (input.source.kind === "snapshot") {
-    if (!input.sourceBundle) throw new Error("Snapshot preparation succeeded without a source bundle.");
-    return ok({ ...base, source: input.source, sourceBundle: input.sourceBundle });
-  }
-  return ok({ ...base, source: input.source });
+      irJson,
+      sourceGraphDigest: input.sourceGraphDigest,
+      ...(packageLockDigest ? { packageLockDigest } : {}),
+      lock,
+    };
+    if (input.source.kind === "snapshot") {
+      if (!input.sourceBundle) {
+        return yield* Effect.die(new Error("Snapshot preparation succeeded without a source bundle."));
+      }
+      return { ...base, source: input.source, sourceBundle: input.sourceBundle };
+    }
+    return { ...base, source: input.source };
+  });
 }
 
 function validatePreparationOptions(
   options: WorkflowPreparationOptions,
-): Result<WorkflowPreparationOptions, SourcePreparationFailure> {
+): Result.Result<WorkflowPreparationOptions, SourcePreparationFailure> {
   if (!options || typeof options !== "object" || typeof options.workspaceDir !== "string") {
-    return err({ type: "source-invalid", phase: "source", message: "Workflow workspaceDir must be a string." });
+    return Result.fail({ type: "source-invalid", phase: "source", message: "Workflow workspaceDir must be a string." });
   }
   const source = options.source;
   if (!source || typeof source !== "object" || (source.kind !== "path" && source.kind !== "files")) {
-    return err({ type: "source-invalid", phase: "source", message: "Workflow source must be a path or files input." });
+    return Result.fail({ type: "source-invalid", phase: "source", message: "Workflow source must be a path or files input." });
   }
   if (source.kind === "path" && typeof source.entry !== "string") {
-    return err({ type: "source-invalid", phase: "source", message: "Workflow path entry must be a string." });
+    return Result.fail({ type: "source-invalid", phase: "source", message: "Workflow path entry must be a string." });
   }
-  return ok({ workspaceDir: resolve(options.workspaceDir), source });
+  return Result.succeed({ workspaceDir: resolve(options.workspaceDir), source });
 }
 
 function buildLock(
@@ -311,27 +306,27 @@ function pathReferences(path: string): [string, string] {
 
 export function tryReadPackageLockDigest(
   workspaceDir: string,
-): ResultAsync<Sha256Digest | undefined, PackageLockFailure> {
-  return new ResultAsync(readPackageLockDigest(workspaceDir));
+): Effect.Effect<Sha256Digest | undefined, PackageLockFailure> {
+  return Effect.promise(() => readPackageLockDigest(workspaceDir)).pipe(Effect.flatMap(Effect.fromResult));
 }
 
 async function readPackageLockDigest(
   workspaceDir: string,
-): Promise<Result<Sha256Digest | undefined, PackageLockFailure>> {
+): Promise<Result.Result<Sha256Digest | undefined, PackageLockFailure>> {
   for (const name of ["pnpm-lock.yaml", "package-lock.json", "yarn.lock"]) {
     const path = join(workspaceDir, name);
     try {
-      return ok(sha256Digest(await readFile(path, "utf8")));
+      return Result.succeed(sha256Digest(await readFile(path, "utf8")));
     } catch (cause) {
       if (isMissingPathError(cause)) continue;
-      return err({
+      return Result.fail({
         type: "package-lock-read-failed",
         path,
         message: `Package lock '${path}' could not be read: ${causeMessage(cause)}`,
       });
     }
   }
-  return ok(undefined);
+  return Result.succeed(undefined);
 }
 
 function causeMessage(cause: unknown): string {

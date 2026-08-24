@@ -1,10 +1,10 @@
 import { WORKFLOW } from "../internal/symbols.js";
 import { makeNodeRef, refExpr, type ExprValue, type NodeRef } from "./refs.js";
 import type { Resolvable } from "@acpus/expression";
+import * as Result from "effect/Result";
 import type { z } from "zod";
-import { err, ok, type Result } from "neverthrow";
 import { toSchemaIR, type Schema } from "../schema/index.js";
-import { agentToken, buildAgentNode, lowerAgentDefinitions, type AgentDefinitionSpec, type AgentStepSpec, type AgentToken } from "../nodes/leaf/agent.js";
+import { agentToken, buildAgentNode, lowerAgentDefinitions, type AgentDeclarationSpec, type AgentStepSpec, type AgentToken } from "../nodes/leaf/agent.js";
 import {
   buildTaskNode,
   TaskCompilationAbort,
@@ -46,7 +46,7 @@ import { validateWorkflowIR } from "../ir/validator.js";
 export type { AgentStepSpec } from "../nodes/leaf/agent.js";
 export type { TaskStepSpec } from "../nodes/leaf/task.js";
 export type { SignalStepSpec } from "../nodes/leaf/signal.js";
-export type AgentMap = Record<string, AgentDefinitionSpec>;
+export type AgentMap = Record<string, AgentDeclarationSpec>;
 type AgentRegistry<Agents extends AgentMap | undefined = AgentMap | undefined> = Agents extends AgentMap
   ? { readonly [K in Extract<keyof Agents, string>]: AgentToken<K> }
   : {};
@@ -353,12 +353,12 @@ export type WorkflowCompilationFailure =
 export function tryCompileWorkflowDefinition(
   definition: WorkflowDefinition<any, any>,
   options?: CompileWorkflowDefinitionOptions,
-): Result<WorkflowIR, WorkflowCompilationFailure> {
+): Result.Result<WorkflowIR, WorkflowCompilationFailure> {
   try {
-    return ok(lowerWorkflowDefinition(definition, options));
+    return Result.succeed(lowerWorkflowDefinition(definition, options));
   } catch (cause) {
-    if (cause instanceof TaskCompilationAbort) return err(cause.failure);
-    return err({
+    if (cause instanceof TaskCompilationAbort) return Result.fail(cause.failure);
+    return Result.fail({
       type: "workflow-lowering-failed",
       message: cause instanceof Error ? cause.message : String(cause),
       cause,
@@ -370,13 +370,13 @@ export function compileWorkflowDefinition(
   definition: WorkflowDefinition<any, any>,
   options?: CompileWorkflowDefinitionOptions,
 ): WorkflowIR {
-  return tryCompileWorkflowDefinition(definition, options).match(
-    ir => ir,
-    failure => {
+  return Result.match(tryCompileWorkflowDefinition(definition, options), {
+    onSuccess: ir => ir,
+    onFailure: failure => {
       if (failure.type === "workflow-lowering-failed") throw failure.cause;
       throw new Error(failure.message, { cause: failure });
     },
-  );
+  });
 }
 
 function lowerWorkflowDefinition(
@@ -403,7 +403,7 @@ function lowerWorkflowDefinition(
   }
 
   const ir = stripUndefined({
-    irVersion: 7,
+    irVersion: 8,
     name: definition.config.name,
     description: definition.config.description,
     inputSchema: definition.config.inputSchema ? toSchemaIR(definition.config.inputSchema) : undefined,

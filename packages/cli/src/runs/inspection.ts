@@ -2,9 +2,15 @@ import { Command } from "commander";
 import {
   listRuns,
   readInspection,
+  requestDaemonInspection,
+  type DaemonClientFailure,
   type InspectionError,
+  type InspectionRead,
   type InspectionViewQuery,
+  type ObservableInspectionViewQuery,
 } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { notFoundError, usageError } from "../presentation/errors.js";
 import { canPrompt } from "../presentation/prompt.js";
 import type { RunsCommandContext } from "./context.js";
@@ -47,14 +53,42 @@ async function inspectRun(ctx: RunsCommandContext, runId: string, options: Inspe
     return;
   }
 
-  const inspected = await readInspection(ctx.cwd, inspectionViewQuery(runId, options));
-  if (inspected.isErr()) throw inspectionError(inspected.error);
-  const document = inspected.value;
+  const document = await readOneShotInspection(ctx.cwd, inspectionViewQuery(runId, options));
   if (document.kind === "archived-run") return renderArchivedRun(ctx, document.run);
   ctx.stdout.write(document.kind === "candidates"
-    ? formatInspectionCandidates(document, options.forensics ? "forensics" : options.timeline ? "timeline" : "summary")
+    ? formatInspectionCandidates(document)
     : formatInspectionView(document));
   ctx.setExitCode(0);
+}
+
+async function readOneShotInspection(cwd: string, view: InspectionViewQuery): Promise<InspectionRead> {
+  if (isObservableView(view)) {
+    const live = await Effect.runPromise(Effect.result(requestDaemonInspection(cwd, view)));
+    if (Result.isSuccess(live)) return live.success;
+    if (!allowsOfflineInspection(live.failure)) {
+      throw inspectionError({
+        type: live.failure.type === "rejected" && live.failure.code === "INVALID_REQUEST"
+          ? "invalid-query"
+          : "inspection-read-failed",
+        ...(live.failure.type === "rejected" && live.failure.code === "INVALID_REQUEST"
+          ? {}
+          : { runId: view.runId }),
+        message: live.failure.message,
+      } as InspectionError);
+    }
+  }
+  const inspected = await Effect.runPromise(Effect.result(readInspection(cwd, view)));
+  if (Result.isFailure(inspected)) throw inspectionError(inspected.failure);
+  return inspected.success;
+}
+
+function isObservableView(view: InspectionViewQuery): view is ObservableInspectionViewQuery {
+  return view.kind === "run" || view.detail !== "forensics";
+}
+
+function allowsOfflineInspection(error: DaemonClientFailure): boolean {
+  return error.type === "transport" && (error.reason === "not-found" || error.reason === "refused")
+    || error.type === "rejected" && error.code === "RUN_NOT_FOUND";
 }
 
 async function inspectRunCommand(
@@ -69,13 +103,13 @@ async function inspectRunCommand(
   }
   if (!canPrompt(ctx)) throw usageError("Run id is required when not running in an interactive terminal.");
 
-  const runs = await listRuns(ctx.cwd);
-  if (runs.isErr()) throw notFoundError(runtimeReadFailureMessage(runs.error), {
-    errorCode: runtimeReadFailureCode(runs.error),
+  const runs = await Effect.runPromise(Effect.result(listRuns(ctx.cwd)));
+  if (Result.isFailure(runs)) throw notFoundError(runtimeReadFailureMessage(runs.failure), {
+    errorCode: runtimeReadFailureCode(runs.failure),
   });
-  if (runs.value.length === 0) throw notFoundError("No active runs found. Inspect archived runs by id.");
+  if (runs.success.length === 0) throw notFoundError("No active runs found. Inspect archived runs by id.");
 
-  const selectedRunId = await pickRunId(runs.value, ctx);
+  const selectedRunId = await pickRunId(runs.success, ctx);
   if (selectedRunId === undefined) throw usageError("Run selection cancelled.");
   await inspectRun(ctx, selectedRunId, options);
 }

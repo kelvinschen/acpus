@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { officialAuthoringTypeScriptPaths } from "@acpus/loader";
 import type { DiagnosticIR } from "@acpus/core/ir";
-import { err, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import type { SourceFile } from "typescript/unstable/ast";
 import { DiagnosticCategory, type Diagnostic, type Program } from "typescript/unstable/sync";
 import { analyzeWorkflowTasksFromSourceFile } from "../task-analysis/index.js";
@@ -26,12 +26,12 @@ export async function checkTypeScript(
   scratchDir: string,
   source: string,
   options: { dependencyFallback?: boolean } = {},
-): Promise<Result<TypeScriptCheck, TypeScriptNativeFailure>> {
+): Promise<Result.Result<TypeScriptCheck, TypeScriptNativeFailure>> {
   let tsconfig: string;
   try {
     tsconfig = await writeTypecheckConfig(entry, cwd, scratchDir);
   } catch (cause) {
-    return err(nativeFailure(cause));
+    return Result.fail(nativeFailure(cause));
   }
   return withNativeProject({
     configPath: tsconfig,

@@ -1,221 +1,40 @@
-# Core Spec
+# Core SPEC
 
-## Purpose
+## 目的
 
-`@acpus/core` owns the TypeScript workflow DSL, schema bridge, node authoring shapes, serializable `WorkflowIR`, structural IR validation, and shared content identity. [Expression](expression-spec.md) owns expression and template semantics; the [Workflow Compiler](workflow-compiler-spec.md) owns TypeScript module checks, task callsite analysis, and reusable task preparation.
+`@acpus/core` 负责定义将类型化 Workflow 声明转换为持久化 Workflow 图的稳定编写模型。[Expression](expression-spec.md) 负责运行时值的计算，而 [Workflow Compiler](workflow-compiler-spec.md) 负责源码分析与准备。
 
-## Requirements
+## 要求
 
-### Public API
+### 编写模型
 
-- The root `@acpus/core` entrypoint MUST expose the minimal workflow authoring surface: `defineWorkflow`, `z`, and `task`.
-- The root and workflow entrypoints MUST NOT expose standalone `OutputValue` or `OutputValues` authoring types; output constraints MUST remain behind workflow and node interfaces.
-- `@acpus/core/workflow` MUST expose `defineWorkflow`, `compileWorkflowDefinition`, `tryCompileWorkflowDefinition`, `isWorkflowDefinition`, and the workflow-compilation option, reusable-Task link, and failure types.
-- `@acpus/core/schema` MUST expose the native `z` authoring object, `toSchemaIR`, `tryToSchemaIR`, and `schemaToJsonSchema`.
-- `@acpus/core/runtime` MUST expose the task command wrapper factory `createDollar` and related task runtime types.
-- `@acpus/core/ir` MUST expose `validateWorkflowIR`, `tryParseDurationMs`, `childScopes`, `walkNodes`, `DurationParseError`, and public IR and traversal types.
-- `@acpus/core/content-identity` MUST expose `Sha256Digest`, `sha256Digest`, `isSha256Digest`, `sha256DigestHex`, and `workflowSourceGraphDigest` without adding runtime values to the root authoring entrypoint.
-- The core package MUST NOT expose a binary; command behavior belongs to the `acpus` CLI package.
+- 构建 Workflow 时 MUST 同步声明静态图；MUST NOT 实际执行 Agent、Task、Signal 或任何其他 Workflow 工作。
+- Workflow 输入、Run 元数据、Composite 局部值以及节点输出结果 MUST 保持为不透明的类型化表达式，且仅在 Run 期间求值。声明阶段传入的值 MUST 保持为纯配置。
+- 编写者 MUST 通过表达式声明运行时计算，并通过图节点声明运行时控制；图构建期间的 JavaScript 求值 MUST NOT 替代这两者。
+- `step` ID MUST 唯一标识静态图节点，且在整个 Workflow 中不可重复。循环轮次与扇出项 MUST 为这些节点创建运行时实例（occurrence）；节点 ID MUST NOT 动态生成。
+- 节点引用 MUST 仅用于表达控制关系；其执行结果 MUST 通过显式的输出表达式读取。每个 Workflow 或 Composite 作用域 MUST 返回一个可持久化的输出值，其中 `{}` 表示显式的纯控制流结果，`null` 则作为显式返回值保留。
+- Composite 回调 MUST 声明静态子图。分支产生的结果 MAY 保持为类型化的联合类型；每次循环状态流转 MUST 完整替换上一轮状态，MUST NOT 隐式合并字段。
+- 顶层 Agent 声明 MUST 为 Workflow 建立类型化的 Agent 绑定。已指定具体身份的 Agent 声明，MUST 与未指定身份、留待准入时绑定的 Slot 明确区分。
 
-### Content Identity
+### 持久化边界
 
-- `Sha256Digest` MUST use the `sha256:<64-lowercase-hex>` wire shape. String content MUST be hashed as its exact UTF-8 bytes without normalization or framing; byte content MUST be hashed verbatim.
-- Digest validation MUST accept only the complete canonical wire shape, and digest-to-hex extraction MUST reject malformed values.
-- Workflow source-graph identity MUST hash compact recursively key-sorted JSON plus one trailing LF for `{ kind: "acpus_workflow_source_graph", version: 1, entry, files: [{ path, digest }] }`.
-- Source-graph files and object keys MUST be ordered by locale-independent code-unit order without mutating caller-owned input.
+- 跨 Workflow、节点与 Task 边界持久存储或返回的数据 MUST 是兼容 JSON 的基础类型、数组、普通对象或受支持的 Acpus 引用。顶层值或数组元素 MUST NOT 为 `undefined`；对象中缺失的可选字段 MAY 直接省略。
+- 图边界处的 Schema 在执行前 MUST 能够转换为可序列化的 Schema 数据。仅在运行时生效的动态 Schema 行为 MUST NOT 写入持久化的 Workflow IR。
+- 可复用 Task 的输入 Schema MUST 仅用于编写阶段的 TypeScript 类型推导；MUST NOT 承诺在运行时自动校验、填充默认值或转换数据。
+- Task 代码 MUST 被视为由 Workflow 编写者指定的受信任本地代码。沙箱隔离与第三方代码策略 MUST 由执行环境显式控制，MUST NOT 依赖 Task 语法隐式生效。
+- Workflow 传递给 Task 的数据 MUST 通过显式 Task 输入传入，Task 执行结果 MUST 作为可持久化数据返回。内联 Task 代码除了使用传入的 Task 上下文外 MUST 保持自包含。
 
-### Workflow Authoring
+### 冻结 Workflow 契约
 
-- The core MUST expose `defineWorkflow(...).build(...)` as the workflow entry point, where `build` receives `{ input, agents, meta, step }`.
-- Workflow authoring config MAY declare `description?: string`, and compilation MUST preserve it as top-level `WorkflowIR.description` metadata when present.
-- During graph construction, `input.*` fields MUST be exposed as `Expr<T>` tokens.
-- During graph construction, `meta.runId`, `meta.workflowPath`, `meta.workflowName`, and `meta.workspaceDir` MUST be exposed as run-level `Expr<string>` tokens.
-- Agent definitions MUST be declared at workflow top level under `agents` as plain object definitions.
-- `{ use, model?, ... }` MUST define a named Agent and `{ command, ... }` MUST define a custom command Agent.
-- Agent definition `use` and `command` MUST be mutually exclusive.
-- Top-level agent definitions MUST be authoring specs without an IR `kind` field.
-- Named and custom command agent definitions MAY declare `model`.
-- Named and custom command agent definitions MAY declare `config?: Record<string, string>` as a declaration-time static Agent profile. Core MUST preserve it as an opaque string map; it is not an ACP `configOptions` snapshot, and adapter-specific key/value validation belongs outside Core.
-- Agent definitions MUST NOT declare `agentMode`.
-- The `build` context `agents` member MUST expose one typed token for each key declared in workflow top-level `agents`.
-- Agent node authoring field `agent` MUST use an agent token from the `build` context `agents` member.
-- When authors extract an `agents` object before passing it to `defineWorkflow(...)`, they SHOULD preserve literal keys, for example with `satisfies AgentMap`; otherwise TypeScript MAY widen the keys and lose per-Agent inference.
+- Workflow 编译成功后 MUST 生成确定性、自包含且完全可序列化的 Workflow IR，且每个可执行作用域都拥有明确且唯一的输出。
+- 遇到无效的图引用、不可持久化的值、格式错误的 Task 定义或未解析的可复用 Task 链接时，编译或校验 MUST 失败并报告错误；Core MUST NOT 输出包含未解析占位目标的残缺 IR。
+- Core MUST 区分两类 IR：编写完成的 Workflow IR MAY 包含未绑定的 Agent Slot，而已完成准入的 Workflow IR 中，所有 Agent 绑定 MUST 已实际确定；下游执行模块 MUST NOT 接收到包含未解析 Slot 的 IR。
+- 无论 IR 通过何种方式生成，结构化 IR 校验 MUST 对 Workflow Compiler、Runtime 及外部 IR 使用方统一应用相同的自包含图完整性规则。
+- Workflow 源图的唯一标识 MUST 采用规范化格式，且仅由逻辑入口和文件内容决定，MUST NOT 受调用方指定的顺序或 Host 环境元数据影响。具体的传输数据格式属于共享实现细节。
+- 遇到可恢复的图转换与校验失败时，Core MUST 保留充分的结构化上下文，便于调用方定位具体哪处边界被拒绝。Workflow 编译过程 MUST NOT 吞掉或掩盖底层的构建与转换异常。
 
-### Schema Layer
+## 验证
 
-- The core MUST directly re-export Zod 4's native `z` object without Acpus extensions, preserving standard type members such as `z.infer` and `z.output`.
-- Graph-boundary schemas MUST be canonicalized to serializable `SchemaIR` via `toSchemaIR(schema)`.
-- `tryToSchemaIR(schema)` MUST return a neverthrow `Result<SchemaIR, SchemaLoweringError>` for recoverable schema lowering failures.
-- `SchemaLoweringError` MUST be a serializable tagged union that includes unsupported schema, invalid literal, and invalid default failures with stable path fields.
-- `toSchemaIR(schema)` MUST return the lowered `SchemaIR` from `tryToSchemaIR(schema)` or throw an `Error` carrying the lowering failure message.
-- A schema default MUST be JSON-compatible and copied with native structured-clone semantics; cyclic or uncloneable defaults MUST return `invalid-default` instead of throwing an untyped exception.
-- Lowering a Zod default factory MUST evaluate it exactly once; a throwing factory MUST return `invalid-default` from `tryToSchemaIR`.
-- The graph-boundary schema subset MUST include string, number, boolean, null, unknown, literal, enum, array, object, record, union, optional, nullable, default, and non-empty homogeneous tuple schemas without rest items.
-- Enum lowering MUST use Zod 4's effective enum values, excluding TypeScript numeric-enum reverse mappings.
-- A supported tuple schema MUST lower to array `SchemaIR` using its shared lowered item schema without retaining tuple arity.
-- Graph-boundary schema lowering MUST reject empty, heterogeneous, and rest tuple schemas as unsupported.
-- The core MUST expose the native Zod schema constructor surface without Acpus-specific constructors.
-- Graph-boundary schema lowering MUST reject runtime-only or non-serializable schema constructs such as transform, custom, function, promise, map, set, date, bigint, symbol, undefined, void, and never.
-- `SchemaIR` MUST be a core-owned recursive schema union rather than duplicating or overloading the expression value model.
-- Schema lowering MUST summarize selected Zod number checks in the existing `SchemaIR.description` annotation: `.int()` as `integer`; inclusive and exclusive lower and upper bounds as the corresponding JSON Schema keyword; and `.multipleOf(n)` as `multipleOf: n`.
-- Numeric constraint summaries MUST use deterministic keyword order, retain only the strongest lower and upper bound (with exclusivity winning an equal bound), de-duplicate and sort multiples, omit safe-integer-format bounds implied by `.int()`, and ignore every other check.
-- When an authored description and a numeric constraint summary coexist, lowering MUST preserve the authored prose and append `Constraints: <summary>.`; a summary without authored prose MUST be the complete description.
-- Generated numeric constraint summaries MUST remain advisory annotations: they MUST NOT alter the serialized `SchemaIR` shape or add Runtime conformance rules.
-- `schemaToJsonSchema` MUST preserve `SchemaIR.description` as a JSON Schema annotation.
-- `schemaToJsonSchema` MUST preserve `SchemaIR.default` as a JSON Schema annotation.
-- `schemaToJsonSchema` MUST express a nullable schema as accepting `null`.
-- `schemaToJsonSchema` MUST represent optional object fields only by omission from the parent `required` array without introducing `undefined` semantics.
-- Schema lowering MUST preserve every authored JSON property name, including prototype-named keys, as own data properties.
-- JSON Schema rendering MUST preserve every declared JSON property name, including prototype-named keys, as own data properties.
-- `validateWorkflowIR(ir)` MUST validate `SchemaIR` as a closed recursive union, reject unknown schema kinds and fields, and reject hand-authored `kind: "integer"` in favor of `kind: "number"`.
-- `validateWorkflowIR(ir)` MUST match required object-schema fields against own field properties only.
-
-### Resolvable Values, Templates, And Helpers
-
-- Plain `T` in an authoring type MUST mean declaration-time structure. `Resolvable<T>` MUST mean a value evaluated from durable workflow scope at run time.
-- Core MUST use `Resolvable<T>` from `@acpus/expression` as the sole public runtime-value seam and MUST NOT define duplicate value-or-expression or template-input types.
-- Every `Resolvable` field, including literal input, MUST lower through `valueToExprIR` to `ExprIR`. Template tokens MUST be stored only as `ExprIR.kind: "template"`; node fields MUST NOT store `TemplateIR` directly.
-- Workflow, composite-scope, and Task-input authored values MUST reject raw `undefined` at every nesting level instead of omitting it during lowering. Runtime Task outputs remain governed by runtime output normalization.
-- Template interpolation MUST preserve expressions inside the template `ExprIR`; rendering policy belongs to runtime consumers.
-
-### Nodes
-
-- Schema-valued authoring fields MUST use the `Schema` suffix. Workflow `inputSchema` and Agent/Signal `outputSchema` are runtime schema boundaries; reusable Task `inputSchema` is a config-time TypeScript type witness.
-- Runtime bindings and accessors MUST continue to use `input` and `output`; scopes MUST declare their single `output` by returning a durable workflow value, not by calling an output helper.
-- Agent, Task, and Signal authoring specs MUST use flat kind-specific objects whose execution fields lower under the frozen node's `run` field.
-- TypeScript-owned Task outputs MUST be inferred from `exec` without an author-facing `outputSchema`.
-- Node ids MUST be bound through `step("id")`; node kind methods MUST receive only the kind-specific spec.
-- Agent nodes MUST use `step("id").agent({ agent: agents.<key>, prompt, permissionMode?, sessionKey?, cwd?, env?, outputSchema?, timeout? })`.
-- Agent definitions MAY declare `permissionMode?: "approve-reads" | "approve-all" | "deny-all"`.
-- Signal nodes MUST use `step("id").signal({ prompt, outputSchema?, timeout?, onTimeout? })`. Schema-less signals expose raw `Expr<string>` output; schema-backed signals expose parsed structured output.
-- Signal `onTimeout`, when present, MUST use `{ message? }`.
-- Signal `onTimeout` MUST NOT be present unless `timeout` is present.
-- Task nodes MUST use the top-level authoring field `input` as the explicit expression-to-runtime-value boundary.
-- Inline Task nodes MUST use `step("id").task({ input, exec, cwd?, env?, execution?, timeout? })`; output is inferred from `Awaited<ReturnType<exec>>`.
-- Reusable Task nodes MUST use `step("id").task({ task, input, cwd?, env?, execution?, timeout? })`; output is inferred from the reusable Task token's `exec`.
-- Agent node graph dependencies MUST be expressed by refs inside the authored `prompt`, `cwd`, `env`, and `sessionKey` fields.
-- Signal node graph dependencies MUST be expressed by refs inside the authored `prompt` field.
-- Agent and Task node authoring field `cwd` MUST be `Resolvable<string>`.
-- Agent and Task node authoring field `env` values MUST be `Resolvable<string>`.
-- Top-level Agent definition `cwd` and `env` MUST remain declaration-time plain strings and MUST remain plain values in `WorkflowIR`.
-- Assert nodes MUST use `step("id").assert({ condition, message? })`.
-- Assert nodes MUST serialize only `condition` and optional `message`, and MUST produce no output.
-- Composite nodes MUST include `step("id").if`, `switch`, `parallel`, `fanout`, and `loop`, each producing child-scope IR.
-- Composite callbacks MUST receive only node-specific local values: fanout callbacks receive `item` and `itemIndex`; loop body callbacks receive `index`, `round`, and `state`.
-- `step` MUST be a single per-compilation active-scope dispatcher provided by the workflow `build` callback: `step("id")` declares into whichever workflow or composite declaration callback is currently executing.
-- Workflow and composite graph declaration callbacks MUST be synchronous. Calling `step()` after graph declaration has closed MUST fail with a clear authoring invariant error.
-- Node ids MUST remain unique across the entire workflow IR, including nested composite scopes.
-- Parent scopes MUST access a composite node only through that node's projected `output`.
-- Workflow and composite callbacks MUST declare one durable output value. They MUST accept primitives, `null`, arrays, plain objects, `ArtifactRef`, and `Expr` values whose resolved type is durable workflow data.
-- A node's result MUST be read through exactly one `.output`; `NodeRef` itself is a control handle and MUST be rejected both as a direct scope return and when nested at any depth. A direct `Expr` such as `task.output` MUST remain valid.
-- TypeScript-owned composite outputs MUST be inferred from callback returns and MUST NOT declare author-facing `outputSchema`.
-- Workflow root and composite callback return types MUST use a position-sensitive recursive TypeScript constraint that accepts durable primitives, arrays, plain object shapes, `JsonValue`, `ArtifactRef`, graph `Expr` values, and unions while rejecting raw `undefined`, `unknown`, unconstrained `object`, functions, promises, dates, maps, sets, symbol-keyed objects, symbols, bigint, and array-element `undefined`. Task outputs MAY contain object-property `undefined` and MAY return top-level `undefined`.
-- A scope output MUST NOT be raw `undefined` or an `Expr<T | undefined>` at the top level.
-- An object field MAY be an `Expr<T | undefined>` and remains optional to downstream projection.
-- An array element MUST NOT be raw `undefined` or an `Expr<T | undefined>`.
-- Workflow, composite, loop-state, and Task output seams MUST reduce `any`, including `any` inherited from imported helpers, to `never`; they MUST NOT provide a usable author-facing `any` escape hatch.
-- The recursive output constraint MUST preserve exact inferred output types and MUST remain an internal type implementation detail rather than a required author import.
-- Ordinary authored literals MUST follow TypeScript widening. Authors MUST use `as const` or an explicit literal union when a narrow literal result is required.
-- Array output accessors MAY be combined through the `@acpus/expression` `lift` callback helper; no array-specific expression helper is required.
-- If nodes MUST use `step("id").if({ condition, then, else })` and MUST infer the union of `then` and `else` outputs.
-- Switch nodes MUST use `default` for fallback authoring, and default MUST be declared.
-- Switch and parallel race outputs MUST preserve heterogeneous branch unions. Accessors over a union MUST expose only fields TypeScript can prove are present.
-- If and switch results MUST permit direct projection only of fields common to every possible branch. Authors MUST use `lift` to narrow a branch union before reading branch-specific fields.
-- Parallel nodes MUST express static named branches and support declaration-time `strategy?: "all" | "race"`, defaulting to `"all"`, plus runtime `maxConcurrency?: Resolvable<number | undefined>`.
-- Composite outputs MUST preserve these shapes: parallel `all` is a record keyed by branch name, parallel `race` is `{ winner, result }`, fanout is the accepted item-output array, and loop is the final state.
-- Fanout nodes MUST express runtime array expansion through `over: Resolvable<readonly Item[]>`, support declaration-time `strategy?: "all" | "quorum"`, and accept runtime `count: Resolvable<number>` for quorum and `maxConcurrency?: Resolvable<number | undefined>`.
-- Fanout item output MUST be inferred from the `do` callback and serialize no `itemOutputSchema`.
-- Loop nodes MUST declare `state`; loop bodies MUST receive `index`, `round`, and non-optional `state`.
-- Loop bodies MUST return a transition object `{ state, stop }`; transition `state` MUST converge with the declared initial `state`.
-- Loop `stop` MUST accept a boolean workflow value and lower under the `stop` field of `LoopNodeIR.do.output`; `loop.output` MUST expose the final transition `state`.
-- Loop transition shape, stop type, and state convergence MUST be enforced by the public TypeScript interface rather than compiler AST rules.
-- Control-only scopes MUST return `{}` explicitly. `null` MUST mean an explicit null output and MUST NOT represent an implicit no-output state.
-
-### Task Authoring And Runtime Context Types
-
-- A reusable Task MUST be authored via `task.define({ inputSchema, exec })`.
-- A reusable Task node MUST infer output from the reusable Task's `exec` return type and MUST NOT repeat `outputSchema` at the call site.
-- A reusable Task definition's `inputSchema` MUST infer the TypeScript input type of its `exec` function and call sites. It MUST NOT be retained on the executable Task token or promise runtime parsing, defaults, or transforms.
-- Inline and reusable Task `input` MUST accept one durable authored value: a primitive, `null`, array or tuple, plain object shape, `ArtifactRef`, or `Expr` whose resolved value is durable. An unconstrained `object` type and an ordinary object type with symbol keys MUST be rejected because neither proves a lowerable plain-object shape.
-- Task input MUST use the same position-sensitive recursive durable constraint as graph output: raw `undefined` MUST be rejected at every position, a top-level or array-element `Expr<T | undefined>` MUST be rejected, and an object field expression MAY resolve missing.
-- Task input constraints and materialization transforms MUST remain internal; Core MUST NOT export standalone `StepInput`, `GraphInput`, or `RuntimeInput` authoring types.
-- Task `exec` input MUST recursively unwrap authored expressions, preserve unions, optional properties, and tuple positions, and remove authoring-side `readonly`.
-- A reusable Task node call site's complete materialized `input` value MUST be checked non-distributively against the input type inferred from its reusable Task token. Structural extra fields remain permitted.
-- Reusable Task input validation MUST remain a config-time TypeScript check; Core MUST NOT parse, default, or transform the value through `inputSchema` at runtime.
-- Task input errors MUST remain local to the Task call without removing contextual typing from `exec` or poisoning an otherwise valid Task output type.
-- Inline and reusable Task return types MUST use the recursive durable output constraint. A Task MAY return top-level `undefined` to represent no output, but arrays MUST NOT contain `undefined` entries.
-- Task node lifecycle options MAY support top-level `timeout`.
-- Task invocation options MAY support top-level `cwd`, `env`, and `execution.defaultCommandTimeout`.
-- Task code MUST receive a context containing only `input`, `$`, `artifact`, `env`, and `abortSignal`.
-- Task context `artifact` MUST expose only `write(name, content, options?)` and synchronous `path(ref)` operations. It MUST NOT expose format-specific write helpers or file-read helpers.
-- `artifact.write(...)` MUST accept `string | Uint8Array`, return `Promise<ArtifactRef>`, encode strings as UTF-8 with default media type `text/plain`, and write byte arrays verbatim without inferring a media type.
-- `artifact.path(ref)` MUST return an absolute filesystem path synchronously.
-- Task context `env` MUST use `Record<string, string | undefined>` and MUST expose the Task process's live `process.env` object.
-- Task code MUST receive an Acpus-owned `$` wrapper backed by `zx/core`.
-- Without an explicit per-call cwd or env override, the `$` wrapper MUST read the live process cwd and environment when each command starts rather than capturing them when the wrapper is created.
-- The `$` wrapper MUST capture command stdout and stderr without echoing either to host streams by default.
-- The wrapper MUST support `` $`cmd` ``, `$({ cwd, env, timeout, nothrow, allowExitCode })`, `.allowExitCode([...])`, `.nothrow()`, `.timeout("10m")`, `.json<T>()`, `.text()`, and `.lines()`.
-- An explicit command timeout MUST attempt to send its configured signal to the command process and its descendants.
-- Programmatic arguments MUST use zx array interpolation.
-- `CommandResult.command` MUST equal zx's rendered command for the actual process invocation, including quoting and array expansion.
-
-### IR And Validation
-
-- `tryCompileWorkflowDefinition(definition, options?)` MUST lower an in-memory workflow definition to a `Result<WorkflowIR, WorkflowCompilationFailure>` with `irVersion: 7` on success.
-- `tryCompileWorkflowDefinition(...)` MUST retain an ordinary build/lowering exception as the `workflow-lowering-failed` cause.
-- `compileWorkflowDefinition(definition, options?)` MUST rethrow an ordinary build/lowering cause unchanged and MUST preserve a tagged Task/link failure as the thrown error's cause.
-- `WorkflowCompilationFailure` MUST distinguish workflow lowering failure, malformed Task authoring specs, missing reusable-Task links, and invalid reusable-Task link fields.
-- Source-independent workflows MUST compile without a reusable-Task link plan.
-- A workflow containing a reusable Task MUST receive `reusableTasks: { referrerPath, targets }`, where `referrerPath` is one source-root-relative workflow path and `targets` is a read-only map from globally unique node id to `{ specifier, exportName }`.
-- Core MUST copy reusable-Task link values into the constructed IR and MUST NOT retain caller-owned plan or target objects.
-- Every reusable Task actually declared by the workflow build callback MUST have one complete link. Unconsumed source-analysis links MAY be ignored.
-- Missing or invalid reusable-Task links and malformed Task specs MUST fail compilation; Core MUST NOT encode these failures as empty inline source or empty module target sentinels.
-- If an internal caller bypasses the public TypeScript interface, workflow and composite outputs containing a `NodeRef` or a non-durable value MUST fail as lowering invariants rather than being interpreted as empty or positional bindings.
-- Repeated compilation of the same in-memory workflow definition MUST produce identical `WorkflowIR` values.
-- `WorkflowIR` MUST contain only `irVersion`, `name`, optional `description`, optional `inputSchema`, `agents`, `root`, and `diagnostics`.
-- Every executable `ScopeIR`, including `WorkflowIR.root`, MUST contain exactly `nodes: NodeIR[]` and one required `output: ExprIR`. Scope outputs MUST lower as one expression and MUST NOT use a named-output map or a top-level workflow `outputs` field.
-- `LoopNodeIR.do.output` MUST be an object expression containing exactly the authored `state` and `stop` fields.
-- `WorkflowIR`, node IR, scope IR, schema IR, template IR, expression IR, agent definitions, task runs, and task execution targets MUST use closed serialized object shapes.
-- `AgentDefinitionIR` MUST retain optional `config: Record<string, string>` in IR version 7. It MUST NOT retain `agentMode`. Agent node and Agent run IR MUST remain closed shapes without a `config` field.
-- `childScopes(node)` MUST return every direct composite child scope and none for leaf nodes, ordered as `then` before `else`, authored switch cases before `default`, authored parallel keys, then fanout or loop body scope.
-- `walkNodes(scope)` MUST traverse nodes in depth-first pre-order, preserve authored node and branch order, and report child-scope ancestry from outermost to innermost.
-- Structural traversal MUST exhaust the closed `NodeIR` union so adding a node kind requires traversal handling at compile time.
-- `WorkflowIR.description`, when present, MUST be a string.
-- `validateWorkflowIR(ir)` MUST require IR version 7 and diagnose unknown fields, malformed agent definitions (including non-string `config` values), malformed node runs, missing or invalid scope output expressions, invalid expressions/templates/schemas, missing required composite branches/defaults, invalid loop transition output, and malformed task execution targets. It MUST NOT enforce TypeScript-owned task/composite business output shape through generated schemas.
-- `validateWorkflowIR(ir)` MUST be the sole owner of `ID001` node-id diagnostics. Each invalid id MUST produce one error containing the accepted `/^[A-Za-z_][A-Za-z0-9_-]*$/` pattern, the node IR path, and a hint to use a compile-time literal id.
-- Node builders MUST NOT emit `ID001`.
-- `compileWorkflowDefinition(definition, { validate: false })` MUST intentionally skip node-id validation but MUST NOT bypass Task spec or reusable-Task link completeness.
-- The default compilation path MUST append validator diagnostics once.
-- `validateWorkflowIR(ir)` MUST diagnose scope-illegal refs with stable code `IR003`.
-- Node pre-execution fields MUST reference only workflow input/meta, visible local refs such as the current fanout or loop context, ancestor scope nodes, and previous sibling nodes in the same scope. They MUST NOT reference the current node output or later sibling node outputs.
-- Scope outputs MAY reference ancestor scope nodes and any node declared in that scope, but parent scopes and sibling branches/cases MUST NOT reference child-scope internal nodes.
-- `fanout.<id>.item` and `fanout.<id>.itemIndex` refs MUST be valid only in that fanout body and nested descendants.
-- `loop.<id>.index`, `loop.<id>.round`, and `loop.<id>.state` refs MUST be valid only in that loop body and nested descendants.
-- Agent, Task, and Signal `timeout`, Task `execution.defaultCommandTimeout`, Parallel/Fanout `maxConcurrency`, Fanout quorum `count`, prompts, session keys, assert/signal messages, conditions, fanout `over`, loop state, task input/cwd/env, and other runtime values MUST be stored as `ExprIR`.
-- `tryParseDurationMs(value)` syntax MUST match exactly `^\d+(ms|s|m|h|d)?$`; syntactically valid values remain subject to the range rule below.
-- Literal duration expressions MUST use the shared `tryParseDurationMs` grammar.
-- Duration units `ms`, `s`, `m`, `h`, and `d` MUST resolve to `1`, `1_000`, `60_000`, `3_600_000`, and `86_400_000` milliseconds respectively; omitted units MUST mean milliseconds and zero MUST be accepted.
-- `DurationParseError` MUST be `{ type: "invalid-duration-syntax"; value: string } | { type: "duration-out-of-range"; value: string }`; both variants MUST preserve the original input in `value`.
-- `tryParseDurationMs(value)` MUST return the resolved integer milliseconds in a `Result`; invalid syntax MUST return `invalid-duration-syntax`, and any non-finite or non-safe-integer resolved value MUST return `duration-out-of-range`.
-- Literal quorum counts MUST be positive integers. Literal concurrency limits MUST be positive integers or zero, where zero means no authored local concurrency cap.
-- `@acpus/core/ir` MUST expose the shared positive-integer predicate used by frozen-IR validation and runtime resource resolution.
-- Agent, Task, and Signal runs MUST serialize only their meaningful execution fields and MUST NOT contain singleton run-kind tags.
-- `TaskRunIR.input` MUST be one `ExprIR`. Object-shaped input MUST lower as an object expression; scalar, `null`, array, and direct expression input MUST NOT be wrapped in a named binding map.
-- Task runs MUST contain a closed `target` descriptor that is either an inline source target or a reusable module target.
-- Inline task targets MUST contain `{ kind: "inline", source }`, where `source` is the self-contained `exec` function source.
-- Reusable task targets MUST contain `{ kind: "module", specifier, exportName, referrer }`, where `specifier` is the source-level module specifier, `exportName` selects the exported task token, and `referrer` identifies the workflow source file used as the resolution parent.
-- Core MUST construct reusable task targets from complete caller-provided links and MUST never publish an incomplete reusable descriptor. `validateWorkflowIR(...)` MUST continue to reject incomplete hand-authored or externally supplied IR.
-- Reusable task `exportName` MUST identify one exported binding; source-language derivation rules belong to [Workflow Compiler Task Analysis](workflow-compiler-spec.md#task-analysis-and-reusable-references).
-- Reusable task target referrers MUST use the closed shape `{ path: string }`.
-- Reusable task target referrer paths MUST be source-root-relative workflow paths, not absolute filesystem paths or paths that escape the source root.
-- Serialized Task invocation fields such as `input`, `cwd`, `env`, and `execution` MUST belong to `TaskRunIR`, not the serialized task node top level.
-- Workflow lowering MUST preserve every own field of authored object maps, including `__proto__`, as ordinary data without changing the lowered map's prototype.
-- Parallel node branch values MUST be child `ScopeIR` objects directly, without a single-field branch wrapper.
-
-## Verification
-
-- Contract and type tests cover public exports, native Zod authoring, graph-boundary schema lowering, and every workflow/node authoring shape.
-- Dollar integration tests cover live process defaults, captured output, rendered commands, exit controls, timeouts, and abort-listener cleanup.
-- Lowering and validation tests cover deterministic closed `WorkflowIR`, duration rules, task targets, output/ref legality, and single-owner diagnostics.
-- Traversal tests cover every node kind, child-scope order, ancestry, and the public traversal type unions.
-- Content-identity tests cover the exact subpath exports, digest wire format, UTF-8 and byte semantics, strict validation, hex extraction, and canonical source-graph vectors.
+- `pnpm --filter @acpus/core typecheck`：验证静态编写模型能够拒绝无效的图与运行时值用法。
+- `pnpm test:contract packages/core` 与 `pnpm test:type packages/core`：验证其他包所消费的 Workflow 编写与持久化图边界。
+- `pnpm test:unit packages/core`：验证确定性的图结构转换、校验、Schema 转换与内容标识。

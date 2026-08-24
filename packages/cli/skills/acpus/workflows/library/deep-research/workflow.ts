@@ -38,9 +38,9 @@ export default defineWorkflow({
     depth: z.enum(["fast", "deep", "xdeep", "max"]).default("deep").describe("Research budget: fast=4 groups/1 round, deep=8/2, xdeep=16/3, max=32/3."),
   }),
   agents: {
-    lead: { use: "codex", model: "gpt-5.6-sol" },
-    worker: { use: "codex", model: "gpt-5.6-luna" },
-    skeptic: { use: "codex", model: "gpt-5.6-terra" },
+    lead: {},
+    worker: {},
+    skeptic: {},
   },
 }).build(({ input, agents, meta, step }) => {
   const profile = lift(input.depth, depth => ({

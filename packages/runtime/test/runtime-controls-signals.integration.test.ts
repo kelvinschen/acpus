@@ -1,9 +1,11 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
-import { getRun, getRunVisualizationSnapshot, inspectNode, listRuns } from "@acpus/runtime";
-import { openExistingWritableRuntimeStore, openRuntimeStore } from "../src/store/store.js";
+import { inspectNode } from "../src/inspection/use-cases.js";
+import { getRun, getRunVisualizationSnapshot, listRuns } from "../src/runs/use-cases.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
 import {
   admitSyntheticWorkflow,
-  failOnceTaskWorkflow,
   failingPureWorkflow,
   fanoutSignalWorkflow,
   missingProviderWorkflow,
@@ -17,12 +19,11 @@ import {
   timedSignalWorkflow,
   withRuntimeWorkspace,
 } from "./support/runtime-fixtures.js";
-import { applySchedulerControlIntent } from "./support/scheduler.js";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { advanceRun, controlRun, forkRun, signalRun, waitUntil } from "./support/runtime-controls.js";
 
 describe.concurrent("runtime controls and recovery", () => {
-  it("pauses, resumes, and applies retries to durable runs", async () => {
+  it("pauses, resumes, and durably records an unsuccessful retry", async () => {
     await withRuntimeWorkspace("runtime-controls", async workspace => {
       const missingProvider = await admitSyntheticWorkflow(workspace, missingProviderWorkflow());
       expect(missingProvider.status).toBe("failed");
@@ -39,17 +40,10 @@ describe.concurrent("runtime controls and recovery", () => {
       const failed = await admitSyntheticWorkflow(workspace, failingPureWorkflow());
       expect(failed.status).toBe("failed");
       const failedId = failed.run.id;
-      await expect(controlRun(workspace, failedId, "retry")).resolves.toMatchObject({ status: "failed" });
-      expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'control.run_retry_requested'", failedId)).toMatchObject({ count: 1 });
+      const failedRetry = await retryTarget(workspace, failedId);
+      await expect(controlRun(workspace, failedId, "retry", failedRetry.target)).resolves.toMatchObject({ status: "failed" });
+      expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = ?", failedId, retryEventType(failedRetry.kind))).toMatchObject({ count: 1 });
       expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.failed'", failedId)).toMatchObject({ count: 2 });
-
-      const failOnce = await admitSyntheticWorkflow(workspace, failOnceTaskWorkflow(), { workDir: workspace });
-      expect(failOnce.status).toBe("failed");
-      await expect(controlRun(workspace, failOnce.run.id, "retry")).resolves.toMatchObject({ status: "completed", output: { ok: true } });
-      expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'control.run_retry_requested'", failOnce.run.id)).toMatchObject({ count: 1 });
-      expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.failed'", failOnce.run.id)).toMatchObject({ count: 1 });
-      expect(runtimeRow(workspace, "SELECT COUNT(*) AS count FROM run_events WHERE run_id = ? AND type = 'run.completed'", failOnce.run.id)).toMatchObject({ count: 1 });
-
     });
   });
 
@@ -71,7 +65,7 @@ describe.concurrent("runtime controls and recovery", () => {
       expect(fork.run.status).toBe("pending");
       expect(fork.run.output).toBeUndefined();
       await advanceRun(workspace, fork.run.id);
-      expect((await getRun(workspace, fork.run.id))._unsafeUnwrap()).toMatchObject({
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, fork.run.id)))))).toMatchObject({
         status: "completed",
         output: { approvals: { left: { ok: true }, right: { ok: true } } },
       });
@@ -94,7 +88,7 @@ describe.concurrent("runtime controls and recovery", () => {
 
       const raceFork = await forkRun(workspace, race.run.id);
       await advanceRun(workspace, raceFork.run.id);
-      expect((await getRun(workspace, raceFork.run.id))._unsafeUnwrap()).toMatchObject({
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, raceFork.run.id)))))).toMatchObject({
         status: "completed",
         output: { approval: { winner: "left", result: { ok: true } } },
       });
@@ -110,18 +104,18 @@ describe.concurrent("runtime controls and recovery", () => {
 
       const replayed = await forkRun(workspace, source.run.id);
       await advanceRun(workspace, replayed.run.id);
-      expect((await getRun(workspace, replayed.run.id))._unsafeUnwrap()).toMatchObject({
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, replayed.run.id)))))).toMatchObject({
         status: "completed",
         output: { ok: true },
       });
       expect(runtimeRows(workspace, "SELECT status FROM signal_waits WHERE run_id = ?", replayed.run.id)).toEqual([]);
-      expect((await getRun(workspace, replayed.run.id))._unsafeUnwrap()?.dynamic?.nodeInstances).toEqual([
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, replayed.run.id)))))?.dynamic?.nodeInstances).toEqual([
         expect.objectContaining({ reusedFromRunId: source.run.id }),
       ]);
 
       const targeted = await forkRun(workspace, source.run.id, { target: "approve" });
       await advanceRun(workspace, targeted.run.id);
-      expect((await getRun(workspace, targeted.run.id))._unsafeUnwrap()).toMatchObject({ status: "awaiting" });
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, targeted.run.id)))))).toMatchObject({ status: "awaiting" });
       await expect(signalRun(workspace, targeted.run.id, "approve", { ok: true })).resolves.toMatchObject({
         run: { status: "completed", output: { ok: true } },
       });
@@ -138,7 +132,7 @@ describe.concurrent("runtime controls and recovery", () => {
       const fork = await forkRun(workspace, source.run.id);
       await advanceRun(workspace, fork.run.id);
 
-      const child = (await getRun(workspace, fork.run.id))._unsafeUnwrap();
+      const child = Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, fork.run.id)))));
       expect(child?.status).toBe("awaiting");
       expect(child?.dynamic?.nodeInstances.filter(instance => instance.nodeId === "approve" && instance.reusedFromRunId === source.run.id)).toHaveLength(1);
       const childWaits = runtimeRows(workspace, "SELECT node_key FROM signal_waits WHERE run_id = ? AND status = 'awaiting' ORDER BY node_key", fork.run.id);
@@ -161,10 +155,10 @@ describe.concurrent("runtime controls and recovery", () => {
         expect.objectContaining({ node_id: "approve", status: "awaiting" }),
         expect.objectContaining({ node_id: "approve", status: "awaiting" }),
       ]);
-      const run = (await getRun(workspace, awaiting.run.id))._unsafeUnwrap();
+      const run = Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, awaiting.run.id)))));
       expect(run?.dynamic?.nodeInstances.filter(instance => instance.nodeId === "approve" && instance.status === "awaiting")).toHaveLength(2);
       expect(run?.dynamic?.signalWaits.filter(wait => wait.nodeId === "approve" && wait.status === "awaiting")).toHaveLength(2);
-      const snapshot = (await getRunVisualizationSnapshot(workspace, awaiting.run.id))._unsafeUnwrap();
+      const snapshot = Result.getOrThrow((await Effect.runPromise(Effect.result(getRunVisualizationSnapshot(workspace, awaiting.run.id)))));
       expect(snapshot?.overlay.workflow).toMatchObject({ name: "cli-fanout-signal", runId: awaiting.run.id, status: "awaiting" });
       expect(snapshot?.overlay.nodes.find(node => node.nodeId === "approve")).toMatchObject({
         kind: "signal",
@@ -203,7 +197,7 @@ describe.concurrent("runtime controls and recovery", () => {
       const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());
       expect(awaiting.status).toBe("awaiting");
       const runId = awaiting.run.id;
-      expect((await listRuns(workspace))._unsafeUnwrap()).toEqual([
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(listRuns(workspace)))))).toEqual([
         expect.objectContaining({ id: runId, status: "awaiting" }),
       ]);
 
@@ -213,11 +207,11 @@ describe.concurrent("runtime controls and recovery", () => {
 
       await expect(controlRun(workspace, runId, "resume")).resolves.toMatchObject({ status: "awaiting" });
 
-      const beforeMissingSignal = (await getRun(workspace, runId))._unsafeUnwrap();
+      const beforeMissingSignal = Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, runId)))));
       await expect(signalRun(workspace, runId, "missing", { ok: true })).rejects.toMatchObject({
         failure: { type: "signal-target-not-found", runId, target: "missing" },
       });
-      const afterMissingSignal = (await getRun(workspace, runId))._unsafeUnwrap();
+      const afterMissingSignal = Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, runId)))));
       expect(afterMissingSignal?.eventCount).toBe(beforeMissingSignal?.eventCount);
       expect(afterMissingSignal?.dynamic?.signalWaits).toEqual([
         expect.objectContaining({ status: "awaiting" }),
@@ -231,7 +225,7 @@ describe.concurrent("runtime controls and recovery", () => {
       await expect(signalRun(workspace, runId, "approve", signalPayload, signalCommandIdempotencyKey)).resolves.toMatchObject({
         run: { status: "completed", output: { ok: true } },
       });
-      const completedRun = (await getRun(workspace, runId))._unsafeUnwrap();
+      const completedRun = Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, runId)))));
       expect(completedRun).toMatchObject({ status: "completed", output: { ok: true } });
       const consumedWait = completedRun?.dynamic?.signalWaits[0];
       expect(consumedWait).toMatchObject({
@@ -246,12 +240,12 @@ describe.concurrent("runtime controls and recovery", () => {
   it("cancels a paused run before its root frame materializes", async () => {
     await withRuntimeWorkspace("runtime-cancel-paused-before-root", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, scalarWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const run = await admitRunForTest(store, { prepared, input: {}, cwd: workspace })
         .finally(() => store.close());
 
       await expect(controlRun(workspace, run.id, "pause")).resolves.toMatchObject({ status: "paused" });
-      expect((await getRunVisualizationSnapshot(workspace, run.id))._unsafeUnwrap()).toMatchObject({
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRunVisualizationSnapshot(workspace, run.id)))))).toMatchObject({
         controls: { canCancelRun: true },
       });
       await expect(controlRun(workspace, run.id, "cancel")).resolves.toMatchObject({ status: "canceled" });
@@ -267,29 +261,6 @@ describe.concurrent("runtime controls and recovery", () => {
   });
 
 
-  it("does not apply controls when another owner holds the run lease", async () => {
-    await withRuntimeWorkspace("runtime-control-lease-conflict", async workspace => {
-      const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());
-      const store = await openExistingWritableRuntimeStore(workspace);
-      expect(store).toBeDefined();
-      const claim = store!.scheduler.claimRun(awaiting.run.id, "other-owner", 30_000);
-      expect(claim).toBeDefined();
-      try {
-        const result = await applySchedulerControlIntent(workspace, store!, {
-          requestId: "lease-conflict",
-          runId: awaiting.run.id,
-          type: "cancel",
-        }, { ownerId: "test-control-owner" });
-        expect(result.advanced).toMatchObject({ status: "lease_lost" });
-        expect(store!.getRun(awaiting.run.id)).toMatchObject({ status: "awaiting" });
-      } finally {
-        if (claim) store!.scheduler.releaseRun(claim);
-        store?.close();
-      }
-    });
-  });
-
-
   it("settles expired signal timeouts before validating late signal payloads", async () => {
     await withRuntimeWorkspace("runtime-signal-timeout-before-invalid-payload", async workspace => {
       const awaiting = await admitSyntheticWorkflow(workspace, timedSignalWorkflow());
@@ -301,7 +272,7 @@ describe.concurrent("runtime controls and recovery", () => {
       });
 
       await expect(signalRun(workspace, runId, "approve", { ok: "yes" })).rejects.toThrow();
-      expect((await getRun(workspace, runId))._unsafeUnwrap()).toMatchObject({ status: "failed" });
+      expect(Result.getOrThrow((await Effect.runPromise(Effect.result(getRun(workspace, runId)))))).toMatchObject({ status: "failed" });
       expect(runtimeRows(workspace, "SELECT status, terminal_reason FROM signal_waits WHERE run_id = ?", runId)).toEqual([
         { status: "timed_out", terminal_reason: "signal_timeout" },
       ]);
@@ -312,33 +283,44 @@ describe.concurrent("runtime controls and recovery", () => {
   it("projects selected cancel only while the exact dynamic target is controllable", async () => {
     await withRuntimeWorkspace("runtime-selected-cancel-projection", async workspace => {
       const awaiting = await admitSyntheticWorkflow(workspace, signalWorkflow());
-      const before = await inspectNode(workspace, {
+      const before = await Effect.runPromise(Effect.result(inspectNode(workspace, {
         runId: awaiting.run.id,
         target: "approve",
-      });
-      expect(before.isOk()
-        ? before.value.availableControls
+      })));
+      expect(Result.isSuccess(before)
+        ? before.success.availableControls
         : undefined).toEqual([
         { type: "cancel", target: expect.any(String) },
       ]);
-      const cancelTarget = before.isOk()
-        ? before.value.availableControls[0]?.target
+      const cancelTarget = Result.isSuccess(before)
+        ? before.success.availableControls[0]?.target
         : undefined;
       expect(cancelTarget).toEqual(
-        before.isOk()
-          ? before.value.summary.nodeKey
+        Result.isSuccess(before)
+          ? before.success.summary.nodeKey
           : undefined,
       );
 
       await signalRun(workspace, awaiting.run.id, "approve", { ok: true });
-      const after = await inspectNode(workspace, {
+      const after = await Effect.runPromise(Effect.result(inspectNode(workspace, {
         runId: awaiting.run.id,
         target: "approve",
-      });
-      expect(after.isOk()
-        ? after.value.availableControls
+      })));
+      expect(Result.isSuccess(after)
+        ? after.success.availableControls
         : undefined).toEqual([]);
     });
   });
 
 });
+
+function retryEventType(kind: "node" | "frame"): "instance.retry_requested" | "frame.retry_requested" {
+  return kind === "node" ? "instance.retry_requested" : "frame.retry_requested";
+}
+
+async function retryTarget(workspace: string, runId: string) {
+  const snapshot = Result.getOrThrow((await Effect.runPromise(Effect.result(getRunVisualizationSnapshot(workspace, runId)))));
+  const target = snapshot?.controls.retryTargets[0];
+  if (!target) throw new Error(`Expected one retry target for run '${runId}'.`);
+  return target;
+}

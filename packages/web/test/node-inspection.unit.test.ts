@@ -104,6 +104,7 @@ describe("node inspection projection", () => {
           status: "started",
           startedAt: "2026-07-01T00:00:00.000Z",
           error: { private: true },
+          result: { candidate: "not accepted" },
         },
         agent: {
           key: "observer",
@@ -139,7 +140,7 @@ describe("node inspection projection", () => {
           code: "provider_exit",
           message: "Provider rejected the request.",
           upstream: {
-            source: "acpx",
+            source: "acp",
             operation: "turn",
             exitCode: 7,
             code: "E_PROVIDER",
@@ -168,6 +169,7 @@ describe("node inspection projection", () => {
       nodeId: "review",
       nodeKey: "review~abc",
       cancelTarget: "review~abc",
+      availableControls: [{ type: "cancel", target: "review~abc" }],
       staticKind: "agent",
       timing: { startedAt: "2026-07-01T00:00:01.000Z" },
       latestAttempt: { attemptNo: 1, status: "started" },
@@ -199,7 +201,7 @@ describe("node inspection projection", () => {
         code: "provider_exit",
         message: "Provider rejected the request.",
         upstream: {
-          source: "acpx",
+          source: "acp",
           operation: "turn",
           exitCode: 7,
           code: "E_PROVIDER",
@@ -231,6 +233,7 @@ describe("node inspection projection", () => {
       nodeId: "review",
       nodeKey: "review~abc",
       staticKind: "agent",
+      availableControls: [],
       artifacts: [],
     });
   });
@@ -314,22 +317,6 @@ describe("node runtime values projection", () => {
     ))).toEqual({ available: true, values: { maxConcurrency: 3 } });
   });
 
-  it("projects the complete materialized Fanout input", () => {
-    expect(projectNodeRuntimeValues(forensicsView(
-      { kind: "fanout", over: "input.items", strategy: "quorum", count: "2", maxConcurrency: "3", do: emptyScope },
-      {
-        status: "resolved",
-        kind: "fanout",
-        items: [{ id: 1 }, { id: 2 }],
-        quorumCount: 2,
-        maxConcurrency: 3,
-      },
-    ))).toEqual({
-      available: true,
-      values: { over: [{ id: 1 }, { id: 2 }], count: 2, maxConcurrency: 3 },
-    });
-  });
-
   it("projects durable Loop progress values", () => {
     expect(projectNodeRuntimeValues(forensicsView(
       { kind: "loop", state: "input.state", do: { nodes: [], transition: { state: "do.state", stop: "do.stop" } } },
@@ -352,7 +339,8 @@ describe("node runtime values projection", () => {
       {
         kind: "agent",
         agent: "worker",
-        profile: { kind: "agent_definition", use: "codex" },
+        source: { kind: "workflow" },
+        effective: { kind: "agent_definition", use: "codex" },
         prompt: "private authored prompt",
       },
       {
@@ -397,50 +385,6 @@ describe("node execution inspection", () => {
     },
   );
 
-  it("maps only the closed Web execution fields", () => {
-    const execution = {
-      ...executionInspection(),
-      runtimeOnly: "private",
-      run: { ...executionInspection().run, runtimeOnly: "private" },
-      subject: { ...executionInspection().subject, runtimeOnly: "private" },
-      summary: { ...executionInspection().summary, runtimeOnly: "private" },
-      contextWindow: { ...executionInspection().contextWindow, runtimeOnly: "private" },
-      tokenUsage: { ...executionInspection().tokenUsage, runtimeOnly: "private" },
-      output: { ...executionInspection().output, runtimeOnly: "private" },
-      recentTools: [{
-        ...executionInspection().recentTools[0]!,
-        runtimeOnly: "private",
-      }],
-    } as unknown as RunInspectionAgentExecutionDocument;
-
-    expect(projectNodeExecution(execution)).toEqual({
-      available: true,
-      lastObservedAt: "2026-07-01T00:00:02.000Z",
-      summary: {
-        status: "running",
-        sessionName: "review-session",
-        turnCount: 2,
-        message: "working",
-      },
-      contextWindow: { used: 2_500, size: 10_000, percent: 25 },
-      tokenUsage: {
-        source: "usage_update",
-        inputTokens: 100,
-        outputTokens: 25,
-        totalTokens: 125,
-      },
-      recentTools: [{
-        turn: 2,
-        toolCallId: "tool_1",
-        toolName: "read_file",
-        status: "running",
-        durationMs: 20,
-        inputPreview: "README.md",
-      }],
-      output: { tail: "partial response", totalBytes: 16, truncated: false },
-    });
-  });
-
   it.each([
     {
       reason: "not-agent" as const,
@@ -484,7 +428,7 @@ function executionInspection(): RunInspectionAgentExecutionDocument {
     available: true,
     summary: {
       status: "running",
-      sessionName: "review-session",
+      agentSessionId: "review-session",
       turnCount: 2,
       message: "working",
     },

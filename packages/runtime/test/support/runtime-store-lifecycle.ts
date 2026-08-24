@@ -1,3 +1,5 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { DatabaseSync } from "node:sqlite";
@@ -7,7 +9,7 @@ import {
   resolveRuntimeWorkspaceLayout,
   type RuntimeLayoutOptions,
 } from "../../src/runtime-layout.js";
-import { openRuntimeStoreAtLayout } from "../../src/store/store.js";
+import { openRuntimeStoreAdapterAtLayout } from "../../src/store/store.js";
 
 export type LegacyRunSummary = {
   id: string;
@@ -23,9 +25,9 @@ export async function createLegacyStore(
   run?: LegacyRunSummary,
   options: RuntimeLayoutOptions = {},
 ): Promise<void> {
-  const initialized = await ensureRuntimeLayout(workspace, options);
-  if (initialized.isErr()) throw new Error(initialized.error.message);
-  const store = await openRuntimeStoreAtLayout(initialized.value, { prevalidated: true });
+  const initialized = await Effect.runPromise(Effect.result(ensureRuntimeLayout(workspace, options)));
+  if (Result.isFailure(initialized)) throw new Error(initialized.failure.message);
+  const store = await openRuntimeStoreAdapterAtLayout(initialized.success, { prevalidated: true });
   store.close();
   const current = resolveRuntimeLayout(workspace, options);
   if (run) {
@@ -75,9 +77,16 @@ export async function startPredecessorDaemon(
   let closed = false;
   const server = createServer({ allowHalfOpen: true }, socket => {
     const chunks: Buffer[] = [];
-    socket.on("data", chunk => chunks.push(Buffer.from(chunk)));
-    socket.on("end", () => {
-      const request = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { method?: unknown };
+    let handled = false;
+    const respond = () => {
+      if (handled) return;
+      let request: { method?: unknown };
+      try {
+        request = JSON.parse(Buffer.concat(chunks).toString("utf8")) as { method?: unknown };
+      } catch {
+        return;
+      }
+      handled = true;
       if (request.method === "status") {
         statusRequests += 1;
         socket.end(JSON.stringify({
@@ -100,13 +109,21 @@ export async function startPredecessorDaemon(
         }));
         return;
       }
-      socket.end(JSON.stringify({ ok: true, result: { status: "shutdown" } }), () => {
-        if (!closed) {
-          closed = true;
-          server.close();
-        }
-      });
+      socket.end(JSON.stringify({ ok: true, result: { status: "shutdown" } }));
+      if (!closed) {
+        closed = true;
+        server.close();
+      }
+    };
+    socket.on("error", error => {
+      if ((error as NodeJS.ErrnoException).code !== "EPIPE"
+        && (error as NodeJS.ErrnoException).code !== "ECONNRESET") throw error;
     });
+    socket.on("data", chunk => {
+      chunks.push(Buffer.from(chunk));
+      respond();
+    });
+    socket.on("end", respond);
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

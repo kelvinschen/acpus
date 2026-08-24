@@ -1,3 +1,6 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import { settle } from "./effect.js";
 import { admitRunForTest } from "./support/runtime-store.js";
 import { access, cp, mkdir, readFile, readdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -6,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { appendNode, deriveInstanceKey } from "../src/scheduler/identity.js";
 import * as occurrenceRefs from "../src/scheduler/occurrence-ref.js";
 import { DirectoryFence } from "../src/store/path-fence.js";
-import { openRuntimeStore, publishRunDirectory, type RuntimeStore } from "../src/store/store.js";
+import { openRuntimeStoreAdapter, publishRunDirectory, type RuntimeStoreAdapter } from "../src/store/store.js";
 import { preparedWorkflow, prepareSyntheticWorkflow, runtimeRunsRoot, taskArtifactWorkflow, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 import { throwingSchedulerStore } from "./support/scheduler-store.js";
 
@@ -41,39 +44,39 @@ describe("runtime run directory publication", () => {
     vi.useRealTimers();
   });
 
-  it("returns tagged prepared, input, and Agent override failures without mutation", async () => {
+  it("returns tagged prepared, input, and Agent injection failures without mutation", async () => {
     await withRuntimeWorkspace("runtime-admission-tagged-failures", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const invalidIr = { ...prepared.ir, irVersion: 999 } as any;
-        expect((await store.admitRun({
+        expect(Result.getOrThrow(Result.flip((await settle(store.admitRun({
           prepared: preparedWorkflow(invalidIr, join(workspace, prepared.source.entry), workspace),
           cwd: workspace,
           input: { ready: true },
-        }))._unsafeUnwrapErr()).toMatchObject({
+        })))))).toMatchObject({
           type: "prepared-workflow-invalid",
           reason: "invalid-ir",
         });
 
-        expect((await store.admitRun({
+        expect(Result.getOrThrow(Result.flip((await settle(store.admitRun({
           prepared: { ...prepared, irJson: "{}" },
           cwd: workspace,
           input: { ready: true },
-        }))._unsafeUnwrapErr()).toMatchObject({ type: "prepared-workflow-invalid" });
+        })))))).toMatchObject({ type: "prepared-workflow-invalid" });
 
-        expect((await store.admitRun({
+        expect(Result.getOrThrow(Result.flip((await settle(store.admitRun({
           prepared,
           cwd: workspace,
           input: { ready: "yes" } as any,
-        }))._unsafeUnwrapErr()).toMatchObject({ type: "schema-mismatch", path: "$.ready" });
+        })))))).toMatchObject({ type: "schema-mismatch", path: "$.ready" });
 
-        expect((await store.admitRun({
+        expect(Result.getOrThrow(Result.flip((await settle(store.admitRun({
           prepared,
           cwd: workspace,
           input: { ready: true },
-          agentOverrides: { missing: { use: "codex" } },
-        }))._unsafeUnwrapErr()).toMatchObject({ type: "agent-overrides-invalid" });
+          agentInjections: { missing: { use: "codex" } },
+        })))))).toMatchObject({ type: "agent-injections-invalid" });
 
         expect(store.listRuns()).toEqual([]);
         await expect(readdir(runtimeRunsRoot(workspace))).resolves.toEqual([]);
@@ -86,7 +89,7 @@ describe("runtime run directory publication", () => {
   it("rejects an admission workspace split before filesystem or database mutation", async () => {
     await withRuntimeWorkspace("runtime-admission-workspace-split", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const otherWorkspace = join(workspace, "other-workspace");
       await mkdir(otherWorkspace);
       try {
@@ -104,7 +107,7 @@ describe("runtime run directory publication", () => {
   it("preserves pre-existing admission staging and final directories", async () => {
     await withRuntimeWorkspace("runtime-admission-path-ownership", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const runsDir = runtimeRunsRoot(workspace);
       await mkdir(runsDir, { recursive: true });
       try {
@@ -138,7 +141,7 @@ describe("runtime run directory publication", () => {
   it("preserves pre-existing fork staging and final directories", async () => {
     await withRuntimeWorkspace("runtime-fork-path-ownership", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const runsDir = runtimeRunsRoot(workspace);
       try {
         runIdBytes.values.push(0xaa);
@@ -150,7 +153,7 @@ describe("runtime run directory publication", () => {
         await writeFile(join(stagingDir, "sentinel.txt"), "owned by another fork");
         runIdBytes.values.push(0xbb);
 
-        await expect(store.forkRun(source.id).then(result => result._unsafeUnwrap())).rejects.toMatchObject({ code: "EEXIST" });
+        await expect(Effect.runPromise(store.forkRun(source.id))).rejects.toMatchObject({ code: "EEXIST" });
         await expect(readFile(join(stagingDir, "sentinel.txt"), "utf8")).resolves.toBe("owned by another fork");
         expect(store.listRuns().map(run => run.id)).toEqual([source.id]);
 
@@ -161,7 +164,7 @@ describe("runtime run directory publication", () => {
         await writeFile(join(finalDir, "sentinel.txt"), "pre-existing fork final");
         runIdBytes.values.push(0xcc);
 
-        await expect(store.forkRun(source.id).then(result => result._unsafeUnwrap())).rejects.toThrow("already exists");
+        await expect(Effect.runPromise(store.forkRun(source.id))).rejects.toThrow("already exists");
         await expect(readFile(join(finalDir, "sentinel.txt"), "utf8")).resolves.toBe("pre-existing fork final");
         await expect(access(join(runsDir, `.staging-${finalForkId}`))).rejects.toThrow();
         expect(store.listRuns().map(run => run.id)).toEqual([source.id]);
@@ -174,7 +177,7 @@ describe("runtime run directory publication", () => {
   it("re-resolves an occurrence fork target inside the final commit transaction", async () => {
     await withRuntimeWorkspace("runtime-fork-occurrence-target-transaction", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         runIdBytes.values.push(0xaa);
         const source = await admitRunForTest(store, { prepared, cwd: workspace, input: null });
@@ -189,8 +192,8 @@ describe("runtime run directory publication", () => {
           return resolveOccurrenceRef(...args);
         });
         try {
-          const fork = await store.forkRun(source.id, { target });
-          expect(fork.isOk()).toBe(true);
+          const fork = await settle(store.forkRun(source.id, { target }));
+          expect(Result.isSuccess(fork)).toBe(true);
           expect(transactionStates).toContain(true);
         } finally {
           resolveSpy.mockRestore();
@@ -204,7 +207,7 @@ describe("runtime run directory publication", () => {
   it("abandons a published fork when its source scheduler version changes", async () => {
     await withRuntimeWorkspace("runtime-fork-source-version-guard", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, taskArtifactWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         runIdBytes.values.push(0xaa);
         const source = await admitRunForTest(store, { prepared, cwd: workspace, input: null });
@@ -225,18 +228,18 @@ describe("runtime run directory publication", () => {
           });
         };
 
-        const fork = await store.forkRun(source.id, { target: occurrence.target });
+        const fork = await settle(store.forkRun(source.id, { target: occurrence.target }));
 
-        expect(fork.isErr()).toBe(true);
-        if (fork.isErr()) {
-          expect(fork.error).toMatchObject({
+        expect(Result.isFailure(fork)).toBe(true);
+        if (Result.isFailure(fork)) {
+          expect(fork.failure).toMatchObject({
             type: "fork-source-version-mismatch",
             runId: source.id,
             expectedVersion,
             actualVersion: expect.any(Number),
           });
-          if (fork.error.type === "fork-source-version-mismatch") {
-            expect(fork.error.actualVersion).toBeGreaterThan(expectedVersion);
+          if (fork.failure.type === "fork-source-version-mismatch") {
+            expect(fork.failure.actualVersion).toBeGreaterThan(expectedVersion);
           }
         }
         expect(store.getRun(forkId)).toBeUndefined();
@@ -249,7 +252,7 @@ describe("runtime run directory publication", () => {
 
   it("reports an orphan final run directory without deleting it", async () => {
     await withRuntimeWorkspace("runtime-orphan-run-publication", async workspace => {
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const runId = deterministicRunId(0xdd);
       const sentinel = join(runtimeRunsRoot(workspace), runId, "sentinel.txt");
       await mkdir(dirname(sentinel), { recursive: true });
@@ -311,7 +314,7 @@ describe("runtime run directory publication", () => {
   it("returns absence only for missing rows and rejects a substituted run capsule before writes", async () => {
     await withRuntimeWorkspace("runtime-run-capsule-lookup", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, cwd: workspace, input: { ready: true } });
         const runDir = store.getRunDir(run.id);
@@ -339,7 +342,7 @@ describe("runtime run directory publication", () => {
   it.skipIf(process.platform === "win32")("rejects a substituted runtime ancestor before exposing a run directory", async () => {
     await withRuntimeWorkspace("runtime-run-capsule-ancestor", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, cwd: workspace, input: { ready: true } });
         const runDir = store.getRunDir(run.id);
@@ -375,7 +378,7 @@ describe("runtime run directory publication", () => {
   it.skipIf(process.platform === "win32")("rejects a same-path runs-root replacement by directory identity", async () => {
     await withRuntimeWorkspace("runtime-runs-root-identity", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, cwd: workspace, input: { ready: true } });
         const runDir = store.getRunDir(run.id);
@@ -426,8 +429,8 @@ function deferred<T>(): {
   return { promise, resolve: resolvePromise };
 }
 
-function materializeForkOccurrence(store: RuntimeStore, runId: string): {
-  claim: NonNullable<ReturnType<RuntimeStore["scheduler"]["claimRun"]>>;
+function materializeForkOccurrence(store: RuntimeStoreAdapter, runId: string): {
+  claim: NonNullable<ReturnType<RuntimeStoreAdapter["scheduler"]["claimRun"]>>;
   nodeKey: string;
   target: string;
 } {

@@ -7,6 +7,7 @@ import {
   hasOnlyKeys,
   isControlTarget,
   isNonNegativeInteger,
+  isOptionalBoolean,
   isOptionalString,
   isRecord,
   isStringArray,
@@ -58,6 +59,7 @@ function isNodeDetail(value: unknown): value is NodeDetail {
         && isOptionalString(value.use)
         && isOptionalString(value.command)
         && isOptionalString(value.model)
+        && isOptionalBoolean(value.unbound)
         && isOptionalString(value.outputSchema);
     case "signal":
       return isOptionalString(value.outputSchema);

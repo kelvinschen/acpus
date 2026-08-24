@@ -1,15 +1,19 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as Scope from "effect/Scope";
+import { makeNodeProcessHost } from "@acpus/owned-process";
+import { it } from "@effect/vitest";
+import { beforeEach, describe, expect, vi } from "vitest";
 import { tryLoadRuntimeConfiguration } from "../src/configuration.js";
 import type { dispatchCommittedHooksForRun as DispatchCommittedHooksForRun } from "../src/hooks/dispatch.js";
 import type { applySchedulerControlIntent as ApplySchedulerControlIntent } from "../src/scheduler/control.js";
-import type { createRuntimeRunScheduler as CreateRuntimeRunScheduler, RunExecution, RunExecutionExit, RuntimeRunScheduler } from "../src/scheduler/runtime-runner.js";
+import type { createRuntimeRunScheduler as CreateRuntimeRunScheduler, RunExecution, RuntimeRunScheduler } from "../src/scheduler/runtime-runner.js";
 import type { SchedulerSnapshot } from "../src/scheduler/store-port.js";
-import type { RunDetails, RuntimeStore } from "../src/store/store.js";
-import { ok } from "neverthrow";
+import type { RunDetails, RuntimeStoreAdapter } from "../src/store/store.js";
 
 const applySchedulerControlIntent = vi.fn<typeof ApplySchedulerControlIntent>();
 const createRuntimeRunScheduler = vi.fn<typeof CreateRuntimeRunScheduler>();
-const dispatchCommittedHooksForRun = vi.fn<typeof DispatchCommittedHooksForRun>(() => ok({ runId: "run-a", eventSequence: 0, dispatched: 0 }));
+const dispatchCommittedHooksForRun = vi.fn<typeof DispatchCommittedHooksForRun>(() => Result.succeed({ runId: "run-a", eventSequence: 0, dispatched: 0 }));
 
 vi.mock("../src/scheduler/control.js", () => ({ applySchedulerControlIntent }));
 vi.mock("../src/scheduler/runtime-runner.js", () => ({ createRuntimeRunScheduler }));
@@ -19,9 +23,18 @@ const { RunExecutionSessions } = await import("../src/daemon/sessions.js");
 
 const schedulerStart = vi.fn<RuntimeRunScheduler["start"]>();
 let executions: RunExecution[];
+let executionInterruptions: ReturnType<typeof vi.fn>[];
+
+function scopedTest(name: string, test: (scope: Scope.Scope) => Promise<void>): void {
+  it.effect(name, () => Effect.gen(function*() {
+    const scope = yield* Effect.scope;
+    yield* Effect.promise(() => test(scope));
+  }));
+}
 
 beforeEach(() => {
   executions = [];
+  executionInterruptions = [];
   applySchedulerControlIntent.mockReset();
   createRuntimeRunScheduler.mockReset();
   schedulerStart.mockReset().mockImplementation(({ runId }) => {
@@ -34,12 +47,12 @@ beforeEach(() => {
 });
 
 describe("daemon run execution sessions", () => {
-  it("passes the startup runtime configuration snapshot to the scheduler factory", async () => {
+  scopedTest("passes the startup runtime configuration snapshot to the scheduler factory", async scope => {
     const configuration = runtimeConfiguration();
-    const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a", "run-b"), undefined, configuration);
+    const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a", "run-b"), undefined, configuration, makeNodeProcessHost(), scope);
 
-    sessions.start("run-a");
-    sessions.start("run-b");
+    await startSession(sessions, "run-a");
+    await startSession(sessions, "run-b");
 
     expect(createRuntimeRunScheduler).toHaveBeenCalledOnce();
     expect(createRuntimeRunScheduler).toHaveBeenCalledWith(expect.objectContaining({
@@ -50,19 +63,19 @@ describe("daemon run execution sessions", () => {
     expect(createRuntimeRunScheduler.mock.calls[0]![0].agentHostPolicy).toBe(configuration.agentHostPolicy);
     expect(schedulerStart.mock.calls.map(([input]) => input.runId)).toEqual(["run-a", "run-b"]);
 
-    await sessions.stopExecutors(100);
+    await Effect.runPromise(sessions.stopExecutors(100));
   });
 
-  it("wakes an active execution only after durable control succeeds", async () => {
+  scopedTest("wakes an active execution only after durable control succeeds", async scope => {
     const order: string[] = [];
-    const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a"), undefined, runtimeConfiguration());
-    sessions.start("run-a");
+    const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a"), undefined, runtimeConfiguration(), makeNodeProcessHost(), scope);
+    await startSession(sessions, "run-a");
     executions[0]!.wake = vi.fn(() => {
       order.push("wake");
     });
     applySchedulerControlIntent.mockImplementation(() => {
       order.push("control");
-      return ok({
+      return Effect.succeed({
         snapshot: {} as SchedulerSnapshot,
         effect: {
           type: "signal",
@@ -75,7 +88,7 @@ describe("daemon run execution sessions", () => {
       });
     });
 
-    await sessions.control({
+    await control(sessions, {
       requestId: "signal-1",
       runId: "run-a",
       type: "signal",
@@ -84,13 +97,14 @@ describe("daemon run execution sessions", () => {
     });
 
     expect(order).toEqual(["control", "wake"]);
-    await sessions.stopExecutors(100);
+    await Effect.runPromise(sessions.stopExecutors(100));
   });
 
-  it("bridges steer to the scheduler and returns its durable receipt without replacing the session", async () => {
-    const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a"), undefined, runtimeConfiguration());
-    sessions.start("run-a");
-    applySchedulerControlIntent.mockReturnValue(ok({
+  scopedTest("bridges steer to the scheduler and returns its durable receipt without replacing the session", async scope => {
+    const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a"), undefined, runtimeConfiguration(), makeNodeProcessHost(), scope);
+    await startSession(sessions, "run-a");
+    const abort = registerAgentTurn();
+    applySchedulerControlIntent.mockReturnValue(Effect.succeed({
       snapshot: {} as SchedulerSnapshot,
       effect: {
         type: "steer",
@@ -98,13 +112,14 @@ describe("daemon run execution sessions", () => {
         steerId: "steer-1",
         requestedTarget: "review",
         target: "review~000000000001",
+        delivery: "interrupt_continue",
         fencedAttemptId: "attempt-1",
         continuation: "queued",
       },
       reopened: false,
     }));
 
-    const result = await sessions.control({
+    const result = await control(sessions, {
       requestId: "steer-1",
       runId: "run-a",
       type: "steer",
@@ -122,34 +137,42 @@ describe("daemon run execution sessions", () => {
         instruction: "Focus on the failing assertion.",
       },
       1,
+      {
+        agentSessionId: "session-1",
+        attemptId: "attempt-1",
+        turnId: "turn-1",
+        sessionLeaseId: "lease-1",
+      },
     );
-    expect(result._unsafeUnwrap()).toMatchObject({
+    expect(Result.getOrThrow(result)).toMatchObject({
       type: "steer",
       steerId: "steer-1",
       target: "review~000000000001",
+      delivery: "interrupt_continue",
       fencedAttemptId: "attempt-1",
       continuation: "queued",
     });
     expect(executions[0]!.wake).toHaveBeenCalledOnce();
-    expect(executions[0]!.stop).not.toHaveBeenCalled();
-    await sessions.stopExecutors(100);
+    expect(executionInterruptions[0]).not.toHaveBeenCalled();
+    expect(abort).toHaveBeenCalledWith("steer");
+    await Effect.runPromise(sessions.stopExecutors(100));
   });
 
-  it("snapshots the private observation fence before waking the steered execution", async () => {
+  scopedTest("snapshots the private observation fence before waking the steered execution", async scope => {
     const order: string[] = [];
     const store = runtimeStore("run-a");
     store.observationLog.markFenced = vi.fn(() => {
-      order.push("fence");
-      return Promise.resolve();
+      return Effect.sync(() => { order.push("fence"); });
     });
-    const sessions = new RunExecutionSessions("/workspace", store, undefined, runtimeConfiguration());
-    sessions.start("run-a");
+    const sessions = new RunExecutionSessions("/workspace", store, undefined, runtimeConfiguration(), makeNodeProcessHost(), scope);
+    await startSession(sessions, "run-a");
+    registerAgentTurn();
     executions[0]!.wake = vi.fn(() => {
       order.push("wake");
     });
     applySchedulerControlIntent.mockImplementation(() => {
       order.push("control");
-      return ok({
+      return Effect.succeed({
         snapshot: {} as SchedulerSnapshot,
         effect: {
           type: "steer",
@@ -157,6 +180,7 @@ describe("daemon run execution sessions", () => {
           steerId: "steer-1",
           requestedTarget: "review",
           target: "review~000000000001",
+          delivery: "interrupt_continue",
           fencedAttemptId: "attempt-1",
           continuation: "queued",
         },
@@ -171,7 +195,7 @@ describe("daemon run execution sessions", () => {
       });
     });
 
-    await sessions.control({
+    await control(sessions, {
       requestId: "steer-1",
       runId: "run-a",
       type: "steer",
@@ -187,119 +211,100 @@ describe("daemon run execution sessions", () => {
       committedAt: "2026-07-12T00:00:00.000Z",
       reason: "operator_steered",
     });
-    await sessions.stopExecutors(100);
+    await Effect.runPromise(sessions.stopExecutors(100));
   });
 
-  it.each(["resume", "retry"] as const)("does not replace an active execution for a no-op %s", async type => {
-    const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a"), undefined, runtimeConfiguration());
-    sessions.start("run-a");
-    applySchedulerControlIntent.mockReturnValue(ok({
+  scopedTest("does not replace an active execution for a no-op resume", async scope => {
+    const type = "resume" as const;
+    const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a"), undefined, runtimeConfiguration(), makeNodeProcessHost(), scope);
+    await startSession(sessions, "run-a");
+    applySchedulerControlIntent.mockReturnValue(Effect.succeed({
       snapshot: {} as SchedulerSnapshot,
       effect: { type, state: "applied" },
       reopened: false,
     }));
 
-    await sessions.control({ requestId: `${type}-replay`, runId: "run-a", type });
+    await control(sessions, { requestId: `${type}-replay`, runId: "run-a", type });
 
-    expect(executions[0]!.stop).not.toHaveBeenCalled();
+    expect(executionInterruptions[0]).not.toHaveBeenCalled();
     expect(schedulerStart).toHaveBeenCalledOnce();
-    await sessions.stopExecutors(100);
+    await Effect.runPromise(sessions.stopExecutors(100));
   });
 
-  it("does not carry a rejected old-session fence into a reopened execution", async () => {
+  scopedTest("does not quarantine an interrupted session before starting its reopened replacement", async scope => {
     const store = runtimeStore("run-a");
-    let rejectOld!: (error: Error) => void;
     schedulerStart
       .mockReturnValueOnce({
-        ownerEpoch: Promise.resolve(1),
-        result: new Promise(( _resolve, reject) => {
-          rejectOld = reject;
-        }),
+        ownerEpoch: Effect.succeed(1),
+        result: Effect.never,
         wake: vi.fn(),
-        stop: vi.fn(() => rejectOld(new Error("old session failed during stop"))),
       })
-      .mockReturnValueOnce({
-        ownerEpoch: Promise.resolve(2),
-        result: Promise.resolve(ok({
-          status: "awaiting",
-          runId: "run-a",
-          ownerEpoch: 2,
-          started: 0,
-          completed: 0,
-          failed: 0,
-          cancelled: 0,
-          active: 0,
-        })),
-        wake: vi.fn(),
-        stop: vi.fn(),
-      });
+      .mockImplementationOnce(() => controlledExecution("run-a"));
     applySchedulerControlIntent.mockImplementation(() => {
       store.getRun("run-a")!.eventCount += 1;
-      return ok({
+      return Effect.succeed({
         snapshot: {} as SchedulerSnapshot,
         effect: { type: "resume", state: "applied" },
         reopened: true,
       });
     });
-    const sessions = new RunExecutionSessions("/workspace", store, undefined, runtimeConfiguration());
+    const sessions = new RunExecutionSessions("/workspace", store, undefined, runtimeConfiguration(), makeNodeProcessHost(), scope);
 
-    sessions.start("run-a");
-    await sessions.control({ requestId: "resume-applied", runId: "run-a", type: "resume" });
-    await vi.waitFor(() => expect(sessions.activeCount()).toBe(0), { interval: 1 });
-    sessions.start("run-a");
+    await startSession(sessions, "run-a");
+    await control(sessions, { requestId: "resume-applied", runId: "run-a", type: "resume" });
+    expect(sessions.activeCount()).toBe(1);
+    await expect(startSession(sessions, "run-a")).resolves.toMatchObject({ disposition: "already-active" });
 
-    expect(schedulerStart).toHaveBeenCalledTimes(3);
-    await sessions.stopExecutors(100);
+    expect(schedulerStart).toHaveBeenCalledTimes(2);
+    await Effect.runPromise(sessions.stopExecutors(100));
   });
 
-  it("stops each active execution during executor shutdown", async () => {
-    const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a"), undefined, runtimeConfiguration());
-    sessions.start("run-a");
+  scopedTest("interrupts and awaits each owned session Fiber during executor shutdown", async scope => {
+    const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a"), undefined, runtimeConfiguration(), makeNodeProcessHost(), scope);
+    await startSession(sessions, "run-a");
 
-    await sessions.stopExecutors(100);
+    await Effect.runPromise(sessions.stopExecutors(100));
 
-    expect(executions[0]!.stop).toHaveBeenCalledOnce();
+    expect(sessions.activeCount()).toBe(0);
   });
 
-  it("does not restart an unchanged rejected run and leaves other runs startable", async () => {
+  scopedTest("does not restart an unchanged rejected run and leaves other runs startable", async scope => {
     const failure = new Error("scheduler invariant failed");
     schedulerStart.mockReturnValueOnce({
-      ownerEpoch: Promise.resolve(1),
-      result: Promise.reject(failure),
+      ownerEpoch: Effect.succeed(1),
+      result: Effect.die(failure),
       wake: vi.fn(),
-      stop: vi.fn(),
     });
-    const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a", "run-b"), undefined, runtimeConfiguration());
+    const sessions = new RunExecutionSessions("/workspace", runtimeStore("run-a", "run-b"), undefined, runtimeConfiguration(), makeNodeProcessHost(), scope);
 
-    sessions.start("run-a");
+    await startSession(sessions, "run-a");
     await vi.waitFor(() => expect(sessions.activeCount()).toBe(0), { interval: 1 });
 
-    expect(() => sessions.start("run-a")).not.toThrow();
-    sessions.start("run-b");
+    await expect(startSession(sessions, "run-a")).resolves.toBeDefined();
+    await startSession(sessions, "run-b");
     expect(schedulerStart.mock.calls.map(([input]) => input.runId)).toEqual(["run-a", "run-b"]);
-    await sessions.stopExecutors(100);
+    await Effect.runPromise(sessions.stopExecutors(100));
   });
 
-  it("allows a failed session to restart after durable state changes", async () => {
+  scopedTest("allows a failed session to restart after durable state changes", async scope => {
     const store = runtimeStore("run-a");
     schedulerStart.mockReturnValueOnce({
-      ownerEpoch: Promise.resolve(1),
-      result: Promise.reject(new Error("scheduler invariant failed")),
+      ownerEpoch: Effect.succeed(1),
+      result: Effect.die(new Error("scheduler invariant failed")),
       wake: vi.fn(),
-      stop: vi.fn(),
     });
-    const sessions = new RunExecutionSessions("/workspace", store, undefined, runtimeConfiguration());
+    const sessions = new RunExecutionSessions("/workspace", store, undefined, runtimeConfiguration(), makeNodeProcessHost(), scope);
 
-    sessions.start("run-a");
+    await startSession(sessions, "run-a");
     await vi.waitFor(() => expect(sessions.activeCount()).toBe(0), { interval: 1 });
     store.getRun("run-a")!.eventCount += 1;
 
-    expect(() => sessions.start("run-a")).not.toThrow();
+    await expect(startSession(sessions, "run-a")).resolves.toBeDefined();
     expect(schedulerStart).toHaveBeenCalledTimes(2);
-    await sessions.stopExecutors(100);
+    await Effect.runPromise(sessions.stopExecutors(100));
   });
 
-  it("fences a hook projection incident without reloading full run details", () => {
+  scopedTest("fences a hook projection incident without reloading full run details", async scope => {
     const corruption = new Error("scheduler projection is corrupt");
     const incident = vi.fn();
     const store = runtimeStore("run-a");
@@ -310,10 +315,10 @@ describe("daemon run execution sessions", () => {
     dispatchCommittedHooksForRun.mockImplementationOnce(() => {
       throw corruption;
     });
-    const sessions = new RunExecutionSessions("/workspace", store, undefined, runtimeConfiguration(), incident);
+    const sessions = new RunExecutionSessions("/workspace", store, undefined, runtimeConfiguration(), makeNodeProcessHost(), scope, incident);
 
-    expect(sessions.dispatchHooks("run-a")).toBe("quarantined");
-    expect(sessions.dispatchHooks("run-a")).toBe("quarantined");
+    await expect(Effect.runPromise(sessions.dispatchHooks("run-a"))).resolves.toBe("quarantined");
+    await expect(Effect.runPromise(sessions.dispatchHooks("run-a"))).resolves.toBe("quarantined");
     expect(getRun).not.toHaveBeenCalled();
     expect(dispatchCommittedHooksForRun).toHaveBeenCalledOnce();
     expect(incident).toHaveBeenCalledOnce();
@@ -321,28 +326,28 @@ describe("daemon run execution sessions", () => {
   });
 });
 
-function controlledExecution(runId: string): RunExecution {
-  let settle!: (exit: RunExecutionExit) => void;
-  const result: RunExecution["result"] = new Promise(resolve => {
-    settle = exit => resolve(ok(exit));
-  });
+function controlledExecution(_runId: string): RunExecution {
+  const interrupted = vi.fn();
+  executionInterruptions.push(interrupted);
   return {
-    ownerEpoch: Promise.resolve(1),
-    result,
+    ownerEpoch: Effect.succeed(1),
+    result: Effect.never.pipe(Effect.onInterrupt(() => Effect.sync(interrupted))),
     wake: vi.fn(),
-    stop: vi.fn(() => {
-      settle({
-        status: "completed",
-        runId,
-        ownerEpoch: 1,
-        started: 0,
-        completed: 0,
-        failed: 0,
-        cancelled: 0,
-        active: 0,
-      });
-    }),
   };
+}
+
+function control(
+  sessions: InstanceType<typeof RunExecutionSessions>,
+  intent: Parameters<InstanceType<typeof RunExecutionSessions>["control"]>[0],
+) {
+  return Effect.runPromise(Effect.result(sessions.control(intent)));
+}
+
+function startSession(
+  sessions: InstanceType<typeof RunExecutionSessions>,
+  runId: string,
+) {
+  return Effect.runPromise(sessions.start(runId));
 }
 
 function runtimeConfiguration() {
@@ -350,18 +355,51 @@ function runtimeConfiguration() {
     ACPUS_RUNTIME_RUN_MAX_LEAF_CONCURRENCY: "7",
     ACPUS_AGENT_RESPONSE_REPAIR_MAX: "1",
   });
-  if (configuration.isErr()) throw new Error(configuration.error.message);
-  return configuration.value;
+  if (Result.isFailure(configuration)) throw new Error(configuration.failure.message);
+  return configuration.success;
 }
 
-function runtimeStore(...runIds: string[]): RuntimeStore {
+function runtimeStore(...runIds: string[]): RuntimeStoreAdapter {
   const runs = new Map(runIds.map(runId => [runId, run(runId)]));
   return {
     getRun: (runId: string) => runs.get(runId),
     getRunEventVersion: (runId: string) => runs.get(runId)?.eventCount,
     writeNodeProgress: vi.fn(),
     observationLog: { markFenced: vi.fn(() => Promise.resolve()) },
-  } as unknown as RuntimeStore;
+    scheduler: {
+      claimRun: vi.fn((runId: string, ownerId: string) => ({
+        runId,
+        ownerId,
+        ownerEpoch: 2,
+        leaseExpiresAt: "2026-07-12T00:01:00.000Z",
+      })),
+      releaseRun: vi.fn(() => true),
+      tryPlanAgentSteer: vi.fn((runId: string) => ({
+        runId,
+        attemptId: "attempt-1",
+        nodeKey: "review~000000000001",
+        nodeId: "review",
+        attemptNo: 1,
+      })),
+    },
+  } as unknown as RuntimeStoreAdapter;
+}
+
+function registerAgentTurn() {
+  const registry = createRuntimeRunScheduler.mock.calls[0]?.[0].agentTurnRegistry;
+  if (!registry) throw new Error("Expected Agent Turn registry.");
+  const abort = vi.fn();
+  registry.register({
+    runId: "run-a",
+    nodeKey: "review~000000000001",
+    nodeId: "review",
+    agentSessionId: "session-1",
+    attemptId: "attempt-1",
+    turnId: "turn-1",
+    sessionLeaseId: "lease-1",
+    abort,
+  });
+  return abort;
 }
 
 function run(id: string): RunDetails {

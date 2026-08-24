@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import type { SchemaIR } from "@acpus/core/ir";
 import type { JsonValue } from "@acpus/expression/ir";
 import { describe, expect, it } from "vitest";
@@ -14,7 +15,7 @@ describe("schema normalization", () => {
   it("returns a tagged path and expected type for a schema mismatch", () => {
     const normalized = tryNormalizeValue(schema, { ok: "yes" }, "Node output");
 
-    expect(normalized.isErr() && normalized.error).toEqual({
+    expect(Result.isFailure(normalized) && normalized.failure).toEqual({
       type: "schema-mismatch",
       label: "Node output",
       path: "$.ok",
@@ -48,7 +49,7 @@ describe("schema normalization", () => {
 
     const normalized = tryNormalizeValue(required, {}, "Node output");
 
-    expect(normalized.isErr() && normalized.error).toMatchObject({
+    expect(Result.isFailure(normalized) && normalized.failure).toMatchObject({
       type: "schema-mismatch",
       path: "$.constructor",
       actual: "missing",
@@ -65,11 +66,11 @@ describe("schema normalization", () => {
 
     const normalized = tryNormalizeValue(withDefault, {}, "Node output");
 
-    expect(normalized.isOk()).toBe(true);
-    if (normalized.isErr() || typeof normalized.value !== "object" || normalized.value === null || Array.isArray(normalized.value)) throw new Error("expected object output");
-    expect(Object.hasOwn(normalized.value, "__proto__")).toBe(true);
-    expect(normalized.value.__proto__).toBe(true);
-    expect(Object.getPrototypeOf(normalized.value)).toBe(Object.prototype);
+    expect(Result.isSuccess(normalized)).toBe(true);
+    if (Result.isFailure(normalized) || typeof normalized.success !== "object" || normalized.success === null || Array.isArray(normalized.success)) throw new Error("expected object output");
+    expect(Object.hasOwn(normalized.success, "__proto__")).toBe(true);
+    expect(normalized.success.__proto__).toBe(true);
+    expect(Object.getPrototypeOf(normalized.success)).toBe(Object.prototype);
   });
 
   it.each([
@@ -78,13 +79,13 @@ describe("schema normalization", () => {
     { kind: "enum", values: [null] } satisfies SchemaIR,
     { kind: "union", variants: [{ kind: "string" }, { kind: "null" }] } satisfies SchemaIR,
   ])("accepts null according to $kind schema semantics", schema => {
-    expect(tryNormalizeValue(schema, null, "Node output")._unsafeUnwrap()).toBeNull();
+    expect(Result.getOrThrow(tryNormalizeValue(schema, null, "Node output"))).toBeNull();
   });
 
   it("rejects an undeclared own __proto__ field", () => {
     const closed: SchemaIR = { kind: "object", fields: {}, required: [], additionalProperties: false };
 
-    expect(tryNormalizeValue(closed, { ["__proto__"]: true }, "Node output")._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(tryNormalizeValue(closed, { ["__proto__"]: true }, "Node output")))).toMatchObject({
       type: "schema-mismatch",
       path: "$.__proto__",
       actual: "additional property",

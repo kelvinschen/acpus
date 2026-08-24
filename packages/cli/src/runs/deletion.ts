@@ -9,6 +9,8 @@ import {
   type RuntimeReadFailure,
   type RunRecord,
 } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { deleteError, usageError } from "../presentation/errors.js";
 import { writeResult } from "../presentation/output.js";
 import { canPrompt } from "../presentation/prompt.js";
@@ -92,12 +94,12 @@ async function deleteRunCommand(ctx: RunsCommandContext, runId: string | undefin
 }
 
 async function deleteChoices(ctx: RunsCommandContext): Promise<DeleteRunChoice[]> {
-  const listed = await listRuns(ctx.cwd);
-  if (listed.isErr()) throw deleteRuntimeReadError(listed.error);
-  return await Promise.all(listed.value.map(async run => {
-    const details = await getRun(ctx.cwd, run.id);
-    if (details.isErr()) throw deleteRuntimeReadError(details.error);
-    const active = details.value?.execution.state === "active";
+  const listed = await Effect.runPromise(Effect.result(listRuns(ctx.cwd)));
+  if (Result.isFailure(listed)) throw deleteRuntimeReadError(listed.failure);
+  return await Promise.all(listed.success.map(async run => {
+    const details = await Effect.runPromise(Effect.result(getRun(ctx.cwd, run.id)));
+    if (Result.isFailure(details)) throw deleteRuntimeReadError(details.failure);
+    const active = details.success?.execution.state === "active";
     return {
       run,
       ...(active ? { disabled: true, hint: "active" } : {}),
@@ -114,33 +116,33 @@ async function deleteManyRuns(
   const skippedRuns = [...initialSkipped];
   const skippedIds = new Set(skippedRuns.map(run => run.id));
   for (const id of runIds) {
-    const deleted = await deleteRuntimeRun(ctx.cwd, id);
-    if (deleted.isErr()) {
-      const read = await getRun(ctx.cwd, id);
-      if (read.isErr()) throw deleteRuntimeReadError(read.error);
-      if (read.value && !skippedIds.has(read.value.id)) {
-        skippedRuns.push(toRunRecord(read.value));
-        skippedIds.add(read.value.id);
+    const deleted = await Effect.runPromise(Effect.result(deleteRuntimeRun(ctx.cwd, id)));
+    if (Result.isFailure(deleted)) {
+      const read = await Effect.runPromise(Effect.result(getRun(ctx.cwd, id)));
+      if (Result.isFailure(read)) throw deleteRuntimeReadError(read.failure);
+      if (read.success && !skippedIds.has(read.success.id)) {
+        skippedRuns.push(toRunRecord(read.success));
+        skippedIds.add(read.success.id);
       }
       continue;
     }
-    if (deleted.value) deletedRuns.push(deleted.value);
+    if (deleted.success) deletedRuns.push(deleted.success);
   }
   return { deletedRuns, skippedRuns };
 }
 
 async function deleteOneRun(ctx: RunsCommandContext, runId: string): Promise<RunRecord> {
-  const deleted = await deleteRuntimeRun(ctx.cwd, runId);
-  if (deleted.isErr()) {
-    const read = await getRun(ctx.cwd, runId);
-    if (read.isErr()) throw deleteRuntimeReadError(read.error);
-    throw deleteError(deleted.error.message, {
+  const deleted = await Effect.runPromise(Effect.result(deleteRuntimeRun(ctx.cwd, runId)));
+  if (Result.isFailure(deleted)) {
+    const read = await Effect.runPromise(Effect.result(getRun(ctx.cwd, runId)));
+    if (Result.isFailure(read)) throw deleteRuntimeReadError(read.failure);
+    throw deleteError(deleted.failure.message, {
       errorCode: "RUN_ACTIVE",
-      ...(read.value ? { run: toRunRecord(read.value) } : {}),
+      ...(read.success ? { run: toRunRecord(read.success) } : {}),
     });
   }
-  if (!deleted.value) throw deleteError(`Run '${runId}' was not found.`);
-  return deleted.value;
+  if (!deleted.success) throw deleteError(`Run '${runId}' was not found.`);
+  return deleted.success;
 }
 
 function deleteRuntimeReadError(error: RuntimeReadFailure): ReturnType<typeof deleteError> {
@@ -158,7 +160,7 @@ async function pruneRunsCommand(ctx: RunsCommandContext, options: PruneRunOption
   if (!options.dryRun && !options.yes && !canPrompt(ctx)) {
     throw usageError("--yes is required to prune runs without an interactive terminal.");
   }
-  const preview = await pruneRuntimeRuns(ctx.cwd, { ...request, dryRun: true });
+  const preview = await Effect.runPromise(pruneRuntimeRuns(ctx.cwd, { ...request, dryRun: true }));
   const selectedItems = preview.selected.runs + preview.selected.archives;
   if (options.dryRun) {
     writePruneResult(ctx, preview, "Prune preview.");
@@ -184,7 +186,7 @@ async function pruneRunsCommand(ctx: RunsCommandContext, options: PruneRunOption
     if (confirmed !== true) throw usageError("Run pruning cancelled.");
   }
 
-  const report = await pruneRuntimeRuns(ctx.cwd, { ...request, dryRun: false });
+  const report = await Effect.runPromise(pruneRuntimeRuns(ctx.cwd, { ...request, dryRun: false }));
   writePruneResult(ctx, report, report.failures.length === 0
     ? "Runs pruned."
     : "Run pruning completed with failures.");
@@ -193,8 +195,8 @@ async function pruneRunsCommand(ctx: RunsCommandContext, options: PruneRunOption
 function parsePruneAge(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const parsed = tryParseDurationMs(value);
-  if (parsed.isErr()) throw usageError("--older-than must be a duration such as 30d, 24h, or 15m.");
-  return parsed.value;
+  if (parsed._tag === "Failure") throw usageError("--older-than must be a duration such as 30d, 24h, or 15m.");
+  return parsed.success;
 }
 
 function writePruneResult(ctx: RunsCommandContext, report: PruneReport, message: string): void {

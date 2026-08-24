@@ -1,55 +1,21 @@
-# Loader Spec
+# Loader SPEC
 
-## Purpose
+## 目的
 
-`@acpus/loader` is a private internal package that owns TypeScript authoring module loading for Acpus workflow preparation and reusable task execution. It centralizes official `acpus/*` facade resolution, TypeScript module execution, CJS and ESM resolver hooks, source-first workspace development resolution, and package `development` export fallback. Compiler and runtime packages use this package as their only authoring-module loading boundary.
+`@acpus/loader` 负责在包之间统一解析与加载 TypeScript Workflow 及可复用 Task 模块。无论是在源码开发模式还是在已发布的 npm 包安装环境中，它都为 Workflow Compiler 与执行方提供一致的官方包导入入口与依赖解析规则。
 
-## Requirements
+## 要求
 
-### Public Surface
+- 无论在源码开发模式还是已发布的安装环境中，官方编写入口 MUST 准确解析到匹配的 Acpus 实现。具体支持的入口由各包的 `exports` 定义。
+- 通过官方编写入口加载模块时，MUST NOT 强制要求用户的 Workflow 项目工作区额外安装底层的 Acpus 内部实现包。
+- 加载编写模块时，调用方 MUST 明确提供 referrer（发起导入的源文件）；相对导入 MUST 以此为基准。对于从调用方指定源码范围内发起的 bare package import（通过包名导入模块），如果常规解析失败且调用方提供了 dependency authority（依赖解析来源），Loader MUST 仅从该来源继续查找。
+- Loader 在解析过程中 MUST NOT 擅自修改进程当前工作目录（cwd），也 MUST NOT 自行猜测或推导 Workflow Compiler 与 Runtime 未显式提供的依赖来源。
+- 在源码模式与发布安装模式下，针对 Workflow Compiler 准备阶段与可复用 Task 运行阶段的模块解析行为 MUST 保持完全一致。
+- 只有首选目标确实不存在时，Loader MUST 尝试该包在 `development` 条件下选中的 export target；一旦首选目标存在，解析、访问或执行它时发生的失败 MUST 原样返回，MUST NOT 被回退机制掩盖。
+- 当加载失败时，Loader MUST 保留完整的模块解析或执行上下文信息，以便上层的 Workflow Compiler 或 Runtime 能够准确报告具体是哪项导入失败。
+- Loader 仅负责模块定位与加载，MUST NOT 负责源码快照捕获、数据持久化、生成唯一标识、磁盘清理、维护 Runtime 状态或执行面向用户的命令；这些生命周期行为由各自的调用方负责。
 
-- The package MUST expose `officialAuthoringTypeScriptPaths(fromDir)`.
-- The package MUST expose `officialAuthoringEnvironment()` as the single resolved authority for official facade implementation package names, versions, package roots, and TypeScript authority paths.
-- The package MUST expose `importAuthoringModule(specifier, { parentURL, sourceRoot?, dependencyRoot? })`.
-- The package MUST NOT expose user-facing CLI commands, runtime state, workflow compilation APIs, or task execution APIs.
-- The package MUST keep TypeScript loader implementation details private to this package.
+## 验证
 
-### Official Facades
-
-- The loader MUST resolve supported official authoring facade specifiers `acpus/core`, `acpus/expression`, and `acpus/tasks/git` to Acpus-owned implementation packages.
-- In workspace development, official facade specifiers SHOULD resolve to a usable live package source. Normal published exports MAY be used when no usable live source target exists.
-- In published installs, official facade specifiers MUST resolve through normal package exports.
-- Official facade resolution MUST work for ESM imports and for CommonJS-transformed TypeScript module paths.
-- Official facade resolution MUST NOT require the workflow workspace to install Acpus packages locally.
-
-### TypeScript Paths
-
-- `officialAuthoringTypeScriptPaths(fromDir)` MUST return `paths` entries that TypeScript scratch configs can use for the supported official facade specifiers.
-- Returned path targets MUST be relative to `fromDir`.
-- The return value MUST indicate whether any official facade target resolved to workspace source so callers can enable the `development` condition when needed.
-- `officialAuthoringEnvironment()` paths MUST be canonical absolute paths and MUST describe the same targets returned by `officialAuthoringTypeScriptPaths(...)`.
-
-### Module Loading
-
-- `importAuthoringModule(...)` MUST lazily register the TypeScript authoring loader, official facade mappings, CommonJS `_resolveFilename` fallback, ESM loader resolution, and feature-detected synchronous `module.registerHooks` resolution at most once per process.
-- The synchronous `module.registerHooks` hook MUST be optional and MUST NOT raise on Node versions that do not provide it.
-- `importAuthoringModule(specifier, options)` MUST load file URLs, data URLs, node builtins, relative specifiers, absolute filesystem paths, and bare package specifiers using `parentURL` as the source referrer.
-- When `sourceRoot` and `dependencyRoot` are present, failed bare-package resolution originating beneath that source root MUST fall back to the dependency root; relative and absolute source resolution MUST remain anchored to `parentURL`.
-- When registered source roots overlap, dependency fallback MUST use the most specific containing source root independent of registration order. Re-registering the same source root MUST replace its dependency authority.
-- The loader MUST NOT substitute process cwd or infer a workspace dependency root.
-- Source-root and referrer construction are owned by the [Workflow Compiler](workflow-compiler-spec.md#prepared-workflow-data) and [Runtime](runtime-spec.md#workspace-shards-admission-and-store).
-- The loader MUST NOT persist, copy, identify, or clean source roots.
-- Relative `.js` source-level specifiers MUST continue to load matching TypeScript source files through the authoring loader.
-- TypeScript authoring modules MUST load when their workspace has no nearest `package.json` or its package type is CommonJS.
-- Bare package specifiers SHOULD use ESM import resolution semantics, including nested `node`, `node-addons`, `import`, `module-sync`, and `default` export conditions in declaration order. CommonJS-transformed paths MAY use the registered CommonJS fallback.
-- When normal package resolution fails for a package export whose selected normal import target is missing, the loader MUST attempt the selected, possibly nested, package `development` export target for that subpath.
-- Filesystem discovery MUST treat only `ENOENT` and `ENOTDIR` as an absent candidate.
-- Filesystem permission, I/O, symlink-loop, and directory-import failures MUST propagate and MUST NOT select another source or package export target.
-- The loader MUST NOT use the `development` export fallback to mask errors thrown while an existing selected normal import target is evaluating, including transitive `ERR_MODULE_NOT_FOUND` failures.
-- The loader MUST rely on normal Node module caching behind the authoring loader and MUST NOT add Acpus-owned cache busting, dependency graph copying, or generated task source artifacts.
-
-## Verification
-
-- `pnpm test:contract packages/loader`: verifies the package-root public export surface.
-- Integration tests cover official facade and TypeScript module loading in clean source and built-package environments without ambient workspace dependencies.
-- Resolver tests cover explicit source and dependency authorities, ESM/CJS hooks, relative `.js` to TypeScript, `development` fallback boundaries, normal import conditions, and usable scratch-config paths.
+- `pnpm --filter @acpus/loader typecheck` 与 `pnpm test:contract packages/loader`：验证 Workflow Compiler 与 Runtime 共用的显式模块加载接口契约。
+- `pnpm test:integration packages/loader`：验证源码模式与发布模式的一致性、显式依赖解析来源以及保留底层失败的回退查找行为。

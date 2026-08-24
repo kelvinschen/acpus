@@ -9,7 +9,7 @@ export function deriveInstanceKey(path: InstancePath): string {
 
 /** A stable, path-scoped digest for operator-facing occurrence selectors. */
 export function deriveInstanceDigest(path: InstancePath): string {
-  return createHash("sha256").update(canonicalPath(path)).digest("hex").slice(0, 12);
+  return createHash("sha256").update(canonicalPath(path)).digest("hex").slice(0, 8);
 }
 
 export function appendNode(path: InstancePath, nodeId: string): InstancePath {

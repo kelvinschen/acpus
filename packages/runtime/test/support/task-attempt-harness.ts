@@ -1,6 +1,7 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import type { Dollar, TaskContext } from "@acpus/core/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
 import { tryNormalizeWorkflowData } from "../../src/evaluation/admissible.js";
 import { loadInlineTaskFunction } from "../../src/execution/inline-task.js";
 import type { runTaskAttempt, TaskAttemptFailure } from "../../src/execution/task-process.js";
@@ -16,7 +17,6 @@ export type InlineTaskAttemptCall = {
   cwd: string;
   env: NodeJS.ProcessEnv;
   timeoutMs?: number;
-  signal?: AbortSignal;
 };
 
 export function createInlineTaskAttemptHarness(): {
@@ -24,7 +24,7 @@ export function createInlineTaskAttemptHarness(): {
   calls: InlineTaskAttemptCall[];
 } {
   const calls: InlineTaskAttemptCall[] = [];
-  const runAttempt: TaskAttemptRunner = input => {
+  const runAttempt: TaskAttemptRunner = input => Effect.promise(async signal => {
     calls.push({
       nodeId: input.nodeId,
       nodeKey: input.request.artifact.nodeKey,
@@ -33,37 +33,35 @@ export function createInlineTaskAttemptHarness(): {
       cwd: input.cwd,
       env: { ...input.env },
       ...(input.timeoutMs === undefined ? {} : { timeoutMs: input.timeoutMs }),
-      ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
-    assertHarnessTarget(input);
-    return new ResultAsync(executeInlineTask(input).then(
-      result => result,
-      error => {
-        if (error instanceof InlineTaskAttemptHarnessMisuseError) throw error;
-        return err(input.signal?.aborted ? cancelledFailure(input.nodeId) : taskFailure(error));
-      },
-    ));
-  };
+    try {
+      assertHarnessTarget(input);
+      return await executeInlineTask(input, signal);
+    } catch (error) {
+      if (error instanceof InlineTaskAttemptHarnessMisuseError) throw error;
+      return Result.fail(signal.aborted ? cancelledFailure(input.nodeId) : taskFailure(error));
+    }
+  });
   return { runAttempt, calls };
 }
 
-async function executeInlineTask(input: RunTaskAttemptInput): Promise<Result<JsonValue | undefined, TaskAttemptFailure>> {
-  assertNotAborted(input);
+async function executeInlineTask(input: RunTaskAttemptInput, signal: AbortSignal): Promise<Result.Result<JsonValue | undefined, TaskAttemptFailure>> {
+  assertNotAborted(signal);
   const target = input.request.target;
   if (target.kind !== "inline") throw new InlineTaskAttemptHarnessMisuseError("module task targets");
   const fn = await loadInlineTaskFunction(target.source);
-  assertNotAborted(input);
+  assertNotAborted(signal);
   const output = await fn({
     input: input.request.input,
     $: unsupported<Dollar>("the Task $ command runner"),
     artifact: unsupported<TaskContext<unknown>["artifact"]>("the Task artifact API"),
     env: input.env,
-    abortSignal: input.signal ?? new AbortController().signal,
+    abortSignal: signal,
   } satisfies TaskContext<typeof input.request.input>);
-  assertNotAborted(input);
+  assertNotAborted(signal);
   const normalized = tryNormalizeWorkflowData(output, "Task output", { allowTopLevelUndefined: true });
-  assertNotAborted(input);
-  return normalized.isErr() ? err(taskFailure(normalized.error.message)) : ok(normalized.value);
+  assertNotAborted(signal);
+  return Result.isFailure(normalized) ? Result.fail(taskFailure(normalized.failure.message)) : Result.succeed(normalized.success);
 }
 
 function assertHarnessTarget(input: RunTaskAttemptInput): void {
@@ -72,8 +70,8 @@ function assertHarnessTarget(input: RunTaskAttemptInput): void {
   if (/\bprocess\b/.test(target.source)) throw new InlineTaskAttemptHarnessMisuseError("process.cwd/process.env semantics");
 }
 
-function assertNotAborted(input: RunTaskAttemptInput): void {
-  if (input.signal?.aborted) throw new TaskAttemptHarnessCancelledError();
+function assertNotAborted(signal: AbortSignal): void {
+  if (signal.aborted) throw new TaskAttemptHarnessCancelledError();
 }
 
 function unsupported<T>(feature: string): T {

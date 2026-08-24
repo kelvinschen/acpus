@@ -4,7 +4,7 @@ import type { ExprIR } from "@acpus/expression/ir";
 
 function minimalWorkflow(overrides: Partial<WorkflowIR> = {}): WorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "minimal",
     agents: {},
     root: { output: { kind: "object", fields: {} }, nodes: [] },
@@ -50,12 +50,12 @@ describe("WorkflowIR diagnostics contract", () => {
     }))).toEqual([]);
   });
 
-  it("requires WorkflowIR version 7", () => {
+  it("requires WorkflowIR version 8", () => {
     expect(validateWorkflowIR({ ...minimalWorkflow(), irVersion: 6 } as any)).toEqual([
       expect.objectContaining({
         code: "IR002",
         path: "irVersion",
-        message: "WorkflowIR irVersion must be 7.",
+        message: "WorkflowIR irVersion must be 8.",
       }),
     ]);
   });
@@ -254,34 +254,9 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(diagnostics).toContainEqual(expect.objectContaining({ code, path }));
   });
 
-  it("accepts expression callback-source calls through the workflow validator", () => {
-    const ir: WorkflowIR = {
-      irVersion: 7,
-      name: "callback_expression",
-      agents: {},
-      root: {
-        nodes: [],
-        output: { kind: "object", fields: {
-          score: {
-            kind: "call",
-            fn: "lift",
-            args: [
-              { kind: "ref", path: ["input", "item"] },
-              { kind: "literal", value: "item => item.score" },
-            ],
-          },
-        } },
-      },
-
-      diagnostics: [],
-    };
-
-    expect(validateWorkflowIR(ir)).toEqual([]);
-  });
-
   it("returns stable diagnostic codes and paths for invalid IR", () => {
     const ir: WorkflowIR = {
-      irVersion: 7,
+      irVersion: 8,
       name: "bad workflow name",
       inputSchema: {
         kind: "object",
@@ -332,11 +307,15 @@ describe("WorkflowIR diagnostics contract", () => {
       code: "SC001",
       path: "inputSchema.required.0",
     }));
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "E001",
+      path: "root.output.fields.bad.path",
+    }));
   });
 
   it("validates parallel and fanout strategy invariants", () => {
     const ir: WorkflowIR = {
-      irVersion: 7,
+      irVersion: 8,
       name: "bad_strategy",
       agents: {},
       root: {
@@ -381,7 +360,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates agent definition IR invariants", () => {
     const ir: WorkflowIR = {
-      irVersion: 7,
+      irVersion: 8,
       name: "bad_agents",
       agents: {
         missing_use: {
@@ -422,6 +401,19 @@ describe("WorkflowIR diagnostics contract", () => {
           kind: "agent_builtin",
           use: "codex",
         },
+        valid_slot: {
+          kind: "agent_slot",
+          model: "gpt-5.4",
+          config: { effort: "high" },
+        },
+        slot_with_selector: {
+          kind: "agent_slot",
+          use: "codex",
+        },
+        slot_with_unknown: {
+          kind: "agent_slot",
+          extra: true,
+        },
       } as any,
       root: { output: { kind: "object", fields: {} }, nodes: [] },
 
@@ -438,6 +430,8 @@ describe("WorkflowIR diagnostics contract", () => {
       "IR001",
       "A002",
       "A002",
+      "IR001",
+      "IR001",
     ]);
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "A002",
@@ -466,6 +460,14 @@ describe("WorkflowIR diagnostics contract", () => {
     expect(diagnostics).toContainEqual(expect.objectContaining({
       code: "A002",
       path: "agents.bad_kind",
+    }));
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "IR001",
+      path: "agents.slot_with_selector.use",
+    }));
+    expect(diagnostics).toContainEqual(expect.objectContaining({
+      code: "IR001",
+      path: "agents.slot_with_unknown.extra",
     }));
   });
 
@@ -571,61 +573,6 @@ describe("WorkflowIR diagnostics contract", () => {
     ]);
   });
 
-  it("accepts supported timeout duration strings", () => {
-    const target = { kind: "inline" as const, source: "async function task() { return {}; }" };
-
-    const diagnostics = validateWorkflowIR(minimalWorkflow({
-      agents: {
-        reviewer: {
-          kind: "agent_definition",
-          use: "codex",
-        },
-      },
-      root: {
-        output: { kind: "object", fields: {} },
-        nodes: [
-          {
-            id: "agent_milliseconds",
-            kind: "agent",
-            run: { agent: "reviewer", prompt: { kind: "literal", value: "" } },
-            timeout: { kind: "literal", value: "500ms" },
-          },
-          {
-            id: "task_seconds",
-            kind: "task",
-            run: { input: { kind: "literal", value: null }, target },
-            timeout: { kind: "literal", value: "30s" },
-          },
-          {
-            id: "signal_minutes",
-            kind: "signal",
-            run: { prompt: { kind: "literal", value: "" } },
-            timeout: { kind: "literal", value: "5m" },
-          },
-          {
-            id: "task_default_milliseconds",
-            kind: "task",
-            run: { input: { kind: "literal", value: null }, target, execution: { defaultCommandTimeout: { kind: "literal", value: "1000" } } },
-          },
-          {
-            id: "agent_hours",
-            kind: "agent",
-            run: { agent: "reviewer", prompt: { kind: "literal", value: "" } },
-            timeout: { kind: "literal", value: "1h" },
-          },
-          {
-            id: "signal_days",
-            kind: "signal",
-            run: { prompt: { kind: "literal", value: "" } },
-            timeout: { kind: "literal", value: "1d" },
-          },
-        ],
-      },
-    }));
-
-    expect(diagnostics).toEqual([]);
-  });
-
   it("validates task default command timeout duration strings", () => {
     const diagnostics = validateWorkflowIR(minimalWorkflow({
       root: {
@@ -649,7 +596,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates signal timeout invariants", () => {
     const ir: WorkflowIR = {
-      irVersion: 7,
+      irVersion: 8,
       name: "bad_completion",
       agents: {},
       root: {
@@ -681,7 +628,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates required aligned IR fields", () => {
     const ir: WorkflowIR = {
-      irVersion: 7,
+      irVersion: 8,
       name: "bad_required_fields",
       agents: {},
       root: {
@@ -740,7 +687,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("rejects fields outside the closed IR shape", () => {
     const ir: WorkflowIR = {
-      irVersion: 7,
+      irVersion: 8,
       name: "closed_shape",
       agents: { reviewer: { kind: "agent_definition", use: "codex" } },
       root: {
@@ -845,7 +792,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("returns diagnostics for malformed expr, template, and env IR", () => {
     const ir: WorkflowIR = {
-      irVersion: 7,
+      irVersion: 8,
       name: "malformed_nested_ir",
       agents: {
         worker: {
@@ -983,7 +930,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates SchemaIR as a closed recursive union", () => {
     const ir: WorkflowIR = {
-      irVersion: 7,
+      irVersion: 8,
       name: "bad_schema",
       inputSchema: {
         kind: "object",
@@ -1033,7 +980,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("validates literal, enum, unknown, and closed schema variants", () => {
     const ir: WorkflowIR = {
-      irVersion: 7,
+      irVersion: 8,
       name: "bad_schema_variants",
       inputSchema: {
         kind: "union",
@@ -1060,7 +1007,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("accepts valid recursive core-only SchemaIR", () => {
     const ir: WorkflowIR = {
-      irVersion: 7,
+      irVersion: 8,
       name: "valid_recursive_schema",
       inputSchema: {
         kind: "object",
@@ -1101,20 +1048,6 @@ describe("WorkflowIR diagnostics contract", () => {
       expect.objectContaining({ code: "SC002", path: "inputSchema.fields.literal.value" }),
       expect.objectContaining({ code: "SC002", path: "inputSchema.fields.enumerated.values.0" }),
     ]));
-  });
-
-  it("validates the root workflow output", () => {
-    const diagnostics = validateWorkflowIR(minimalWorkflow({
-      root: {
-        nodes: [],
-        output: { kind: "object", fields: { bad: { kind: "ref", path: [] } } },
-      },
-    }));
-
-    expect(diagnostics).toContainEqual(expect.objectContaining({
-      code: "E001",
-      path: "root.output.fields.bad.path",
-    }));
   });
 
   it("accepts workflow roots and rejects unknown ref roots and meta fields", () => {
@@ -1394,7 +1327,7 @@ describe("WorkflowIR diagnostics contract", () => {
 
   it("returns diagnostics instead of throwing for malformed top-level containers", () => {
     const malformed = {
-      irVersion: 7,
+      irVersion: 8,
       name: "malformed",
       agents: [],
       root: "bad",

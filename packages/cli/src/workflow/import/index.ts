@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { ResultAsync } from "neverthrow";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import {
   prepareWorkflowCatalogCommit,
   type AvailableWorkflowCatalogEntry,
@@ -41,10 +42,13 @@ type ImportOptions = {
   check: boolean;
 };
 
-export function importWorkflowPackage(options: ImportOptions): ResultAsync<WorkflowImportResult, WorkflowImportFailure> {
-  return ResultAsync.fromPromise(runImport(options), cause => cause instanceof WorkflowImportAbort
-    ? cause.failure
-    : { type: "import", errorCode: "IMPORT_FAILED", message: `Workflow import failed: ${causeMessage(cause)}` });
+export function importWorkflowPackage(options: ImportOptions): Effect.Effect<WorkflowImportResult, WorkflowImportFailure> {
+  return Effect.tryPromise({
+    try: () => runImport(options),
+    catch: cause => cause instanceof WorkflowImportAbort
+      ? cause.failure
+      : { type: "import", errorCode: "IMPORT_FAILED", message: `Workflow import failed: ${causeMessage(cause)}` },
+  });
 }
 
 async function runImport(options: ImportOptions): Promise<WorkflowImportResult> {
@@ -58,19 +62,21 @@ async function runImport(options: ImportOptions): Promise<WorkflowImportResult> 
   try {
     const acquired = await acquireWorkflowImportSource(source, stagingRoot, stagedPackage);
     const preparedPackage = await prepareWorkflowImportPackage(acquired, stagingRoot, stagedPackage);
-    const commit = await prepareWorkflowCatalogCommit(options.cwd, options.scope, preparedPackage.name);
-    if (commit.isErr()) abortImport(catalogImportErrorCode(commit.error.type), commit.error.message);
+    const commit = await Effect.runPromise(Effect.result(
+      prepareWorkflowCatalogCommit(options.cwd, options.scope, preparedPackage.name),
+    ));
+    if (Result.isFailure(commit)) abortImport(catalogImportErrorCode(commit.failure.type), commit.failure.message);
 
     const preparation = options.check
       ? await checkWorkflowImportPackage(options.cwd, stagedPackage, preparedPackage.name)
       : undefined;
-    const committed = await commit.value.commit(stagedPackage);
-    if (committed.isErr()) abortImport(catalogImportErrorCode(committed.error.type), committed.error.message);
+    const committed = await Effect.runPromise(Effect.result(commit.success.commit(stagedPackage)));
+    if (Result.isFailure(committed)) abortImport(catalogImportErrorCode(committed.failure.type), committed.failure.message);
     outcome = {
       ok: true,
       value: preparation === undefined
-        ? { checked: false, catalog: committed.value }
-        : { checked: true, catalog: committed.value, ...preparation },
+        ? { checked: false, catalog: committed.success }
+        : { checked: true, catalog: committed.success, ...preparation },
     };
   } catch (error) {
     outcome = {

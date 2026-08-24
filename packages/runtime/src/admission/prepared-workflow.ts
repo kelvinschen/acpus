@@ -7,7 +7,7 @@ import {
   type Sha256Digest,
 } from "@acpus/core/content-identity";
 import { validateWorkflowIR, walkNodes, type WorkflowIR } from "@acpus/core/ir";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import { isContainedPath } from "../path-containment.js";
 import { stableJsonLine } from "../stable-json.js";
 
@@ -84,7 +84,7 @@ export type WorkflowSourceSnapshotManifest = {
 export function tryValidatePreparedRunWorkflow(
   cwd: string,
   prepared: PreparedRunWorkflow,
-): Result<PreparedRunWorkflow, PreparedRunValidationFailure> {
+): Result.Result<PreparedRunWorkflow, PreparedRunValidationFailure> {
   if (!isPreparedRunWorkflow(prepared)) {
     return preparedInvalid("source-bundle-mismatch", "Prepared workflow does not match the current closed format.");
   }
@@ -166,7 +166,7 @@ export function tryValidatePreparedRunWorkflow(
       throw error;
     }
   }
-  return ok({ ...structuredClone(candidate), ir: parsedIr });
+  return Result.succeed({ ...structuredClone(candidate), ir: parsedIr });
 }
 
 function reusableTaskReferrerPaths(ir: WorkflowIR): string[] {
@@ -336,8 +336,8 @@ function hasExactObjectKeys(value: Record<string, unknown>, required: string[], 
 function preparedInvalid(
   reason: PreparedRunValidationFailure["reason"],
   message: string,
-): Result<never, PreparedRunValidationFailure> {
-  return err({ type: "prepared-workflow-invalid", reason, message });
+): Result.Result<never, PreparedRunValidationFailure> {
+  return Result.fail({ type: "prepared-workflow-invalid", reason, message });
 }
 
 function isMissingPathError(error: unknown): boolean {

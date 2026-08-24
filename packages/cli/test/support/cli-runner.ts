@@ -57,7 +57,7 @@ function runProcess(
   args: string[],
   options: { cwd?: string; env?: NodeJS.ProcessEnv; interruptAfterStdout?: RegExp } = {},
 ): Promise<ProcessResult> {
-  return new Promise(resolveProcess => {
+  return new Promise((resolveProcess, rejectProcess) => {
     const env: NodeJS.ProcessEnv = { ...process.env, ...options.env, FORCE_COLOR: "0" };
     delete env.NODE_NO_WARNINGS;
     delete env.NODE_OPTIONS;
@@ -69,18 +69,38 @@ function runProcess(
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let interrupted = false;
+    let failure: unknown;
+    const watchdog = setTimeout(() => {
+      failure = new Error(`CLI test process exceeded 30 seconds: ${command}`);
+      child.kill("SIGKILL");
+    }, 30_000);
     child.stdout.on("data", chunk => {
-      stdout.push(Buffer.from(chunk));
-      if (!interrupted && options.interruptAfterStdout?.test(Buffer.concat(stdout).toString("utf8"))) {
-        interrupted = true;
-        child.kill("SIGINT");
+      try {
+        stdout.push(Buffer.from(chunk));
+        if (!interrupted && options.interruptAfterStdout?.test(Buffer.concat(stdout).toString("utf8"))) {
+          interrupted = true;
+          child.kill("SIGINT");
+        }
+      } catch (error) {
+        failure = error;
+        child.kill("SIGKILL");
       }
     });
     child.stderr.on("data", chunk => stderr.push(Buffer.from(chunk)));
-    child.on("close", exitCode => resolveProcess({
-      exitCode,
-      stdout: Buffer.concat(stdout).toString("utf8"),
-      stderr: Buffer.concat(stderr).toString("utf8"),
-    }));
+    child.once("error", error => {
+      failure = error;
+    });
+    child.once("close", exitCode => {
+      clearTimeout(watchdog);
+      if (failure !== undefined) {
+        rejectProcess(failure);
+        return;
+      }
+      resolveProcess({
+        exitCode,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
+      });
+    });
   });
 }

@@ -1,8 +1,12 @@
 import { access, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
-import { err } from "neverthrow";
 import type { ArtifactRecord, RegisterArtifactInput } from "../src/artifacts/types.js";
+import { captureDirectoryIdentity } from "../src/store/path-fence.js";
+import { tryCaptureRunFile } from "../src/store/run-file.js";
+import type { TaskExecutorOptions } from "../src/execution/task-executor.js";
 import {
   executeTaskNode,
   inlineTask,
@@ -55,7 +59,7 @@ describe.concurrent("task executor artifacts", () => {
         },
       });
       const options = taskOptions(runId);
-      options.store.getArtifact = (_runId, id) => id === artifactId ? artifact : undefined;
+      bindArtifact(options, artifact, runDir);
 
       await expect(executeTaskNode(node, {}, options))
         .resolves.toEqual({ before: path, after: path });
@@ -73,7 +77,7 @@ describe.concurrent("task executor artifacts", () => {
       const options = taskOptions(runId);
       await mkdir(join(runDir, "artifacts"), { recursive: true });
       await writeFile(inputPath, "original\n");
-      options.store.getArtifact = () => ({
+      bindArtifact(options, {
         id: artifactId,
         runId,
         nodeKey: "produce",
@@ -82,7 +86,7 @@ describe.concurrent("task executor artifacts", () => {
         digest: "sha256:test",
         size: 9,
         path: inputPath,
-      });
+      }, runDir);
       const execution = executeTaskNode(
         inlineTask("replaced_input_path", barrierTaskSource(
           ready,
@@ -147,7 +151,15 @@ describe.concurrent("task executor artifacts", () => {
         },
       });
 
-      await expect(executeTaskNode(foreign, {}, taskOptions("run_current")))
+      const options = taskOptions("run_current");
+      options.store.resolveArtifactRef = () => Effect.fail({
+        type: "artifact-run-mismatch",
+        expectedRunId: "run_current",
+        actualRunId: "run_other",
+        message: "Artifact belongs to another run.",
+      });
+
+      await expect(executeTaskNode(foreign, {}, options))
         .rejects.toMatchObject({
           failure: {
             type: "resolution",
@@ -256,19 +268,17 @@ describe.concurrent("task executor artifacts", () => {
         "async ({ artifact }) => artifact.write('late.txt', 'late')",
       );
       const options = taskOptions("run_fenced_artifact");
-      options.store.registerArtifact = input => err({
-        type: "terminal-attempt",
-        attemptId: input.attemptId,
-        status: "cancelled",
-        message: "attempt is already cancelled",
-      });
+      options.store.registerArtifact = input => Effect.fail({
+          type: "terminal-attempt",
+          attemptId: input.attemptId,
+          status: "cancelled",
+          message: "attempt is already cancelled",
+        });
 
       await expect(executeTaskNode(node, {}, options)).rejects.toMatchObject({
-        failure: {
-          type: "terminal-attempt",
-          attemptId: options.attemptId,
-          status: "cancelled",
-        },
+        type: "terminal-attempt",
+        attemptId: options.attemptId,
+        status: "cancelled",
       });
       const artifactDir = join(
         runtimeRunDir("run_fenced_artifact"),
@@ -280,6 +290,16 @@ describe.concurrent("task executor artifacts", () => {
     });
   });
 });
+
+function bindArtifact(options: TaskExecutorOptions, artifact: ArtifactRecord, runDir: string): void {
+  const run = {
+    runId: artifact.runId,
+    runsRoot: captureDirectoryIdentity(dirname(runDir), "Runtime runs root"),
+    runDirectory: captureDirectoryIdentity(runDir, `Run directory '${artifact.runId}'`),
+  };
+  const file = Result.getOrThrow(tryCaptureRunFile(run, artifact.path, `Artifact '${artifact.id}'`));
+  options.store.resolveArtifactRef = () => Effect.succeed({ artifact, run, file });
+}
 
 function barrierTaskSource(ready: string, release: string, action: string): string {
   return [

@@ -221,7 +221,7 @@ function snapshot(runId: string) {
     run: { ...run, input: {} },
     workflow: { name: run.name, agents: {} },
     graph: undefined,
-    controls: { canCancelRun: false, retryTargets: [] },
+    controls: { canCancelRun: false, retryTargets: [], agentControls: [] },
   };
 }
 

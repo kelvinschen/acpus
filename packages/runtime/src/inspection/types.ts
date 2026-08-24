@@ -2,12 +2,14 @@ import type { AgentDefinitionIR, ExprIR, NodeIR, SchemaIR } from "@acpus/core/ir
 import type { JsonValue } from "@acpus/expression/ir";
 import type { AgentTelemetryAvailability } from "@acpus/agent-executor";
 import type { ArtifactRecord } from "../artifacts/types.js";
-import type { AgentOverrideMap } from "../control/agent-overrides.js";
+import type { AgentBindingSource } from "../agents/injections.js";
 import type {
   RunDetails,
   RunForkInfo,
   RunStatus,
 } from "../store/store.js";
+import type { RuntimeAgentSessionInspection } from "../scheduler/store-port.js";
+import type { RuntimeSteerProjection } from "../scheduler/steer-lifecycle.js";
 
 export type InspectNodeQuery = { runId: string; target: string };
 export type InspectAgentExecutionQuery = { runId: string; target: string };
@@ -29,6 +31,7 @@ export type RunInspectionRunSummary = {
     attempts: number;
     turns: number;
   };
+  agentSessions?: readonly RuntimeAgentSessionInspection[];
 };
 
 export type RunInspectionStatus =
@@ -66,7 +69,7 @@ type RunInspectionFailure = {
   code?: string;
   message: string;
   upstream?: {
-    source: "acpx";
+    source: "acp";
     operation?: string;
     exitCode?: number;
     code?: string;
@@ -239,10 +242,13 @@ export type RunInspectionTargetSummary = {
   agentDefinition?: AgentDefinitionIR;
   signal?: RunInspectionItem["signal"];
   artifacts: ArtifactRecord[];
+  agentSession?: RuntimeAgentSessionInspection;
+  steer?: RuntimeSteerProjection;
 };
 
 export type RunInspectionControl =
-  | { type: "retry" | "steer"; target: string }
+  | { type: "retry"; target: string }
+  | { type: "steer"; target: string; delivery: "interrupt_continue"; effect: "cancel_drain_then_continue" }
   | { type: "cancel"; target?: string };
 
 /** Web's one-target read. The resolved dossier remains private to Runtime. */
@@ -315,7 +321,7 @@ export type RunInspectionAgentExecutionDocument = ({
   subject: RunInspectionSubject;
   summary: {
     status: RunInspectionStatus;
-    sessionName?: string;
+    agentSessionId?: string;
     turnCount?: number;
     message?: string;
   };
@@ -379,7 +385,7 @@ export type AgentCurrentActivity = {
   attemptNo?: number;
   postFence?: true;
   turn?: number;
-  turnKind?: "task" | "continuation" | "steer" | "repair";
+  turnKind?: "task" | "steer" | "repair";
   phase: RunInspectionPulse["phase"];
   updatedAt: string;
   response?: RunInspectionExcerpt;
@@ -629,6 +635,7 @@ export type InspectionRun = {
   fork?: {
     sourceRunId: string;
   };
+  agentSessions?: readonly RuntimeAgentSessionInspection[];
 };
 
 type InspectionRunRef = {
@@ -642,7 +649,10 @@ export type InspectionSubject = {
   selector?: string;
 };
 
-export type ForensicsAgentOverride = AgentOverrideMap[string];
+export type ForensicsAgentResolution = {
+  source: AgentBindingSource;
+  effective: AgentDefinitionIR;
+};
 
 export type ForensicsScopeDefinition = {
   nodes: string[];
@@ -655,17 +665,12 @@ export type ForensicsDefinition =
       name: string;
       description?: string;
       inputSchema?: SchemaIR;
-      agents: Record<string, {
-        profile: AgentDefinitionIR;
-        override?: ForensicsAgentOverride;
-      }>;
+      agents: Record<string, ForensicsAgentResolution>;
       root: ForensicsScopeDefinition;
     }
-  | {
+  | ForensicsAgentResolution & {
       kind: "agent";
       agent: string;
-      profile: AgentDefinitionIR;
-      override?: ForensicsAgentOverride;
       prompt: string;
       permissionMode?: "approve-reads" | "approve-all" | "deny-all";
       sessionKey?: string;
@@ -772,7 +777,7 @@ export type ForensicsInvocation =
   | (ForensicsResolvedInvocationBase & {
       kind: "agent";
       attempt: number;
-      promptOrigin: "authored" | "steering" | "continuation";
+      promptOrigin: "authored" | "steering" | "repair";
       prompt: string;
       cwd: string;
       env: Record<string, string>;
@@ -822,10 +827,14 @@ export type ForensicsInvocation =
       transition?: JsonValue;
     });
 
-export type ForensicsResult =
+export type InspectionTargetResult =
   | { status: "accepted"; value: JsonValue }
   | { status: "completed_without_output" }
-  | { status: "pending" | "not_started" | "not_selected" | "cancelled" | "not_accepted" }
+  | { status: "not_accepted" };
+
+export type ForensicsResult =
+  | InspectionTargetResult
+  | { status: "pending" | "not_started" | "not_selected" | "cancelled" }
   | { status: "failed" | "timed_out"; code?: string; message: string };
 
 type InspectionTreeSubject = InspectionSubject;
@@ -987,11 +996,15 @@ export type InspectionView =
       run: InspectionRunRef;
       subject: InspectionSubject;
       state: InspectionVisibleState;
+      result?: InspectionTargetResult;
       pulse?: InspectionPulse;
       acp?: { silentForMs: number };
       attention?: InspectionAttention;
       visibility?: InspectionVisibility;
       occurrences?: InspectionCounts;
+      agentSession?: RuntimeAgentSessionInspection;
+      steer?: RuntimeSteerProjection;
+      availableControls?: RunInspectionControl[];
     }
   | {
       kind: "target";

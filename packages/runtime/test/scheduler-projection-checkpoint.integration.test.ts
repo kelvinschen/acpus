@@ -1,26 +1,25 @@
 import { admitRunForTest } from "./support/runtime-store.js";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import { throwSchedulerStoreResult } from "../src/scheduler/store-port.js";
-import { openExistingRuntimeStore, openRuntimeStore } from "../src/store/store.js";
+import { openExistingRuntimeStoreAdapter, openRuntimeStoreAdapter } from "../src/store/store.js";
 import { prepareSyntheticWorkflow, runtimeDatabasePath, validWorkflow, withRuntimeWorkspace } from "./support/runtime-fixtures.js";
 
 describe("scheduler projection checkpoint", () => {
   it("loads only events after a durable checkpoint on restart", async () => {
     await withRuntimeWorkspace("scheduler-projection-checkpoint-tail", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
       seedLargeSchedulerEventStream(workspace, run.id, 1_000);
-      const before = throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(run.id));
+      const before = store.scheduler.tryLoadRunSnapshot(run.id);
       const claim = store.scheduler.claimRun(run.id, "owner", 60_000)!;
-      const paused = throwSchedulerStoreResult(store.scheduler.tryAppendSchedulerEvents({
+      const paused = store.scheduler.tryAppendSchedulerEvents({
         runId: run.id,
         expectedVersion: before.version,
         ownerEpoch: claim.ownerEpoch,
         idempotencyKey: "checkpoint-before-tail",
         events: [{ type: "control.paused", payload: {} }],
-      }));
+      });
       expect(store.scheduler.releaseRun(claim)).toBe(true);
       store.close();
 
@@ -32,9 +31,9 @@ describe("scheduler projection checkpoint", () => {
         `).run(run.id, paused.version + 1, envelope({}), new Date().toISOString(), "tail:resume");
       });
 
-      const reopened = await openExistingRuntimeStore(workspace);
+      const reopened = await openExistingRuntimeStoreAdapter(workspace);
       try {
-        const recovered = throwSchedulerStoreResult(reopened!.scheduler.tryLoadRunSnapshot(run.id));
+        const recovered = reopened!.scheduler.tryLoadRunSnapshot(run.id);
         expect(recovered.version).toBe(paused.version + 1);
         expect(recovered.projection.run).toMatchObject({ paused: false });
         expect(Object.keys(recovered.projection.instances)).toHaveLength(333);
@@ -47,61 +46,37 @@ describe("scheduler projection checkpoint", () => {
   it("reports malformed and ahead-of-log checkpoints as invariant failures", async () => {
     await withRuntimeWorkspace("scheduler-projection-checkpoint-corrupt", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
       store.close();
 
       mutateDatabase(workspace, db => db.prepare("UPDATE scheduler_projection_checkpoints SET projection_json = '{' WHERE run_id = ?").run(run.id));
-      let reopened = await openExistingRuntimeStore(workspace);
-      expect(() => throwSchedulerStoreResult(reopened!.scheduler.tryLoadRunSnapshot(run.id))).toThrow("checkpoint JSON is malformed");
+      let reopened = await openExistingRuntimeStoreAdapter(workspace);
+      expect(() => reopened!.scheduler.tryLoadRunSnapshot(run.id)).toThrow("checkpoint JSON is malformed");
       reopened?.close();
 
       mutateDatabase(workspace, db => db.prepare("UPDATE scheduler_projection_checkpoints SET projection_json = ?, event_sequence = 99 WHERE run_id = ?")
         .run(JSON.stringify(emptyProjection(run.id)), run.id));
-      reopened = await openExistingRuntimeStore(workspace);
+      reopened = await openExistingRuntimeStoreAdapter(workspace);
       try {
-        expect(() => throwSchedulerStoreResult(reopened!.scheduler.tryLoadRunSnapshot(run.id))).toThrow("exceeds event sequence");
+        expect(() => reopened!.scheduler.tryLoadRunSnapshot(run.id)).toThrow("exceeds event sequence");
       } finally {
         reopened?.close();
       }
     });
   });
 
-  it("checkpoints an uncheckpointed tail before explicitly releasing its owner", async () => {
-    await withRuntimeWorkspace("scheduler-projection-checkpoint-release", async workspace => {
-      const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
-      try {
-        const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const claim = store.scheduler.claimRun(run.id, "owner", 60_000)!;
-        const snapshot = throwSchedulerStoreResult(store.scheduler.tryAppendSchedulerEvents({
-          runId: run.id,
-          expectedVersion: 1,
-          ownerEpoch: claim.ownerEpoch,
-          idempotencyKey: "uncheckpointed-tail",
-          events: [{ type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } }],
-        }));
-        expect(checkpointSequence(workspace, run.id)).toBe(1);
-
-        expect(store.scheduler.releaseRun(claim)).toBe(true);
-        expect(checkpointSequence(workspace, run.id)).toBe(snapshot.version);
-      } finally {
-        store.close();
-      }
-    });
-  });
-
-  it("drops completed checkpoints and recovers completed state from events", async () => {
+  it("recovers completed state from events when no checkpoint is available", async () => {
     await withRuntimeWorkspace("scheduler-projection-checkpoint-completed", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       let runId = "";
       let completedVersion = 0;
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
         runId = run.id;
         const claim = store.scheduler.claimRun(run.id, "owner", 60_000)!;
-        const completed = throwSchedulerStoreResult(store.scheduler.tryAppendSchedulerEvents({
+        const completed = store.scheduler.tryAppendSchedulerEvents({
           runId: run.id,
           expectedVersion: 1,
           ownerEpoch: claim.ownerEpoch,
@@ -110,19 +85,21 @@ describe("scheduler projection checkpoint", () => {
             { type: "frame.started", payload: { runId: run.id, frameKey: "root", frameKind: "root" } },
             { type: "frame.completed", payload: { frameKey: "root", result: { ok: true }, terminalReason: "root_completed" } },
           ],
-        }));
+        });
         completedVersion = completed.version;
 
-        expect(checkpointSequence(workspace, run.id)).toBeUndefined();
         expect(store.scheduler.releaseRun(claim)).toBe(true);
-        expect(checkpointSequence(workspace, run.id)).toBeUndefined();
       } finally {
         store.close();
       }
 
-      const reopened = await openExistingRuntimeStore(workspace);
+      mutateDatabase(workspace, db => {
+        db.prepare("DELETE FROM scheduler_projection_checkpoints WHERE run_id = ?").run(runId);
+      });
+
+      const reopened = await openExistingRuntimeStoreAdapter(workspace);
       try {
-        const recovered = throwSchedulerStoreResult(reopened!.scheduler.tryLoadRunSnapshot(runId));
+        const recovered = reopened!.scheduler.tryLoadRunSnapshot(runId);
         expect(recovered.version).toBe(completedVersion);
         expect(recovered.projection.run).toMatchObject({ status: "completed", paused: false });
         expect(recovered.projection.frames.root).toMatchObject({ status: "completed", result: { ok: true } });
@@ -136,10 +113,10 @@ describe("scheduler projection checkpoint", () => {
   it("rolls back events and projection rows when checkpoint persistence fails", async () => {
     await withRuntimeWorkspace("scheduler-projection-checkpoint-atomic", async workspace => {
       const prepared = await prepareSyntheticWorkflow(workspace, validWorkflow());
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared, input: { ready: true }, cwd: workspace });
-        const before = throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(run.id));
+        const before = store.scheduler.tryLoadRunSnapshot(run.id);
         const claim = store.scheduler.claimRun(run.id, "owner", 60_000)!;
         mutateDatabase(workspace, db => {
           db.prepare("DELETE FROM scheduler_projection_checkpoints WHERE run_id = ?").run(run.id);
@@ -152,17 +129,17 @@ describe("scheduler projection checkpoint", () => {
           `);
         });
 
-        expect(() => throwSchedulerStoreResult(store.scheduler.tryAppendSchedulerEvents({
+        expect(() => store.scheduler.tryAppendSchedulerEvents({
           runId: run.id,
           expectedVersion: before.version,
           ownerEpoch: claim.ownerEpoch,
           idempotencyKey: "must-rollback",
           events: [{ type: "instance.ready", payload: { runId: run.id, nodeKey: "new", nodeId: "new", instancePath: [{ kind: "node", nodeId: "new" }] } }],
-        }))).toThrow("checkpoint-write-failed");
+        })).toThrow("checkpoint-write-failed");
 
         expect(eventCount(workspace, run.id)).toBe(before.version);
         expect(rowCount(workspace, "node_instances", run.id)).toBe(0);
-        expect(throwSchedulerStoreResult(store.scheduler.tryLoadRunSnapshot(run.id))).toEqual(before);
+        expect(store.scheduler.tryLoadRunSnapshot(run.id)).toEqual(before);
       } finally {
         store.close();
       }
@@ -215,14 +192,6 @@ function mutateDatabase(workspace: string, action: (db: DatabaseSync) => void): 
   } finally {
     db.close();
   }
-}
-
-function checkpointSequence(workspace: string, runId: string): number | undefined {
-  let sequence: number | undefined;
-  mutateDatabase(workspace, db => {
-    sequence = (db.prepare("SELECT event_sequence FROM scheduler_projection_checkpoints WHERE run_id = ?").get(runId) as { event_sequence: number } | undefined)?.event_sequence;
-  });
-  return sequence;
 }
 
 function eventCount(workspace: string, runId: string): number {

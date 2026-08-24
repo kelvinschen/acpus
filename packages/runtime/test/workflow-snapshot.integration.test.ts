@@ -1,12 +1,13 @@
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import { settle } from "./effect.js";
 import { chmod, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
-import {
-  type PreparedRunWorkflow,
-  type Sha256Digest,
-} from "@acpus/runtime";
-import { openRuntimeStore } from "../src/store/store.js";
+import type { Sha256Digest } from "@acpus/core/content-identity";
+import type { PreparedRunWorkflow } from "../src/admission/prepared-workflow.js";
+import { openRuntimeStoreAdapter } from "../src/store/store.js";
 import { resolveRuntimeLayout } from "../src/runtime-layout.js";
 import { admitRunForTest } from "./support/runtime-store.js";
 import {
@@ -28,8 +29,8 @@ describe.concurrent("runtime workflow snapshots", () => {
         { path: "tasks/helper.ts", content: "export const helper = true;\n" },
       ]);
 
-      const firstStore = await openRuntimeStore(first);
-      const secondStore = await openRuntimeStore(second);
+      const firstStore = await openRuntimeStoreAdapter(first);
+      const secondStore = await openRuntimeStoreAdapter(second);
       try {
         const firstRun = await admitRunForTest(firstStore, { prepared, cwd: first, input: { ready: true } });
         const reusedRun = await admitRunForTest(firstStore, { prepared, cwd: first, input: { ready: true } });
@@ -61,14 +62,14 @@ describe.concurrent("runtime workflow snapshots", () => {
 
         if (process.platform !== "win32") {
           await chmod(join(firstSnapshot, "workflow.ts"), 0o644);
-          await expect(firstStore.admitRun({ prepared, cwd: first, input: { ready: true } }))
+          await expect(Effect.runPromise(firstStore.admitRun({ prepared, cwd: first, input: { ready: true } })))
             .rejects.toThrow("not private");
           await chmod(join(firstSnapshot, "workflow.ts"), 0o600);
           expect(firstStore.listRuns()).toHaveLength(2);
         }
 
         await writeFile(join(firstSnapshot, "workflow.ts"), "tampered\n");
-        await expect(firstStore.admitRun({ prepared, cwd: first, input: { ready: true } }))
+        await expect(Effect.runPromise(firstStore.admitRun({ prepared, cwd: first, input: { ready: true } })))
           .rejects.toThrow("failed digest verification");
         expect(firstStore.readRunInspection(firstRun.id).frozen?.sourceRoot).toBeUndefined();
         expect(() => firstStore.getFrozenRun(firstRun.id)).toThrow("failed digest verification");
@@ -86,7 +87,7 @@ describe.concurrent("runtime workflow snapshots", () => {
       const prepared = snapshotPreparedWorkflow(base, [
         { path: "workflow.ts", content: "export const source = 'frozen';\n" },
       ]);
-      const store = await openRuntimeStore(first);
+      const store = await openRuntimeStoreAdapter(first);
       const sourcesRoot = resolveRuntimeLayout(first).sourcesRoot;
       const openedSourcesRoot = `${sourcesRoot}.opened`;
       try {
@@ -125,7 +126,7 @@ describe.concurrent("runtime workflow snapshots", () => {
         { path: "helper-\uFFFD.ts", content: "export const helper = true;\n" },
         { path: "workflow.ts", content: "export default 1;\n" },
       ]);
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         await admitRunForTest(store, { prepared, cwd: workspace, input: { ready: true } });
         if (prepared.source.kind !== "snapshot") throw new Error("expected snapshot source");
@@ -133,7 +134,7 @@ describe.concurrent("runtime workflow snapshots", () => {
         const manifest = await readFile(manifestPath);
         await writeFile(manifestPath, corrupt(manifest));
 
-        await expect(store.admitRun({ prepared, cwd: workspace, input: { ready: true } }))
+        await expect(Effect.runPromise(store.admitRun({ prepared, cwd: workspace, input: { ready: true } })))
           .rejects.toThrow(message);
         expect(store.listRuns()).toHaveLength(1);
       } finally {
@@ -157,10 +158,10 @@ describe.concurrent("runtime workflow snapshots", () => {
           files: [...valid.sourceBundle.files].reverse(),
         },
       } as PreparedRunWorkflow;
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
-        const admitted = await store.admitRun({ prepared: invalid, cwd: workspace, input: { ready: true } });
-        expect(admitted.isErr()).toBe(true);
+        const admitted = await settle(store.admitRun({ prepared: invalid, cwd: workspace, input: { ready: true } }));
+        expect(Result.isFailure(admitted)).toBe(true);
         expect(store.listRuns()).toEqual([]);
         expect(await readdir(resolveRuntimeLayout(workspace).sourcesRoot)).toEqual([]);
       } finally {
@@ -178,7 +179,7 @@ describe.concurrent("runtime workflow snapshots", () => {
       const second = snapshotPreparedWorkflow(base, [
         { path: "workflow.ts", content: "export const source = 'second';\n" },
       ]);
-      const store = await openRuntimeStore(workspace);
+      const store = await openRuntimeStoreAdapter(workspace);
       try {
         const run = await admitRunForTest(store, { prepared: first, cwd: workspace, input: { ready: true } });
         await admitRunForTest(store, { prepared: second, cwd: workspace, input: { ready: true } });

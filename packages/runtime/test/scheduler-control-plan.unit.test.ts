@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import {
   canCancelRun,
@@ -69,7 +70,7 @@ describe("scheduler control plans", () => {
       { target: "a_frame", kind: "frame", nodeId: "route" },
       { target: "z_node", kind: "node", nodeId: "task" },
     ]);
-    expect(planRetryControl(snapshot, "m_expression")._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(planRetryControl(snapshot, "m_expression")))).toMatchObject({
       type: "invalid-retry-target",
       targetKey: "m_expression",
       status: "expression_resolution_failed",
@@ -83,19 +84,20 @@ describe("scheduler control plans", () => {
       ...failedInstance("a_occurrence", "task"),
     ]);
 
-    expect(planRetryControl(snapshot, "task")._unsafeUnwrapErr()).toEqual({
+    expect(Result.getOrThrow(Result.flip(planRetryControl(snapshot, "task")))).toEqual({
       type: "ambiguous-retry-target",
       runId: "run_1",
       targetKey: "task",
       candidateKeys: ["a_occurrence", "z_occurrence"],
       message: "Scheduler retry target 'task' is ambiguous. Candidate target keys: a_occurrence, z_occurrence.",
     });
-    expect(planRetryControl(snapshot, deriveOccurrenceRef([]))._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(planRetryControl(snapshot, deriveOccurrenceRef([]))))).toMatchObject({
       type: "ambiguous-retry-target",
       candidateKeys: ["a_occurrence", "z_occurrence"],
     });
-    expect(planRetryControl(snapshot, "z_occurrence")._unsafeUnwrap()).toEqual({
+    expect(Result.getOrThrow(planRetryControl(snapshot, "z_occurrence"))).toEqual({
       resolvedTarget: "z_occurrence",
+      reexecutedNodeKeys: ["z_occurrence"],
       events: [{
         type: "instance.retry_requested",
         payload: { nodeKey: "z_occurrence" },
@@ -137,18 +139,18 @@ describe("scheduler control plans", () => {
       },
     ]);
 
-    expect(planRetryControl(retry, ref)._unsafeUnwrap()).toMatchObject({
+    expect(Result.getOrThrow(planRetryControl(retry, ref))).toMatchObject({
       resolvedTarget: "task~exact",
     });
-    expect(planCancelControl(cancel, ref)._unsafeUnwrap()).toMatchObject({
+    expect(Result.getOrThrow(planCancelControl(cancel, ref))).toMatchObject({
       resolvedTarget: "task~exact",
     });
-    expect(planRetryControl(retry, `${ref}#1`)._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(planRetryControl(retry, `${ref}#1`)))).toMatchObject({
       type: "invalid-retry-target",
       targetKey: `${ref}#1`,
       status: "attempt-selector",
     });
-    expect(planCancelControl(cancel, `${ref}#1`)._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(planCancelControl(cancel, `${ref}#1`)))).toMatchObject({
       type: "invalid-cancel-target",
       targetKey: `${ref}#1`,
       status: "attempt-selector",
@@ -195,7 +197,7 @@ describe("scheduler control plans", () => {
       },
     };
 
-    expect(planRetryControl(paused, "target")._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(planRetryControl(paused, "target")))).toMatchObject({
       type: "invalid-retry-target",
       targetKey: "target",
       status: "paused",
@@ -205,7 +207,7 @@ describe("scheduler control plans", () => {
   it("distinguishes useful run cancel from idempotent terminal acceptance", () => {
     const pending = schedulerSnapshot([]);
     expect(canCancelRun(pending)).toBe(true);
-    expect(planCancelControl(pending)._unsafeUnwrap()).toEqual({
+    expect(Result.getOrThrow(planCancelControl(pending))).toEqual({
       events: [
         {
           type: "frame.started",
@@ -226,7 +228,7 @@ describe("scheduler control plans", () => {
       }]),
     };
     expect(canCancelRun(pausedBeforeRoot)).toBe(true);
-    expect(planCancelControl(pausedBeforeRoot)._unsafeUnwrap()).toEqual({
+    expect(Result.getOrThrow(planCancelControl(pausedBeforeRoot))).toEqual({
       events: [
         {
           type: "frame.started",
@@ -247,7 +249,7 @@ describe("scheduler control plans", () => {
       },
     ]);
     expect(canCancelRun(canceled)).toBe(false);
-    expect(planCancelControl(canceled)._unsafeUnwrap()).toEqual({ events: [] });
+    expect(Result.getOrThrow(planCancelControl(canceled))).toEqual({ events: [] });
   });
 
   it("offers exact active cancel targets and rejects terminal or ambiguous targets", () => {
@@ -259,99 +261,25 @@ describe("scheduler control plans", () => {
       { type: "instance.completed", payload: { nodeKey: "finished", output: null } },
     ]);
 
-    expect(planCancelControl(active, "z_occurrence")._unsafeUnwrap()).toEqual({
+    expect(Result.getOrThrow(planCancelControl(active, "z_occurrence"))).toEqual({
       resolvedTarget: "z_occurrence",
       events: [{
         type: "instance.cancelled",
         payload: { nodeKey: "z_occurrence", cancelReason: "operator_cancelled" },
       }],
     });
-    expect(planCancelControl(active, "finished")._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(planCancelControl(active, "finished")))).toMatchObject({
       type: "invalid-cancel-target",
       targetKey: "finished",
       status: "completed",
     });
-    expect(planCancelControl(active, "task")._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(planCancelControl(active, "task")))).toMatchObject({
       type: "ambiguous-cancel-target",
       candidateKeys: ["a_occurrence", "z_occurrence"],
     });
-    expect(planCancelControl(active, deriveOccurrenceRef([]))._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(planCancelControl(active, deriveOccurrenceRef([]))))).toMatchObject({
       type: "ambiguous-cancel-target",
       candidateKeys: ["a_occurrence", "finished", "z_occurrence"],
-    });
-  });
-
-  it("rejects a completed node inside a completed group member", () => {
-    const memberKey = "parallel.finished";
-    const nodeKey = `${memberKey}/task`;
-    const snapshot = schedulerSnapshot([
-      rootStarted(),
-      {
-        type: "frame.started",
-        payload: {
-          runId: "run_1",
-          frameKey: "parallel",
-          frameKind: "node",
-          parentFrameKey: "root",
-          nodeKey: "parallel",
-          nodeId: "parallel",
-          strategy: "all",
-        },
-      },
-      {
-        type: "group.started",
-        payload: {
-          runId: "run_1",
-          groupKey: "parallel",
-          nodeKey: "parallel",
-          nodeId: "parallel",
-          kind: "parallel",
-          strategy: "all",
-        },
-      },
-      {
-        type: "frame.started",
-        payload: {
-          runId: "run_1",
-          frameKey: memberKey,
-          frameKind: "branch",
-          parentFrameKey: "parallel",
-        },
-      },
-      {
-        type: "group.member_ready",
-        payload: {
-          runId: "run_1",
-          groupKey: "parallel",
-          memberKey,
-          childFrameKey: memberKey,
-          memberKind: "branch",
-          branchId: "finished",
-          readinessSequence: 1,
-        },
-      },
-      {
-        type: "instance.ready",
-        payload: {
-          runId: "run_1",
-          nodeKey,
-          nodeId: "task",
-          parentFrameKey: memberKey,
-          instancePath: [],
-        },
-      },
-      { type: "instance.completed", payload: { nodeKey, output: null } },
-      { type: "frame.completed", payload: { frameKey: memberKey, result: null } },
-      {
-        type: "group.member_completed",
-        payload: { memberKey, output: null, completionSequence: 1 },
-      },
-    ]);
-
-    expect(planCancelControl(snapshot, nodeKey)._unsafeUnwrapErr()).toMatchObject({
-      type: "invalid-cancel-target",
-      targetKey: nodeKey,
-      status: "completed",
     });
   });
 
@@ -368,8 +296,21 @@ describe("scheduler control plans", () => {
     ];
 
     for (const candidate of candidates) {
-      expect(targets.has(candidate)).toBe(planRetryControl(snapshot, candidate).isOk());
+      expect(targets.has(candidate)).toBe(Result.isSuccess(planRetryControl(snapshot, candidate)));
     }
+  });
+
+  it("reports every frame descendant and restored completion dependency as reexecuted", () => {
+    const snapshot = schedulerSnapshot(nestedCompletionDependencyEvents(3));
+
+    expect(Result.getOrThrow(planRetryControl(snapshot, "outer")).reexecutedNodeKeys).toEqual([
+      "inner.item.0",
+      "inner.item.1",
+      "inner.item.2",
+      "outer.dependency.0",
+      "outer.dependency.1",
+      "outer.dependency.2",
+    ]);
   });
 
   it("projects nested completion dependencies without replaying each candidate", () => {

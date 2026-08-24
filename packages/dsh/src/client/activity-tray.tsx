@@ -34,7 +34,7 @@ export type AcpusActivityTrayProps =
   & PropsRuntime<"conversation.input.dock">
   & { acpus: AcpusClientState };
 
-export const ACTIVITY_HOVER_DELAY_MS = 700;
+const ACTIVITY_HOVER_DELAY_MS = 700;
 const useBrowserLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 export function AcpusActivityTray({

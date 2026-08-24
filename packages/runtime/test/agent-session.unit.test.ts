@@ -1,30 +1,38 @@
+import * as Result from "effect/Result";
 import type { AgentNodeIR } from "@acpus/core/ir";
 import { describe, expect, it } from "vitest";
 import { resolveAgentSessionIdentity } from "../src/execution/agent-session.js";
 
 describe("Agent session identity", () => {
-  it("uses a short deterministic id for a node-local session", () => {
-    const first = resolveAgentSessionIdentity(agentNode(), {}, "run-1", "node#1")._unsafeUnwrap();
-    const second = resolveAgentSessionIdentity(agentNode(), {}, "run-1", "node#1")._unsafeUnwrap();
-
-    expect(first).toEqual({ sessionName: "acpus-Mw48dJv0p2g2ep6TflAn_g" });
-    expect(second).toEqual(first);
-    expect(first.sessionName).toHaveLength(28);
-    expect(resolveAgentSessionIdentity(agentNode(), {}, "run-1", "other-node")._unsafeUnwrap().sessionName)
-      .not.toBe(first.sessionName);
-  });
-
-  it("preserves explicit shared-session identity within one run", () => {
-    const first = resolveAgentSessionIdentity(agentNode("shared"), {}, "run-1", "node#1")._unsafeUnwrap();
-    const second = resolveAgentSessionIdentity(agentNode("shared"), {}, "run-1", "other-node")._unsafeUnwrap();
-    const otherRun = resolveAgentSessionIdentity(agentNode("shared"), {}, "run-2", "node#1")._unsafeUnwrap();
+  it("locks the node-local scope and generation golden vectors", () => {
+    const first = Result.getOrThrow(resolveAgentSessionIdentity(agentNode(), {}, "run-1", "agent~abc"));
+    const second = Result.getOrThrow(resolveAgentSessionIdentity(agentNode(), {}, "run-1", "agent~abc", 2));
 
     expect(first).toEqual({
-      sessionName: "acpus-RpuTCEVCtKjYYs3E9RMYrw",
-      explicitSessionKey: "shared",
+      agentSessionId: "acpus-ec29acea756f750b2036306a307551059020c13952bbbd7d73ffb2e0166812b0-g1",
+      scopeDigest: "sha256:ec29acea756f750b2036306a307551059020c13952bbbd7d73ffb2e0166812b0",
+      generation: 1,
+      explicitShared: false,
+    });
+    expect(second).toEqual({
+      ...first,
+      agentSessionId: "acpus-ec29acea756f750b2036306a307551059020c13952bbbd7d73ffb2e0166812b0-g2",
+      generation: 2,
+    });
+  });
+
+  it("locks the explicit shared Unicode scope golden vector", () => {
+    const first = Result.getOrThrow(resolveAgentSessionIdentity(agentNode("team/α"), {}, "run-1", "node#1"));
+    const second = Result.getOrThrow(resolveAgentSessionIdentity(agentNode("team/α"), {}, "run-1", "other-node"));
+
+    expect(first).toEqual({
+      agentSessionId: "acpus-75456fb6c293211e6eece5f13689ec5014b41bcded5e17deb0e84a21ad14ca8e-g1",
+      scopeDigest: "sha256:75456fb6c293211e6eece5f13689ec5014b41bcded5e17deb0e84a21ad14ca8e",
+      generation: 1,
+      explicitShared: true,
+      explicitSessionKey: "team/α",
     });
     expect(second).toEqual(first);
-    expect(otherRun.sessionName).toBe("acpus-rMG309IGR7FmwHN8U1Tx2g");
   });
 });
 

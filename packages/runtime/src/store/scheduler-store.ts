@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { sha256Digest } from "@acpus/core/content-identity";
+import * as Result from "effect/Result";
+import { isSha256Digest, sha256Digest, type Sha256Digest } from "@acpus/core/content-identity";
 import type { JsonValue } from "@acpus/expression/ir";
 import { tryCreateDeadline } from "../deadline.js";
 import { stableJson, stableJsonLine } from "../stable-json.js";
@@ -13,16 +14,34 @@ import { ancestorGroupMembersForNode } from "../scheduler/membership.js";
 import { resolveOccurrenceRef } from "../scheduler/occurrence-ref.js";
 import { settleFrozenProjection, type FrozenSchedulerRun } from "../scheduler/settle.js";
 import { planSteerControl } from "../scheduler/steer-plan.js";
+import { planRetrySessionImpact } from "../scheduler/retry-session-impact.js";
+import { projectSteerLifecycle } from "../scheduler/steer-lifecycle.js";
+import { agentSessionIdForScope, agentSessionScopeDigest } from "../execution/agent-session.js";
+import { indexNodes } from "../scheduler/ir-walk.js";
+import type {
+  AgentAttemptOperationPlan,
+  AgentOperationPlanError,
+  AgentSessionCheckpoint,
+  AgentSessionCheckpointValue,
+} from "../execution/agent-operation-plan.js";
+import { planAgentAttemptAdmission } from "../execution/agent-operation-plan.js";
 import {
+  type AdvanceAgentSessionCheckpointInput,
+  type AgentAttemptSessionBinding,
+  type AgentSessionCheckpointTransitionCause,
+  type BindAgentAttemptSessionInput,
+  type PlanAgentAttemptAdmissionInput,
+  type CommitAgentTurnDispatchInput,
   SchedulerStoreException,
-  schedulerStoreResult,
-  throwSchedulerStoreResult,
   type AttemptCommitInput,
   type AttemptStartInput,
   type AttemptStartResult,
   type ReplayCandidate,
   type ReplayCommitInput,
   type ReplayCommitResult,
+  type ReconcileAgentSteersInput,
+  type RecordAgentSessionReadyInput,
+  type RuntimeAgentControlInspection,
   type RunOwnerClaim,
   type SchedulerCancelInput,
   type SchedulerCommit,
@@ -30,22 +49,72 @@ import {
   type SchedulerRecoveryInput,
   type SchedulerResumeInput,
   type SchedulerRetryInput,
-  type SchedulerRunRetryInput,
+  type SchedulerRetryPlan,
+  type SchedulerRetryCommitInput,
   type SchedulerSnapshot,
   type SchedulerSteerInput,
+  type SchedulerSteerTarget,
   type SchedulerSteerResult,
   type SchedulerStoreError,
   type SchedulerStorePort,
-  type SchedulerStoreResult,
   type SignalConsumeInput,
+  type SettleFencedAgentSessionCheckpointInput,
 } from "../scheduler/store-port.js";
 import { applySchedulerEvents, createSchedulerProjection, type SchedulerProjectionTimings } from "../scheduler/transitions.js";
 import type { SchedulerProjection, SchedulerRunStatus } from "../scheduler/types.js";
 import { readContainedFileSync } from "./contained-path.js";
 import { isContainedPath } from "../path-containment.js";
-import type { ForkReplayArtifact } from "./replay-model.js";
+import {
+  replayAgentSessionAuthority,
+  type AgentSessionAuthorityReplay,
+  type ForkReplayArtifact,
+} from "./replay-model.js";
 
 type CountRow = { count: number };
+type AgentSessionRow = {
+  agent_session_id: string;
+  run_id: string;
+  scope_digest: Sha256Digest;
+  generation: number;
+  explicit_shared: number;
+  ready_at: string | null;
+  reported_version: string | null;
+  lifecycle: "active" | "abandoned";
+  checkpoint: AgentSessionCheckpoint;
+  checkpoint_attempt_id: string;
+  checkpoint_turn_id: string | null;
+  checkpoint_session_lease_id: string | null;
+  checkpoint_prompt_origin: AgentSessionCheckpointValue["promptOrigin"];
+  checkpoint_input_digest: Sha256Digest;
+  checkpoint_at: string;
+};
+
+type AgentAttemptBindingRow = {
+  attempt_id: string;
+  run_id: string;
+  agent_session_id: string;
+  operation: AgentAttemptSessionBinding["operation"];
+  session_open_mode: AgentAttemptSessionBinding["sessionOpenMode"];
+  predecessor_attempt_id: string | null;
+  steer_event_sequence: number | null;
+  initial_prompt_origin: AgentAttemptSessionBinding["initialPromptOrigin"];
+  input_digest: Sha256Digest;
+  admitted_from_checkpoint: AgentSessionCheckpoint | null;
+};
+
+type AttemptStartedPayload = {
+  attemptId: string;
+  nodeKey: string;
+  nodeId: string;
+  ownerEpoch: number;
+  steerEventSequence?: number;
+};
+type InstanceRequeuedPayload = {
+  nodeKey: string;
+  reason: string;
+  steerEventSequence?: number;
+  steerId?: string;
+};
 export class SqliteSchedulerStorePort implements SchedulerStorePort {
   private readonly snapshotCache = new Map<string, SchedulerSnapshot>();
 
@@ -118,8 +187,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
-  tryLoadRunSnapshot(runId: string): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.loadRunSnapshot(runId));
+  tryLoadRunSnapshot(runId: string): SchedulerSnapshot {
+    return this.loadRunSnapshot(runId);
   }
 
   private loadRunSnapshot(runId: string): SchedulerSnapshot {
@@ -151,8 +220,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     return snapshot;
   }
 
-  tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.appendSchedulerEvents(commit));
+  tryAppendSchedulerEvents(commit: SchedulerCommit): SchedulerSnapshot {
+    return this.appendSchedulerEvents(commit);
   }
 
   private appendSchedulerEvents(
@@ -199,8 +268,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
-  tryStartAttempt(input: AttemptStartInput): SchedulerStoreResult<AttemptStartResult> {
-    return schedulerStoreResult(() => this.startAttempt(input));
+  tryStartAttempt(input: AttemptStartInput): AttemptStartResult {
+    return this.startAttempt(input);
   }
 
   listReplayCandidates(runId: string): ReplayCandidate[] {
@@ -216,8 +285,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     }));
   }
 
-  tryCommitReplay(input: ReplayCommitInput): SchedulerStoreResult<ReplayCommitResult> {
-    return schedulerStoreResult(() => this.commitReplay(input));
+  tryCommitReplay(input: ReplayCommitInput): ReplayCommitResult {
+    return this.commitReplay(input);
   }
 
   private commitReplay(input: ReplayCommitInput): ReplayCommitResult {
@@ -503,6 +572,9 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
         attemptNo,
         ownerEpoch: input.ownerEpoch,
         admissionVersion: input.expectedVersion,
+        ...(instance.pendingSteerEventSequence === undefined
+          ? {}
+          : { steerEventSequence: instance.pendingSteerEventSequence }),
         ...(steer === undefined ? {} : { steerId: steer.steerId }),
         ...(input.deadlineAt === undefined ? {} : { deadlineAt: input.deadlineAt }),
         ...(input.replayIdentity === undefined ? {} : { replayIdentity: input.replayIdentity }),
@@ -547,8 +619,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
-  tryCommitAttemptResult(input: AttemptCommitInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.commitAttemptResult(input));
+  tryCommitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot {
+    return this.commitAttemptResult(input);
   }
 
   private commitAttemptResult(input: AttemptCommitInput): SchedulerSnapshot {
@@ -598,8 +670,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
-  tryConsumeSignal(input: SignalConsumeInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.consumeSignal(input));
+  tryConsumeSignal(input: SignalConsumeInput): SchedulerSnapshot {
+    return this.consumeSignal(input);
   }
 
   private consumeSignal(input: SignalConsumeInput): SchedulerSnapshot {
@@ -723,8 +795,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     );
   }
 
-  tryPauseRun(input: SchedulerPauseInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.pauseRun(input));
+  tryPauseRun(input: SchedulerPauseInput): SchedulerSnapshot {
+    return this.pauseRun(input);
   }
 
   private pauseRun(input: SchedulerPauseInput): SchedulerSnapshot {
@@ -765,8 +837,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
           type: "instance.requeued",
           payload: {
             nodeKey: instance.nodeKey,
-            reason: attempt.steerId === undefined ? "paused" : "steered",
-            ...(attempt.steerId === undefined ? {} : { steerId: attempt.steerId }),
+            reason: "paused",
             ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
           },
         });
@@ -782,8 +853,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     });
   }
 
-  tryResumeRun(input: SchedulerResumeInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.resumeRun(input));
+  tryResumeRun(input: SchedulerResumeInput): SchedulerSnapshot {
+    return this.resumeRun(input);
   }
 
   private resumeRun(input: SchedulerResumeInput): SchedulerSnapshot {
@@ -807,7 +878,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
       const timeoutRemainingMs = wait.timeoutRemainingMs;
       if (wait.status !== "awaiting" || timeoutRemainingMs === undefined) continue;
       const deadline = tryCreateDeadline(now, timeoutRemainingMs);
-      if (deadline.isErr()) {
+      if (Result.isFailure(deadline)) {
         throwSchedulerStoreError({
           type: "deadline-out-of-range",
           runId: input.runId,
@@ -819,7 +890,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
         type: "signal.timeout_resumed",
         payload: {
           nodeKey: wait.nodeKey,
-          deadlineAt: deadline.value.toISOString(),
+          deadlineAt: deadline.success.toISOString(),
         },
       });
     }
@@ -833,81 +904,155 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     });
   }
 
-  tryRetryRun(input: SchedulerRunRetryInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.retryRun(input));
-  }
-
-  private retryRun(input: SchedulerRunRetryInput): SchedulerSnapshot {
-    const intentDigest = schedulerIntentDigest({ type: "run_retry" });
-    const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey, intentDigest);
-    if (duplicate) return duplicate;
-    const snapshot = this.loadRunSnapshot(input.runId);
-    if (snapshot.projection.run.status !== "failed") {
-      throwSchedulerStoreError({ type: "invalid-retry-target", runId: input.runId, status: snapshot.projection.run.status, message: `Cannot retry run from ${snapshot.projection.run.status}.` });
-    }
-    return this.appendSchedulerEvents({
-      runId: input.runId,
-      expectedVersion: snapshot.version,
-      ownerEpoch: input.ownerEpoch,
-      idempotencyKey: input.idempotencyKey,
-      intentDigest,
-      events: [{ type: "control.run_retry_requested", payload: {} }],
-    });
-  }
-
-  tryRetry(input: SchedulerRetryInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.retry(input));
-  }
-
-  private retry(input: SchedulerRetryInput): SchedulerSnapshot {
-    const idempotencyKey = input.idempotencyKey;
-    const intentDigest = schedulerIntentDigest({ type: "retry", target: input.target });
-    const duplicate = this.duplicateIntentIdempotency(input.runId, idempotencyKey, intentDigest);
-    if (duplicate) return duplicate;
-    const frozen = this.loadFrozenRun(input.runId);
-    const now = new Date();
-    const retryEvents = (snapshot: SchedulerSnapshot): SchedulerEvent[] => {
-      validateRetryControlRun(snapshot, input.target).match(
-        () => undefined,
-        failure => throwSchedulerStoreError(failure),
-      );
-      const settled = settleRetryControlSnapshot({
-        frozen,
+  tryPlanRetry(input: Omit<SchedulerRetryInput, "ownerEpoch">): SchedulerRetryPlan {
+      const intentDigest = schedulerIntentDigest({ type: "retry", target: input.target });
+      const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey, intentDigest);
+      if (duplicate) {
+        return {
+          snapshot: duplicate,
+          requestedTarget: input.target,
+          resolvedTarget: input.target,
+          duplicate: true,
+          sessions: [],
+        };
+      }
+      const snapshot = this.loadRunSnapshot(input.runId);
+      const plan = this.planRetry(snapshot, input.target, new Date());
+      return {
         snapshot,
-        now,
-      });
-      const plan = planRetryControl(settled.snapshot, input.target).match(
-        value => value,
-        failure => throwSchedulerStoreError(failure),
-      );
-      return [...settled.events, ...plan.events];
-    };
-    const current = this.loadRunSnapshot(input.runId);
-    const events = retryEvents(current);
-    return this.appendSchedulerEvents(
-      {
-        runId: input.runId,
-        expectedVersion: current.version,
-        ownerEpoch: input.ownerEpoch,
-        idempotencyKey,
-        intentDigest,
-        events,
-      },
-      input.target.startsWith("@") ? retryEvents : undefined,
-    );
+        requestedTarget: input.target,
+        resolvedTarget: plan.resolvedTarget,
+        duplicate: false,
+        sessions: plan.sessions.map(session => ({ runId: input.runId, agentSessionId: session.agent_session_id })),
+      };
   }
 
-  tryCancel(input: SchedulerCancelInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.cancel(input));
+  tryCommitRetry(input: SchedulerRetryCommitInput): SchedulerSnapshot {
+    return this.commitRetry(input);
+  }
+
+  private commitRetry(input: SchedulerRetryCommitInput): SchedulerSnapshot {
+    const neutralized = [...input.neutralizedAgentSessionIds].sort();
+    const intentDigest = schedulerIntentDigest({ type: "retry", target: input.target });
+    const now = new Date();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.requireOwnerEpoch(input.runId, input.ownerEpoch);
+      const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey, intentDigest);
+      if (duplicate) {
+        this.db.exec("COMMIT");
+        return duplicate;
+      }
+      const currentVersion = this.currentVersion(input.runId);
+      if (currentVersion !== input.expectedVersion) {
+        throwSchedulerStoreError({
+          type: "version-mismatch",
+          runId: input.runId,
+          expectedVersion: input.expectedVersion,
+          actualVersion: currentVersion,
+          message: `Run '${input.runId}' scheduler version mismatch.`,
+        });
+      }
+      const current = this.loadRunSnapshot(input.runId);
+      const plan = this.planRetry(current, input.target, now);
+      const expected = plan.sessions.map(session => session.agent_session_id).sort();
+      if (!sameStrings(expected, neutralized)) {
+        throwSchedulerStoreError({
+          type: "retry-neutralization-mismatch",
+          runId: input.runId,
+          expectedAgentSessionIds: expected,
+          actualAgentSessionIds: neutralized,
+          message: `Run '${input.runId}' Retry neutralization proof does not match the active Agent Session set.`,
+        });
+      }
+      const nowIso = now.toISOString();
+      this.db.prepare(`
+        INSERT INTO scheduler_commits (run_id, idempotency_key, event_count, event_digest, intent_digest)
+        VALUES (?, ?, ?, ?, ?)
+      `).run(input.runId, input.idempotencyKey, plan.events.length, schedulerEventDigest(plan.events), intentDigest);
+      for (const session of plan.sessions) {
+        const updated = this.db.prepare(`
+          UPDATE agent_sessions
+          SET lifecycle = 'abandoned', updated_at = ?
+          WHERE agent_session_id = ? AND lifecycle = 'active'
+        `).run(nowIso, session.agent_session_id);
+        if (updated.changes !== 1) {
+          throw new Error(`Agent Session '${session.agent_session_id}' could not be abandoned.`);
+        }
+      }
+      const snapshot = this.commitProjectionEventsInTransaction({
+        runId: input.runId,
+        current,
+        events: plan.events,
+        now: nowIso,
+        idempotencyKeys: plan.events.map((_, index) => schedulerEventIdempotencyKey(input.runId, input.idempotencyKey, index)),
+        nodeKeys: plan.events.map(event => schedulerEventNodeKey(event)),
+      });
+      this.db.exec("COMMIT");
+      this.snapshotCache.set(input.runId, snapshot);
+      return snapshot;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private planRetry(snapshot: SchedulerSnapshot, target: string, now: Date): {
+    events: SchedulerEvent[];
+    resolvedTarget: string;
+    sessions: AgentSessionRow[];
+  } {
+    Result.match(validateRetryControlRun(snapshot, target), {
+      onSuccess: () => undefined,
+      onFailure: failure => throwSchedulerStoreError(failure),
+    });
+    const frozen = this.loadFrozenRun(snapshot.runId);
+    const settled = settleRetryControlSnapshot({ frozen, snapshot, now });
+    const retry = Result.match(planRetryControl(settled.snapshot, target), {
+      onSuccess: value => value,
+      onFailure: failure => throwSchedulerStoreError(failure),
+    });
+    const activeSessions = this.activeAgentSessions(snapshot.runId);
+    const impact = planRetrySessionImpact({
+      frozen,
+      snapshot: settled.snapshot,
+      reexecutedNodeKeys: retry.reexecutedNodeKeys,
+      materializedSessions: activeSessions.flatMap(session => {
+        const nodeKey = this.attemptNodeKey(snapshot.runId, session.checkpoint_attempt_id);
+        return nodeKey === undefined ? [] : [{ agentSessionId: session.agent_session_id, nodeKey }];
+      }),
+    });
+    if (Result.isFailure(impact)) {
+      throwSchedulerStoreError({
+        type: "shared-session-retry-requires-fork",
+        runId: snapshot.runId,
+        target,
+        message: `Retry target '${target}' intersects an explicit shared Agent Session; use \`acpus runs fork ${snapshot.runId} --target ${target}\`.`,
+      });
+    }
+    const impactedIds = new Set(impact.success.agentSessionIds);
+    const sessions = activeSessions.filter(session => impactedIds.has(session.agent_session_id));
+    return {
+      events: [...settled.events, ...retry.events],
+      resolvedTarget: retry.resolvedTarget,
+      sessions,
+    };
+  }
+
+  tryCancel(input: SchedulerCancelInput): SchedulerSnapshot {
+    return this.cancel(input);
   }
 
   private cancel(input: SchedulerCancelInput): SchedulerSnapshot {
     const intentDigest = schedulerIntentDigest({ type: "cancel", target: input.target ?? null });
     const duplicate = this.duplicateIntentIdempotency(input.runId, input.idempotencyKey, intentDigest);
     if (duplicate) return duplicate;
-    const cancelEvents = (snapshot: SchedulerSnapshot): SchedulerEvent[] => planCancelControl(snapshot, input.target).match(
-      value => value.events,
-      failure => throwSchedulerStoreError(failure),
+    const cancelEvents = (snapshot: SchedulerSnapshot): SchedulerEvent[] => Result.match(
+      planCancelControl(snapshot, input.target),
+      {
+        onSuccess: value => value.events,
+        onFailure: failure => throwSchedulerStoreError(failure),
+      },
     );
     const snapshot = this.loadRunSnapshot(input.runId);
     const events = cancelEvents(snapshot);
@@ -924,8 +1069,976 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     );
   }
 
-  trySteerAgent(input: SchedulerSteerInput): SchedulerStoreResult<SchedulerSteerResult> {
-    return schedulerStoreResult(() => this.steerAgent(input));
+  trySteerAgent(input: SchedulerSteerInput): SchedulerSteerResult {
+    return this.steerAgent(input);
+  }
+
+  tryPlanAgentSteer(runId: string, target: string): SchedulerSteerTarget {
+    const current = this.loadRunSnapshot(runId);
+    return plannerValue(planSteerControl(this.loadFrozenRun(runId), current, target)).target;
+  }
+
+  tryBindAgentAttemptSession(
+    input: BindAgentAttemptSessionInput,
+  ): AgentAttemptSessionBinding {
+    return this.bindAgentAttemptSession(input);
+  }
+
+
+  tryRecordAgentSessionReady(
+    input: RecordAgentSessionReadyInput,
+  ): void {
+    return this.recordAgentSessionReady(input);
+  }
+
+  private recordAgentSessionReady(input: RecordAgentSessionReadyInput): void {
+    const now = (input.now ?? new Date()).toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.requireStartedAttempt(input.runId, input.attemptId, input.ownerEpoch);
+      if (input.reportedVersion !== undefined
+        && (input.reportedVersion.length === 0 || input.reportedVersion.length > 256)) {
+        this.bindingConflict(input, "contains an invalid Provider reported version");
+      }
+      this.requireAgentSession(input.runId, input.agentSessionId);
+      this.requireBindingForSession(input.runId, input.attemptId, input.agentSessionId);
+      this.db.prepare(`
+        UPDATE agent_sessions
+        SET ready_at = COALESCE(ready_at, ?),
+          reported_version = COALESCE(?, reported_version), updated_at = ?
+        WHERE agent_session_id = ?
+      `).run(now, input.reportedVersion ?? null, now, input.agentSessionId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  planAgentAttemptAdmission(
+    input: PlanAgentAttemptAdmissionInput,
+  ): Result.Result<AgentAttemptOperationPlan, AgentOperationPlanError> {
+    this.requireStartedAttempt(input.runId, input.attemptId, input.ownerEpoch);
+    const existing = this.agentAttemptBinding(input.attemptId);
+    if (existing) return Result.succeed(this.operationPlanFromBinding(existing));
+    const start = this.attemptStart(input.runId, input.attemptId);
+    const steerEventSequence = start.payload.steerEventSequence;
+    const active = this.activeAgentSessionForScope(input.runId, input.scopeDigest);
+    if (steerEventSequence !== undefined) {
+      const source = this.schedulerEvent(input.runId, steerEventSequence);
+      if (source?.type === "control.agent_steer_requested") {
+        const payload = decodeSchedulerPayload(source.payload_json, source.type) as {
+          steerId: string;
+          instruction: string;
+          fencedAttemptId: string;
+        };
+        const steering = input.steering;
+        if (!active) throw new Error(`Steer admission for '${input.attemptId}' has no active Agent Session.`);
+        if (!steering || steering.steerId !== payload.steerId || steering.instruction !== payload.instruction) {
+          throw new Error(`Steer admission for '${input.attemptId}' does not match its durable instruction.`);
+        }
+        return planAgentAttemptAdmission({
+          source: "continue",
+          target: input.target,
+          active: false,
+          session: plannedSession(active),
+          checkpoint: checkpointFromRow(active),
+          predecessorAttemptId: payload.fencedAttemptId,
+          prompt: steering,
+          steerEventSequence,
+        });
+      }
+      throw new Error(`Agent Attempt '${input.attemptId}' references a missing Steer event.`);
+    }
+    if (!active) {
+      const predecessor = this.latestAgentSessionForScope(input.runId, input.scopeDigest);
+      if (predecessor) {
+        if (predecessor.lifecycle !== "abandoned") {
+          throw new Error(`Agent Session scope '${input.scopeDigest}' latest generation is not abandoned.`);
+        }
+        return planAgentAttemptAdmission({
+          source: "generation_start",
+          target: input.target,
+          session: {
+            agentSessionId: agentSessionIdForScope(input.scopeDigest, predecessor.generation + 1),
+            scopeDigest: input.scopeDigest,
+            generation: predecessor.generation + 1,
+            explicitShared: input.explicitShared,
+          },
+          predecessorAttemptId: predecessor.checkpoint_attempt_id,
+          predecessorCheckpoint: predecessor.checkpoint,
+          prompt: input.authored,
+        });
+      }
+      return planAgentAttemptAdmission({
+        source: "first_materialization",
+        target: input.target,
+        session: this.plannedSessionForMissing(input),
+        prompt: input.authored,
+      });
+    }
+    const checkpoint = checkpointFromRow(active);
+    const predecessor = this.agentAttemptBinding(checkpoint.attemptId);
+    if (checkpoint.checkpoint === "not_dispatched" && predecessor) {
+      const rebuilt = checkpoint.promptOrigin === "authored" ? input.authored : input.steering;
+      return planAgentAttemptAdmission({
+        source: "safe_retry",
+        target: input.target,
+        session: plannedSession(active),
+        checkpoint,
+        predecessorAttemptId: checkpoint.attemptId,
+        predecessorSessionOpenMode: predecessor.sessionOpenMode,
+        rebuiltPrompt: rebuilt ?? input.authored,
+      });
+    }
+    return planAgentAttemptAdmission({
+      source: "continue",
+      target: input.target,
+      active: false,
+      session: plannedSession(active),
+      checkpoint,
+      predecessorAttemptId: checkpoint.attemptId,
+      prompt: input.authored,
+    });
+  }
+
+  private bindAgentAttemptSession(input: BindAgentAttemptSessionInput): AgentAttemptSessionBinding {
+    const now = (input.now ?? new Date()).toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.requireStartedAttempt(input.runId, input.attemptId, input.ownerEpoch);
+      this.requireAgentSessionInput(input);
+      const existingBinding = this.agentAttemptBinding(input.attemptId);
+      if (existingBinding) {
+        if (!sameBindingInput(existingBinding, input)) this.bindingConflict(input, "is already bound differently");
+        this.db.exec("COMMIT");
+        return existingBinding;
+      }
+      this.requireAdmissionLineage(input);
+      const current = this.agentSessionRow(input.agentSessionId);
+      if (current) this.bindExistingAgentSession(input, current, now);
+      else this.bindNewAgentSession(input, now);
+      this.db.prepare(`
+        INSERT INTO agent_attempt_sessions (
+          attempt_id, run_id, agent_session_id, operation, session_open_mode,
+          predecessor_attempt_id, steer_event_sequence,
+          initial_prompt_origin, input_digest,
+          admitted_from_checkpoint, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        input.attemptId,
+        input.runId,
+        input.agentSessionId,
+        input.operation,
+        input.sessionOpenMode,
+        input.predecessorAttemptId ?? null,
+        input.steerEventSequence ?? null,
+        input.promptOrigin,
+        input.inputDigest,
+        input.admittedFromCheckpoint ?? null,
+        now,
+      );
+      const binding = this.agentAttemptBinding(input.attemptId);
+      if (!binding) throw new Error(`Agent Attempt '${input.attemptId}' binding was not persisted.`);
+      this.db.exec("COMMIT");
+      return binding;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  tryAdvanceAgentSessionCheckpoint(
+    input: AdvanceAgentSessionCheckpointInput,
+  ): AgentSessionCheckpointValue {
+    return this.advanceAgentSessionCheckpoint(input);
+  }
+
+  private advanceAgentSessionCheckpoint(input: AdvanceAgentSessionCheckpointInput): AgentSessionCheckpointValue {
+    const now = (input.now ?? new Date()).toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.requireStartedAttempt(input.runId, input.attemptId, input.ownerEpoch);
+      const row = this.requireAgentSession(input.runId, input.agentSessionId);
+      this.requireBindingForSession(input.runId, input.attemptId, input.agentSessionId);
+      const current = checkpointFromRow(row);
+      if (!sameCheckpoint(current, input.expected)) {
+        if (input.cause === "local_call_pending"
+          && input.expected.checkpoint === "dispatch_intent"
+          && strongerThanOwnedInFlight(current, input.expected)) {
+          this.db.exec("COMMIT");
+          return current;
+        }
+        this.checkpointConflict(input.runId, input.agentSessionId, "expected checkpoint does not match current state");
+      }
+      if (input.next.attemptId !== input.attemptId || !validCheckpointTransition(current, input.next, input.cause)) {
+        this.checkpointConflict(input.runId, input.agentSessionId, `transition '${current.checkpoint}' → '${input.next.checkpoint}' is invalid for '${input.cause}'`);
+      }
+      this.writeCheckpoint(input.agentSessionId, input.next, now);
+      this.db.exec("COMMIT");
+      return input.next;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  tryCommitAgentTurnDispatch(
+    input: CommitAgentTurnDispatchInput,
+  ): AgentSessionCheckpointValue {
+    return this.commitAgentTurnDispatch(input);
+  }
+
+  private commitAgentTurnDispatch(input: CommitAgentTurnDispatchInput): AgentSessionCheckpointValue {
+    const now = (input.now ?? new Date()).toISOString();
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.requireStartedAttempt(input.runId, input.attemptId, input.ownerEpoch);
+      const row = this.requireAgentSession(input.runId, input.agentSessionId);
+      this.requireBindingForSession(input.runId, input.attemptId, input.agentSessionId);
+      if (row.ready_at === null) {
+        this.checkpointConflict(input.runId, input.agentSessionId, "cannot dispatch before the Session is ready");
+      }
+      const current = checkpointFromRow(row);
+      if (!sameCheckpoint(current, input.expected)
+        || input.expected.attemptId !== input.attemptId
+        || !input.turnId
+        || !input.sessionLeaseId) {
+        this.checkpointConflict(input.runId, input.agentSessionId, "dispatch intent does not match not-dispatched authority");
+      }
+      const next: AgentSessionCheckpointValue = {
+        checkpoint: "dispatch_intent",
+        attemptId: input.attemptId,
+        turnId: input.turnId,
+        sessionLeaseId: input.sessionLeaseId,
+        promptOrigin: input.expected.promptOrigin,
+        inputDigest: input.expected.inputDigest,
+      };
+      this.db.prepare(`
+        INSERT INTO execution_metadata (run_id, attempt_id, kind, metadata_json, created_at)
+        VALUES (?, ?, 'agent_invocation', ?, ?)
+      `).run(input.runId, input.attemptId, stableJsonLine(input.invocationMetadata), now);
+      this.writeCheckpoint(input.agentSessionId, next, now);
+      this.db.exec("COMMIT");
+      return next;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  trySettleFencedAgentSessionCheckpoint(
+    input: SettleFencedAgentSessionCheckpointInput,
+  ): AgentSessionCheckpointValue {
+    return this.settleFencedAgentSessionCheckpoint(input);
+  }
+
+  tryReconcileAgentSteers(input: ReconcileAgentSteersInput): number {
+      this.requireRuntimeAuthority(input.runtimeOwnerEpoch);
+      const rows = this.db.prepare(`
+        SELECT payload_json
+        FROM run_events
+        WHERE run_id = ? AND type = 'control.agent_steer_requested'
+        ORDER BY sequence
+      `).all(input.runId) as Array<{ payload_json: string }>;
+      let reconciled = 0;
+      for (const row of rows) {
+        const directive = decodeSteerDirective(row.payload_json);
+        if (this.pendingSteerDirectiveForAttempt(input.runId, directive.fencedAttemptId) === undefined) continue;
+        const binding = this.agentAttemptBinding(directive.fencedAttemptId);
+        if (!binding || binding.runId !== input.runId) {
+          throw new Error(`Steer '${directive.steerId}' has no exact Agent Session binding.`);
+        }
+        const session = this.requireAgentSession(input.runId, binding.agentSessionId);
+        const checkpoint = checkpointFromRow(session);
+        if (checkpoint.checkpoint === "not_dispatched") {
+          throw new Error(`Steer '${directive.steerId}' cannot reconcile a non-dispatched Session checkpoint.`);
+        }
+        const next = checkpoint.checkpoint === "terminal_observed"
+          ? "terminal_observed"
+          : checkpoint.checkpoint === "provider_observed" || checkpoint.checkpoint === "terminal_unknown"
+            ? "terminal_unknown"
+            : "acceptance_unknown";
+        this.trySettleFencedAgentSessionCheckpoint({
+          runId: input.runId,
+          runtimeOwnerEpoch: input.runtimeOwnerEpoch,
+          agentSessionId: binding.agentSessionId,
+          attemptId: directive.fencedAttemptId,
+          turnId: checkpoint.turnId,
+          sessionLeaseId: checkpoint.sessionLeaseId,
+          expected: checkpoint.checkpoint,
+          next,
+          cause: next === "terminal_observed" ? "provider_terminal" : "loss_without_new_provider_evidence",
+          observedAt: input.now ?? new Date(),
+        });
+        reconciled += 1;
+      }
+    return reconciled;
+  }
+
+  readAgentControlInspection(runId: string): RuntimeAgentControlInspection {
+    const replay = this.replayAgentSessions(runId);
+    const attempts = new Map(Object.values(this.loadRunSnapshot(runId).projection.attempts)
+      .map(attempt => [attempt.attemptId, attempt]));
+    const materialized = replay.sessions.map(session => {
+      const binding = replay.bindings.find(candidate => candidate.attemptId === session.checkpoint.attemptId);
+      if (!binding || binding.agentSessionId !== session.agentSessionId) {
+        throw new Error(`Agent Session '${session.agentSessionId}' has no binding for its current checkpoint Attempt.`);
+      }
+      return {
+        scope: session.explicitShared ? "shared" as const : "node" as const,
+        agentSessionId: session.agentSessionId,
+        generation: session.generation,
+        lifecycle: session.lifecycle,
+        ...(session.reportedVersion === undefined ? {} : { reportedVersion: session.reportedVersion }),
+        currentBinding: {
+          attemptId: binding.attemptId,
+          operation: binding.operation,
+          promptOrigin: binding.initialPromptOrigin,
+        },
+        checkpoint: {
+          value: session.checkpoint.checkpoint,
+          attemptId: session.checkpoint.attemptId,
+          ...(session.checkpoint.turnId === undefined ? {} : { turnId: session.checkpoint.turnId }),
+          promptOrigin: session.checkpoint.promptOrigin,
+        },
+      };
+    });
+    const rows = this.db.prepare(`
+      SELECT sequence, type, payload_json
+      FROM run_events
+      WHERE run_id = ?
+      ORDER BY sequence
+    `).all(runId) as Array<{ sequence: number; type: string; payload_json: string }>;
+    const sequenced = rows
+      .filter(row => isSchedulerEventType(row.type))
+      .map(row => ({
+        sequence: row.sequence,
+        event: { type: row.type, payload: decodeSchedulerPayload(row.payload_json, row.type) } as SchedulerEvent,
+      }));
+    const directives = sequenced
+      .filter((item): item is typeof item & { event: Extract<SchedulerEvent, { type: "control.agent_steer_requested" }> } =>
+        item.event.type === "control.agent_steer_requested");
+    const steers = directives.map(item => {
+      const binding = replay.bindings.find(candidate => candidate.attemptId === item.event.payload.fencedAttemptId);
+      const session = binding === undefined
+        ? undefined
+        : replay.sessions.find(candidate => candidate.agentSessionId === binding.agentSessionId);
+      const projected = projectSteerLifecycle(
+        item.event.payload.steerId,
+        sequenced,
+        session?.checkpoint.checkpoint,
+      );
+      if (Result.isFailure(projected)) throw new Error(projected.failure.message);
+      return { nodeKey: item.event.payload.nodeKey, projection: projected.success };
+    });
+    const agentSessions = materialized.sort((left, right) => left.agentSessionId.localeCompare(right.agentSessionId));
+    const turnProofs = replay.sessions.flatMap(session => {
+      const checkpoint = session.checkpoint;
+      const attempt = attempts.get(checkpoint.attemptId);
+      return checkpoint.checkpoint === "not_dispatched"
+        || checkpoint.turnId === undefined
+        || checkpoint.sessionLeaseId === undefined
+        || attempt === undefined
+        ? []
+        : [{
+            runId,
+            nodeKey: attempt.nodeKey,
+            agentSessionId: session.agentSessionId,
+            attemptId: checkpoint.attemptId,
+            turnId: checkpoint.turnId,
+            sessionLeaseId: checkpoint.sessionLeaseId,
+          }];
+    });
+    return { agentSessions, steers, turnProofs };
+  }
+
+  private settleFencedAgentSessionCheckpoint(
+    input: SettleFencedAgentSessionCheckpointInput,
+  ): AgentSessionCheckpointValue {
+    const observedAt = input.observedAt.toISOString();
+    let settledSnapshot: SchedulerSnapshot | undefined;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      this.requireRuntimeAuthority(input.runtimeOwnerEpoch);
+      const snapshot = this.loadRunSnapshot(input.runId);
+      const row = this.requireAgentSession(input.runId, input.agentSessionId);
+      this.requireBindingForSession(input.runId, input.attemptId, input.agentSessionId);
+      const current = checkpointFromRow(row);
+      if (current.checkpoint !== input.expected
+        || current.attemptId !== input.attemptId
+        || current.checkpoint === "not_dispatched"
+        || current.turnId !== input.turnId
+        || current.sessionLeaseId !== input.sessionLeaseId) {
+        throwSchedulerStoreError({
+          type: "agent-session-settlement-authority-mismatch",
+          runId: input.runId,
+          agentSessionId: input.agentSessionId,
+          attemptId: input.attemptId,
+          message: `Agent Session '${input.agentSessionId}' settlement authority does not match the current Turn tuple.`,
+        });
+      }
+      const next: AgentSessionCheckpointValue = { ...current, checkpoint: input.next };
+      const checkpointAlreadySettled = current.checkpoint === input.next;
+      if (!checkpointAlreadySettled && !validCheckpointTransition(current, next, input.cause)) {
+        this.checkpointConflict(input.runId, input.agentSessionId, `settlement transition '${current.checkpoint}' → '${input.next}' is invalid for '${input.cause}'`);
+      }
+      if (!checkpointAlreadySettled) this.writeCheckpoint(input.agentSessionId, next, observedAt);
+      const directive = this.pendingSteerDirectiveForAttempt(input.runId, input.attemptId);
+      if (directive) {
+        const instance = snapshot.projection.instances[directive.nodeKey];
+        if (!instance || instance.pendingSteerId !== directive.steerId) {
+          this.checkpointConflict(input.runId, input.agentSessionId, "Steer settlement has no matching draining projection");
+        }
+        const events: SchedulerEvent[] = input.next === "terminal_observed"
+          ? [{
+              type: "instance.requeued",
+              payload: {
+                nodeKey: directive.nodeKey,
+                reason: "steered",
+                steerId: directive.steerId,
+                steerEventSequence: directive.eventSequence,
+                ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
+              },
+            }]
+          : input.next === "acceptance_unknown" || input.next === "terminal_unknown"
+            ? [
+                {
+                  type: "control.agent_steer_blocked",
+                  payload: {
+                    steerId: directive.steerId,
+                    nodeKey: directive.nodeKey,
+                    fencedAttemptId: directive.fencedAttemptId,
+                    checkpoint: input.next,
+                  },
+                },
+                {
+                  type: "instance.failed",
+                  payload: {
+                    nodeKey: directive.nodeKey,
+                    statusReason: "session_checkpoint_unknown",
+                    error: {
+                      origin: "runtime",
+                      code: "session_checkpoint_unknown",
+                      message: "Steered Agent Turn could not prove a terminal checkpoint.",
+                    },
+                  },
+                },
+              ]
+            : [];
+        if (events.length > 0) {
+          settledSnapshot = this.commitProjectionEventsInTransaction({
+            runId: input.runId,
+            current: snapshot,
+            events,
+            now: observedAt,
+            idempotencyKeys: events.map((_, index) => `scheduler:steer-settlement:${input.runId}:${directive.steerId}:${index}`),
+            nodeKeys: events.map(() => directive.nodeKey),
+          });
+        }
+      }
+      this.db.exec("COMMIT");
+      if (settledSnapshot) this.snapshotCache.set(input.runId, settledSnapshot);
+      return next;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  private pendingSteerDirectiveForAttempt(runId: string, attemptId: string): SteerDirective | undefined {
+    const rows = this.db.prepare(`
+      SELECT sequence, payload_json, created_at
+      FROM run_events
+      WHERE run_id = ? AND type = 'control.agent_steer_requested'
+      ORDER BY sequence
+    `).all(runId) as Array<{ sequence: number; payload_json: string; created_at: string }>;
+    const directives = rows
+      .map(row => ({ ...decodeSteerDirective(row.payload_json), eventSequence: row.sequence, createdAt: row.created_at }))
+      .filter(item => item.fencedAttemptId === attemptId);
+    if (directives.length > 1) throw new Error(`Attempt '${attemptId}' has multiple Steer directives.`);
+    const directive = directives[0];
+    if (!directive) return undefined;
+    const settled = this.db.prepare(`
+      SELECT 1
+      FROM run_events
+      WHERE run_id = ? AND (
+        (type = 'instance.requeued' AND json_extract(payload_json, '$.payload.steerId') = ?)
+        OR (type = 'control.agent_steer_blocked' AND json_extract(payload_json, '$.payload.steerId') = ?)
+      )
+      LIMIT 1
+    `).get(runId, directive.steerId, directive.steerId);
+    return settled ? undefined : directive;
+  }
+
+  private replayAgentSessions(runId: string): AgentSessionAuthorityReplay {
+    const sessionRows = this.db.prepare(`
+      SELECT agent_session_id, run_id, scope_digest, generation,
+        explicit_shared, lifecycle, checkpoint, checkpoint_attempt_id,
+        checkpoint_turn_id, checkpoint_session_lease_id,
+        checkpoint_prompt_origin, checkpoint_input_digest, checkpoint_at,
+        ready_at, reported_version
+      FROM agent_sessions
+      WHERE run_id = ?
+      ORDER BY scope_digest, generation
+    `).all(runId) as AgentSessionRow[];
+    const bindingRows = this.db.prepare(`
+      SELECT attempt_id, run_id, agent_session_id, operation, session_open_mode,
+        predecessor_attempt_id, steer_event_sequence,
+        initial_prompt_origin, input_digest,
+        admitted_from_checkpoint
+      FROM agent_attempt_sessions
+      WHERE run_id = ?
+      ORDER BY attempt_id
+    `).all(runId) as AgentAttemptBindingRow[];
+    return replayAgentSessionAuthority({
+      runId,
+      sessions: sessionRows.map(row => ({
+        agentSessionId: row.agent_session_id,
+        runId: row.run_id,
+        scopeDigest: row.scope_digest,
+        generation: row.generation,
+        explicitShared: Boolean(row.explicit_shared),
+        ...(row.reported_version === null ? {} : { reportedVersion: row.reported_version }),
+        lifecycle: row.lifecycle,
+        checkpoint: checkpointFromRow(row),
+      })),
+      bindings: bindingRows.map(bindingFromRow),
+    });
+  }
+
+  private attemptNodeKey(runId: string, attemptId: string): string | undefined {
+    const rows = this.db.prepare(`
+      SELECT payload_json
+      FROM run_events
+      WHERE run_id = ? AND type = 'attempt.started'
+      ORDER BY sequence
+    `).all(runId) as Array<{ payload_json: string }>;
+    const matches = rows.map(row => decodeSchedulerPayload(row.payload_json, "attempt.started") as AttemptStartedPayload)
+      .filter(payload => payload.attemptId === attemptId);
+    if (matches.length > 1) throw new Error(`Attempt '${attemptId}' has multiple durable attempt.started events.`);
+    return matches[0]?.nodeKey;
+  }
+
+
+  private requireStartedAttempt(runId: string, attemptId: string, ownerEpoch: number): void {
+    const attempt = this.db.prepare(`
+      SELECT run_id, owner_epoch, status
+      FROM node_attempts
+      WHERE attempt_id = ?
+    `).get(attemptId) as { run_id: string; owner_epoch: number; status: string } | undefined;
+    if (!attempt || attempt.run_id !== runId) {
+      throwSchedulerStoreError({ type: "attempt-not-found", attemptId, message: `Attempt '${attemptId}' was not found for run '${runId}'.` });
+    }
+    if (attempt.owner_epoch !== ownerEpoch) {
+      throwSchedulerStoreError({ type: "owner-epoch-stale", runId, attemptId, ownerEpoch, message: `Attempt '${attemptId}' owner epoch is stale.` });
+    }
+    this.requireOwnerEpoch(runId, ownerEpoch);
+    if (attempt.status !== "started") {
+      throwSchedulerStoreError({ type: "terminal-attempt", attemptId, status: attempt.status, message: `Attempt '${attemptId}' is already ${attempt.status}.` });
+    }
+  }
+
+  private requireAgentSessionInput(input: BindAgentAttemptSessionInput): void {
+    if (!/^acpus-[0-9a-f]{64}-g[1-9][0-9]*$/u.test(input.agentSessionId)
+      || !isSha256Digest(input.scopeDigest)
+      || !isSha256Digest(input.inputDigest)
+      || !Number.isInteger(input.generation)
+      || input.generation < 1) {
+      this.bindingConflict(input, "contains an invalid durable identity");
+    }
+    if (input.agentSessionId !== agentSessionIdForScope(input.scopeDigest, input.generation)) {
+      this.bindingConflict(input, "does not match its canonical scope and generation identity");
+    }
+    const start = input.operation === "start";
+    const continued = input.operation === "continue";
+    const safeRetry = input.operation === "safe_retry";
+    if ((start && (input.sessionOpenMode !== "new_or_empty" || input.promptOrigin !== "authored"
+      || (input.predecessorAttemptId === undefined) !== (input.admittedFromCheckpoint === undefined)))
+      || (continued && (input.sessionOpenMode !== "existing_required" || !input.predecessorAttemptId || input.admittedFromCheckpoint !== "terminal_observed" || input.promptOrigin === "repair"))
+      || (safeRetry && (!input.predecessorAttemptId || input.admittedFromCheckpoint !== "not_dispatched"))) {
+      this.bindingConflict(input, "has an invalid operation/open-mode/predecessor combination");
+    }
+    if (input.steerEventSequence !== undefined
+      && (!continued || input.promptOrigin !== "steering")) {
+      this.bindingConflict(input, "has Steer lineage for a non-Steer admission");
+    }
+  }
+
+  private requireAdmissionLineage(input: BindAgentAttemptSessionInput): void {
+    const row = this.db.prepare(`
+      SELECT sequence, payload_json
+      FROM run_events
+      WHERE run_id = ? AND type = 'attempt.started'
+      ORDER BY sequence
+    `).all(input.runId) as Array<{ sequence: number; payload_json: string }>;
+    const starts = row.map(item => ({
+      sequence: item.sequence,
+      payload: decodeSchedulerPayload(item.payload_json, "attempt.started") as AttemptStartedPayload,
+    })).filter(item => item.payload.attemptId === input.attemptId);
+    if (starts.length !== 1) this.bindingConflict(input, "does not have one durable attempt.started lineage");
+    const start = starts[0]!;
+    const node = indexNodes(this.loadFrozenRun(input.runId).ir.root).get(start.payload.nodeId);
+    if (!node || node.kind !== "agent") this.bindingConflict(input, "does not belong to a frozen Agent node");
+    const explicitSessionKeyDeclared = node.kind === "agent" && node.run.sessionKey !== undefined;
+    if (explicitSessionKeyDeclared !== input.explicitShared) {
+      this.bindingConflict(input, "does not match the frozen Agent Session scope kind");
+    }
+    if (!input.explicitShared
+      && input.scopeDigest !== agentSessionScopeDigest(input.runId, "node", start.payload.nodeKey)) {
+      this.bindingConflict(input, "does not match the canonical local Agent Session scope");
+    }
+    const steerEventSequence = start.payload.steerEventSequence;
+    if (steerEventSequence !== input.steerEventSequence) this.bindingConflict(input, "does not match attempt.started Steer lineage");
+    if (start.payload.ownerEpoch !== input.ownerEpoch) this.bindingConflict(input, "does not match attempt.started owner lineage");
+    if (steerEventSequence === undefined) return;
+    if (input.operation !== "continue" || input.promptOrigin !== "steering") {
+      this.bindingConflict(input, "has Steer lineage for a non-Steer Continue");
+    }
+    const steer = this.db.prepare(`
+      SELECT type, payload_json
+      FROM run_events
+      WHERE run_id = ? AND sequence = ?
+    `).get(input.runId, steerEventSequence) as { type: string; payload_json: string } | undefined;
+    if (!steer || steer.type !== "control.agent_steer_requested") {
+      this.bindingConflict(input, "references a missing or invalid Steer event");
+    }
+    const requeues = this.db.prepare(`
+      SELECT payload_json
+      FROM run_events
+      WHERE run_id = ? AND type = 'instance.requeued' AND sequence > ? AND sequence < ?
+      ORDER BY sequence
+    `).all(input.runId, steerEventSequence, start.sequence) as Array<{ payload_json: string }>;
+    const matchingRequeues = requeues.map(item => decodeSchedulerPayload(item.payload_json, "instance.requeued") as InstanceRequeuedPayload)
+      .filter(payload => payload.nodeKey === start.payload.nodeKey
+        && payload.steerEventSequence === steerEventSequence);
+    if (matchingRequeues.length !== 1) this.bindingConflict(input, "does not have one exact Steer-to-requeue lineage");
+    const requeue = matchingRequeues[0]!;
+    const payload = decodeSchedulerPayload(steer.payload_json, "control.agent_steer_requested") as {
+      nodeKey: string;
+      fencedAttemptId: string;
+      steerId: string;
+    };
+    if (requeue.reason !== "steered"
+      || payload.nodeKey !== start.payload.nodeKey
+      || payload.fencedAttemptId !== input.predecessorAttemptId
+      || requeue.steerId !== payload.steerId) {
+      this.bindingConflict(input, "Steer replacement does not match the exact requested lineage");
+    }
+  }
+
+  private bindExistingAgentSession(input: BindAgentAttemptSessionInput, current: AgentSessionRow, now: string): void {
+    if (current.run_id !== input.runId
+      || current.scope_digest !== input.scopeDigest
+      || current.generation !== input.generation
+      || Boolean(current.explicit_shared) !== input.explicitShared
+      || current.lifecycle !== "active") {
+      this.bindingConflict(input, "does not match the materialized Agent Session");
+    }
+    const checkpoint = checkpointFromRow(current);
+    if (input.operation === "continue") {
+      if (checkpoint.checkpoint !== "terminal_observed" || checkpoint.attemptId !== input.predecessorAttemptId) {
+        this.checkpointConflict(input.runId, input.agentSessionId, "Continue requires the predecessor terminal checkpoint");
+      }
+    } else if (input.operation === "safe_retry") {
+      const predecessor = input.predecessorAttemptId ? this.agentAttemptBinding(input.predecessorAttemptId) : undefined;
+      if (checkpoint.checkpoint !== "not_dispatched"
+        || checkpoint.attemptId !== input.predecessorAttemptId
+        || checkpoint.promptOrigin !== input.promptOrigin
+        || checkpoint.inputDigest !== input.inputDigest
+        || predecessor?.sessionOpenMode !== input.sessionOpenMode) {
+        this.bindingConflict(input, "does not exactly match the predecessor not-dispatched prompt");
+      }
+    } else {
+      this.generationConflict(input.runId, input.scopeDigest, `Operation '${input.operation}' cannot bind an already materialized active generation.`);
+    }
+    const next: AgentSessionCheckpointValue = {
+      checkpoint: "not_dispatched",
+      attemptId: input.attemptId,
+      promptOrigin: input.promptOrigin,
+      inputDigest: input.inputDigest,
+    };
+    this.writeCheckpoint(input.agentSessionId, next, now);
+  }
+
+  private bindNewAgentSession(input: BindAgentAttemptSessionInput, now: string): void {
+    const active = this.db.prepare(`
+      SELECT agent_session_id
+      FROM agent_sessions
+      WHERE run_id = ? AND scope_digest = ? AND lifecycle = 'active'
+    `).get(input.runId, input.scopeDigest) as { agent_session_id: string } | undefined;
+    if (active) this.generationConflict(input.runId, input.scopeDigest, `Scope already has active Agent Session '${active.agent_session_id}'.`);
+    if (input.operation !== "start") {
+      this.generationConflict(input.runId, input.scopeDigest, `Operation '${input.operation}' requires an existing Agent Session.`);
+    }
+    const predecessor = this.latestAgentSessionForScope(input.runId, input.scopeDigest);
+    if (!predecessor) {
+      if (input.generation !== 1
+        || input.predecessorAttemptId !== undefined
+        || input.admittedFromCheckpoint !== undefined) {
+        this.generationConflict(input.runId, input.scopeDigest, "The first Start must create generation one without a predecessor.");
+      }
+    } else if (predecessor.lifecycle !== "abandoned"
+      || predecessor.generation + 1 !== input.generation
+      || predecessor.checkpoint_attempt_id !== input.predecessorAttemptId
+      || predecessor.checkpoint !== input.admittedFromCheckpoint
+      || Boolean(predecessor.explicit_shared) !== input.explicitShared) {
+      this.generationConflict(input.runId, input.scopeDigest, "Start does not match the latest abandoned generation and predecessor checkpoint.");
+    }
+    this.db.prepare(`
+      INSERT INTO agent_sessions (
+        agent_session_id, run_id, scope_digest, generation, explicit_shared,
+        lifecycle, checkpoint, checkpoint_attempt_id, checkpoint_turn_id,
+        checkpoint_session_lease_id, checkpoint_prompt_origin,
+        checkpoint_input_digest, checkpoint_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'active', 'not_dispatched', ?, NULL, NULL, ?, ?, ?, ?, ?)
+    `).run(
+      input.agentSessionId,
+      input.runId,
+      input.scopeDigest,
+      input.generation,
+      input.explicitShared ? 1 : 0,
+      input.attemptId,
+      input.promptOrigin,
+      input.inputDigest,
+      now,
+      now,
+      now,
+    );
+  }
+
+  private requireAgentSession(runId: string, agentSessionId: string): AgentSessionRow {
+    const row = this.agentSessionRow(agentSessionId);
+    if (!row || row.run_id !== runId) {
+      throwSchedulerStoreError({
+        type: "agent-session-not-found",
+        runId,
+        agentSessionId,
+        message: `Agent Session '${agentSessionId}' was not found for run '${runId}'.`,
+      });
+    }
+    return row;
+  }
+
+  private agentSessionRow(agentSessionId: string): AgentSessionRow | undefined {
+    return this.db.prepare(`
+      SELECT agent_session_id, run_id, scope_digest, generation, explicit_shared,
+        lifecycle, checkpoint, checkpoint_attempt_id, checkpoint_turn_id,
+        checkpoint_session_lease_id, checkpoint_prompt_origin,
+        checkpoint_input_digest, checkpoint_at, ready_at, reported_version
+      FROM agent_sessions
+      WHERE agent_session_id = ?
+    `).get(agentSessionId) as AgentSessionRow | undefined;
+  }
+
+  private activeAgentSessionForScope(runId: string, scopeDigest: Sha256Digest): AgentSessionRow | undefined {
+    return this.db.prepare(`
+      SELECT agent_session_id, run_id, scope_digest, generation, explicit_shared,
+        lifecycle, checkpoint, checkpoint_attempt_id, checkpoint_turn_id,
+        checkpoint_session_lease_id, checkpoint_prompt_origin,
+        checkpoint_input_digest, checkpoint_at, ready_at, reported_version
+      FROM agent_sessions
+      WHERE run_id = ? AND scope_digest = ? AND lifecycle = 'active'
+    `).get(runId, scopeDigest) as AgentSessionRow | undefined;
+  }
+
+  private latestAgentSessionForScope(runId: string, scopeDigest: Sha256Digest): AgentSessionRow | undefined {
+    return this.db.prepare(`
+      SELECT agent_session_id, run_id, scope_digest, generation, explicit_shared,
+        lifecycle, checkpoint, checkpoint_attempt_id, checkpoint_turn_id,
+        checkpoint_session_lease_id, checkpoint_prompt_origin,
+        checkpoint_input_digest, checkpoint_at, ready_at, reported_version
+      FROM agent_sessions
+      WHERE run_id = ? AND scope_digest = ?
+      ORDER BY generation DESC
+      LIMIT 1
+    `).get(runId, scopeDigest) as AgentSessionRow | undefined;
+  }
+
+  private activeAgentSessions(runId: string): AgentSessionRow[] {
+    return this.db.prepare(`
+      SELECT agent_session_id, run_id, scope_digest, generation, explicit_shared,
+        lifecycle, checkpoint, checkpoint_attempt_id, checkpoint_turn_id,
+        checkpoint_session_lease_id, checkpoint_prompt_origin,
+        checkpoint_input_digest, checkpoint_at, ready_at, reported_version
+      FROM agent_sessions
+      WHERE run_id = ? AND lifecycle = 'active'
+      ORDER BY agent_session_id
+    `).all(runId) as AgentSessionRow[];
+  }
+
+  private attemptStart(runId: string, attemptId: string): { sequence: number; payload: AttemptStartedPayload } {
+    const rows = this.db.prepare(`
+      SELECT sequence, payload_json
+      FROM run_events
+      WHERE run_id = ? AND type = 'attempt.started'
+      ORDER BY sequence
+    `).all(runId) as Array<{ sequence: number; payload_json: string }>;
+    const matches = rows.map(row => ({
+      sequence: row.sequence,
+      payload: decodeSchedulerPayload(row.payload_json, "attempt.started") as AttemptStartedPayload,
+    })).filter(row => row.payload.attemptId === attemptId);
+    if (matches.length !== 1) throw new Error(`Agent Attempt '${attemptId}' does not have one durable attempt.started event.`);
+    return matches[0]!;
+  }
+
+  private schedulerEvent(runId: string, sequence: number): { type: string; payload_json: string } | undefined {
+    return this.db.prepare(`
+      SELECT type, payload_json
+      FROM run_events
+      WHERE run_id = ? AND sequence = ?
+    `).get(runId, sequence) as { type: string; payload_json: string } | undefined;
+  }
+
+  private plannedSessionForMissing(input: PlanAgentAttemptAdmissionInput): {
+    agentSessionId: string;
+    scopeDigest: Sha256Digest;
+    generation: 1;
+    explicitShared: boolean;
+  } {
+    return {
+      agentSessionId: agentSessionIdForScope(input.scopeDigest, 1),
+      scopeDigest: input.scopeDigest,
+      generation: 1,
+      explicitShared: input.explicitShared,
+    };
+  }
+
+  private operationPlanFromBinding(binding: AgentAttemptSessionBinding): AgentAttemptOperationPlan {
+    const row = this.requireAgentSession(binding.runId, binding.agentSessionId);
+    const session = plannedSession(row);
+    const prompt = { promptOrigin: binding.initialPromptOrigin, inputDigest: binding.inputDigest };
+    if (binding.operation === "start") {
+      if (prompt.promptOrigin !== "authored"
+        || (binding.predecessorAttemptId === undefined) !== (binding.admittedFromCheckpoint === undefined)) {
+        throw new Error(`Persisted Start binding '${binding.attemptId}' is invalid.`);
+      }
+      return {
+        operation: "start",
+        session,
+        sessionOpenMode: "new_or_empty",
+        ...(binding.predecessorAttemptId === undefined ? {} : { predecessorAttemptId: binding.predecessorAttemptId }),
+        promptOrigin: "authored",
+        inputDigest: prompt.inputDigest,
+        ...(binding.admittedFromCheckpoint === undefined ? {} : { admittedFromCheckpoint: binding.admittedFromCheckpoint }),
+      };
+    }
+    if (binding.operation === "continue") {
+      if (!binding.predecessorAttemptId || binding.admittedFromCheckpoint !== "terminal_observed" || prompt.promptOrigin === "repair") {
+        throw new Error(`Persisted Continue binding '${binding.attemptId}' is invalid.`);
+      }
+      return {
+        operation: "continue",
+        session,
+        sessionOpenMode: "existing_required",
+        predecessorAttemptId: binding.predecessorAttemptId,
+        promptOrigin: prompt.promptOrigin,
+        inputDigest: prompt.inputDigest,
+        admittedFromCheckpoint: "terminal_observed",
+        ...(binding.steerEventSequence === undefined ? {} : { steerEventSequence: binding.steerEventSequence }),
+      };
+    }
+    if (!binding.predecessorAttemptId || binding.admittedFromCheckpoint === undefined) {
+      throw new Error(`Persisted ${binding.operation} binding '${binding.attemptId}' is invalid.`);
+    }
+    return {
+      operation: "safe_retry",
+      session,
+      sessionOpenMode: binding.sessionOpenMode,
+      predecessorAttemptId: binding.predecessorAttemptId,
+      ...prompt,
+      admittedFromCheckpoint: "not_dispatched",
+    };
+  }
+
+  private agentAttemptBinding(attemptId: string): AgentAttemptSessionBinding | undefined {
+    const row = this.db.prepare(`
+      SELECT attempt_id, run_id, agent_session_id, operation, session_open_mode,
+        predecessor_attempt_id, steer_event_sequence,
+        initial_prompt_origin, input_digest,
+        admitted_from_checkpoint
+      FROM agent_attempt_sessions
+      WHERE attempt_id = ?
+    `).get(attemptId) as AgentAttemptBindingRow | undefined;
+    return row ? bindingFromRow(row) : undefined;
+  }
+
+  private requireBindingForSession(runId: string, attemptId: string, agentSessionId: string): AgentAttemptSessionBinding {
+    const binding = this.agentAttemptBinding(attemptId);
+    if (!binding || binding.runId !== runId || binding.agentSessionId !== agentSessionId) {
+      throwSchedulerStoreError({
+        type: "agent-session-binding-conflict",
+        runId,
+        attemptId,
+        message: `Attempt '${attemptId}' is not bound to Agent Session '${agentSessionId}'.`,
+      });
+    }
+    return binding;
+  }
+
+  private writeCheckpoint(agentSessionId: string, checkpoint: AgentSessionCheckpointValue, now: string): void {
+    const updated = this.db.prepare(`
+      UPDATE agent_sessions
+      SET checkpoint = ?, checkpoint_attempt_id = ?, checkpoint_turn_id = ?,
+        checkpoint_session_lease_id = ?, checkpoint_prompt_origin = ?,
+        checkpoint_input_digest = ?, checkpoint_at = ?, updated_at = ?
+      WHERE agent_session_id = ? AND lifecycle = 'active'
+    `).run(
+      checkpoint.checkpoint,
+      checkpoint.attemptId,
+      checkpoint.checkpoint === "not_dispatched" ? null : checkpoint.turnId,
+      checkpoint.checkpoint === "not_dispatched" ? null : checkpoint.sessionLeaseId,
+      checkpoint.promptOrigin,
+      checkpoint.inputDigest,
+      now,
+      now,
+      agentSessionId,
+    );
+    if (updated.changes !== 1) throw new Error(`Agent Session '${agentSessionId}' checkpoint update did not affect one active row.`);
+  }
+
+  private requireRuntimeAuthority(runtimeOwnerEpoch: number): void {
+    const row = this.db.prepare(`
+      SELECT 1
+      FROM runtime_authority
+      WHERE epoch = ? AND released_at IS NULL
+      LIMIT 1
+    `).get(runtimeOwnerEpoch);
+    if (!row) {
+      throwSchedulerStoreError({
+        type: "owner-epoch-inactive",
+        runId: "runtime",
+        ownerEpoch: runtimeOwnerEpoch,
+        message: `Workspace Runtime owner epoch ${runtimeOwnerEpoch} is not active.`,
+      });
+    }
+  }
+
+  private bindingConflict(input: Pick<BindAgentAttemptSessionInput, "runId" | "attemptId">, reason: string): never {
+    throwSchedulerStoreError({
+      type: "agent-session-binding-conflict",
+      runId: input.runId,
+      attemptId: input.attemptId,
+      message: `Agent Attempt '${input.attemptId}' binding ${reason}.`,
+    });
+  }
+
+  private checkpointConflict(runId: string, agentSessionId: string, reason: string): never {
+    throwSchedulerStoreError({
+      type: "agent-session-checkpoint-conflict",
+      runId,
+      agentSessionId,
+      message: `Agent Session '${agentSessionId}' ${reason}.`,
+    });
+  }
+
+  private generationConflict(runId: string, scopeDigest: string, reason: string): never {
+    throwSchedulerStoreError({
+      type: "agent-session-generation-conflict",
+      runId,
+      scopeDigest,
+      message: `Agent Session scope '${scopeDigest}' generation conflict: ${reason}`,
+    });
   }
 
   private steerAgent(input: SchedulerSteerInput): SchedulerSteerResult {
@@ -964,7 +2077,27 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
       this.requireOwnerEpoch(input.runId, input.ownerEpoch);
       const current = this.loadRunSnapshot(input.runId);
       const frozen = this.loadFrozenRun(input.runId);
-      const attempt = throwSchedulerStoreResult(planSteerControl(frozen, current, input.target)).target;
+      const attempt = plannerValue(planSteerControl(frozen, current, input.target)).target;
+      const binding = this.agentAttemptBinding(attempt.attemptId);
+      const session = binding ? this.agentSessionRow(binding.agentSessionId) : undefined;
+      const checkpoint = session ? checkpointFromRow(session) : undefined;
+      if (!binding
+        || !session
+        || !input.proof
+        || input.proof.agentSessionId !== binding.agentSessionId
+        || input.proof.attemptId !== attempt.attemptId
+        || checkpoint?.attemptId !== attempt.attemptId
+        || checkpoint.turnId !== input.proof.turnId
+        || checkpoint.sessionLeaseId !== input.proof.sessionLeaseId
+        || checkpoint.checkpoint !== "owned_in_flight" && checkpoint.checkpoint !== "provider_observed") {
+        throwSchedulerStoreError({
+          type: "steer-session-conflict",
+          runId: input.runId,
+          targetKey: input.target,
+          candidateKeys: [],
+          message: `Steer target '${input.target}' has no exact active Agent Turn proof.`,
+        });
+      }
 
       const events: SchedulerEvent[] = [
         {
@@ -975,6 +2108,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
             nodeKey: attempt.nodeKey,
             fencedAttemptId: attempt.attemptId,
             instruction: input.instruction,
+            delivery: "interrupt_continue",
           },
         },
         {
@@ -982,17 +2116,6 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
           payload: {
             attemptId: attempt.attemptId,
             cancelReason: "operator_steered",
-          },
-        },
-        {
-          type: "instance.requeued",
-          payload: {
-            nodeKey: attempt.nodeKey,
-            reason: "steered",
-            steerId: input.steerId,
-            ...(current.projection.instances[attempt.nodeKey]?.readinessSequence === undefined
-              ? {}
-              : { readinessSequence: current.projection.instances[attempt.nodeKey]!.readinessSequence }),
           },
         },
       ];
@@ -1025,8 +2148,8 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
     }
   }
 
-  tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerStoreResult<SchedulerSnapshot> {
-    return schedulerStoreResult(() => this.markExpiredOwnerAttemptsSuperseded(input));
+  tryMarkExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerSnapshot {
+    return this.markExpiredOwnerAttemptsSuperseded(input);
   }
 
   private markExpiredOwnerAttemptsSuperseded(input: SchedulerRecoveryInput): SchedulerSnapshot {
@@ -1053,8 +2176,6 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
       const nodeKeys: string[] = [];
       for (const attempt of attempts) {
         const instance = projection.instances[attempt.node_key];
-        const projectedAttempt = projection.attempts[attempt.attempt_id];
-        const steerId = projectedAttempt?.steerId;
         const events: SchedulerEvent[] = [
           { type: "attempt.superseded", payload: { attemptId: attempt.attempt_id, cancelReason: "superseded" } },
           ...(instance && (instance.status === "running" || instance.status === "awaiting")
@@ -1062,8 +2183,7 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
               type: "instance.requeued",
               payload: {
                 nodeKey: instance.nodeKey,
-                reason: steerId === undefined ? "superseded" : "steered",
-                ...(steerId === undefined ? {} : { steerId }),
+                reason: "superseded",
                 ...(instance.readinessSequence === undefined ? {} : { readinessSequence: instance.readinessSequence }),
               },
             } satisfies SchedulerEvent]
@@ -1161,18 +2281,18 @@ export class SqliteSchedulerStorePort implements SchedulerStorePort {
   }
 
   private drainDueSignalTimeouts(runId: string, ownerEpoch: number, now: Date): SchedulerSnapshot {
-    const snapshot = throwSchedulerStoreResult(this.tryLoadRunSnapshot(runId));
+    const snapshot = this.tryLoadRunSnapshot(runId);
     const events = signalTimeoutEvents(snapshot.projection, now);
     if (events.length === 0) return snapshot;
     const frozen = this.loadFrozenRun(runId);
     const settled = settleFrozenProjection({ frozen, projection: snapshot.projection, initialEvents: events, now });
-    return throwSchedulerStoreResult(this.tryAppendSchedulerEvents({
+    return this.tryAppendSchedulerEvents({
       runId,
       ownerEpoch,
       expectedVersion: snapshot.version,
       idempotencyKey: `scheduler:signal-timeouts:${runId}:${snapshot.version}`,
       events: settled.events,
-    }));
+    });
   }
 
   private loadFrozenRun(runId: string): FrozenSchedulerRun {
@@ -1892,8 +3012,146 @@ function derivedIdempotencyKey(idempotencyKey: string, suffix: string): string {
   return `${idempotencyKey}:${suffix}`;
 }
 
+function plannedSession(row: AgentSessionRow) {
+  return {
+    agentSessionId: row.agent_session_id,
+    scopeDigest: row.scope_digest,
+    generation: row.generation,
+    explicitShared: row.explicit_shared === 1,
+  };
+}
+
+function checkpointFromRow(row: AgentSessionRow): AgentSessionCheckpointValue {
+  const common = {
+    attemptId: row.checkpoint_attempt_id,
+    promptOrigin: row.checkpoint_prompt_origin,
+    inputDigest: row.checkpoint_input_digest,
+  };
+  if (row.checkpoint === "not_dispatched") {
+    if (row.checkpoint_turn_id !== null || row.checkpoint_session_lease_id !== null) {
+      throw new Error(`Agent Session '${row.agent_session_id}' has an invalid not-dispatched tuple.`);
+    }
+    return { checkpoint: "not_dispatched", ...common };
+  }
+  if (row.checkpoint_turn_id === null || row.checkpoint_session_lease_id === null) {
+    throw new Error(`Agent Session '${row.agent_session_id}' has an incomplete dispatched tuple.`);
+  }
+  return {
+    checkpoint: row.checkpoint,
+    ...common,
+    turnId: row.checkpoint_turn_id,
+    sessionLeaseId: row.checkpoint_session_lease_id,
+  };
+}
+
+function sameCheckpoint(left: AgentSessionCheckpointValue, right: AgentSessionCheckpointValue): boolean {
+  return left.checkpoint === right.checkpoint
+    && left.attemptId === right.attemptId
+    && left.promptOrigin === right.promptOrigin
+    && left.inputDigest === right.inputDigest
+    && (left.checkpoint === "not_dispatched" ? undefined : left.turnId)
+      === (right.checkpoint === "not_dispatched" ? undefined : right.turnId)
+    && (left.checkpoint === "not_dispatched" ? undefined : left.sessionLeaseId)
+      === (right.checkpoint === "not_dispatched" ? undefined : right.sessionLeaseId);
+}
+
+function strongerThanOwnedInFlight(current: AgentSessionCheckpointValue, expected: AgentSessionCheckpointValue): boolean {
+  if (current.checkpoint === "not_dispatched" || expected.checkpoint === "not_dispatched") return false;
+  return current.attemptId === expected.attemptId
+    && current.turnId === expected.turnId
+    && current.sessionLeaseId === expected.sessionLeaseId
+    && current.promptOrigin === expected.promptOrigin
+    && current.inputDigest === expected.inputDigest
+    && ["provider_observed", "terminal_observed"].includes(current.checkpoint);
+}
+
+function validCheckpointTransition(
+  current: AgentSessionCheckpointValue,
+  next: AgentSessionCheckpointValue,
+  cause: AgentSessionCheckpointTransitionCause,
+): boolean {
+  if (cause === "begin_repair") {
+    return current.checkpoint === "terminal_observed"
+      && next.checkpoint === "not_dispatched"
+      && current.attemptId === next.attemptId
+      && next.promptOrigin === "repair";
+  }
+  if (current.checkpoint === "not_dispatched" || next.checkpoint === "not_dispatched") return false;
+  const sameTuple = current.attemptId === next.attemptId
+    && current.turnId === next.turnId
+    && current.sessionLeaseId === next.sessionLeaseId
+    && current.promptOrigin === next.promptOrigin
+    && current.inputDigest === next.inputDigest;
+  if (!sameTuple) return false;
+  if (current.checkpoint === next.checkpoint) {
+    return cause === "provider_activity" && current.checkpoint === "provider_observed";
+  }
+  if (cause === "local_call_pending") {
+    return current.checkpoint === "dispatch_intent" && next.checkpoint === "owned_in_flight";
+  }
+  if (cause === "provider_activity") {
+    return (current.checkpoint === "dispatch_intent" || current.checkpoint === "owned_in_flight")
+      && next.checkpoint === "provider_observed";
+  }
+  if (cause === "provider_terminal") {
+    return ["dispatch_intent", "owned_in_flight", "provider_observed"].includes(current.checkpoint)
+      && next.checkpoint === "terminal_observed";
+  }
+  if (cause === "loss_without_new_provider_evidence") {
+    return ((current.checkpoint === "dispatch_intent" || current.checkpoint === "owned_in_flight")
+        && next.checkpoint === "acceptance_unknown")
+      || (current.checkpoint === "provider_observed" && next.checkpoint === "terminal_unknown");
+  }
+  return cause === "inbound_local_failure"
+    && ["dispatch_intent", "owned_in_flight", "provider_observed"].includes(current.checkpoint)
+    && next.checkpoint === "terminal_unknown";
+}
+
+function bindingFromRow(row: AgentAttemptBindingRow): AgentAttemptSessionBinding {
+  return {
+    attemptId: row.attempt_id,
+    runId: row.run_id,
+    agentSessionId: row.agent_session_id,
+    operation: row.operation,
+    sessionOpenMode: row.session_open_mode,
+    ...(row.predecessor_attempt_id === null ? {} : { predecessorAttemptId: row.predecessor_attempt_id }),
+    ...(row.steer_event_sequence === null ? {} : { steerEventSequence: row.steer_event_sequence }),
+    initialPromptOrigin: row.initial_prompt_origin,
+    inputDigest: row.input_digest,
+    ...(row.admitted_from_checkpoint === null ? {} : { admittedFromCheckpoint: row.admitted_from_checkpoint }),
+  };
+}
+
+function sameBindingInput(binding: AgentAttemptSessionBinding, input: BindAgentAttemptSessionInput): boolean {
+  return binding.attemptId === input.attemptId
+    && binding.runId === input.runId
+    && binding.agentSessionId === input.agentSessionId
+    && binding.operation === input.operation
+    && binding.sessionOpenMode === input.sessionOpenMode
+    && binding.predecessorAttemptId === input.predecessorAttemptId
+    && binding.steerEventSequence === input.steerEventSequence
+    && binding.initialPromptOrigin === input.promptOrigin
+    && binding.inputDigest === input.inputDigest
+    && binding.admittedFromCheckpoint === input.admittedFromCheckpoint;
+}
+
+function schedulerEventNodeKey(event: SchedulerEvent): string | null {
+  return "nodeKey" in event.payload && typeof event.payload.nodeKey === "string"
+    ? event.payload.nodeKey
+    : null;
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
+}
+
 export function throwSchedulerStoreError(error: SchedulerStoreError): never {
   throw new SchedulerStoreException(error);
+}
+
+function plannerValue<Success>(result: Result.Result<Success, SchedulerStoreError>): Success {
+  if (Result.isFailure(result)) throwSchedulerStoreError(result.failure);
+  return result.success;
 }
 
 export function requireActiveOwnerEpoch(db: DatabaseSync, runId: string, ownerEpoch: number): void {

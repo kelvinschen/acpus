@@ -1,4 +1,4 @@
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 import { ancestorGroupMembersForFrame, ancestorGroupMembersForNode } from "./membership.js";
 import { resolveOccurrenceRef } from "./occurrence-ref.js";
 import {
@@ -11,10 +11,9 @@ import type { SchedulerEvent } from "./events.js";
 import { settleFrozenSnapshot, type FrozenSchedulerRun } from "./settle.js";
 import {
   SchedulerStoreException,
-  schedulerStoreResult,
+  schedulerStoreError,
   type SchedulerSnapshot,
   type SchedulerStoreError,
-  type SchedulerStoreResult,
 } from "./store-port.js";
 import type {
   GroupMember,
@@ -32,6 +31,7 @@ export type RuntimeControlTarget = {
 
 export type RetryControlPlan = {
   resolvedTarget: string;
+  reexecutedNodeKeys: string[];
   events: SchedulerEvent[];
 };
 
@@ -76,33 +76,52 @@ type RetryDependencyOutcome = "blocked" | "complete" | "work";
 export function planRetryControl(
   snapshot: SchedulerSnapshot,
   target: string,
-): SchedulerStoreResult<RetryControlPlan> {
+): Result.Result<RetryControlPlan, SchedulerStoreError> {
   const context = retryPlanningContext(snapshot.projection);
-  return schedulerStoreResult(() => {
+  return planningResult(() => {
     const plan = materializeRetryPlan(assessRetry(snapshot, target, context));
     // Mutation admission retains the reducer's invariant check. Batch
     // capability projection stops at the equivalent pure assessment.
-    applySchedulerEvents(snapshot.projection, plan.events);
-    return plan;
+    const next = applySchedulerEvents(snapshot.projection, plan.events);
+    const reexecutedNodeKeys = Object.values(snapshot.projection.instances)
+      .filter(instance => {
+        const retried = next.instances[instance.nodeKey];
+        return retried === undefined
+          || retried.status === "ready" && instance.status !== "ready";
+      })
+      .map(instance => instance.nodeKey)
+      .sort();
+    return { ...plan, reexecutedNodeKeys };
   });
 }
 
 export function validateRetryControlRun(
   snapshot: SchedulerSnapshot,
   target: string,
-): SchedulerStoreResult<void> {
-  return schedulerStoreResult(() =>
+): Result.Result<void, SchedulerStoreError> {
+  return planningResult(() =>
     assertTargetedRetryRunOpen(snapshot.runId, target, snapshot.projection.run.status));
 }
 
 export function planCancelControl(
   snapshot: SchedulerSnapshot,
   target?: string,
-): SchedulerStoreResult<CancelControlPlan> {
-  return schedulerStoreResult(() => {
+): Result.Result<CancelControlPlan, SchedulerStoreError> {
+  return planningResult(() => {
     const plan = planCancel(snapshot, target);
     if (plan.events.length > 0) applySchedulerEvents(snapshot.projection, plan.events);
     return plan;
+  });
+}
+
+function planningResult<Success>(operation: () => Success): Result.Result<Success, SchedulerStoreError> {
+  return Result.try({
+    try: operation,
+    catch: error => {
+      const failure = schedulerStoreError(error);
+      if (failure) return failure;
+      throw error;
+    },
   });
 }
 
@@ -226,7 +245,7 @@ function groupMemberEligible(
 
 export function canCancelRun(snapshot: SchedulerSnapshot): boolean {
   const planned = planCancelControl(snapshot);
-  return planned.isOk() && planned.value.events.length > 0;
+  return Result.isSuccess(planned) && planned.success.events.length > 0;
 }
 
 function assessRetry(
@@ -235,10 +254,10 @@ function assessRetry(
   context: RetryPlanningContext,
 ): RetryAssessment {
   assertTargetedRetryRunOpen(snapshot.runId, target, snapshot.projection.run.status);
-  const targetKey = retryTargetKey(target, snapshot).match(
-    value => value,
-    rejectControl,
-  );
+  const targetKey = Result.match(retryTargetKey(target, snapshot), {
+    onSuccess: value => value,
+    onFailure: rejectControl,
+  });
   const instance = snapshot.projection.instances[targetKey];
   const frame = snapshot.projection.frames[targetKey];
   assertSingleControlIdentity(snapshot.projection, targetKey);
@@ -323,7 +342,7 @@ function assessRetry(
   };
 }
 
-function materializeRetryPlan(assessment: RetryAssessment): RetryControlPlan {
+function materializeRetryPlan(assessment: RetryAssessment): Omit<RetryControlPlan, "reexecutedNodeKeys"> {
   const retryDependencyMemberKeys = assessment.ancestors.flatMap(plan =>
     plan.dependencies.map(dependency => dependency.memberKey));
   const dependencies = retryDependencyMemberKeys.length === 0
@@ -363,7 +382,10 @@ function planCancel(snapshot: SchedulerSnapshot, target: string | undefined): Ca
   if (target === undefined && snapshot.projection.run.status === "canceled") return { events: [] };
   const targetKey = target === undefined
     ? "root"
-    : cancelTargetKey(target, snapshot).match(value => value, rejectControl);
+    : Result.match(cancelTargetKey(target, snapshot), {
+        onSuccess: value => value,
+        onFailure: rejectControl,
+      });
   assertSingleControlIdentity(snapshot.projection, targetKey);
   const status = snapshot.projection.frames[targetKey]?.status
     ?? snapshot.projection.instances[targetKey]?.status;
@@ -479,7 +501,7 @@ function rejectBlockedTargetedRetry(runId: string, targetKey: string, reason: st
     runId,
     targetKey,
     status: "blocked",
-    message: `Target '${targetKey}' cannot make progress because ${reason}; use run-level retry or fork.`,
+    message: `Target '${targetKey}' cannot make progress because ${reason}; use Restart or fork.`,
   });
 }
 
@@ -525,7 +547,7 @@ function assessRetryAncestorGroups(
         runId,
         targetKey,
         status: "blocked",
-        message: `Target '${targetKey}' cannot make progress because group '${group.groupKey}' would immediately become ${blocker.status} (${blocker.reason}); use run-level retry or fork.`,
+        message: `Target '${targetKey}' cannot make progress because group '${group.groupKey}' would immediately become ${blocker.status} (${blocker.reason}); use Restart or fork.`,
       });
     }
     plans.push(groupPlan);
@@ -767,12 +789,12 @@ function assertRetryableAncestorFrames(
 function retryTargetKey(
   target: string,
   snapshot: SchedulerSnapshot,
-): Result<string, SchedulerStoreError> {
+): Result.Result<string, SchedulerStoreError> {
   const occurrence = occurrenceControlTargetKey(target, snapshot, "retry");
   if (occurrence) return occurrence;
   if (target !== "root"
     && (snapshot.projection.instances[target] || snapshot.projection.frames[target])) {
-    return ok(target);
+    return Result.succeed(target);
   }
   const instanceMatches = Object.values(snapshot.projection.instances)
     .filter(instance => instance.nodeId === target && instance.status === "failed")
@@ -784,9 +806,9 @@ function retryTargetKey(
       && frame.status === "failed")
     .map(frame => frame.frameKey);
   const matches = [...instanceMatches, ...frameMatches].sort(compareStrings);
-  if (matches.length === 1) return ok(matches[0]!);
+  if (matches.length === 1) return Result.succeed(matches[0]!);
   if (matches.length > 1) {
-    return err({
+    return Result.fail({
       type: "ambiguous-retry-target",
       runId: snapshot.runId,
       targetKey: target,
@@ -794,19 +816,19 @@ function retryTargetKey(
       message: `Scheduler retry target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`,
     });
   }
-  if (target === "root" && snapshot.projection.frames.root) return ok("root");
-  return ok(target);
+  if (target === "root" && snapshot.projection.frames.root) return Result.succeed("root");
+  return Result.succeed(target);
 }
 
 function cancelTargetKey(
   target: string,
   snapshot: SchedulerSnapshot,
-): Result<string, SchedulerStoreError> {
+): Result.Result<string, SchedulerStoreError> {
   const occurrence = occurrenceControlTargetKey(target, snapshot, "cancel");
   if (occurrence) return occurrence;
   if (target !== "root"
     && (snapshot.projection.instances[target] || snapshot.projection.frames[target])) {
-    return ok(target);
+    return Result.succeed(target);
   }
   const instanceMatches = Object.values(snapshot.projection.instances)
     .filter(instance => instance.nodeId === target && !terminalStatus(instance.status))
@@ -818,9 +840,9 @@ function cancelTargetKey(
       && !terminalStatus(frame.status))
     .map(frame => frame.frameKey);
   const matches = [...instanceMatches, ...frameMatches].sort(compareStrings);
-  if (matches.length === 1) return ok(matches[0]!);
+  if (matches.length === 1) return Result.succeed(matches[0]!);
   if (matches.length > 1) {
-    return err({
+    return Result.fail({
       type: "ambiguous-cancel-target",
       runId: snapshot.runId,
       targetKey: target,
@@ -828,31 +850,31 @@ function cancelTargetKey(
       message: `Scheduler cancel target '${target}' is ambiguous. Candidate target keys: ${matches.join(", ")}.`,
     });
   }
-  if (target === "root" && snapshot.projection.frames.root) return ok("root");
-  return ok(target);
+  if (target === "root" && snapshot.projection.frames.root) return Result.succeed("root");
+  return Result.succeed(target);
 }
 
 function occurrenceControlTargetKey(
   target: string,
   snapshot: SchedulerSnapshot,
   control: "retry" | "cancel",
-): Result<string, SchedulerStoreError> | undefined {
+): Result.Result<string, SchedulerStoreError> | undefined {
   const occurrence = resolveOccurrenceRef(snapshot.projection, target, { attempt: "reject" });
   if (!occurrence) return undefined;
   if (occurrence.ok) {
-    if (occurrence.value.kind === "node") return ok(occurrence.value.nodeKey);
-    if (occurrence.value.kind === "frame") return ok(occurrence.value.frameKey);
+    if (occurrence.value.kind === "node") return Result.succeed(occurrence.value.nodeKey);
+    if (occurrence.value.kind === "frame") return Result.succeed(occurrence.value.frameKey);
   } else if (occurrence.error.type === "occurrence-ref-collision") {
     const message = `Scheduler ${control} target '${target}' is ambiguous. Candidate target keys: ${occurrence.error.candidateKeys.join(", ")}.`;
     return control === "retry"
-      ? err({
+      ? Result.fail({
           type: "ambiguous-retry-target",
           runId: snapshot.runId,
           targetKey: target,
           candidateKeys: occurrence.error.candidateKeys,
           message,
         })
-      : err({
+      : Result.fail({
           type: "ambiguous-cancel-target",
           runId: snapshot.runId,
           targetKey: target,
@@ -864,14 +886,14 @@ function occurrenceControlTargetKey(
   }
   const message = `${control === "retry" ? "Retry" : "Cancel"} target '${target}' selects an attempt; ${control} the occurrence without an attempt suffix.`;
   return control === "retry"
-    ? err({
+    ? Result.fail({
         type: "invalid-retry-target",
         runId: snapshot.runId,
         targetKey: target,
         status: "attempt-selector",
         message,
       })
-    : err({
+    : Result.fail({
         type: "invalid-cancel-target",
         runId: snapshot.runId,
         targetKey: target,

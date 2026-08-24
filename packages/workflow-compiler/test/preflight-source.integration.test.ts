@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import {
   copyFile,
   mkdir,
@@ -13,6 +14,7 @@ import {
   prepareWorkflow,
   tryPrepareWorkflow,
 } from "@acpus/workflow-compiler";
+import { settle } from "./effect.js";
 import { describe, expect, it, vi } from "vitest";
 import {
   expectNoScratchReference,
@@ -123,7 +125,7 @@ describe("workflow preparation scratch cleanup", () => {
   it("rejects private materialization paths in snapshot IR and removes scratch", async () => {
     await withCompilerWorkspace("compiler-snapshot-failure-paths", async workspaceDir => {
       const scratchIndex = scratchDirectories.length;
-      const result = await tryPrepareWorkflow({
+      const result = await settle(tryPrepareWorkflow({
         workspaceDir,
         source: {
           kind: "files",
@@ -141,18 +143,18 @@ export default defineWorkflow({
             },
           ],
         },
-      });
+      }));
 
-      expect(result.isErr()).toBe(true);
-      if (result.isOk()) throw new Error("expected source failure");
-      expect(result.error).toEqual({
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isSuccess(result)) throw new Error("expected source failure");
+      expect(result.failure).toEqual({
         type: "source-invalid",
         phase: "source",
         message: "Snapshot workflow IR must not reference the compiler's private source materialization.",
       });
       const scratch = scratchDirectories.slice(scratchIndex);
       expect(scratch).toHaveLength(1);
-      expectNoScratchReference(result.error, scratch);
+      expectNoScratchReference(result.failure, scratch);
       await expect(stat(scratch[0]!)).rejects.toMatchObject({ code: "ENOENT" });
     });
   });

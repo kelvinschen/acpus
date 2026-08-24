@@ -11,10 +11,12 @@ import {
   type RunDetails,
   type RuntimeReadFailure,
 } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import type { WorkflowCatalogScopeOptions } from "../workflow/catalog.js";
 import { controlError, usageError, validationError } from "../presentation/errors.js";
 import { parseAgents, parseInput, parseRequiredPayload } from "../presentation/json-input.js";
-import { writeResult, type CliAppliedControl } from "../presentation/output.js";
+import { writeResult, type CliAppliedControl, type CliResult } from "../presentation/output.js";
 import {
   daemonControlRequestId,
   sendDaemonControl,
@@ -50,12 +52,13 @@ type ControlAction = "pause" | "resume" | "retry" | "fork" | "cancel";
 
 type RunMutation =
   | { type: "pause" | "resume" }
-  | ({ type: "retry" | "cancel" } & Target)
+  | { type: "retry"; target: string }
+  | ({ type: "cancel" } & Target)
   | ({ type: "fork" } & ForkMutation);
 
 export function createControlCommands(ctx: RunsCommandContext): Command[] {
   const commands: Command[] = [];
-  for (const name of ["pause", "resume", "retry", "cancel"] as const) {
+  for (const name of ["pause", "resume", "cancel"] as const) {
     const control = new Command(name)
       .exitOverride()
       .description(controlDescription(name))
@@ -66,10 +69,18 @@ export function createControlCommands(ctx: RunsCommandContext): Command[] {
           : { type: name, ...(options.target === undefined ? {} : { target: options.target }) };
         await mutateRun(ctx, runId, request);
       });
-    if (name === "retry") control.option("--target <run-target>", "retry only a failed run target");
     if (name === "cancel") control.option("--target <run-target>", "cancel only a non-terminal run target");
     commands.push(control);
   }
+
+  commands.push(new Command("retry")
+    .exitOverride()
+    .description(controlDescription("retry"))
+    .argument("<run-id>", "run id")
+    .requiredOption("--target <run-target>", "failed or timed-out Task, Agent, or frame target")
+    .action(async (runId: string, options: { target: string }) => {
+      await mutateRun(ctx, runId, { type: "retry", target: options.target });
+    }));
 
   commands.push(new Command("fork")
     .exitOverride()
@@ -79,7 +90,7 @@ export function createControlCommands(ctx: RunsCommandContext): Command[] {
     .option("--project", "resolve replacement workflow name from the project catalog")
     .option("--global", "resolve replacement workflow name from the global catalog")
     .option("--input <json|file.json>", "override workflow input with inline JSON or a JSON file")
-    .option("--agents <json|file.json>", "override inherited agents with inline JSON or a JSON file")
+    .option("--agents <json|file.json>", "inject replacement Agents with inline JSON or a JSON file")
     .option("--target <source-occurrence>", "rewind: rerun this occurrence and later work; omit #attemptNo")
     .action(async (runId: string, options: ForkMutation) => {
       await mutateRun(ctx, runId, {
@@ -105,7 +116,7 @@ export function createControlCommands(ctx: RunsCommandContext): Command[] {
 
   commands.push(new Command("steer")
     .exitOverride()
-    .description("Apply an admitted in-scope information update to one running Agent attempt.")
+    .description("Steer a running Agent by interrupting its current Turn, draining it, then continuing the same Session.")
     .argument("<run-id>", "run id")
     .requiredOption("--target <run-target>", "running Agent attempt, dynamic node, or static node")
     .requiredOption("--instruction <text>", "admitted in-scope information update or constraint")
@@ -118,50 +129,56 @@ export function createControlCommands(ctx: RunsCommandContext): Command[] {
 
 async function signalRun(ctx: RunsCommandContext, runId: string, options: SignalOptions): Promise<void> {
   const payload = parseRequiredPayload(options.payload);
-  const controlled = await sendDaemonControl(ctx.cwd, {
+  const controlled = await Effect.runPromise(Effect.result(sendDaemonControl(ctx.cwd, {
     requestId: daemonControlRequestId(),
     type: "signal",
     runId,
     nodeId: options.target,
     payload,
-  });
-  if (controlled.isErr()) throw await runControlError(ctx, controlled.error, options.target);
-  const result = controlled.value;
+  })));
+  if (Result.isFailure(controlled)) throw await runControlError(ctx, controlled.failure, options.target);
+  const result = controlled.success;
   if (result.type !== "signal") throw new Error(`Daemon returned '${result.type}' for signal control.`);
-  ctx.setExitCode(writeResult({
+  ctx.setExitCode(writeControlResult({
     ok: true,
     phase: "control",
     message: "Signal consumed.",
     control: appliedControl(result, options.target),
     run: toRunRecord(result.run),
     ...(terminalRun(result.run) ? {} : { followRunId: result.run.id }),
-  }, ctx, 0));
+  }, ctx));
 }
 
 async function steerRun(ctx: RunsCommandContext, runId: string, options: SteerOptions): Promise<void> {
   if (options.target.trim() === "") throw usageError("--target must be a non-empty string.");
   if (options.instruction.trim() === "") throw usageError("--instruction must be a non-empty string.");
-  const controlled = await sendDaemonControl(ctx.cwd, {
+  const controlled = await Effect.runPromise(Effect.result(sendDaemonControl(ctx.cwd, {
     requestId: daemonControlRequestId(),
     type: "steer",
     runId,
     target: options.target,
     instruction: options.instruction,
-  });
-  if (controlled.isErr()) throw await runControlError(ctx, controlled.error, options.target);
-  const result = controlled.value;
+  })));
+  if (Result.isFailure(controlled)) throw await runControlError(ctx, controlled.failure, options.target);
+  const result = controlled.success;
   if (result.type !== "steer") throw new Error(`Daemon returned '${result.type}' for steer control.`);
-  ctx.setExitCode(writeResult({
+  ctx.setExitCode(writeControlResult({
     ok: true,
     phase: "control",
-    message: "Attempt fenced; information update queued.",
+    message: "Steer delivery: Interrupt & Continue. Current Turn fenced and draining; instruction queued for the same Session.",
     control: appliedControl(result, options.target),
     run: toRunRecord(result.run),
     ...(terminalRun(result.run) ? {} : { followRunId: result.run.id }),
-  }, ctx, 0));
+  }, ctx));
 }
 
 async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMutation): Promise<void> {
+  if (request.type === "retry" && request.target.trim() === "") {
+    throw usageError("--target must be a non-empty string.");
+  }
+  if (request.type === "cancel" && request.target === "") {
+    throw usageError("--target must be a non-empty string.");
+  }
   if (request.type === "fork" && request.target === "") throw usageError("--target must be a non-empty string.");
   if (request.type === "fork" && request.project && request.global) {
     throw usageError("--project and --global are mutually exclusive.");
@@ -172,6 +189,7 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
   const replacementInput = request.type === "fork" && request.input !== undefined
     ? await parseInput(request.input, ctx.cwd)
     : undefined;
+  const agentInjections = request.type === "fork" ? await parseAgents(request.agents, ctx.cwd) : undefined;
   const preparation = request.type === "fork" && request.workflow !== undefined
     ? await prepareWorkflowForCli({
         workspaceDir: ctx.cwd,
@@ -182,7 +200,6 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
       })
     : undefined;
   const prepared = preparation?.prepared;
-  const agentOverrides = request.type === "fork" ? await parseAgents(request.agents, ctx.cwd) : undefined;
   const forkInput = request.type === "fork"
     ? await maybeNormalizeForkInput(ctx, runId, replacementInput, prepared)
     : undefined;
@@ -195,8 +212,10 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
       intent = { ...base, type: request.type };
       break;
     case "retry":
+      intent = { ...base, type: "retry", target: request.target };
+      break;
     case "cancel":
-      intent = { ...base, type: request.type, ...(request.target ? { target: request.target } : {}) };
+      intent = { ...base, type: "cancel", ...(request.target ? { target: request.target } : {}) };
       break;
     case "fork":
       intent = {
@@ -205,19 +224,19 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
         ...(request.target ? { target: request.target } : {}),
         ...(prepared ? { prepared } : {}),
         ...(forkInput !== undefined ? { input: forkInput } : {}),
-        ...(agentOverrides !== undefined ? { agentOverrides } : {}),
+        ...(agentInjections !== undefined ? { agentInjections } : {}),
       };
       break;
   }
-  const controlled = await sendDaemonControl(ctx.cwd, intent);
-  if (controlled.isErr()) throw await runControlError(ctx, controlled.error, requestedTarget);
-  const result = controlled.value;
+  const controlled = await Effect.runPromise(Effect.result(sendDaemonControl(ctx.cwd, intent)));
+  if (Result.isFailure(controlled)) throw await runControlError(ctx, controlled.failure, requestedTarget);
+  const result = controlled.success;
   if (result.type !== request.type) throw new Error(`Daemon returned '${result.type}' for ${request.type} control.`);
   const control = appliedControl(result, requestedTarget);
   const run = toRunRecord(result.run);
   const follow = terminalRun(result.run) ? {} : { followRunId: result.run.id };
   if (control.type === "fork") {
-    ctx.setExitCode(writeResult({
+    ctx.setExitCode(writeControlResult({
       ok: true,
       phase: "control",
       message: controlSuccessMessage(request.type),
@@ -230,17 +249,21 @@ async function mutateRun(ctx: RunsCommandContext, runId: string, request: RunMut
             diagnostics: preparation.prepared.ir.diagnostics,
             ...(preparation.catalog === undefined ? {} : { catalog: preparation.catalog }),
           }),
-    }, ctx, 0));
+    }, ctx));
     return;
   }
-  ctx.setExitCode(writeResult({
+  ctx.setExitCode(writeControlResult({
     ok: true,
     phase: "control",
     message: controlSuccessMessage(request.type),
     control,
     run,
     ...follow,
-  }, ctx, 0));
+  }, ctx));
+}
+
+function writeControlResult(result: CliResult, ctx: RunsCommandContext): number {
+  return writeResult(result, ctx, 0);
 }
 
 function controlDescription(type: Exclude<ControlAction, "fork">): string {
@@ -268,6 +291,7 @@ function appliedControl(result: DaemonControlResult, requestedTarget?: string): 
     case "resume":
       return { type: result.type, state: "applied", runId: result.run.id };
     case "retry":
+      return { type: "retry", state: "applied", runId: result.run.id, target: requestedTarget ?? result.target };
     case "cancel":
       return {
         type: result.type,
@@ -294,6 +318,7 @@ function appliedControl(result: DaemonControlResult, requestedTarget?: string): 
         runId: result.run.id,
         steerId: result.steerId,
         target: requestedTarget ?? result.requestedTarget,
+        delivery: result.delivery,
         continuation: result.continuation,
       };
   }
@@ -306,17 +331,19 @@ async function maybeNormalizeForkInput(
   prepared: PreparedRunWorkflow | undefined,
 ): Promise<JsonValue | undefined> {
   if (replacementInput === undefined && !prepared) return undefined;
-  const normalized = await tryNormalizeForkInput(ctx.cwd, runId, replacementInput, prepared);
-  if (normalized.isErr()) {
-    if (isRuntimeReadFailure(normalized.error)) {
-      throw controlError(runtimeReadFailureMessage(normalized.error), {
-        errorCode: runtimeReadFailureCode(normalized.error),
+  const normalized = await Effect.runPromise(Effect.result(
+    tryNormalizeForkInput(ctx.cwd, runId, replacementInput, prepared),
+  ));
+  if (Result.isFailure(normalized)) {
+    if (isRuntimeReadFailure(normalized.failure)) {
+      throw controlError(runtimeReadFailureMessage(normalized.failure), {
+        errorCode: runtimeReadFailureCode(normalized.failure),
         control: { type: "fork", runId },
       });
     }
-    throw validationError(normalized.error.message);
+    throw validationError(normalized.failure.message);
   }
-  return normalized.value;
+  return normalized.success;
 }
 
 function isRuntimeReadFailure(
@@ -364,9 +391,11 @@ async function controlCandidates(
   runId: string,
   target: string,
 ): Promise<InspectionCandidates | undefined> {
-  const inspected = await readInspection(cwd, { kind: "target", runId, target, detail: "summary" });
-  return inspected.isOk() && inspected.value.kind === "candidates"
-    ? inspected.value
+  const inspected = await Effect.runPromise(Effect.result(
+    readInspection(cwd, { kind: "target", runId, target, detail: "summary" }),
+  ));
+  return Result.isSuccess(inspected) && inspected.success.kind === "candidates"
+    ? inspected.success
     : undefined;
 }
 

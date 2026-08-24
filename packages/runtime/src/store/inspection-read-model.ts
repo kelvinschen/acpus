@@ -2,7 +2,7 @@ import type { JsonValue } from "@acpus/expression/ir";
 import type { DatabaseSync } from "node:sqlite";
 import { requirePersistedDeadline } from "../deadline.js";
 import type { HookJournalEntry } from "../hooks/journal.js";
-import { throwSchedulerStoreResult, type SchedulerStorePort } from "../scheduler/store-port.js";
+import type { SchedulerStorePort } from "../scheduler/store-port.js";
 import type { GroupMemberIdentity, GroupProjection, InstancePath, SchedulerFrame } from "../scheduler/types.js";
 
 export type RunDynamicDetails = {
@@ -34,7 +34,7 @@ export type RunDynamicGroup =
 
 export type RunExecutionMetadata = {
   id: number;
-  attemptId?: string;
+  attemptId: string;
   kind: string;
   metadata: unknown;
   createdAt: string;
@@ -151,7 +151,6 @@ type HookJournalRow = {
   source: HookJournalEntry["source"];
   source_path: string;
   handler_id: string;
-  definition_hash: string;
   node_key: string | null;
   status: HookJournalEntry["status"];
   exit_code: number | null;
@@ -171,7 +170,7 @@ export class SqliteRuntimeInspectionReadModel {
 
   getHookJournal(runId: string): HookJournalEntry[] {
     const rows = this.db.prepare(`
-      SELECT id, run_id, event_sequence, trigger_order, event, source, source_path, handler_id, definition_hash,
+      SELECT id, run_id, event_sequence, trigger_order, event, source, source_path, handler_id,
         node_key, status, exit_code, stdout, stderr, duration_ms, error, triggered_at
       FROM hook_journal
       WHERE run_id = ?
@@ -187,20 +186,25 @@ export class SqliteRuntimeInspectionReadModel {
       WHERE run_id = ?
       ORDER BY id
     `).all(runId) as Array<Record<string, string | number | null>>;
-    return rows.map(row => withoutUndefined({
-      id: Number(row.id),
-      attemptId: nullableString(row.attempt_id),
-      kind: String(row.kind),
-      metadata: JSON.parse(String(row.metadata_json)) as unknown,
-      createdAt: String(row.created_at),
-    }) as RunExecutionMetadata);
+    return rows.map(row => {
+      if (typeof row.attempt_id !== "string") {
+        throw new Error(`Execution metadata row '${String(row.id)}' has no Attempt identity.`);
+      }
+      return {
+        id: Number(row.id),
+        attemptId: row.attempt_id,
+        kind: String(row.kind),
+        metadata: JSON.parse(String(row.metadata_json)) as unknown,
+        createdAt: String(row.created_at),
+      };
+    });
   }
 
   getDynamicDetails(runId: string): RunDynamicDetails | undefined {
     const frames = readRunDynamicFrames(this.db, runId);
     const nodeInstances = readRunDynamicNodeInstances(this.db, runId);
     const attempts = readRunDynamicAttempts(this.db, runId);
-    const groups = Object.values(throwSchedulerStoreResult(this.scheduler.tryLoadRunSnapshot(runId)).projection.groups).map(runDynamicGroup);
+    const groups = Object.values(this.scheduler.tryLoadRunSnapshot(runId).projection.groups).map(runDynamicGroup);
     const groupMembers = readRunDynamicGroupMembers(this.db, runId);
     const signalWaits = readRunDynamicSignalWaits(this.db, runId);
     const executionMetadata = this.getExecutionMetadata(runId);
@@ -461,7 +465,6 @@ function hookJournalEntryFromRow(row: HookJournalRow): HookJournalEntry {
     source: row.source,
     sourcePath: row.source_path,
     handlerId: row.handler_id,
-    definitionHash: row.definition_hash,
     ...(row.node_key === null ? {} : { nodeKey: row.node_key }),
     status: row.status,
     ...(row.exit_code === null ? {} : { exitCode: Number(row.exit_code) }),

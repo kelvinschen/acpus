@@ -34,11 +34,12 @@
   },
   "dependencies": {
     "@acpus/agent-executor": "workspace:*",
+    "@acpus/owned-process": "workspace:*",
     "@acpus/loader": "workspace:*",
     "@acpus/core": "workspace:*",
     "@acpus/expression": "workspace:*",
-    "jsonrepair": "^3.14.1",
-    "neverthrow": "^8.2.0"
+    "effect": "4.0.0-rc.111",
+    "jsonrepair": "^3.14.1"
   },
   "devDependencies": {
     "@acpus/workflow-compiler": "workspace:*",

@@ -1,6 +1,8 @@
 import { basename, extname } from "node:path";
 import type { Context, Hono } from "hono";
 import { readArtifact } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { apiError, runtimeReadError } from "../errors.js";
 import type { WebWorkspaceContext } from "../workspace-context.js";
 
@@ -21,9 +23,11 @@ export function registerArtifactRoutes(app: Hono, workspaces: WebWorkspaceContex
     const workspace = await workspaces.resolve(context.req.param("workspaceKey"));
     const runId = context.req.param("id");
     const artifactId = context.req.param("artifactId");
-    const read = await readArtifact(workspace.canonicalPath, runId, artifactId);
-    if (read.isErr()) runtimeReadError(read.error);
-    const verified = read.value;
+    const read = await Effect.runPromise(Effect.result(
+      readArtifact(workspace.canonicalPath, runId, artifactId),
+    ));
+    if (Result.isFailure(read)) runtimeReadError(read.failure);
+    const verified = read.success;
     if (!verified) apiError(404, "artifact_not_found", `Artifact '${artifactId}' was not found.`);
     const { artifact, bytes } = verified;
     const previewBytes = bytes.subarray(0, artifactPreviewLimit);
@@ -37,9 +41,11 @@ export function registerArtifactRoutes(app: Hono, workspaces: WebWorkspaceContex
     const workspace = await workspaces.resolve(context.req.param("workspaceKey"));
     const runId = context.req.param("id");
     const artifactId = context.req.param("artifactId");
-    const read = await readArtifact(workspace.canonicalPath, runId, artifactId);
-    if (read.isErr()) runtimeReadError(read.error);
-    const verified = read.value;
+    const read = await Effect.runPromise(Effect.result(
+      readArtifact(workspace.canonicalPath, runId, artifactId),
+    ));
+    if (Result.isFailure(read)) runtimeReadError(read.failure);
+    const verified = read.success;
     if (!verified) apiError(404, "artifact_not_found", `Artifact '${artifactId}' was not found.`);
     const { artifact, bytes } = verified;
     setArtifactResponseHeaders(context, artifact.path, artifact.mediaType, bytes.byteLength, {

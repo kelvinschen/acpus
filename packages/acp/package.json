@@ -1,0 +1,52 @@
+{
+  "name": "@acpus/acp",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Acpus stable ACP v1 stdio client runtime.",
+  "license": "MIT",
+  "engines": {
+    "node": "^22.18.0 || >=24.0.0"
+  },
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./transport": {
+      "development": "./src/transport.ts",
+      "types": "./dist/transport.d.ts",
+      "default": "./dist/transport.js"
+    },
+    "./cancellation": {
+      "development": "./src/cancellation.ts",
+      "types": "./dist/cancellation.d.ts",
+      "default": "./dist/cancellation.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist tsconfig.build.tsbuildinfo"
+  },
+  "dependencies": {
+    "@acpus/owned-process": "workspace:*",
+    "@agentclientprotocol/sdk": "1.3.0",
+    "effect": "4.0.0-rc.111"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kelvinschen/acpus"
+  }
+}

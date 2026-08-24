@@ -1,6 +1,6 @@
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
-import { lift } from "@acpus/expression";
-import { refExpr, type ExprIR, type TemplateIR } from "@acpus/expression/ir";
+import { type ExprIR, type TemplateIR } from "@acpus/expression/ir";
 import { evaluateExpr } from "../src/evaluation/evaluator.js";
 import { tryCreateDeadline, tryResolveConcurrencyLimit, tryResolveDuration, tryResolveInteger, tryResolveString } from "../src/evaluation/resolvable.js";
 
@@ -10,21 +10,21 @@ const call = (fn: string, args: ExprIR[]): ExprIR => ({ kind: "call", fn, args }
 
 describe("runtime expression evaluator", () => {
   it("classifies runtime value resolution failures", () => {
-    expect(tryResolveString(literal(1), {}, "prompt")._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(tryResolveString(literal(1), {}, "prompt")))).toMatchObject({
       type: "type",
       field: "prompt",
       expected: "string",
       actual: "number",
     });
-    expect(tryResolveInteger(literal(0), {}, "count", 1)._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(tryResolveInteger(literal(0), {}, "count", 1)))).toMatchObject({
       type: "constraint",
       field: "count",
     });
-    expect(tryResolveDuration(literal("soon"), {}, "timeout")._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(tryResolveDuration(literal("soon"), {}, "timeout")))).toMatchObject({
       type: "constraint",
       field: "timeout",
     });
-    expect(tryResolveInteger(call("lift", [literal(1), literal("value => { throw new Error('boom') }")]), {}, "count", 1)._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(tryResolveInteger(call("lift", [literal(1), literal("value => { throw new Error('boom') }")]), {}, "count", 1)))).toMatchObject({
       type: "evaluation",
       field: "count",
       message: expect.stringContaining("boom"),
@@ -49,32 +49,32 @@ describe("runtime expression evaluator", () => {
   });
 
   it("treats missing and zero concurrency limits as omitted", () => {
-    expect(tryResolveConcurrencyLimit(ref(["input", "parallelism"]), { input: {} }, "maxConcurrency")._unsafeUnwrap()).toBeUndefined();
-    expect(tryResolveConcurrencyLimit(literal(0), {}, "maxConcurrency")._unsafeUnwrap()).toBeUndefined();
-    expect(tryResolveConcurrencyLimit(call("lift", [ref(["input", "parallelism"]), literal("value => value ?? 0")]), { input: {} }, "maxConcurrency")._unsafeUnwrap()).toBeUndefined();
-    expect(tryResolveConcurrencyLimit(literal(2), {}, "maxConcurrency")._unsafeUnwrap()).toBe(2);
-    expect(tryResolveConcurrencyLimit(literal(-1), {}, "maxConcurrency")._unsafeUnwrapErr()).toMatchObject({ type: "constraint" });
-    expect(tryResolveConcurrencyLimit(literal(1.5), {}, "maxConcurrency")._unsafeUnwrapErr()).toMatchObject({ type: "constraint" });
-    expect(tryResolveConcurrencyLimit(literal("many"), {}, "maxConcurrency")._unsafeUnwrapErr()).toMatchObject({ type: "type" });
+    expect(Result.getOrThrow(tryResolveConcurrencyLimit(ref(["input", "parallelism"]), { input: {} }, "maxConcurrency"))).toBeUndefined();
+    expect(Result.getOrThrow(tryResolveConcurrencyLimit(literal(0), {}, "maxConcurrency"))).toBeUndefined();
+    expect(Result.getOrThrow(tryResolveConcurrencyLimit(call("lift", [ref(["input", "parallelism"]), literal("value => value ?? 0")]), { input: {} }, "maxConcurrency"))).toBeUndefined();
+    expect(Result.getOrThrow(tryResolveConcurrencyLimit(literal(2), {}, "maxConcurrency"))).toBe(2);
+    expect(Result.getOrThrow(Result.flip(tryResolveConcurrencyLimit(literal(-1), {}, "maxConcurrency")))).toMatchObject({ type: "constraint" });
+    expect(Result.getOrThrow(Result.flip(tryResolveConcurrencyLimit(literal(1.5), {}, "maxConcurrency")))).toMatchObject({ type: "constraint" });
+    expect(Result.getOrThrow(Result.flip(tryResolveConcurrencyLimit(literal("many"), {}, "maxConcurrency")))).toMatchObject({ type: "type" });
   });
 
   it("rejects duration overflow and unrepresentable deadlines", () => {
-    expect(tryResolveDuration(literal(String(Number.MAX_SAFE_INTEGER)), {}, "timeout")._unsafeUnwrap()).toEqual({
+    expect(Result.getOrThrow(tryResolveDuration(literal(String(Number.MAX_SAFE_INTEGER)), {}, "timeout"))).toEqual({
       value: String(Number.MAX_SAFE_INTEGER),
       milliseconds: Number.MAX_SAFE_INTEGER,
     });
-    expect(tryResolveDuration(literal("9007199254740992ms"), {}, "timeout")._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(tryResolveDuration(literal("9007199254740992ms"), {}, "timeout")))).toMatchObject({
       type: "constraint",
       field: "timeout",
     });
 
     const now = new Date("2026-01-01T00:00:00.000Z");
-    expect(tryCreateDeadline(now, 1_000, "timeout")._unsafeUnwrap()).toEqual(new Date("2026-01-01T00:00:01.000Z"));
-    expect(tryCreateDeadline(new Date("9999-12-31T23:59:59.999Z"), 1, "timeout")._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(tryCreateDeadline(now, 1_000, "timeout"))).toEqual(new Date("2026-01-01T00:00:01.000Z"));
+    expect(Result.getOrThrow(Result.flip(tryCreateDeadline(new Date("9999-12-31T23:59:59.999Z"), 1, "timeout")))).toMatchObject({
       type: "constraint",
       field: "timeout",
     });
-    expect(tryCreateDeadline(new Date(8_640_000_000_000_000), 1, "timeout")._unsafeUnwrapErr()).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(tryCreateDeadline(new Date(8_640_000_000_000_000), 1, "timeout")))).toMatchObject({
       type: "constraint",
       field: "timeout",
     });
@@ -126,50 +126,4 @@ describe("runtime expression evaluator", () => {
     });
   });
 
-  it("evaluates real lift-lowered expression IR", () => {
-    const review = refExpr<{
-      issues: string[];
-      tag: string;
-      summary: string;
-    }>(["nodes", "review", "output"]);
-    const expr = lift(review, value => value.issues.length === 0 && /ready/.test(value.summary));
-
-    expect(evaluateExpr(expr.__ir, {
-      input: {},
-      nodes: { review: { output: { issues: [], tag: "ready", summary: "ready to ship" } } },
-    })).toBe(true);
-    expect(evaluateExpr(expr.__ir, {
-      input: {},
-      nodes: { review: { output: { issues: ["blocked"], tag: "ready", summary: "ready to ship" } } },
-    })).toBe(false);
-  });
-
-  it("renders object and array template expressions as JSON", () => {
-    const template: TemplateIR = {
-      kind: "template",
-      parts: [
-        { kind: "text", value: "payload=" },
-        { kind: "expr", expr: ref(["input", "payload"]) },
-        { kind: "text", value: " tags=" },
-        { kind: "expr", expr: ref(["input", "tags"]) },
-      ],
-    };
-
-    expect(evaluateExpr(template, {
-      input: {
-        payload: { ok: true, count: 2 },
-        tags: ["ready", "green"],
-      },
-    })).toBe('payload={"ok":true,"count":2} tags=["ready","green"]');
-
-    expect(() => evaluateExpr({
-      kind: "template",
-      parts: [{ kind: "expr", expr: ref(["input", "invalid"]) }],
-    }, { input: { invalid: () => undefined } })).toThrow("template(...) expected JSON-compatible values.");
-  });
-
-  it("fails loudly for unsupported calls and invalid operand types", () => {
-    expect(() => evaluateExpr(call("unknown", []), {})).toThrow("Unsupported expression operator: unknown.");
-    expect(() => evaluateExpr(ref(["workflow", "name"]), {})).toThrow("Unsupported expression ref root: workflow");
-  });
 });

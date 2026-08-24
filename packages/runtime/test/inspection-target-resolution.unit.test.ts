@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { WorkflowIR } from "@acpus/core/ir";
+import type { AdmittedWorkflowIR } from "@acpus/core/ir";
 import { resolveTargetState } from "../src/inspection/projection.js";
 import {
   deriveOccurrenceRef,
@@ -15,30 +15,30 @@ const staticNodes: RunInspectionStaticNode[] = [
 ];
 
 describe("inspection occurrence targets", () => {
-  it("derives fixed twelve-hex refs from branch, Fanout, Loop, and mixed paths", () => {
-    expect(deriveOccurrenceRef([{ kind: "node", nodeId: "verify" }])).toBe("@75de35d61d1d");
+  it("derives fixed eight-hex refs from branch, Fanout, Loop, and mixed paths", () => {
+    expect(deriveOccurrenceRef([{ kind: "node", nodeId: "verify" }])).toBe("@75de35d6");
     expect(deriveOccurrenceRef([
       { kind: "node", nodeId: "batch" },
       { kind: "fanout", nodeId: "batch", itemIndex: 0 },
       { kind: "node", nodeId: "verify" },
-    ])).toBe("@6119a20210df");
+    ])).toBe("@6119a202");
     expect(deriveOccurrenceRef([
       { kind: "node", nodeId: "batch" },
       { kind: "fanout", nodeId: "batch", itemIndex: 1 },
       { kind: "node", nodeId: "loop" },
       { kind: "loop", nodeId: "loop", iter: 2 },
       { kind: "node", nodeId: "verify" },
-    ])).toBe("@9d4669a0288d");
-    expect(deriveOccurrenceRef([{ kind: "branch", nodeId: "gate", branchId: "then" }])).toBe("@65606a87d385");
+    ])).toBe("@9d4669a0");
+    expect(deriveOccurrenceRef([{ kind: "branch", nodeId: "gate", branchId: "then" }])).toBe("@65606a87");
   });
 
   it("fails closed for a colliding pure lookup without a hash seam", () => {
-    expect(resolveOccurrenceRefCandidate("@111111111111", [
-      { ref: "@111111111111", value: "first~full-key" },
-      { ref: "@111111111111", value: "second~full-key" },
+    expect(resolveOccurrenceRefCandidate("@11111111", [
+      { ref: "@11111111", value: "first~full-key" },
+      { ref: "@11111111", value: "second~full-key" },
     ])).toEqual({
       kind: "collision",
-      target: "@111111111111",
+      target: "@11111111",
       candidates: ["first~full-key", "second~full-key"],
     });
   });
@@ -55,20 +55,20 @@ describe("inspection occurrence targets", () => {
       candidates: {
         target: "verify",
         entries: [{
-          selector: "@6119a20210df",
+          selector: "@6119a202",
           status: "completed",
           breadcrumb: "batch › batch[0] › verify",
         }, {
-          selector: "@9d4669a0288d",
+          selector: "@9d4669a0",
           status: "running",
           breadcrumb: "batch › batch[1] › loop › loop#2 › verify",
         }],
       },
     });
 
-    expect(resolveInspectionTarget({ run, staticNodes, target: "@9d4669a0288d" }))
+    expect(resolveInspectionTarget({ run, staticNodes, target: "@9d4669a0" }))
       .toEqual({ kind: "resolved", target: "verify~item-1-round-2" });
-    expect(resolveInspectionTarget({ run, staticNodes, target: "@9d4669a0288d#2" }))
+    expect(resolveInspectionTarget({ run, staticNodes, target: "@9d4669a0#2" }))
       .toEqual({ kind: "resolved", target: "verify-attempt-2" });
     expect(resolveInspectionTarget({ run, staticNodes, target: "verify~item-0" }))
       .toEqual({ kind: "resolved", target: "verify~item-0" });
@@ -153,6 +153,49 @@ describe("resolved inspection target state", () => {
     });
   });
 
+  it("exposes narrow node output only from the scheduler-accepted durable result", () => {
+    const ir = taskWorkflow();
+    const run = singleNodeRun("work", "work~1");
+    run.dynamic!.nodeInstances[0] = {
+      ...run.dynamic!.nodeInstances[0]!,
+      status: "completed",
+      output: { authoritative: true },
+      acceptedAttemptId: "attempt-2",
+    };
+    run.dynamic!.attempts = [{
+      attemptId: "attempt-1",
+      nodeKey: "work~1",
+      nodeId: "work",
+      attemptNo: 1,
+      status: "completed",
+      result: { candidate: "historical" },
+      startedAt: "2026-07-29T00:00:01.000Z",
+      finishedAt: "2026-07-29T00:00:02.000Z",
+    }, {
+      attemptId: "attempt-2",
+      nodeKey: "work~1",
+      nodeId: "work",
+      attemptNo: 2,
+      status: "completed",
+      result: { candidate: "accepted but not authoritative" },
+      startedAt: "2026-07-29T00:00:03.000Z",
+      finishedAt: "2026-07-29T00:00:04.000Z",
+    }];
+    run.dynamic!.progress = [{
+      nodeKey: "work~1",
+      nodeId: "work",
+      attemptId: "attempt-2",
+      kind: "task",
+      status: "completed",
+      output: { tail: "progress candidate", totalBytes: 18, truncated: false },
+      updatedAt: "2026-07-29T00:00:05.000Z",
+    }];
+
+    expect(resolvedState(ir, run, "work~1").summary.output).toEqual({ authoritative: true });
+    expect(resolvedState(ir, run, "attempt-2").summary.output).toEqual({ authoritative: true });
+    expect(resolvedState(ir, run, "attempt-1").summary).not.toHaveProperty("output");
+  });
+
   it("projects the effective Agent model and terminal metadata fallback", () => {
     const ir = agentWorkflow();
     const run = singleNodeRun("review", "review~1");
@@ -198,7 +241,7 @@ describe("resolved inspection target state", () => {
     });
   });
 
-  it("retains complete acpx failure evidence for the narrow node read", () => {
+  it("retains complete ACP failure evidence for the narrow node read", () => {
     const ir = agentWorkflow();
     const run = singleNodeRun("review", "review~1");
     run.dynamic!.nodeInstances[0]!.status = "failed";
@@ -208,8 +251,8 @@ describe("resolved inspection target state", () => {
       code: "provider_exit",
       message: "Provider configuration failed.",
       upstream: {
-        source: "acpx",
-        operation: "sessions.ensure",
+        source: "acp",
+        operation: "open_session",
         exitCode: 1,
         code: "RUNTIME",
         origin: "cli",
@@ -225,8 +268,8 @@ describe("resolved inspection target state", () => {
       code: "provider_exit",
       message: "Provider configuration failed.",
       upstream: {
-        source: "acpx",
-        operation: "sessions.ensure",
+        source: "acp",
+        operation: "open_session",
         exitCode: 1,
         code: "RUNTIME",
         origin: "cli",
@@ -344,9 +387,9 @@ function thirteenOccurrencesRun(): RunDetails {
   return run;
 }
 
-function taskWorkflow(): WorkflowIR {
+function taskWorkflow(): AdmittedWorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "resolved-task",
     agents: {},
     root: {
@@ -364,9 +407,9 @@ function taskWorkflow(): WorkflowIR {
   };
 }
 
-function agentWorkflow(): WorkflowIR {
+function agentWorkflow(): AdmittedWorkflowIR {
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "resolved-agent",
     agents: {
       reviewer: {
@@ -425,7 +468,7 @@ function singleNodeRun(nodeId: string, nodeKey: string): RunDetails {
   };
 }
 
-function resolvedState(ir: WorkflowIR, run: RunDetails, target: string) {
+function resolvedState(ir: AdmittedWorkflowIR, run: RunDetails, target: string) {
   const details = resolveTargetState({ ir, run, target, artifacts: [] });
   if (!details) throw new Error(`Expected target '${target}' to resolve.`);
   return details;

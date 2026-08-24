@@ -1,17 +1,20 @@
 import { Readable } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { InspectionCandidates, InspectionError, InspectionView } from "@acpus/runtime";
+import * as Effect from "effect/Effect";
 import { createRunsCommand } from "../src/runs/command.js";
 import { CaptureStream } from "./support/capture-stream.js";
 
 const runtime = vi.hoisted(() => ({
   readInspection: vi.fn(),
+  requestDaemonInspection: vi.fn(),
 }));
 const follow = vi.hoisted(() => ({ followRun: vi.fn() }));
 
 vi.mock("@acpus/runtime", async importOriginal => ({
   ...await importOriginal<typeof import("@acpus/runtime")>(),
   readInspection: runtime.readInspection,
+  requestDaemonInspection: runtime.requestDaemonInspection,
 }));
 vi.mock("../src/runs/follow.js", async importOriginal => ({
   ...await importOriginal<typeof import("../src/runs/follow.js")>(),
@@ -20,7 +23,10 @@ vi.mock("../src/runs/follow.js", async importOriginal => ({
 
 describe("runs inspect observation grammar", () => {
   beforeEach(() => {
-    runtime.readInspection.mockReset().mockResolvedValue(ok(runView()));
+    runtime.readInspection.mockReset().mockReturnValue(Effect.succeed(runView()));
+    runtime.requestDaemonInspection.mockReset().mockReturnValue(Effect.fail({
+      type: "transport", reason: "not-found", method: "inspect", message: "offline",
+    }));
     follow.followRun.mockReset().mockResolvedValue({
       kind: "closed",
       reason: "subject-terminal",
@@ -32,12 +38,22 @@ describe("runs inspect observation grammar", () => {
     const result = await runCommand(["inspect", "run_1"]);
 
     expect(result.exitCode).toBe(0);
+    expect(runtime.requestDaemonInspection).toHaveBeenCalledWith("/workspace", { kind: "run", runId: "run_1" });
     expect(runtime.readInspection).toHaveBeenCalledWith("/workspace", { kind: "run", runId: "run_1" });
     expect(result.stdout).toContain("Tree:");
   });
 
-  it("renders every ambiguous Timeline candidate and preserves detail", async () => {
-    runtime.readInspection.mockResolvedValue(ok(candidates()));
+  it("prefers the daemon authority for live one-shot controls", async () => {
+    runtime.requestDaemonInspection.mockReturnValueOnce(Effect.succeed(runView()));
+
+    const result = await runCommand(["inspect", "run_1"]);
+
+    expect(result.exitCode).toBe(0);
+    expect(runtime.readInspection).not.toHaveBeenCalled();
+  });
+
+  it("renders every ambiguous Timeline candidate without embedded commands", async () => {
+    runtime.readInspection.mockReturnValue(Effect.succeed(candidates()));
 
     const result = await runCommand(["inspect", "run_1", "--target", "review", "--timeline"]);
 
@@ -46,8 +62,9 @@ describe("runs inspect observation grammar", () => {
       kind: "target", runId: "run_1", target: "review", detail: "timeline",
     });
     expect(result.stdout).toContain("Target review  matches=13");
-    expect(result.stdout).toContain("Select: acpus runs inspect run_1 --target @000000000001 --timeline");
-    expect(result.stdout).toContain("Select: acpus runs inspect run_1 --target @00000000000d --timeline");
+    expect(result.stdout).toContain("@000000000001");
+    expect(result.stdout).toContain("@00000000000d");
+    expect(result.stdout).not.toContain("Select:");
     expect(result.stdout).not.toContain("Next:");
   });
 
@@ -67,13 +84,14 @@ describe("runs inspect observation grammar", () => {
       kind: "target", runId: "run_1", target: "@1a2b3c4d5e6f#2", detail: "forensics",
     });
 
-    runtime.readInspection.mockResolvedValueOnce(ok(candidates()));
+    runtime.readInspection.mockReturnValueOnce(Effect.succeed(candidates()));
     const result = await runCommand(["inspect", "run_1", "--target", "review", "--forensics"]);
     expect(runtime.readInspection).toHaveBeenLastCalledWith("/workspace", {
       kind: "target", runId: "run_1", target: "review", detail: "forensics",
     });
-    expect(result.stdout).toContain("Select: acpus runs inspect run_1 --target @000000000001 --forensics");
-    expect(result.stdout).toContain("Select: acpus runs inspect run_1 --target @00000000000d --forensics");
+    expect(result.stdout).toContain("@000000000001");
+    expect(result.stdout).toContain("@00000000000d");
+    expect(result.stdout).not.toContain("Select:");
   });
 
   it("maps terminal follow and decision waiting to distinct Runtime policies", async () => {
@@ -106,17 +124,18 @@ describe("runs inspect observation grammar", () => {
   });
 
   it("keeps one-shot ambiguity successful while a Runtime query failure is operational", async () => {
-    runtime.readInspection.mockResolvedValue(ok(candidates()));
+    runtime.readInspection.mockReturnValue(Effect.succeed(candidates()));
     const ambiguous = await runCommand(["inspect", "run_1", "--target", "review"]);
     expect(ambiguous.exitCode).toBe(0);
     expect(ambiguous.stdout).toContain("Target review  matches=13");
-    expect(ambiguous.stdout).toContain("Select: acpus runs inspect run_1 --target @000000000001");
-    expect(ambiguous.stdout).toContain("Select: acpus runs inspect run_1 --target @00000000000d");
+    expect(ambiguous.stdout).toContain("@000000000001");
+    expect(ambiguous.stdout).toContain("@00000000000d");
+    expect(ambiguous.stdout).not.toContain("Select:");
     expect(ambiguous.stdout).not.toContain("--timeline");
     expect(ambiguous.stdout).not.toContain("--forensics");
 
     const error: InspectionError = { type: "run-not-found", runId: "missing", message: "Run missing was not found." };
-    runtime.readInspection.mockResolvedValue(err(error));
+    runtime.readInspection.mockReturnValue(Effect.fail(error));
     await expect(runCommand(["inspect", "missing"])).rejects.toMatchObject({
       exitCode: 1,
       result: { phase: "inspect", errorCode: "RUN_NOT_FOUND" },
@@ -159,12 +178,4 @@ function candidates(): InspectionCandidates {
       breadcrumb: `batch[${index}] › review`,
     })),
   };
-}
-
-function ok<T>(value: T): { isErr(): false; value: T } {
-  return { isErr: () => false, value };
-}
-
-function err(error: InspectionError): { isErr(): true; error: InspectionError } {
-  return { isErr: () => true, error };
 }

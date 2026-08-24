@@ -21,7 +21,7 @@ agents: none
 
   it("renders every remaining node kind, detached roots, arrays, and Agent disclosure", () => {
     const ir: WorkflowIR = {
-      irVersion: 7,
+      irVersion: 8,
       name: "semantic-fixture",
       agents: {
         triager: {
@@ -30,6 +30,10 @@ agents: none
           model: "gpt-5",
           permissionMode: "approve-all",
           config: { mode: "plan" },
+        },
+        reviewer: {
+          kind: "agent_slot",
+          model: "review-model",
         },
       },
       root: scope([
@@ -79,7 +83,7 @@ agents: none
     expect(renderWorkflowTerminalViz(ir)).toBe(`semantic-fixture
 input {}
 output { ok, items: …[] }
-agents: triager (codex, gpt-5, plan)
+agents: triager (codex, gpt-5, plan) · reviewer (unbound, review-model)
 
 ┌─ ✦ plan · agent(triager)
 ├─ $ fetch · task
@@ -108,7 +112,7 @@ agents: triager (codex, gpt-5, plan)
     expect(colored).toContain("\u001b[96m≡\u001b[0m approvals\u001b[2m · parallel\u001b[0m");
 
     const empty: WorkflowIR = {
-      irVersion: 7,
+      irVersion: 8,
       name: "empty-workflow",
       agents: {},
       root: scope([]),
@@ -136,7 +140,7 @@ function parallelApprovals(): WorkflowIR {
     nodeOutput(id),
   );
   return {
-    irVersion: 7,
+    irVersion: 8,
     name: "parallel-approvals",
     inputSchema: {
       kind: "object",

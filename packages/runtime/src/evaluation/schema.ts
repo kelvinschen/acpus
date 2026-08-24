@@ -1,6 +1,6 @@
 import type { JsonValue } from "@acpus/expression/ir";
 import type { SchemaIR } from "@acpus/core/ir";
-import { err, ok, type Result } from "neverthrow";
+import * as Result from "effect/Result";
 
 type RuntimeSchema = SchemaIR;
 
@@ -15,10 +15,10 @@ export type SchemaNormalizationFailure = {
 
 type SchemaIssue = Omit<SchemaNormalizationFailure, "type" | "label" | "message"> & { detail: string };
 
-export function tryNormalizeValue(schema: SchemaIR | undefined, value: JsonValue, label: string): Result<JsonValue, SchemaNormalizationFailure> {
-  if (!schema) return ok(value);
+export function tryNormalizeValue(schema: SchemaIR | undefined, value: JsonValue, label: string): Result.Result<JsonValue, SchemaNormalizationFailure> {
+  if (!schema) return Result.succeed(value);
   const issue = firstSchemaIssue(schema, value, "$");
-  if (issue) return err({
+  if (issue) return Result.fail({
     type: "schema-mismatch",
     label,
     path: issue.path,
@@ -26,7 +26,7 @@ export function tryNormalizeValue(schema: SchemaIR | undefined, value: JsonValue
     ...(issue.actual === undefined ? {} : { actual: issue.actual }),
     message: `${label} does not match schema: ${issue.detail}.`,
   });
-  return ok(applyDefaults(schema, value) as JsonValue);
+  return Result.succeed(applyDefaults(schema, value) as JsonValue);
 }
 
 function firstSchemaIssue(schema: RuntimeSchema, value: JsonValue, path: string): SchemaIssue | undefined {

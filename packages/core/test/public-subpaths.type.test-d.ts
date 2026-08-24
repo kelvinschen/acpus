@@ -9,7 +9,7 @@ import {
 } from "@acpus/core/content-identity";
 import { lift, template, type Expr, type Resolvable } from "@acpus/expression";
 import { refExpr, type ExprIR } from "@acpus/expression/ir";
-import type { Result } from "neverthrow";
+import type * as Result from "effect/Result";
 import {
   childScopes,
   isPositiveInteger,
@@ -87,7 +87,7 @@ test("public package subpaths expose the intended type surface", () => {
   const definition = defineWorkflow({ name: "package-subpath-types", inputSchema: Input }).build(({ input }) => ({ ready: input.ready }));
   assertType<WorkflowDefinition<any, any>>(definition);
   assertType<WorkflowIR>(compileWorkflowDefinition(definition));
-  assertType<Result<WorkflowIR, WorkflowCompilationFailure>>(tryCompileWorkflowDefinition(definition));
+  assertType<Result.Result<WorkflowIR, WorkflowCompilationFailure>>(tryCompileWorkflowDefinition(definition));
   assertType<CompileWorkflowDefinitionOptions>({ validate: false });
   assertType<ReusableTaskLinkPlan>({
     referrerPath: "workflow.ts",
@@ -95,7 +95,7 @@ test("public package subpaths expose the intended type surface", () => {
   });
   assertType<ExprIR>({ kind: "literal", value: true });
   assertType<WorkflowIR["diagnostics"]>(validateWorkflowIR(compileWorkflowDefinition(definition)));
-  expectTypeOf(tryParseDurationMs).toEqualTypeOf<(value: string) => Result<number, DurationParseError>>();
+  expectTypeOf(tryParseDurationMs).toEqualTypeOf<(value: string) => Result.Result<number, DurationParseError>>();
   expectTypeOf(isPositiveInteger).toEqualTypeOf<(value: unknown) => value is number>();
   expectTypeOf<DurationParseError>().toEqualTypeOf<
     | { type: "invalid-duration-syntax"; value: string }

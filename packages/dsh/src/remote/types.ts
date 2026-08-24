@@ -5,18 +5,34 @@ export type { DelegatedTaskSelector, ResolvedTaskSelector } from "../task.js";
 export const TASK_HISTORY_LIMIT = 50;
 export const LONG_POLL_MS = 200_000;
 
-export type AgentProfileView = {
-  id: string;
-  use: string;
-  model?: string;
-  guidance: string;
-  builtIn: boolean;
+export type AgentPresetConfigEntryView = {
+  key: string;
+  value: string;
 };
 
-export type ReadAgentProfilesRequest = {};
+export type AgentPresetAgentView =
+  | {
+      use: string;
+      model?: string;
+      config?: AgentPresetConfigEntryView[];
+    }
+  | {
+      command: string;
+      model?: string;
+      config?: AgentPresetConfigEntryView[];
+    };
 
-export type ReadAgentProfilesResult = {
-  profiles: AgentProfileView[];
+export type AgentPresetView = {
+  id: string;
+  guidance: string;
+  scope: "host" | "project" | "global";
+  agent: AgentPresetAgentView;
+};
+
+export type ReadAgentPresetsRequest = {};
+
+export type ReadAgentPresetsResult = {
+  presets: AgentPresetView[];
 };
 
 export type AcpusRunStatus =
@@ -143,7 +159,7 @@ export type ActivityHoverDetail =
       agent: string;
       model?: string;
       prompt?: BoundedHoverText & {
-        origin: "authored" | "steering" | "continuation";
+        origin: "authored" | "steering" | "repair";
       };
       result?: HoverResult;
     }

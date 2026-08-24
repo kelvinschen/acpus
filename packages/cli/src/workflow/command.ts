@@ -2,8 +2,22 @@ import type { Readable, Writable } from "node:stream";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { Command } from "commander";
-import { tryNormalizeWorkflowInput, tryValidateAgentOverrides, type AgentOverrideMap, type InspectionObservation, type PreparedRunWorkflow, type RunDetails } from "@acpus/runtime";
+import {
+  finalizeAgentBindings,
+  hasPresetInjections,
+  loadAgentPresetCatalog,
+  tryNormalizeWorkflowInput,
+  tryParseAgentInjectionMap,
+  unboundAgentNames,
+  type AgentInjectionMap,
+  type AgentPresetCatalog,
+  type InspectionObservation,
+  type PreparedRunWorkflow,
+  type RunDetails,
+} from "@acpus/runtime";
 import type { JsonValue } from "@acpus/expression/ir";
+import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
 import { importError, runError, usageError, validationError, vizError } from "../presentation/errors.js";
 import { RunInspectionTranscriptPresenter } from "../runs/follow.js";
 import { discoverWorkflowCatalog, lookupWorkflowCatalogEntry, type WorkflowCatalogScope, type WorkflowCatalogScopeOptions } from "./catalog.js";
@@ -85,7 +99,7 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
     .description("Standalone workflow validation without admitting or executing a run.")
     .argument("<workflow-module>", "workflow module path, catalog name, or - for stdin")
     .option("--input <json|file.json>", "validate inline JSON or a JSON file as the workflow input")
-    .option("--agents <json|file.json>", "validate inline JSON or a JSON file as submit-time agent overrides")
+    .option("--agents <json|file.json>", "validate inline JSON or a JSON file as submit-time Agent injections")
     .option("--project", "resolve workflow name from the project catalog")
     .option("--global", "resolve workflow name from the global catalog")
     .action(async (workflow: string, options: CheckWorkflowOptions) => {
@@ -97,7 +111,7 @@ export function createWorkflowCommand(ctx: WorkflowCommandContext): Command {
     .description("Typecheck, compile, validate, and submit a workflow run.")
     .argument("<workflow-module>", "workflow module path, catalog name, or - for stdin (prefer a quoted heredoc)")
     .option("--input <json|file.json>", "freeze inline JSON or a JSON file as the workflow input")
-    .option("--agents <json|file.json>", "override declared agents with inline JSON or a JSON file")
+    .option("--agents <json|file.json>", "inject declared Agents with inline JSON or a JSON file")
     .option("--follow", "wait until the admitted run becomes terminal; Ctrl-C detaches")
     .option("--await-decision", "wait until the admitted run reaches an external decision boundary; Ctrl-C detaches")
     .option("--project", "resolve workflow name from the project catalog")
@@ -155,14 +169,14 @@ async function writeCatalogEntryResult(ctx: WorkflowCommandContext, name: string
 
 async function importWorkflow(ctx: WorkflowCommandContext, source: string, options: ImportWorkflowOptions): Promise<void> {
   const scope = importScope(options);
-  const imported = await importWorkflowPackage({
+  const imported = await Effect.runPromise(Effect.result(importWorkflowPackage({
     cwd: ctx.cwd,
     source,
     scope,
     check: options.check ?? false,
-  });
-  imported.match(
-    result => {
+  })));
+  Result.match(imported, {
+    onSuccess: result => {
       ctx.setExitCode(writeResult(result.checked
         ? {
             ok: true,
@@ -181,12 +195,12 @@ async function importWorkflow(ctx: WorkflowCommandContext, source: string, optio
             checked: false,
           }, ctx, 0));
     },
-    failure => {
+    onFailure: failure => {
       if (failure.type === "preparation") throw workflowPreparationCliError(failure.failure);
       if (failure.type === "usage") throw usageError(failure.message);
       throw importError(failure.message, { errorCode: failure.errorCode });
     },
-  );
+  });
 }
 
 function importScope(options: WorkflowCatalogScopeOptions): WorkflowCatalogScope {
@@ -196,7 +210,7 @@ function importScope(options: WorkflowCatalogScopeOptions): WorkflowCatalogScope
 
 async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, options: CheckWorkflowOptions): Promise<void> {
   const input = options.input === undefined ? undefined : await parseInput(options.input, ctx.cwd);
-  const agentOverrides = await parseAgents(options.agents, ctx.cwd);
+  const agentInjections = await parseAgents(options.agents, ctx.cwd);
   const { prepared, catalog } = await prepareWorkflowForCli({
     workspaceDir: ctx.cwd,
     workflow,
@@ -206,15 +220,33 @@ async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, opti
   });
   if (input !== undefined) {
     const normalized = tryNormalizeWorkflowInput(prepared.ir, input);
-    if (normalized.isErr()) throw validationError(normalized.error.message);
+    if (Result.isFailure(normalized)) throw validationError(normalized.failure.message);
   }
-  const validatedOverrides = tryValidateAgentOverrides(prepared.ir, agentOverrides);
-  if (validatedOverrides.isErr()) throw validationError(validatedOverrides.error.message);
+  const unresolved = agentInjections === undefined ? unboundAgentNames(prepared.ir.agents) : [];
+  if (agentInjections !== undefined) {
+    const parsed = tryParseAgentInjectionMap(agentInjections, prepared.ir.agents);
+    if (Result.isFailure(parsed)) throw validationError(parsed.failure.message);
+    let presetCatalog: AgentPresetCatalog | undefined;
+    if (hasPresetInjections(parsed.success)) {
+      const loaded = await Effect.runPromise(Effect.result(
+        loadAgentPresetCatalog({ workspaceDir: ctx.cwd }),
+      ));
+      if (Result.isFailure(loaded)) throw validationError(loaded.failure.message);
+      presetCatalog = loaded.success;
+    }
+    const finalized = finalizeAgentBindings({
+      declarations: prepared.ir.agents,
+      injections: parsed.success,
+      ...(presetCatalog === undefined ? {} : { presetCatalog }),
+    });
+    if (Result.isFailure(finalized)) throw validationError(finalized.failure.message);
+  }
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "check",
     message: "Workflow check passed.",
     workflow: summarizeWorkflow(prepared.ir),
+    unboundAgents: unresolved,
     diagnostics: prepared.ir.diagnostics,
     ...(catalog ? { catalog } : {}),
   }, ctx, 0));
@@ -223,7 +255,7 @@ async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, opti
 async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, options: RunWorkflowOptions): Promise<void> {
   if (options.follow && options.awaitDecision) throw usageError("--follow and --await-decision are mutually exclusive.");
   const input = options.input === undefined ? {} : await parseInput(options.input, ctx.cwd);
-  const agentOverrides = await parseAgents(options.agents, ctx.cwd);
+  const agentInjections = await parseAgents(options.agents, ctx.cwd);
   const { prepared } = await prepareWorkflowForCli({
     workspaceDir: ctx.cwd,
     workflow,
@@ -232,10 +264,13 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
     ...(options.global ? { global: true } : {}),
   });
   const normalizedInput = tryNormalizeWorkflowInput(prepared.ir, input);
-  if (normalizedInput.isErr()) throw validationError(normalizedInput.error.message);
-  const validatedOverrides = tryValidateAgentOverrides(prepared.ir, agentOverrides);
-  if (validatedOverrides.isErr()) throw validationError(validatedOverrides.error.message);
-  const admittedOverrides = Object.keys(validatedOverrides.value).length === 0 ? undefined : validatedOverrides.value;
+  if (Result.isFailure(normalizedInput)) throw validationError(normalizedInput.failure.message);
+  let admittedInjections: AgentInjectionMap | undefined;
+  if (agentInjections !== undefined) {
+    const parsed = tryParseAgentInjectionMap(agentInjections, prepared.ir.agents);
+    if (Result.isFailure(parsed)) throw validationError(parsed.failure.message);
+    admittedInjections = parsed.success;
+  }
   const until = options.follow
     ? "subject-terminal" as const
     : options.awaitDecision
@@ -244,18 +279,19 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   const submitted = await submitWorkflowThroughDaemon(
     ctx,
     prepared,
-    normalizedInput.value,
-    admittedOverrides,
+    normalizedInput.success,
+    admittedInjections,
     until,
   );
 
   if (until === "admitted") {
-    ctx.setExitCode(writeResult({
+    const result = {
       ok: true,
       phase: "run",
       diagnostics: prepared.ir.diagnostics,
       run: toRunRecord(submitted.run),
-    }, ctx, 0));
+    } as const;
+    ctx.setExitCode(writeResult(result, ctx, 0));
     return;
   }
   if (submitted.kind === "detached") {
@@ -274,7 +310,7 @@ async function submitWorkflowThroughDaemon(
   ctx: WorkflowCommandContext,
   prepared: PreparedRunWorkflow,
   input: JsonValue,
-  agentOverrides: AgentOverrideMap | undefined,
+  agentInjections: AgentInjectionMap | undefined,
   until: "admitted" | "subject-terminal" | "decision-boundary",
 ): Promise<SubmitWorkflowOutcome> {
   const controller = new AbortController();
@@ -299,7 +335,7 @@ async function submitWorkflowThroughDaemon(
     requestId: daemonAdmissionRequestId(),
     prepared,
     input,
-    ...(agentOverrides === undefined ? {} : { agentOverrides }),
+    ...(agentInjections === undefined ? {} : { agentInjections }),
     until,
   }, { signal: controller.signal })[Symbol.asyncIterator]();
   try {
@@ -307,8 +343,8 @@ async function submitWorkflowThroughDaemon(
       const next = await iterator.next();
       if (controller.signal.aborted) break;
       if (next.done) break;
-      if (next.value.isErr()) throw daemonRunError(next.value.error);
-      const frame = next.value.value;
+      if (Result.isFailure(next.value)) throw daemonRunError(next.value.failure);
+      const frame = next.value.success;
       if (frame.kind === "admitted") {
         admitted = frame.run;
         if (until !== "admitted") {

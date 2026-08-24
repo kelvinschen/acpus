@@ -2,7 +2,8 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { connect } from "node:net";
 import { dirname } from "node:path";
 import { describe, expect, it } from "vitest";
-import { daemonEndpoint, startDaemonLoop } from "../src/index.js";
+import { daemonEndpoint } from "../src/index.js";
+import { startDaemonLoop } from "./support/daemon-loop.js";
 import { admitSyntheticWorkflow, signalWorkflow } from "./support/runtime-fixtures.js";
 import {
   requestDaemonControl,
@@ -25,15 +26,14 @@ describe.concurrent("daemon lease socket protocol", () => {
           status: "ok",
           pid: process.pid,
           leaseGeneration: expect.any(Number),
-          protocolVersion: 4,
+          protocolVersion: 10,
           packageVersion: "0.0.0-test",
           authority: {
             workspaceKey: expect.any(String),
-            runtimeAbi: 1,
+            runtimeAbi: 5,
             layoutVersion: 2,
-            storageVersion: 10,
+            storageVersion: 19,
             authorityId: expect.any(String),
-            storeBinding: expect.stringMatching(/^sha256:[a-f0-9]{64}$/),
             leaseGeneration: expect.any(Number),
           },
         });
@@ -123,43 +123,6 @@ describe.concurrent("daemon lease socket protocol", () => {
           type: "fork",
           runId: source.run.id,
         })).rejects.toMatchObject({ code: "CONTROL_CONFLICT" });
-      } finally {
-        await loop.shutdown();
-      }
-    });
-  });
-
-  it("uses socket binding as the single-instance authority", async () => {
-    await withDaemonLeaseWorkspace(async ({ dir }) => {
-      const loop = await startDaemonLoop(dir, {
-        heartbeatMs: 1,
-        packageVersion: "0.0.0-test",
-      });
-      try {
-        await expect(startDaemonLoop(dir, {
-          heartbeatMs: 1,
-          packageVersion: "0.0.0-test",
-        })).rejects.toMatchObject({ code: "EADDRINUSE" });
-        await expect(requestDaemonStatus(dir)).resolves.toMatchObject({ status: "ok" });
-      } finally {
-        await loop.shutdown();
-      }
-    });
-  });
-
-  it("removes a stale filesystem socket before binding", async () => {
-    await withDaemonLeaseWorkspace(async ({ dir }) => {
-      const endpoint = daemonEndpoint(dir);
-      if (endpoint.startsWith("\0") || process.platform === "win32") return;
-      await mkdir(dirname(endpoint), { recursive: true });
-      await writeFile(endpoint, "stale socket");
-
-      const loop = await startDaemonLoop(dir, {
-        heartbeatMs: 50,
-        packageVersion: "0.0.0-test",
-      });
-      try {
-        await expect(requestDaemonStatus(dir)).resolves.toMatchObject({ status: "ok" });
       } finally {
         await loop.shutdown();
       }

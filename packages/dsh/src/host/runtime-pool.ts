@@ -5,7 +5,12 @@ import {
   type WorkspaceRuntimeHostDependencies,
   type WorkspaceRuntimeOpenFailure,
 } from "@acpus/runtime/host";
-import { err, ok, ResultAsync, type Result } from "neverthrow";
+import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Result from "effect/Result";
+import * as Semaphore from "effect/Semaphore";
+import type * as Scope from "effect/Scope";
 import { AcpusOperationError } from "./errors.js";
 
 export type RuntimePoolOpenFailure =
@@ -22,11 +27,22 @@ export type OpenedWorkspaceRuntime = {
   runtime: WorkspaceRuntime;
 };
 
+export function makeRuntimePool(
+  stateRoot: string,
+  dependencies: WorkspaceRuntimeHostDependencies = {},
+): Effect.Effect<RuntimePool, never, Scope.Scope> {
+  return Effect.acquireRelease(
+    Effect.sync(() => new RuntimePool(stateRoot, dependencies)),
+    pool => pool.close(),
+  );
+}
+
 export class RuntimePool {
   private readonly runtimes = new Map<
     string,
-    Promise<Result<WorkspaceRuntime, WorkspaceRuntimeOpenFailure>>
+    Effect.Effect<WorkspaceRuntime, WorkspaceRuntimeOpenFailure>
   >();
+  private readonly semaphore = Semaphore.makeUnsafe(1);
   private closed = false;
 
   constructor(
@@ -34,85 +50,65 @@ export class RuntimePool {
     private readonly dependencies: WorkspaceRuntimeHostDependencies = {},
   ) {}
 
-  open(workspace: string): ResultAsync<OpenedWorkspaceRuntime, RuntimePoolOpenFailure> {
-    if (this.closed) {
-      throw new AcpusOperationError(
-        "Acpus Runtime pool is closed.",
-        "ACPUS_RUNTIME_CLOSED",
-      );
-    }
-    return new ResultAsync(this.openResult(workspace));
-  }
-
-  private async openResult(
-    workspace: string,
-  ): Promise<Result<OpenedWorkspaceRuntime, RuntimePoolOpenFailure>> {
-    let canonicalWorkspace: string;
-    try {
-      canonicalWorkspace = await realpath(workspace);
-    } catch (error) {
-      return err({
-        type: "workspace-unavailable",
-        workspace,
-        message: `Acpus workspace '${workspace}' is unavailable. Restore the original path and retry.`,
-        cause: error,
+  open(workspace: string): Effect.Effect<OpenedWorkspaceRuntime, RuntimePoolOpenFailure> {
+    const pool = this;
+    return Effect.gen(function* () {
+      const canonicalWorkspace = yield* Effect.tryPromise({
+        try: () => realpath(workspace),
+        catch: cause => ({
+          type: "workspace-unavailable" as const,
+          workspace,
+          message: `Acpus workspace '${workspace}' is unavailable. Restore the original path and retry.`,
+          cause,
+        }),
       });
-    }
-    if (this.closed) {
-      throw new AcpusOperationError(
-        "Acpus Runtime pool is closed.",
-        "ACPUS_RUNTIME_CLOSED",
-      );
-    }
-    let pending = this.runtimes.get(canonicalWorkspace);
-    if (pending === undefined) {
-      const opening = (async (): Promise<Result<WorkspaceRuntime, WorkspaceRuntimeOpenFailure>> => {
-        return openWorkspaceRuntime({
+      const opening = yield* pool.semaphore.withPermit(Effect.gen(function* () {
+        pool.ensureOpen();
+        const existing = pool.runtimes.get(canonicalWorkspace);
+        if (existing !== undefined) return existing;
+        let cached!: Effect.Effect<WorkspaceRuntime, WorkspaceRuntimeOpenFailure>;
+        cached = yield* Effect.cached(openWorkspaceRuntime({
           workspace: canonicalWorkspace,
-          stateRoot: this.stateRoot,
-        }, this.dependencies);
-      })();
-      pending = opening;
-      this.runtimes.set(canonicalWorkspace, opening);
-      void opening.then(
-        opened => {
-          if (opened.isErr() && this.runtimes.get(canonicalWorkspace) === opening) {
-            this.runtimes.delete(canonicalWorkspace);
-          }
-        },
-        () => {
-          if (this.runtimes.get(canonicalWorkspace) === opening) {
-            this.runtimes.delete(canonicalWorkspace);
-          }
-        },
-      );
-    }
-    const opened = await pending;
-    if (opened.isErr()) return err(opened.error);
-    if (this.closed) {
-      throw new AcpusOperationError(
-        "Acpus Runtime pool closed while the workspace was opening.",
-        "ACPUS_RUNTIME_CLOSED",
-      );
-    }
-    return ok({ workspace: canonicalWorkspace, runtime: opened.value });
+          stateRoot: pool.stateRoot,
+        }, pool.dependencies).pipe(
+          Effect.onExit(exit => Exit.isFailure(exit)
+            ? Effect.sync(() => {
+                if (pool.runtimes.get(canonicalWorkspace) === cached) pool.runtimes.delete(canonicalWorkspace);
+              })
+            : Effect.void),
+        ));
+        pool.runtimes.set(canonicalWorkspace, cached);
+        return cached;
+      }));
+      const runtime = yield* opening;
+      pool.ensureOpen("Acpus Runtime pool closed while the workspace was opening.");
+      return { workspace: canonicalWorkspace, runtime };
+    });
   }
 
-  async close(): Promise<void> {
-    this.closed = true;
-    const settled = await Promise.allSettled(
-      [...this.runtimes.values()].map(async pending => {
-        const opened = await pending;
-        if (opened.isOk()) await opened.value.close();
-      }),
-    );
-    this.runtimes.clear();
-    const failures = settled
-      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-      .map(result => result.reason);
-    if (failures.length === 1) throw failures[0];
-    if (failures.length > 1) {
-      throw new AggregateError(failures, "Acpus DSH runtimes could not all be closed.");
-    }
+  close(): Effect.Effect<void> {
+    const pool = this;
+    return pool.semaphore.withPermit(Effect.gen(function* () {
+      pool.closed = true;
+      const exits = yield* Effect.forEach(
+        pool.runtimes.values(),
+        opening => Effect.result(opening).pipe(
+          Effect.flatMap(opened => Result.isFailure(opened) ? Effect.void : opened.success.close()),
+          Effect.exit,
+        ),
+        { concurrency: "unbounded" },
+      );
+      pool.runtimes.clear();
+      let failure: Cause.Cause<never> | undefined;
+      for (const exit of exits) {
+        if (Exit.isFailure(exit)) failure = failure === undefined ? exit.cause : Cause.combine(failure, exit.cause);
+      }
+      if (failure !== undefined) return yield* Effect.failCause(failure);
+    }));
+  }
+
+  private ensureOpen(message = "Acpus Runtime pool is closed."): void {
+    if (!this.closed) return;
+    throw new AcpusOperationError(message, "ACPUS_RUNTIME_CLOSED");
   }
 }

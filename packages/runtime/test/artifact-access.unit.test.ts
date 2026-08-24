@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import { createHash } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
 import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
@@ -124,7 +125,7 @@ describe("artifact access", () => {
     };
 
     expect(tampered.byteLength).toBe(registered.byteLength);
-    expect(tryBindArtifactRef(ref(runId, artifactId), context)._unsafeUnwrap().path).toBe(path);
+    expect(Result.getOrThrow(tryBindArtifactRef(ref(runId, artifactId), context)).path).toBe(path);
     expect(() => readVerifiedArtifact(context, artifactId)).toThrow(
       `Artifact '${artifactId}' failed size/digest verification`,
     );
@@ -139,7 +140,7 @@ describe("artifact access", () => {
       runId,
       store: store(record(path, bytes)),
     };
-    const bound = tryBindArtifactRef(ref(runId, artifactId), context)._unsafeUnwrap();
+    const bound = Result.getOrThrow(tryBindArtifactRef(ref(runId, artifactId), context));
 
     await rename(path, openedPath);
     await writeFile(path, bytes);
@@ -176,42 +177,42 @@ describe("artifact access", () => {
   );
 
   it("returns tagged failures for malformed, foreign, missing, and unavailable local artifacts", async () => {
-    expect(tryBindArtifactRef({ kind: "artifact", uri: "artifact://missing-id" }, {
+    expect(Result.getOrThrow(Result.flip(tryBindArtifactRef({ kind: "artifact", uri: "artifact://missing-id" }, {
       runId,
       store: store(),
-    })._unsafeUnwrapErr().type).toBe("invalid-artifact-ref");
+    }))).type).toBe("invalid-artifact-ref");
 
-    expect(tryBindArtifactRef(ref("run_other", artifactId), {
+    expect(Result.getOrThrow(Result.flip(tryBindArtifactRef(ref("run_other", artifactId), {
       runId,
       store: store(),
-    })._unsafeUnwrapErr().type).toBe("artifact-run-mismatch");
+    }))).type).toBe("artifact-run-mismatch");
 
-    expect(tryBindArtifactRef(ref(runId, artifactId), {
+    expect(Result.getOrThrow(Result.flip(tryBindArtifactRef(ref(runId, artifactId), {
       runId,
       store: store(),
-    })._unsafeUnwrapErr().type).toBe("artifact-not-found");
+    }))).type).toBe("artifact-not-found");
 
     const missingPath = join(runDir, "artifacts", "missing.txt");
-    expect(tryBindArtifactRef(ref(runId, artifactId), {
+    expect(Result.getOrThrow(Result.flip(tryBindArtifactRef(ref(runId, artifactId), {
       runId,
       store: store(record(missingPath)),
-    })._unsafeUnwrapErr().type).toBe("artifact-path-invalid");
+    }))).type).toBe("artifact-path-invalid");
 
     const directoryPath = join(runDir, "artifacts", "directory");
     await mkdir(directoryPath);
-    expect(tryBindArtifactRef(ref(runId, artifactId), {
+    expect(Result.getOrThrow(Result.flip(tryBindArtifactRef(ref(runId, artifactId), {
       runId,
       store: store(record(directoryPath)),
-    })._unsafeUnwrapErr().type).toBe("artifact-path-invalid");
+    }))).type).toBe("artifact-path-invalid");
 
     const targetPath = join(runDir, "artifacts", "target.txt");
     const symlinkPath = join(runDir, "artifacts", "link.txt");
     await writeFile(targetPath, "input\n");
     await symlink(targetPath, symlinkPath);
-    expect(tryBindArtifactRef(ref(runId, artifactId), {
+    expect(Result.getOrThrow(Result.flip(tryBindArtifactRef(ref(runId, artifactId), {
       runId,
       store: store(record(symlinkPath)),
-    })._unsafeUnwrapErr().type).toBe("artifact-path-invalid");
+    }))).type).toBe("artifact-path-invalid");
   });
 
   it("propagates store failures and registry path escapes", () => {
@@ -269,10 +270,10 @@ describe("artifact access", () => {
         }),
       };
 
-      expect(tryBindArtifactRef(ref(runId, artifactId), {
+      expect(Result.isSuccess(tryBindArtifactRef(ref(runId, artifactId), {
         runId,
         store: otherStore,
-      }).isOk()).toBe(true);
+      }))).toBe(true);
     } finally {
       restoreOtherRuntimeHome();
       await Promise.all([

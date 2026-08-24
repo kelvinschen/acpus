@@ -1,13 +1,21 @@
-import { spawn } from "node:child_process";
+import type { OwnedProcessError, ProcessExit, OwnedProcess, ProcessHostShape } from "@acpus/owned-process";
 import { tryParseDurationMs } from "@acpus/core/ir";
-import { scheduleCancellableTimeout } from "../cancellable-timeout.js";
+import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
+import * as Deferred from "effect/Deferred";
+import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
+import * as Stream from "effect/Stream";
+import type * as Scope from "effect/Scope";
 import type { HookEvent, HookMatch, LoadedHookConfig } from "./config.js";
 import type { HookContext } from "./dispatch.js";
 import type { HookJournalEntry } from "./journal.js";
 
 export type HookRunner = {
   trigger(event: HookEvent, context: HookContext): void;
-  drain(): Promise<void>;
+  drain(): Effect.Effect<void>;
   activeCount(): number;
 };
 
@@ -15,39 +23,101 @@ export type HookJournalWriter = {
   writeHookJournal(entry: HookJournalEntry): void;
 };
 
+type HookJob = Readonly<{
+  effect: Effect.Effect<void>;
+  discard(): void;
+}>;
+
+type CommandResult = {
+  status: HookJournalEntry["status"];
+  exitCode?: number;
+  stdout: string;
+  stderr: string;
+  error?: string;
+};
+
+type ProcessOutcome =
+  | { type: "closed"; exit: ProcessExit }
+  | { type: "failed"; error: OwnedProcessError }
+  | { type: "timed_out" };
+
 const defaultTimeout = "30s";
+const terminationGraceMs = 2_000;
 const outputLimit = 4 * 1024;
 
 export function createHookRunner(
   hooks: readonly LoadedHookConfig[],
   journal: HookJournalWriter,
+  processes: ProcessHostShape,
   options: { now?: () => Date } = {},
-): HookRunner {
-  const now = options.now ?? (() => new Date());
-  const active = new Set<Promise<void>>();
-  let nextTriggerOrder = 1;
+): Effect.Effect<HookRunner, never, Scope.Scope> {
+  return Effect.gen(function*() {
+    const now = options.now ?? (() => new Date());
+    const jobs = yield* Effect.acquireRelease(
+      Queue.unbounded<HookJob, Cause.Done>(),
+      jobs => Queue.clear(jobs).pipe(
+        Effect.tap(pending => Effect.sync(() => {
+          for (const job of pending) job.discard();
+        })),
+        Effect.ensuring(Effect.sync(() => {
+          Queue.endUnsafe(jobs);
+        })),
+        Effect.asVoid,
+      ),
+    );
+    const active = new Set<number>();
+    let idle = completedDeferred();
+    let nextInvocation = 1;
+    let nextTriggerOrder = 1;
 
-  function trigger(event: HookEvent, context: HookContext): void {
-    for (const hook of hooks) {
-      if (hook.event !== event || !matches(hook.match, context)) continue;
-      const startedAt = now();
-      const triggerOrder = nextTriggerOrder++;
-      const running = spawnHook(hook, context, startedAt, triggerOrder, journal)
-        .catch(() => undefined)
-        .finally(() => active.delete(running));
-      active.add(running);
-    }
-  }
+    const settle = (invocation: number): void => {
+      active.delete(invocation);
+      if (active.size === 0) Deferred.doneUnsafe(idle, Effect.void);
+    };
 
-  return {
-    trigger,
-    async drain() {
-      await Promise.all([...active]);
-    },
-    activeCount() {
-      return active.size;
-    },
-  };
+    yield* Stream.fromQueue(jobs).pipe(
+      Stream.runForEach(job => Effect.forkScoped(job.effect).pipe(
+        Effect.uninterruptible,
+        Effect.asVoid,
+      )),
+      Effect.forkScoped,
+    );
+
+    return {
+      trigger(event, context) {
+        for (const hook of hooks) {
+          if (hook.event !== event || !matches(hook.match, context)) continue;
+          if (active.size === 0) idle = Deferred.makeUnsafe<void>();
+          const invocation = nextInvocation++;
+          const startedAt = now();
+          const triggerOrder = nextTriggerOrder++;
+          active.add(invocation);
+          const discard = () => settle(invocation);
+          const effect = spawnHook(
+            hook,
+            context,
+            startedAt,
+            triggerOrder,
+            journal,
+            processes,
+            now,
+          ).pipe(
+            Effect.catchCause(() => Effect.void),
+            Effect.ensuring(Effect.sync(discard)),
+          );
+          if (!Queue.offerUnsafe(jobs, { effect, discard })) discard();
+        }
+      },
+      drain: () => Effect.suspend(() => Deferred.await(idle)),
+      activeCount: () => active.size,
+    };
+  });
+}
+
+function completedDeferred(): Deferred.Deferred<void> {
+  const deferred = Deferred.makeUnsafe<void>();
+  Deferred.doneUnsafe(deferred, Effect.void);
+  return deferred;
 }
 
 function matches(match: HookMatch | undefined, context: HookContext): boolean {
@@ -62,99 +132,155 @@ function matchesField(regex: string | undefined, value: string | undefined): boo
   return regex === undefined || (value !== undefined && new RegExp(regex).test(value));
 }
 
-async function spawnHook(hook: LoadedHookConfig, context: HookContext, startedAt: Date, triggerOrder: number, journal: HookJournalWriter): Promise<void> {
+function spawnHook(
+  hook: LoadedHookConfig,
+  context: HookContext,
+  startedAt: Date,
+  triggerOrder: number,
+  journal: HookJournalWriter,
+  processes: ProcessHostShape,
+  now: () => Date,
+): Effect.Effect<void> {
   const timeout = tryParseDurationMs(hook.timeout ?? defaultTimeout);
-  if (timeout.isErr()) throw new Error(`Invalid hook timeout '${hook.timeout ?? defaultTimeout}'.`);
+  if (Result.isFailure(timeout)) return Effect.void;
   const startedMs = startedAt.getTime();
-  const result = await runShellCommand(hook.command, context, timeout.value);
-  writeJournal(journal, journalEntry(hook, context, triggerOrder, {
-    ...result,
-    durationMs: Math.max(0, Date.now() - startedMs),
-    triggeredAt: startedAt.toISOString(),
-  }));
+  return runShellCommand(hook.command, context, timeout.success, processes).pipe(
+    Effect.flatMap(result => Effect.sync(() => writeJournal(journal, journalEntry(hook, context, triggerOrder, {
+      ...result,
+      durationMs: Math.max(0, now().getTime() - startedMs),
+      triggeredAt: startedAt.toISOString(),
+    })))),
+  );
 }
 
-function runShellCommand(command: string, context: HookContext, timeoutMs: number): Promise<{
-  status: HookJournalEntry["status"];
-  exitCode?: number;
-  stdout: string;
-  stderr: string;
-  error?: string;
-}> {
-  const timeoutStartedAt = globalThis.performance.now();
-  return new Promise(resolve => {
-    const stdout = new OutputCollector(outputLimit);
-    const stderr = new OutputCollector(outputLimit);
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn(command, { shell: true, cwd: context.run.workspaceDir, detached: process.platform !== "win32" });
-    } catch (error) {
-      const timedOut = Math.max(0, globalThis.performance.now() - timeoutStartedAt) >= timeoutMs;
-      resolve({
+function runShellCommand(
+  command: string,
+  context: HookContext,
+  timeoutMs: number,
+  processes: ProcessHostShape,
+): Effect.Effect<CommandResult> {
+  return Effect.scoped(Effect.gen(function*() {
+    const timeoutStartedAt = yield* Clock.monotonicTimeNanos;
+    const spawned = yield* Effect.result(processes.spawn({
+      command,
+      shell: true,
+      cwd: context.run.workspaceDir,
+      detached: globalThis.process.platform !== "win32",
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    }));
+    if (Result.isFailure(spawned)) {
+      const timedOut = yield* deadlineExpired(timeoutStartedAt, timeoutMs);
+      return {
         status: timedOut ? "timed_out" : "failed",
         stdout: "",
         stderr: "",
-        error: timedOut ? "timeout" : error instanceof Error ? error.message : String(error),
-      });
-      return;
+        error: timedOut ? "timeout" : spawned.failure.message,
+      };
     }
-    let timedOut = false;
-    let settled = false;
-    let cancelTimeout: (() => void) | undefined;
-    let killTimer: NodeJS.Timeout | undefined;
-    const markTimedOut = () => {
-      if (timedOut || settled) return;
-      timedOut = true;
-      killProcessTree(child.pid, "SIGTERM");
-      killTimer = setTimeout(() => killProcessTree(child.pid, "SIGKILL"), 2_000);
-    };
-    const enforceTimeout = (): boolean => {
-      if (Math.max(0, globalThis.performance.now() - timeoutStartedAt) < timeoutMs) return timedOut;
-      markTimedOut();
-      return true;
-    };
-    const remainingTimeoutMs = timeoutMs - Math.max(0, globalThis.performance.now() - timeoutStartedAt);
-    if (remainingTimeoutMs <= 0) markTimedOut();
-    else cancelTimeout = scheduleCancellableTimeout(remainingTimeoutMs, markTimedOut);
 
-    child.stdout?.on("data", chunk => stdout.append(Buffer.from(chunk as Buffer)));
-    child.stderr?.on("data", chunk => stderr.append(Buffer.from(chunk as Buffer)));
-    child.stdin?.on("error", () => {
-      // Hooks are non-interfering; a command that exits before reading stdin
-      // should be recorded from process close/error, not crash the daemon.
-    });
-    child.on("error", error => finish({
-      status: enforceTimeout() ? "timed_out" : "failed",
-      stdout: stdout.toString(),
-      stderr: stderr.toString(),
-      error: timedOut ? "timeout" : error.message,
-    }));
-    child.on("close", code => {
-      enforceTimeout();
-      finish({
-        status: timedOut ? "timed_out" : code === 0 ? "completed" : "failed",
-        ...(timedOut || code === null ? {} : { exitCode: code }),
-        stdout: stdout.toString(),
-        stderr: stderr.toString(),
-        ...(timedOut ? { error: "timeout" } : code === 0 ? {} : { error: `exit_code_${code ?? "null"}` }),
-      });
-    });
-    child.stdin?.end(JSON.stringify(context));
-
-    function finish(result: {
-      status: HookJournalEntry["status"];
-      exitCode?: number;
-      stdout: string;
-      stderr: string;
-      error?: string;
-    }): void {
-      if (settled) return;
-      settled = true;
-      cancelTimeout?.();
-      if (killTimer) clearTimeout(killTimer);
-      resolve(result);
+    const child = spawned.success;
+    const stdout = new OutputCollector(outputLimit);
+    const stderr = new OutputCollector(outputLimit);
+    const stdoutFiber = yield* collectOutput(child.stdout, stdout).pipe(Effect.forkScoped);
+    const stderrFiber = yield* collectOutput(child.stderr, stderr).pipe(Effect.forkScoped);
+    if (child.stdin !== undefined) {
+      yield* writeStdin(child.stdin, JSON.stringify(context)).pipe(
+        Effect.ignore,
+        Effect.forkScoped,
+      );
     }
+
+    const remainingTimeoutMs = yield* deadlineRemaining(timeoutStartedAt, timeoutMs);
+    let outcome = yield* Effect.raceFirst(
+      processOutcome(child),
+      Effect.sleep(remainingTimeoutMs).pipe(
+        Effect.flatMap(() => terminate(child)),
+        Effect.as<ProcessOutcome>({ type: "timed_out" }),
+      ),
+    );
+    if (outcome.type !== "timed_out" && (yield* deadlineExpired(timeoutStartedAt, timeoutMs))) {
+      yield* terminate(child);
+      outcome = { type: "timed_out" };
+    }
+
+    if (outcome.type !== "failed") {
+      yield* Fiber.join(stdoutFiber);
+      yield* Fiber.join(stderrFiber);
+    }
+    return commandResult(outcome, stdout.toString(), stderr.toString());
+  }));
+}
+
+function processOutcome(child: OwnedProcess): Effect.Effect<ProcessOutcome> {
+  return child.closed.pipe(Effect.match({
+    onFailure: error => ({ type: "failed" as const, error }),
+    onSuccess: exit => ({ type: "closed" as const, exit }),
+  }));
+}
+
+function terminate(child: OwnedProcess): Effect.Effect<void> {
+  return Effect.gen(function*() {
+    yield* child.signal("SIGTERM").pipe(Effect.ignore);
+    const exitedDuringGrace = yield* Effect.raceFirst(
+      child.closed.pipe(Effect.ignore, Effect.as(true)),
+      Effect.sleep(terminationGraceMs).pipe(Effect.as(false)),
+    );
+    if (exitedDuringGrace) return;
+    yield* child.signal("SIGKILL").pipe(Effect.ignore);
+    yield* child.closed.pipe(Effect.ignore);
   });
+}
+
+function deadlineExpired(startedAt: bigint, timeoutMs: number): Effect.Effect<boolean> {
+  return deadlineRemaining(startedAt, timeoutMs).pipe(Effect.map(remaining => remaining <= 0));
+}
+
+function deadlineRemaining(startedAt: bigint, timeoutMs: number): Effect.Effect<number> {
+  return Clock.monotonicTimeNanos.pipe(Effect.map(now =>
+    Math.max(0, timeoutMs - Number(now - startedAt) / 1_000_000)));
+}
+
+function collectOutput(
+  output: OwnedProcess["stdout"],
+  collector: OutputCollector,
+): Effect.Effect<void> {
+  return Stream.runForEach(output, chunk => Effect.sync(() => collector.append(Buffer.from(chunk)))).pipe(
+    Effect.ignore,
+  );
+}
+
+function writeStdin(stdin: WritableStream<Uint8Array>, value: string): Effect.Effect<void, unknown> {
+  return Effect.tryPromise({
+    try: async () => {
+      const writer = stdin.getWriter();
+      try {
+        await writer.write(new TextEncoder().encode(value));
+        await writer.close();
+      } finally {
+        writer.releaseLock();
+      }
+    },
+    catch: cause => cause,
+  });
+}
+
+function commandResult(outcome: ProcessOutcome, stdout: string, stderr: string): CommandResult {
+  if (outcome.type === "timed_out") {
+    return { status: "timed_out", stdout, stderr, error: "timeout" };
+  }
+  if (outcome.type === "failed") {
+    return { status: "failed", stdout, stderr, error: outcome.error.message };
+  }
+  const code = outcome.exit.exitCode;
+  return {
+    status: code === 0 ? "completed" : "failed",
+    ...(code === null ? {} : { exitCode: code }),
+    stdout,
+    stderr,
+    ...(code === 0 ? {} : { error: `exit_code_${code ?? "null"}` }),
+  };
 }
 
 function journalEntry(
@@ -179,7 +305,6 @@ function journalEntry(
     source: hook.source,
     sourcePath: hook.sourcePath,
     handlerId: hook.id ?? hook.effectiveId,
-    definitionHash: hook.definitionHash,
     ...(context.node?.key === undefined ? {} : { nodeKey: context.node.key }),
     status: result.status,
     ...(result.exitCode === undefined ? {} : { exitCode: result.exitCode }),
@@ -196,23 +321,6 @@ function writeJournal(journal: HookJournalWriter, entry: HookJournalEntry): void
     journal.writeHookJournal(entry);
   } catch {
     // Hooks are non-interfering; journal failures must not affect workflow execution.
-  }
-}
-
-function killProcessTree(pid: number | undefined, signal: NodeJS.Signals): void {
-  if (pid === undefined) return;
-  try {
-    if (process.platform === "win32") {
-      spawn("taskkill", ["/pid", String(pid), "/T", signal === "SIGKILL" ? "/F" : ""].filter(Boolean), { stdio: "ignore" }).unref();
-      return;
-    }
-    process.kill(-pid, signal);
-  } catch {
-    try {
-      process.kill(pid, signal);
-    } catch {
-      // Best effort; hook timeout is non-interfering.
-    }
   }
 }
 

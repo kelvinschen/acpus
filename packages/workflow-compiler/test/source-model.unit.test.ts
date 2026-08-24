@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import { describe, expect, it } from "vitest";
 import {
   canonicalizeFilesSource,
@@ -15,9 +16,9 @@ describe("workflow source inputs", () => {
       ],
     });
 
-    expect(result.isOk()).toBe(true);
-    if (result.isErr()) throw new Error(result.error.message);
-    expect(result.value.files.map(file => file.path)).toEqual(["workflow.ts", "z-unused.ts"]);
+    expect(Result.isSuccess(result)).toBe(true);
+    if (Result.isFailure(result)) throw new Error(result.failure.message);
+    expect(result.success.files.map(file => file.path)).toEqual(["workflow.ts", "z-unused.ts"]);
   });
 
   it.each([
@@ -38,9 +39,9 @@ describe("workflow source inputs", () => {
       entry,
       files: [{ path, content: "" }],
     });
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected invalid source path");
-    expect(result.error.type).toBe("source-invalid");
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("expected invalid source path");
+    expect(result.failure.type).toBe("source-invalid");
   });
 
   it.each([
@@ -115,9 +116,9 @@ describe("workflow source inputs", () => {
     ],
   ])("rejects ambiguous files inputs", (input, message) => {
     const result = canonicalizeFilesSource({ kind: "files", ...input });
-    expect(result.isErr()).toBe(true);
-    if (result.isOk()) throw new Error("expected invalid files input");
-    expect(result.error.message).toContain(message);
+    expect(Result.isFailure(result)).toBe(true);
+    if (Result.isSuccess(result)) throw new Error("expected invalid files input");
+    expect(result.failure.message).toContain(message);
   });
 
   it("uses the stable source graph digest wire algorithm", () => {

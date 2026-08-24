@@ -5,19 +5,21 @@ import { isDeepStrictEqual } from "node:util";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const projects = {
-  "agent-executor": [],
+  "owned-process": [],
+  acp: ["owned-process"],
+  "agent-executor": ["acp", "owned-process"],
   expression: [],
   core: ["expression"],
   tasks: ["core"],
   loader: [],
-  "workflow-compiler": ["core", "expression", "loader"],
-  runtime: ["agent-executor", "core", "expression", "loader"],
+  "workflow-compiler": ["core", "expression", "loader", "owned-process"],
+  runtime: ["agent-executor", "core", "expression", "loader", "owned-process"],
   dsh: ["agent-executor", "core", "expression", "loader", "runtime", "workflow-compiler"],
   web: ["core", "expression", "runtime", "workflow-compiler"],
   cli: ["core", "expression", "loader", "runtime", "tasks", "web", "workflow-compiler"],
 };
-const foundation = ["agent-executor", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime"];
-const allProjects = ["agent-executor", "dsh", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime", "web", "cli"];
+const foundation = ["owned-process", "acp", "agent-executor", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime"];
+const allProjects = ["owned-process", "acp", "agent-executor", "dsh", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime", "web", "cli"];
 const expectedPnpmWorkspace = `packages:
   - "packages/*"
 
@@ -26,6 +28,7 @@ allowBuilds:
   '@google/genai': false
   esbuild: true
   koffi: true
+  msgpackr-extract: false
   node-pty: true
   protobufjs: false
 blockExoticSubdeps: true
@@ -125,7 +128,7 @@ equal(rootManifest.scripts?.["build:clean"], "pnpm clean && pnpm build", "clean 
 equal(rootManifest.scripts?.clean, "pnpm -r run clean", "root clean script");
 equal(rootManifest.scripts?.typecheck, "pnpm -r typecheck && pnpm typecheck:tests", "root typecheck script");
 equal(rootManifest.scripts?.["typecheck:tests"], "tsc -p tsconfig.vitest.json --noEmit", "test typecheck script");
-equal(rootManifest.scripts?.check, "node scripts/check.mjs", "root check script");
+equal(rootManifest.scripts?.check, "node scripts/checks/index.mjs", "root check script");
 for (const legacy of [
   "check:build-toolchain",
   "check:dead-code",
@@ -141,11 +144,9 @@ equal(rootManifest.scripts?.["version-packages"], "changeset version && node scr
 equal(rootManifest.scripts?.["ci:publish"], "pnpm check release && changeset publish", "publish script");
 
 for (const path of [
-  "scripts/check.mjs",
-  "scripts/check-plan.mjs",
-  "scripts/check-plan.test.mjs",
-  "scripts/build-plan.test.mjs",
+  "scripts/checks/index.mjs",
   "scripts/checks/docs.mjs",
+  "scripts/checks/effect-architecture.mjs",
   "scripts/checks/release.mjs",
   "scripts/checks/toolchain.mjs",
   "packages/dsh/scripts/remote-artifacts.mjs",

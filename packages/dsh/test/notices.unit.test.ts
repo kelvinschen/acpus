@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveNotice, noticeId } from "../src/host/notices.js";
+import { deriveNotice } from "../src/host/notices.js";
 
 describe("Acpus notice derivation", () => {
   it("suppresses progress, paused, and active failures", () => {
@@ -15,7 +15,7 @@ describe("Acpus notice derivation", () => {
   });
 
   it("uses exact Signal facts and terminal facts for stable ids", () => {
-    const signal = deriveNotice({
+    const signalInput = {
       runId: "run-1",
       task: { name: "review", occurrence: 1 },
       status: "awaiting",
@@ -26,16 +26,13 @@ describe("Acpus notice derivation", () => {
         prompt: "Proceed exactly?",
         expected: "{\"approve\":boolean}",
       },
-    });
-    expect(signal?.id).toBe(noticeId({
-      kind: "awaiting-input",
-      runId: "run-1",
-      task: { name: "review", occurrence: 1 },
-      updatedAt: "2026-08-14T00:00:00.000Z",
-      signal: "approval",
-      prompt: "Proceed exactly?",
-      expected: "{\"approve\":boolean}",
-    }));
+    } as const;
+    const signal = deriveNotice(signalInput);
+    expect(deriveNotice(signalInput)?.id).toBe(signal?.id);
+    expect(deriveNotice({
+      ...signalInput,
+      actionRequired: { ...signalInput.actionRequired, prompt: "Proceed differently?" },
+    })?.id).not.toBe(signal?.id);
     expect(signal?.message.id).toBe(signal?.id);
     expect(signal?.message.content).toEqual([{
       type: "text",
@@ -52,20 +49,23 @@ describe("Acpus notice derivation", () => {
       ? signal.message.source.summary
       : undefined).toBe("The delegated task requires user input");
 
+    const terminalIds = new Set<string>();
     for (const status of ["completed", "failed", "canceled"] as const) {
+      const terminalInput = {
+        runId: "run-1",
+        task: { name: "review", occurrence: 1 },
+        status,
+        updatedAt: "2026-08-14T00:00:01.000Z",
+      } as const;
       const terminal = deriveNotice({
-        runId: "run-1",
-        task: { name: "review", occurrence: 1 },
-        status,
-        updatedAt: "2026-08-14T00:00:01.000Z",
+        ...terminalInput,
       });
-      expect(terminal?.id).toBe(noticeId({
-        kind: "terminal",
-        runId: "run-1",
-        task: { name: "review", occurrence: 1 },
-        updatedAt: "2026-08-14T00:00:01.000Z",
-        status,
-      }));
+      expect(deriveNotice(terminalInput)?.id).toBe(terminal?.id);
+      expect(deriveNotice({
+        ...terminalInput,
+        updatedAt: "2026-08-14T00:00:02.000Z",
+      })?.id).not.toBe(terminal?.id);
+      terminalIds.add(terminal!.id);
       expect(terminal?.message.content[0]).toMatchObject({
         type: "text",
         text: JSON.stringify({
@@ -75,6 +75,7 @@ describe("Acpus notice derivation", () => {
         }),
       });
     }
+    expect(terminalIds.size).toBe(3);
   });
 
   it("bounds structured fields by UTF-8 bytes", () => {
