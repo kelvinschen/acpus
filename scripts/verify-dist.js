@@ -232,6 +232,7 @@ async function createConsumer(consumerDirectory, packages) {
         "@google/genai": false,
         esbuild: true,
         koffi: false,
+        "msgpackr-extract": false,
         "node-pty": false,
         protobufjs: false,
       },
