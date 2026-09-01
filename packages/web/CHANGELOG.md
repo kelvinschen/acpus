@@ -1,5 +1,12 @@
 # @acpus/web
 
+## 0.4.1
+
+### Patch Changes
+
+- Updated dependencies [2ad13f3]
+  - @acpus/runtime@0.19.0
+
 ## 0.4.0
 
 ### Minor Changes

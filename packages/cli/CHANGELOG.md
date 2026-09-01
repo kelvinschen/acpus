@@ -1,5 +1,17 @@
 # acpus
 
+## 0.15.0
+
+### Minor Changes
+
+- 2ad13f3: Add unified Agent authoring context discovery, soft scale configuration, Skill bootstrap injection, and the DSH `acpus_agent` tool. Move Skill installation to a stable repository router managed by standard Skills tools, while `acpus skill read` dynamically returns the complete guide bundled with the current CLI.
+
+### Patch Changes
+
+- Updated dependencies [2ad13f3]
+  - @acpus/runtime@0.19.0
+  - @acpus/web@0.4.1
+
 ## 0.14.0
 
 ### Minor Changes
