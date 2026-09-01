@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 const sourceExtensions = new Set([".cjs", ".cts", ".js", ".jsx", ".mjs", ".mts", ".ts", ".tsx"]);
 
 const promiseAdapters = new Set([
+  "packages/agent-teams/src/cli.ts",
+  "packages/agent-teams/src/web.ts",
   "packages/cli/src/agent/command.ts",
   "packages/cli/src/cli.ts",
   "packages/cli/src/doctor/command.ts",

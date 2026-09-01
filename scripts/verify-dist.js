@@ -154,6 +154,13 @@ async function verifyPackage(packageDirectory, manifest, files) {
       "dist/update-awareness-worker.d.ts",
     ]);
   }
+  if (name === "@acpus/agent-teams") {
+    const webAssets = ["web/index.html", "web/app.js", "web/styles.css"];
+    assertPackedPaths(name, packed, ["skills/agent-teams/SKILL.md", ...webAssets]);
+    for (const path of webAssets) {
+      assert.ok((await stat(join(packageDirectory, path))).size > 0, `${name}: packed Web asset is empty: ${path}`);
+    }
+  }
   if (name === "@acpus/web") {
     const entry = "dist/client/index.html";
     const script = [...packed].find(path => path.startsWith("dist/client/assets/") && path.endsWith(".js"));

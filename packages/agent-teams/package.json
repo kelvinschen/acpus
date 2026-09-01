@@ -1,0 +1,52 @@
+{
+  "name": "@acpus/agent-teams",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "ACP-native local Agent Teams runtime and CLI.",
+  "license": "MIT",
+  "engines": {
+    "node": "^22.18.0 || >=24.0.0"
+  },
+  "bin": {
+    "acp-teams": "./dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "development": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "skills",
+    "web",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -b tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist tsconfig.build.tsbuildinfo"
+  },
+  "dependencies": {
+    "@acpus/agent-executor": "workspace:*",
+    "@acpus/owned-process": "workspace:*",
+    "commander": "^15.0.0",
+    "effect": "4.0.0-rc.111"
+  },
+  "devDependencies": {
+    "@types/jsdom": "^27.0.0",
+    "@types/node": "^22.20.1",
+    "jsdom": "^28.1.0",
+    "tsx": "^4.23.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kelvinschen/acpus"
+  }
+}

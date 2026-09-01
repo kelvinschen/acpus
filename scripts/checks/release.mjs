@@ -8,6 +8,7 @@ const expectedEngine = "^22.18.0 || >=24.0.0";
 const expectedPublicPackages = new Set([
   "@acpus/acp",
   "@acpus/agent-executor",
+  "@acpus/agent-teams",
   "acpus",
   "@acpus/core",
   "@acpus/dsh",

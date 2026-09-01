@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <title>ACP Agent Teams</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">ACP Agent Teams</p>
+          <h1 id="team-name">Starting team</h1>
+          <p id="team-goal" class="team-goal">Waiting for the foreground host…</p>
+        </div>
+        <div class="connection-cluster">
+          <span id="connection" class="connection" role="status">Connecting</span>
+          <span id="team-status" class="status-pill starting">Starting</span>
+        </div>
+      </header>
+
+      <section id="summary" class="summary-grid" aria-label="Team summary"></section>
+
+      <section class="workspace-grid">
+        <div class="primary-column">
+          <section class="panel timeline-panel" aria-labelledby="timeline-title">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Live coordination</p>
+                <h2 id="timeline-title">Member timeline</h2>
+              </div>
+              <span class="legend"><i class="turn-swatch"></i> Turn <i class="event-swatch"></i> Event</span>
+            </div>
+            <div id="timeline" class="timeline empty-state">Waiting for the team to start.</div>
+          </section>
+
+          <section class="panel events-panel" aria-labelledby="events-title">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Trajectory</p>
+                <h2 id="events-title">Event stream</h2>
+              </div>
+              <label class="filter-label">Channel
+                <select id="channel-filter">
+                  <option value="team">Team</option>
+                  <option value="turn">Turn</option>
+                  <option value="acp">ACP</option>
+                  <option value="all">All</option>
+                </select>
+              </label>
+            </div>
+            <ol id="events" class="event-list"></ol>
+          </section>
+        </div>
+
+        <aside class="secondary-column">
+          <section class="panel" aria-labelledby="tasks-title">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Shared board</p>
+                <h2 id="tasks-title">Tasks</h2>
+              </div>
+            </div>
+            <div id="tasks" class="task-list empty-state">No tasks yet.</div>
+          </section>
+
+          <section class="panel inspector-panel" aria-labelledby="inspector-title">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Selection</p>
+                <h2 id="inspector-title">Details</h2>
+              </div>
+            </div>
+            <pre id="inspector" tabindex="0">Select a task, turn, or event.</pre>
+          </section>
+        </aside>
+      </section>
+    </main>
+    <script src="/app.js" defer></script>
+  </body>
+</html>

@@ -43,6 +43,16 @@
         "src/process-tree.ts": ["binaries"]
       }
     },
+    "packages/agent-teams": {
+      "entry": [
+        "test/**/*.{test,test-d}.{ts,tsx}"
+      ],
+      "project": [
+        "src/**/*.{ts,tsx}!",
+        "test/**/*.{ts,tsx,mjs}"
+      ],
+      "vitest": false
+    },
     "packages/cli": {
       "entry": [
         "test/**/*.{test,test-d}.{ts,tsx}",

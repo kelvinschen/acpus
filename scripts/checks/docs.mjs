@@ -19,11 +19,12 @@ const files = [path.join(root, "README.md"), path.join(root, "README.en.md")];
 files.push(
   ...(await markdownFiles(path.join(root, "docs"))),
   ...(await markdownFiles(path.join(root, "specs"))),
-  ...(await markdownFiles(path.join(root, "packages", "cli", "skills", "acpus"))),
 );
 
 for (const entry of await readdir(path.join(root, "packages"), { withFileTypes: true })) {
   if (!entry.isDirectory()) continue;
+  const skills = path.join(root, "packages", entry.name, "skills");
+  if (existsSync(skills)) files.push(...(await markdownFiles(skills)));
   const readme = path.join(root, "packages", entry.name, "README.md");
   if (existsSync(readme)) files.push(readme);
 }

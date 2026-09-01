@@ -47,6 +47,12 @@ SPEC 定义了 Acpus 当前稳定的产品契约：即在底层实现变更后�
 | [Agent Executor](agent-executor-spec.md) | `@acpus/agent-executor` | 独占 Agent Session 租约、Turn 收尾、取消与所有权恢复 |
 | [Owned Process](owned-process-spec.md) | `@acpus/owned-process` | 子进程归属、存活性检测、身份隔离与孤儿进程防护 |
 
+## Agent 协作
+
+| SPEC | 负责包 | 长期契约 |
+| --- | --- | --- |
+| [Agent Teams](agent-teams-spec.md) | `@acpus/agent-teams` | 固定 lead、独立 ACP 成员、任务依赖与原子领取、mailbox、wake generation 及协调轨迹 |
+
 ## 产品适配器
 
 | SPEC | 负责包 | 长期契约 |

@@ -8,6 +8,7 @@ const projects = {
   "owned-process": [],
   acp: ["owned-process"],
   "agent-executor": ["acp", "owned-process"],
+  "agent-teams": ["agent-executor", "owned-process"],
   expression: [],
   core: ["expression"],
   tasks: ["core"],
@@ -19,7 +20,7 @@ const projects = {
   cli: ["core", "expression", "loader", "runtime", "tasks", "web", "workflow-compiler"],
 };
 const foundation = ["owned-process", "acp", "agent-executor", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime"];
-const allProjects = ["owned-process", "acp", "agent-executor", "dsh", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime", "web", "cli"];
+const allProjects = ["owned-process", "acp", "agent-executor", "agent-teams", "dsh", "expression", "core", "tasks", "loader", "workflow-compiler", "runtime", "web", "cli"];
 const expectedPnpmWorkspace = `packages:
   - "packages/*"
 

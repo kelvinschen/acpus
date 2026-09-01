@@ -4,6 +4,7 @@
     { "path": "./packages/owned-process/tsconfig.build.json" },
     { "path": "./packages/acp/tsconfig.build.json" },
     { "path": "./packages/agent-executor/tsconfig.build.json" },
+    { "path": "./packages/agent-teams/tsconfig.build.json" },
     { "path": "./packages/dsh/tsconfig.build.json" },
     { "path": "./packages/expression/tsconfig.build.json" },
     { "path": "./packages/core/tsconfig.build.json" },

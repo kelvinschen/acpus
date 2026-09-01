@@ -1,0 +1,6 @@
+trajectory/*
+!trajectory/.gitkeep
+!trajectory/README.md
+results/*
+!results/.gitkeep
+!results/rounds.json
