@@ -113,7 +113,7 @@ export async function readAcpusSkillMetadata(path: string): Promise<AcpusSkillMe
   return parseAcpusSkillMetadata(await readFile(join(path, SKILL_ENTRY), "utf8"));
 }
 
-export function parseAcpusSkillMetadata(source: string): AcpusSkillMetadata {
+function parseAcpusSkillMetadata(source: string): AcpusSkillMetadata {
   const frontmatter = source.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)?.[1];
   if (frontmatter === undefined) return {};
   const lines = frontmatter.split(/\r?\n/);

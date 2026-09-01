@@ -1,4 +1,3 @@
-import { Readable } from "node:stream";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -23,6 +22,38 @@ describe("skill content CLI contracts", () => {
       const metadata = metadataBeforeBody(result.stdout, body);
       expect(metadata).toContain(`path: ${entryPath}\n`);
       expect(metadata).toContain("kind: file\n");
+      expect(metadata).toContain("[acpus agent authoring context]\nstatus: available\n");
+    });
+  });
+
+  it("injects only root reads and preserves pure reference output", async () => {
+    await withPlainTestWorkspace("skill-content-context-routing", async workspace => {
+      const explicit = await runCommand(workspace, ["skill", "read", "SKILL.md"]);
+      expect(explicit.stdout).toContain("[acpus agent authoring context]");
+      const reference = await runCommand(workspace, ["skill", "read", "references/authoring.md"]);
+      expect(reference.exitCode).toBe(0);
+      expect(reference.stdout).not.toContain("[acpus agent authoring context]");
+    });
+  });
+
+  it("returns the complete Skill with an unavailable context block", async () => {
+    await withPlainTestWorkspace("skill-content-context-invalid", async workspace => {
+      const body = await readFile(join(getCliPackageInfo().packageRoot, "skills", "acpus", "SKILL.md"), "utf8");
+      const previous = process.env.ACPUS_AUTHORING_AGENT_SCALE;
+      process.env.ACPUS_AUTHORING_AGENT_SCALE = "invalid";
+      try {
+        const result = await runCommand(workspace, ["skill", "read"]);
+        expect(result.exitCode).toBe(0);
+        expect(result.stderr).toBe("");
+        expect(result.stdout).toContain("status: unavailable");
+        expect(result.stdout).toContain("Agent authoring must not continue");
+        expect(result.stdout).toContain("run `acpus skill read` again");
+        expect(result.stdout).not.toContain("run `acpus agent`");
+        expect(result.stdout.endsWith(body)).toBe(true);
+      } finally {
+        if (previous === undefined) delete process.env.ACPUS_AUTHORING_AGENT_SCALE;
+        else process.env.ACPUS_AUTHORING_AGENT_SCALE = previous;
+      }
     });
   });
 
@@ -41,9 +72,7 @@ describe("skill content CLI contracts", () => {
     const stderr = new CaptureStream();
     const command = createSkillCommand({
       cwd: process.cwd(),
-      stdin: Readable.from([]),
       stdout,
-      stderr,
       setExitCode: () => {},
     });
 

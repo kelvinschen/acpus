@@ -98,8 +98,8 @@ function createProgram(
     setExitCode,
   }));
   program.addCommand(createSkillCommand({
-    ...io,
-    stdin,
+    cwd: io.cwd,
+    stdout: io.stdout,
     setExitCode,
   }));
   program.addCommand(createWebCommand({

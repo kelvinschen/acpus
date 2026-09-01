@@ -8,11 +8,12 @@ import type { JsonValue } from "@acpus/expression/ir";
 import {
   applyAgentPresetChanges,
   hasPresetInjections,
+  loadAgentAuthoringContext,
   loadAgentPresetCatalog,
   type AgentPresetCatalog,
   type AgentPresetChange,
-  type AgentPresetChoice,
   type AgentPresetScope,
+  type EffectiveAuthoringAgentScale,
   type InspectionForensicsView,
   type WritableAgentPresetScope,
 } from "@acpus/runtime";
@@ -281,12 +282,23 @@ export class AcpusMode extends TypertRemoteService {
     }));
   }
 
-  async trustedAgentPresetChoices(): Promise<readonly AgentPresetChoice[]> {
-    return (await this.agentPresetCatalog(undefined, ["host", "global"])).choices;
-  }
-
-  agentPresetChoices(workspace: string): Promise<AgentPresetSelectionView[]> {
-    return this.loadAgentPresetSelections(workspace);
+  agentAuthoringContext(workspace: string): Promise<{
+    scale: EffectiveAuthoringAgentScale | null;
+    presets: AgentPresetSelectionView[];
+  }> {
+    return runHostEffect(Effect.result(loadAgentAuthoringContext({
+      workspaceDir: workspace,
+      hostProvider: dshAgentPresetProvider,
+    })).pipe(Effect.flatMap(loaded => Result.isSuccess(loaded)
+      ? Effect.succeed({
+          scale: loaded.success.scale ?? null,
+          presets: loaded.success.presets.choices.map(toAgentPresetSelectionView),
+        })
+      : Effect.fail(new AcpusOperationError(
+          "Acpus could not read the Agent authoring context.",
+          "ACPUS_AGENT_CONTEXT_FAILED",
+          { cause: loaded.failure },
+        )))));
   }
 
   async applyAgentPresets(
@@ -301,14 +313,6 @@ export class AcpusMode extends TypertRemoteService {
       onSuccess: () => ({ status: "applied" as const }),
       onFailure: failure => ({ status: "rejected" as const, reason: failure.type }),
     });
-  }
-
-  private async loadAgentPresetSelections(
-    workspace: string | undefined,
-    scopes?: readonly AgentPresetScope[],
-  ): Promise<AgentPresetSelectionView[]> {
-    return (await this.agentPresetCatalog(workspace, scopes)).choices
-      .map(toAgentPresetSelectionView);
   }
 
   private async agentPresetCatalog(

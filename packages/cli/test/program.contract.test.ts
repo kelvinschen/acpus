@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { lstat, mkdir, writeFile } from "node:fs/promises";
+import { lstat, mkdir, symlink, writeFile } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { getCliPackageInfo } from "../src/platform/package-info.js";
 import { runCli } from "../src/program.js";
@@ -84,7 +84,7 @@ describe("CLI program usage contracts", () => {
     expect(rootStderr.text).toBe("");
   });
 
-  it("does not hide any public skill leaf from skill help", async () => {
+  it("exposes only the bundled Skill reader from skill help", async () => {
     const skillStdout = new CaptureStream();
     const skillStderr = new CaptureStream();
     expect(await runCli(["skill", "--help"], {
@@ -92,9 +92,8 @@ describe("CLI program usage contracts", () => {
       stdout: skillStdout,
       stderr: skillStderr,
     })).toBe(0);
-    for (const command of ["read", "install", "uninstall"]) {
-      expect(skillStdout.text).toMatch(new RegExp(`^  ${command}(?: |$)`, "mu"));
-    }
+    expect(skillStdout.text).toMatch(/^  read(?: |$)/mu);
+    expect(skillStdout.text).not.toMatch(/^  (?:install|uninstall)(?: |$)/mu);
     expect(skillStderr.text).toBe("");
   });
 
@@ -141,23 +140,27 @@ describe("CLI program usage contracts", () => {
       process.env.USERPROFILE = home;
       try {
         const projectAgents = join(workspace, ".agents", "skills");
-        const projectClaude = join(workspace, ".claude", "skills");
+        const projectClaudeRoot = join(workspace, ".claude");
         const globalAgents = join(home, ".agents", "skills");
+        const globalClaude = join(home, ".claude", "skills");
         await mkdir(join(projectAgents, "acpus"), { recursive: true });
-        await mkdir(join(projectClaude, "acpus"), { recursive: true });
+        await mkdir(projectClaudeRoot, { recursive: true });
+        await symlink("../.agents/skills", join(projectClaudeRoot, "skills"), "dir");
         await mkdir(join(globalAgents, "acpus"), { recursive: true });
+        await mkdir(join(globalClaude, "acpus"), { recursive: true });
         await writeFile(join(projectAgents, "acpus", "SKILL.md"), "---\nname: acpus\nmetadata:\n  acpus-version: 0.0.0\n---\n");
-        await writeFile(join(projectClaude, "acpus", "SKILL.md"), "---\nname: acpus\n---\n");
         await writeFile(join(globalAgents, "acpus", "SKILL.md"), `---\nname: acpus\nmetadata:\n  acpus-version: ${getCliPackageInfo().version}\n---\n`);
+        await writeFile(join(globalClaude, "acpus", "SKILL.md"), "---\nname: acpus\n---\n");
 
         const stdout = new CaptureStream();
         const stderr = new CaptureStream();
         expect(await runCli(["doctor"], { cwd: workspace, stdout, stderr })).toBe(0);
         expect(stdout.text).toContain("Doctor checks passed with warnings.");
-        expect(stdout.text).toContain("Installed universal Acpus skill is stale");
-        expect(stdout.text).toContain("acpus skill install --project --agent universal");
-        expect(stdout.text).not.toContain("claude Acpus skill");
-        expect(stdout.text).not.toContain("--global --agent universal");
+        expect(stdout.text).toContain("Installed project universal Acpus skill is stale");
+        expect(stdout.text).toContain("npx skills add kelvinschen/acpus");
+        expect(stdout.text).not.toContain("project claude Acpus skill");
+        expect(stdout.text).not.toContain("global universal Acpus skill");
+        expect(stdout.text).not.toContain("global claude Acpus skill");
         expect(stdout.text).not.toMatch(/skill.*missing|missing.*skill/iu);
         expect(stdout.text.split("\n").filter(line => /\s+skill\s+/u.test(line))).toHaveLength(1);
         expect(stderr.text).toBe("");
@@ -205,7 +208,6 @@ describe("CLI program usage contracts", () => {
         expect(stderr.text).toBe([
           `Update available: acpus ${getCliPackageInfo().version} → 99.0.0`,
           "Run: npm install -g acpus@latest",
-          "Refresh skill: acpus skill install",
           "",
         ].join("\n"));
       } finally {

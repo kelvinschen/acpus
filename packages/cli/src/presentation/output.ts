@@ -13,7 +13,6 @@ import type {
 } from "@acpus/runtime";
 import type { AvailableWorkflowCatalogEntry, WorkflowCatalogEntry } from "../workflow/catalog.js";
 import type { AuthoringHealthCheck, AuthoringTypeLocation } from "../doctor/authoring-health.js";
-import type { SkillInstallation, SkillRemoval, SkillScope, SkillTarget } from "../skill/installation.js";
 import { renderShellCommand } from "./shell-command.js";
 import { ansi, supportsColor } from "./terminal-style.js";
 
@@ -79,7 +78,6 @@ type CliResultFields = {
   hooks?: HookListResult;
   outputPath?: string;
   visualization?: string;
-  skill?: SkillCommandResult;
   catalog?: WorkflowCatalogEntry;
   checked?: boolean;
 };
@@ -164,24 +162,10 @@ export type CliResult =
   | ResultRecord<"viz", true, "message" | "workflow" | "diagnostics" | "catalog" | "visualization", "message" | "workflow" | "visualization">
   | ResultRecord<"viz", true, "message" | "workflow" | "diagnostics" | "catalog" | "outputPath", "message" | "workflow" | "outputPath">
   | ResultRecord<"viz", false, "message", "message">
-  | ResultRecord<"skill", true, "message" | "skill", "message" | "skill">
-  | ResultRecord<"skill", false, "message" | "skill" | "errorCode", "message">
+  | ResultRecord<"skill", false, "message" | "errorCode", "message">
   | ResultRecord<"agent", false, "message", "message">;
 
 export type HookListResult = Partial<Record<HookConfigScope["source"], { path: string; hooks: LoadedHookConfig[] }>>;
-
-export type SkillCommandResult = {
-  action: "install" | "uninstall";
-  packageName: string;
-  skillName: string;
-  targetName: string;
-  version: string;
-  scope: SkillScope | "custom";
-  dryRun: boolean;
-  targets: SkillTarget[];
-  installations?: SkillInstallation[];
-  removals?: SkillRemoval[];
-};
 
 const healthStatusColors = {
   ok: 32,
@@ -276,7 +260,6 @@ export function writeResult(
     }
   }
   if (result.hooks) writeHooks(stream, result.hooks);
-  if (result.skill) writeSkillResult(stream, result.skill);
   if (result.diagnostics?.length) {
     if (!result.ok && result.phase === "check" && !result.workflow) {
       const errors = result.diagnostics.filter(diagnostic => diagnostic.severity === "error").length;
@@ -436,22 +419,6 @@ function writePruneReport(stream: Writable, report: PruneReport): void {
 
 function formatCount(count: number, name: string): string {
   return `${count} ${name}${count === 1 ? "" : "s"}`;
-}
-
-function writeSkillResult(stream: Writable, result: SkillCommandResult): void {
-  stream.write(`Skill: ${result.packageName}/${result.skillName}\n`);
-  stream.write(`Target: ${result.targetName}\n`);
-  stream.write(`Scope: ${result.scope}\n`);
-  if (result.installations) {
-    for (const installation of result.installations) {
-      stream.write(`${installation.status}\t${installation.agent}\t${installation.targetPath}${installation.error ? `\t${installation.error}` : ""}\n`);
-    }
-  }
-  if (result.removals) {
-    for (const removal of result.removals) {
-      stream.write(`${removal.status}\t${removal.agent}\t${removal.targetPath}${removal.error ? `\t${removal.error}` : ""}\n`);
-    }
-  }
 }
 
 function writeHooks(stream: Writable, scopes: HookListResult): void {

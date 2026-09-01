@@ -42,17 +42,13 @@ Choose the operation by intent:
 
 ## Scale Before Topology
 
-State `N = planners + rounds × (workers + reducers + judges)` and peak ready Agents separately; choose the profile below.
+Before choosing topology, estimate the expected total Agent execution occurrences across all branches, fanout items, and loop rounds. Tasks, declared Agent slots, and reused sessions do not count. Track peak ready Agents separately because concurrency is not scale.
 
-| Profile | Occurrences | Use |
-| --- | ---: | --- |
-| Small | <20 | Narrow, dependent, or explicitly budgeted work. |
-| Standard | 20–49 | Default for broad, uncertain, or multi-aspect work without a user budget. |
-| Large | 50–99 | Many independent items or high-stakes redundancy. |
-| Extra-large | ≥100 | Explicit large corpus or search space; staged reduction required. |
+When the effective scale provides a suggested maximum, keep the expected occurrences within it. This is a guideline, not a hard limit — follow it unless the user's prompt calls for a different scale. When scale is unconfigured, choose the smallest complete set of distinct duties.
 
-Assign every occurrence a distinct item, lens, hypothesis, or verification duty;
+Apply scale only when choosing topology. Do not use it to reconsider a Workflow, topology, or Agent count explicitly chosen by the user.
 
+Assign every occurrence a distinct item, lens, hypothesis, or verification duty.
 
 ## Expressions And Shapes
 
@@ -199,7 +195,7 @@ Only after applying the rules above, choose the closest compact teaching example
 | [`specify-approve-deliver`](../workflows/examples/specify-approve-deliver/workflow.ts) | `agent`, `task`, `signal`, `assert`, `if`, `loop` | Approve a contract, then iterate one Implementer session against fresh reviews and publish. |
 | [`design-forge`](../workflows/examples/design-forge/workflow.ts) | `agent`, `task`, `if`, `parallel`, `loop` | Long example (higher token cost to read) with a resident Designer and three scoped challengers. |
 | [`issue-triage`](../workflows/examples/issue-triage/workflow.ts) | `agent`, `task`, `switch`, `parallel`, `fanout` | Triage items in parallel and route them by switch. |
-| [`scaled-exploration`](../workflows/examples/scaled-exploration/workflow.ts) | `agent`, `task`, `fanout` | Plan a standard-scale fanout and reduce results in batches. |
+| [`scaled-exploration`](../workflows/examples/scaled-exploration/workflow.ts) | `agent`, `task`, `fanout` | Plan a bounded fanout and reduce results in batches. |
 | [`worktree-tournament`](../workflows/examples/worktree-tournament/workflow.ts) | `agent`, `task`, `fanout` | Fan out six worktree candidates and judge them. |
 
 ## Declaration Lookup

@@ -1,8 +1,8 @@
 # Advanced CLI Operations
 
 Read this only for Forensics, inspection candidate-selection/follow mechanics, detailed runtime
-controls, catalogs, import, static visualization, WebUI, bundled-skill
-management, run deletion, or version lookup. Use
+controls, catalogs, import, static visualization, WebUI, run deletion, or
+version lookup. Use
 `acpus <cmd> --help` for exact options.
 
 If the CLI is unavailable, ask before suggesting `npm install -g acpus`.
@@ -172,18 +172,11 @@ acpus web [--host <host>] [--port <port>] [--token]
 - Stop with `Ctrl-C`.
 - Use `--token` when access needs protection.
 
-## Bundled skill and version
+## Version
 
 ```sh
-acpus skill install [--project | --global | --dir <skills-root>] [--agent <universal|claude|universal,claude>] [--dry-run]
-acpus skill uninstall [--project | --global | --dir <skills-root>] [--agent <universal|claude|universal,claude>] [--dry-run]
 acpus --version
 ```
-
-- Manage only the Acpus Skill bundled with this CLI, not the npm package.
-- In a terminal, prompt for missing scope or Agent selections.
-- Outside a terminal, require `--project` or `--global` plus `--agent`.
-- Use `--dir <skills-root>` for one custom root without `--agent`.
 
 ## Run maintenance
 

@@ -35,7 +35,7 @@ describe("@acpus/dsh public contract", () => {
     expect(typeof uninstallAcpusPreset).toBe("function");
     expect(AcpusPresetCollisionError.name).toBe("AcpusPresetCollisionError");
     expect(loader.unwrapExports(supervisor)).toBe(supervisor);
-    expect(supervisor.inject).toEqual(["tools", "systemPrompt"]);
+    expect(supervisor.inject).toEqual(["tools"]);
     expect(client.inject).toEqual(["slots", "remote"]);
     expect(typeof client.AcpusActivityTray).toBe("function");
     expect(typeof client.AcpusInternalToolView).toBe("function");
@@ -110,7 +110,8 @@ describe("@acpus/dsh public contract", () => {
     expect(metadata).toContain("name: Acpus 模式");
     expect(metadata).toContain("order: 5");
     expect(composition).toContain("complete: true");
-    expect(composition).toContain("{{acpus_agent_presets}}");
+    expect(composition).not.toContain("{{acpus_agent_presets}}");
+    expect(composition).toContain("call `acpus_agent` once");
     expect(composition).toContain("name: '@acpus/dsh/supervisor'");
     expect(composition).not.toMatch(/dsh-tool-|dsh-subagent|dsh-workflow|dsh-skill/);
     expect(discovered).toEqual([
@@ -219,9 +220,10 @@ describe("@acpus/dsh public contract", () => {
     expect(calls[1]).toEqual(["effect", "acpus.client"]);
     expect(calls.filter(([kind, name]) =>
       kind === "inject" && name === "tool.call.toolview"
-    )).toHaveLength(6);
-    expect(calls.filter(([kind]) => kind === "register").slice(0, 6)).toEqual(
+    )).toHaveLength(7);
+    expect(calls.filter(([kind]) => kind === "register").slice(0, 7)).toEqual(
       [
+        "acpus_agent",
         "acpus_presets",
         "acpus_tasks",
         "acpus_run",

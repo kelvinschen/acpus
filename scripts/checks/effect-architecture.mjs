@@ -15,7 +15,6 @@ const promiseAdapters = new Set([
   "packages/cli/src/runs/deletion.ts",
   "packages/cli/src/runs/inspection.ts",
   "packages/cli/src/skill/command.ts",
-  "packages/cli/src/skill/installation.ts",
   "packages/cli/src/web/command.ts",
   "packages/cli/src/workflow/catalog.ts",
   "packages/cli/src/workflow/command.ts",

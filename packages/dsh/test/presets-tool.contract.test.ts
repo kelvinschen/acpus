@@ -3,22 +3,21 @@ import type { ToolDefinition } from "@deepseek-ai/dsh-tools";
 import { describe, expect, it, vi } from "vitest";
 import { registerSupervisorTools } from "../src/host/tools.js";
 
-describe("acpus_presets tool contract", () => {
-  it("exposes safe list/apply choices and rejects mixed operation inputs", async () => {
+describe("Agent authoring tools contract", () => {
+  it("exposes aggregated read and apply-only Preset tools", async () => {
     const definitions: ToolDefinition[] = [];
-    const agentPresetChoices = vi.fn(async () => [{
-      id: "dsh",
-      guidance: "Built-in DSH.",
-    }]);
+    const agentAuthoringContext = vi.fn(async () => ({
+      scale: { value: "medium", maxAgentOccurrences: 12, source: "project" },
+      presets: [{ id: "dsh", guidance: "Built-in DSH.", scope: "host" }],
+    }));
     const applyAgentPresets = vi.fn(async () => ({ status: "applied" as const }));
-    registerSupervisorTools(context(definitions, { agentPresetChoices, applyAgentPresets }));
+    registerSupervisorTools(context(definitions, { agentAuthoringContext, applyAgentPresets }));
 
     const presetTool = tool(definitions);
     expect(presetTool.parameters).toMatchObject({
       type: "object",
-      required: ["operation"],
+      required: ["scope", "changes"],
       properties: {
-        operation: { enum: ["list", "apply"] },
         scope: { enum: ["project", "global"] },
         changes: {
           type: "array",
@@ -42,24 +41,29 @@ describe("acpus_presets tool contract", () => {
       },
     });
 
-    await expect(presetTool.execute({ operation: "list" }, execution()))
-      .resolves.toEqual({
-        presets: [{ id: "dsh", guidance: "Built-in DSH." }],
-      });
-    expect(agentPresetChoices).toHaveBeenCalledWith("/workspace");
+    const agent = definitions.find(candidate => candidate.name === "acpus_agent");
+    if (agent === undefined) throw new Error("Expected acpus_agent to be registered.");
+    expect(agent.parameters).toEqual({ type: "object", properties: {} });
+    expect(agent.isConcurrencySafe?.({})).toBe(true);
+    await expect(agent.execute({}, execution())).resolves.toEqual({
+      scale: { value: "medium", maxAgentOccurrences: 12, source: "project" },
+      presets: [{ id: "dsh", guidance: "Built-in DSH.", scope: "host" }],
+    });
+    expect(agentAuthoringContext).toHaveBeenCalledWith("/workspace");
+    await expect(agent.execute({ extra: true }, execution())).rejects.toMatchObject({
+      code: "ACPUS_AGENT_CONTEXT_INVALID",
+    });
 
     await expect(presetTool.execute({
-      operation: "list",
       scope: "project",
-    }, execution())).rejects.toMatchObject({ code: "ACPUS_AGENT_PRESETS_INVALID" });
+    }, execution())).rejects.toMatchObject({ code: "INVALID_ARGS" });
     await expect(presetTool.execute({
-      operation: "apply",
       scope: "project",
+      changes: [],
     }, execution())).rejects.toMatchObject({ code: "ACPUS_AGENT_PRESETS_INVALID" });
     expect(applyAgentPresets).not.toHaveBeenCalled();
 
     await expect(presetTool.execute({
-      operation: "apply",
       scope: "project",
       changes: [{
         operation: "set",

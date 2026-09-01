@@ -4,7 +4,6 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import {
   dshAgentPresetProvider,
-  renderAgentPresetCatalog,
   toAgentPresetSelectionView,
   toAgentPresetViews,
 } from "../src/host/agent-presets.js";
@@ -22,7 +21,7 @@ describe("DSH Agent Preset adapter", () => {
     }]);
   });
 
-  it("renders only safe selection choices for prompt assembly", () => {
+  it("projects only safe selection choices for tool results", () => {
     const choices = [{
       id: "dsh",
       guidance: "Built-in DSH.",
@@ -33,17 +32,10 @@ describe("DSH Agent Preset adapter", () => {
       scope: "global" as const,
     }];
 
-    const rendered = renderAgentPresetCatalog(choices);
-    const catalog = JSON.parse(rendered.split("\n").find(line => line.startsWith("["))!);
-
-    expect(catalog).toEqual(choices.map(({ id, guidance }) => ({ id, guidance })));
-    expect(rendered).not.toContain('"scope"');
-    expect(rendered).not.toContain("command");
-    expect(rendered).not.toContain("model");
-    expect(rendered).not.toContain("env");
     expect(toAgentPresetSelectionView(choices[1]!)).toEqual({
       id: "reviewer",
       guidance: "Independent review.",
+      scope: "global",
     });
   });
 

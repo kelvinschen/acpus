@@ -65,12 +65,12 @@ Orchestrator Agent 负责拆分任务、定义节点和依赖、启动 Run，并
 ### 1. 安装 CLI 和 Skill
 
 > [!TIP]
-> acpus cli 提供了 bundle skill， agent 会自己根据帮助命令来使用 acpus， 比如你可以和 Agent 说：
+> 安装的是稳定路由 Skill；它会让 Agent 通过当前版本 CLI 动态读取完整指南和 authoring context。比如你可以和 Agent 说：
 > "使用 acpus cli 工具来启动一个 workflow，判断这个 release 是否可以发布"
 
 ```sh
 npm install -g acpus
-acpus skill install # 可选
+npx skills add kelvinschen/acpus
 ```
 
 
@@ -245,22 +245,15 @@ Acpus 将它们作为 ACP 会话的期望 model 和 options 应用，并在恢�
 
 ## Skill 安装的补充说明
 
-你也可以使用 skills CLI 安装内置 Skill：
+标准 Skills 工具负责安装、更新和移除 Acpus 路由 Skill：
 
 ```sh
-npx skills add kelvinschen/acpus/packages/cli/skills/acpus
+npx skills add kelvinschen/acpus
 ```
 
-`acpus skill install` 可以在交互式终端中询问安装范围和 Agent 目标。
-脚本调用必须提供 `--project` 或 `--global`。
-同时还要提供 `--agent universal`、`--agent claude` 或 `--agent universal,claude`。
+这个无版本路由只要求 Agent 每个任务运行一次 `acpus skill read`。该命令从当前 CLI 版本读取完整 Skill，并注入当前 workspace 的 Preset 和 authoring scale context。因此升级 CLI 后，完整指南会自动更新，无需重新安装路由 Skill。
 
-安装命令会创建所需目录。
-它会把 Skill 写入项目目录或操作系统 home 下的 `.agents/skills/acpus` 和/或 `.claude/skills/acpus`。
-
-不安装 Skill 也可以使用 Acpus。
-Agent 可以运行 `acpus skill read` 来读取内置指南。
-在 Prompt 中写明“使用 acpus”即可。
+不安装路由 Skill 也可以直接运行 `acpus skill read` 获取相同的完整指南。
 
 ## 核心概念
 

@@ -60,7 +60,7 @@ describe("update awareness", () => {
     expect(isUpdateCheckDue("2026-07-23T08:00:00.000Z", now)).toBe(true);
   });
 
-  it("uses the interactive Skill refresh command", () => {
+  it("does not refresh the stable router Skill after a CLI update", () => {
     expect(formatUpdateNotice({
       currentVersion: "0.7.2",
       update: { checkedAt: "2026-07-23T00:00:00.000Z", version: "0.8.0" },
@@ -68,7 +68,6 @@ describe("update awareness", () => {
     })).toBe([
       "Update available: acpus 0.7.2 → 0.8.0",
       "Run: npm install -g acpus@latest",
-      "Refresh skill: acpus skill install",
       "",
     ].join("\n"));
   });
@@ -81,7 +80,6 @@ describe("update awareness", () => {
     })).toBe([
       "\u001b[1;33mUpdate available:\u001b[0m acpus 0.7.2 → 0.8.0",
       "\u001b[1;33mRun:\u001b[0m \u001b[1;36mnpm install -g acpus@latest\u001b[0m",
-      "\u001b[1;33mRefresh skill:\u001b[0m \u001b[1;36macpus skill install\u001b[0m",
       "",
     ].join("\n"));
   });
@@ -157,7 +155,7 @@ describe("update awareness", () => {
 
       const firstNotice = await show("99.0.0");
       expect(firstNotice).toContain("→ 99.0.0");
-      expect(firstNotice).toContain("Refresh skill: acpus skill install");
+      expect(firstNotice).not.toContain("Refresh skill:");
       expect(await show("99.0.0")).toBe("");
       for (const version of ["100.0.0", "101.0.0", "102.0.0"]) {
         await vi.advanceTimersByTimeAsync(2 * 60 * 60 * 1_000);

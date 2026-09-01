@@ -9,7 +9,7 @@
 ### 集成边界
 
 - 激活操作 MUST 只安装或更新本包提供的 `acpus` Preset。若已有同名 Preset 并非由本包提供，激活 MUST 失败，且 MUST NOT 修改该 Preset。
-- 该集成 MUST 向模型提供 Preset 发现与修改、Task 发现、准入、状态检查、控制以及 Artifact 访问能力。具体 Schema 由 Host 工具定义；本 SPEC 只规定产品与安全边界，不重复具体 Schema。
+- 该集成 MUST 向模型提供统一 Agent authoring context 发现、Preset 修改、Task 发现、准入、状态检查、控制以及 Artifact 访问能力。具体 Schema 由 Host 工具定义；本 SPEC 只规定产品与安全边界，不重复具体 Schema。
 - 面向模型的操作 MUST 使用易读的 Task 选择器，并返回大小受限且符合安全约束的 JSON 数据。这些操作 MUST NOT 泄露 Runtime 内部的 Run ID 或准入 ID、存储路径、工作区标识、内部节点 key、进程数据、凭据或解析后的 Agent 启动信息。
 - 若 Workflow 源码、输入参数或 Agent 选择无效，集成 MUST 向模型返回可恢复的无效结果，且 MUST NOT 准入或持久化可运行的 Task。遇到 Host、存储、目录或 Runtime 基础设施故障时，集成 MUST 返回操作失败，MUST NOT 将其伪装成 Workflow 声明无效。
 - 嵌入式 Runtime MUST 使用独立于 Acpus CLI 存储的集成专属状态。它 MUST NOT 发现或操作属于 CLI 的 Run。
@@ -17,7 +17,9 @@
 ### Agent 与 Preset 隔离
 
 - 解析命名 Agent `dsh` 时，MUST 遵循 [命名 Agent 解析](agent-executor-spec.md#命名-agent-解析) 契约，并将本集成内置且不可篡改的启动配置作为唯一可信来源。用户定义的同名 Agent 配置 MUST NOT 覆盖它；解析 `dsh` 时 MUST NOT 再经过 DSH / Acpus 集成而递归回到自身。
-- 自动注入的 Preset 上下文 MUST 只包含 Host 与全局 Preset 提供的 Agent 选择建议。项目级 Preset MUST 由模型显式发现。这些建议属于不可信的辅助元数据，MUST NOT 用于安全决策，也 MUST NOT 作为允许 Agent 启动的依据。
+- 集成 MUST 提供无参数、只读且并发安全的 `acpus_agent` 工具，一次返回 effective scale 与 Host、项目、全局 Preset 的选择建议。Supervisor MUST 在设计 topology 前调用一次，按 scale 指导规模并依据 guidance 选择 Preset。集成 MUST NOT 将 Host、全局、项目 Preset 或 scale 动态提升进 system prompt。
+- Scale MUST 统计预计 Agent execution occurrences，包括 fanout、loop 及每个分支执行；Task、Agent slot 与复用 Session 数 MUST NOT 计数。该值 MUST 作为软指导而非准入限制，并明确声明：“This is a guideline, not a hard limit — follow it unless the user's prompt calls for a different scale.”
+- 面向模型的 `acpus_presets` MUST 只接受显式作用域与非空 changes 的原子修改，不得兼具 list operation；本集成不提供 scale set/unset 工具。
 - Preset 更新 MUST 原子完成；系统 MUST 拒绝修改保留 ID `dsh`。变更 MUST 只影响此后新准入的 Task；已经准入的 Task MUST 保持其冻结的 Agent 绑定不变。
 
 ### 持久化委托与监管

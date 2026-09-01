@@ -65,12 +65,12 @@ When a decision needs human input, it can pause the Run, retry a node, create a 
 ### 1. Install the CLI and Skill
 
 > [!TIP]
-> The Acpus CLI includes a bundled Skill. Your Agent can use the help commands to learn how to work with Acpus. For example, tell your Agent:
+> Install the stable router Skill. It directs the Agent to load the complete guide and authoring context dynamically from the current CLI version. For example, tell your Agent:
 > "Use the acpus CLI to start a Workflow and decide whether this release is ready to ship."
 
 ```sh
 npm install -g acpus
-acpus skill install # Optional
+npx skills add kelvinschen/acpus
 ```
 
 ### 2. Describe the Goal
@@ -242,22 +242,15 @@ Acpus applies them when opening the ACP Session and replays them when resuming i
 
 ## Additional Skill Installation Notes
 
-You can also use the skills CLI to install the bundled Skill:
+Use the standard Skills tool to install, update, and remove the Acpus router Skill:
 
 ```sh
-npx skills add kelvinschen/acpus/packages/cli/skills/acpus
+npx skills add kelvinschen/acpus
 ```
 
-In an interactive terminal, `acpus skill install` can prompt for the installation scope and Agent targets.
-Scripts must pass `--project` or `--global`.
-They must also pass `--agent universal`, `--agent claude`, or `--agent universal,claude`.
+This unversioned router asks the Agent to run `acpus skill read` once per task. That command reads the complete Skill from the current CLI version and injects the workspace's Preset and authoring scale context. Updating the CLI therefore updates the complete guide without reinstalling the router Skill.
 
-The install command creates the required directories.
-It writes the Skill to `.agents/skills/acpus` and/or `.claude/skills/acpus` under the project directory or operating-system home directory.
-
-You can use Acpus without installing the Skill.
-An Agent can run `acpus skill read` to read the bundled guide.
-Add "use acpus" to the Prompt.
+You can also run `acpus skill read` directly without installing the router Skill.
 
 ## Core Concepts
 

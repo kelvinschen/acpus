@@ -13,7 +13,7 @@ Acpus compiles typed TypeScript workflow modules into durable runs. Assume the C
 
 Use Acpus to achieve user's goal, own the Acpus loop: *author → run → inspect/recover → verify the goal*. For one named operation, route directly.
 
-For Agent-heavy authoring, calibrate logical work before topology; broad or uncertain work without an explicit user budget defaults to standard scale.
+For Agent-heavy authoring, select Presets by their guidance. The scale counts expected Agent execution occurrences across fanout, loops, and branches, not Tasks, Agent slots, or reused sessions. This is a guideline, not a hard limit — follow it unless the user's prompt calls for a different scale.
 
 ## Route the request
 
@@ -29,7 +29,7 @@ For Agent-heavy authoring, calibrate logical work before topology; broad or unce
 - **Recover or intervene:** Read `references/runtime-recovery.md` for failed/timed-out/stale runs, Retry, Steer, Fork decisions, or deep diagnostics.
 - **Advanced authoring:** Read `references/advanced-authoring.md` only for Agent session reuse, reusable/prebuilt Tasks, imports, artifacts, Task process controls, or cooperative cancellation.
 - **Signal authoring:** Read `references/signal-authoring.md` only for parallel Signal waits, payload validation, timeout behavior, or duration syntax.
-- **Advanced CLI operations:** Read `references/advanced-cli-operations.md` only for Forensics, detailed controls, catalogs/import, visualization, WebUI, Skill management, deletion, or version lookup.
+- **Advanced CLI operations:** Read `references/advanced-cli-operations.md` only for Forensics, detailed controls, catalogs/import, visualization, WebUI, deletion, or version lookup.
 - **Review Agent records:** Read `references/agent-records.md` only for settled turn artifacts or the run-local ACP session projection.
 - **Configure Acpus:** Read `references/configuration.md` for named Agents, Presets, and Hooks.
 

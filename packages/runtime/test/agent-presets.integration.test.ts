@@ -8,10 +8,14 @@ import {
   addAgentPreset,
   applyAgentPresetChanges,
   loadAcpusConfigScope,
+  loadAgentAuthoringContext,
   loadAgentPresetCatalog,
+  normalizeAuthoringAgentScale,
   projectAcpusConfigPath,
   removeAgentPreset,
   resolveConfiguredAgentCommand,
+  setAuthoringAgentScale,
+  unsetAuthoringAgentScale,
 } from "../src/index.js";
 import { captureProcessIdentity } from "../src/process-liveness.js";
 
@@ -37,6 +41,7 @@ describe("Agent Preset catalog integration", () => {
     expect(Result.getOrThrow(loaded)).toEqual({
       agents: { "custom-agent": "  custom-acp --stdio  " },
       presets: { reviewer: { guidance: "Review", agent: { use: "custom-agent" } } },
+      authoring: {},
       hooks: { "run.completed": [{ command: "echo done" }] },
     });
   });
@@ -46,6 +51,7 @@ describe("Agent Preset catalog integration", () => {
     ["invalid Agents", { agents: { broken: "" } }],
     ["normalized Agent collision", { agents: { Agent: "one", " agent ": "two" } }],
     ["invalid Preset", { presets: { reviewer: { guidance: "", agent: { use: "codex" } } } }],
+    ["invalid Authoring Agent scale", { authoring: { agentScale: 0 } }],
     ["invalid Hooks", { hooks: { "run.completed": [{ command: "" }] } }],
   ])("rejects the whole config for %s", async (_case, config) => {
     const root = await temporaryRoot();
@@ -164,6 +170,120 @@ describe("Agent Preset catalog integration", () => {
       kind: "agent_definition",
       use: "host-agent",
     });
+  });
+
+  it("loads one unified authoring snapshot with independent Preset and scale precedence", async () => {
+    const root = await temporaryRoot();
+    const workspace = join(root, "workspace");
+    const homeDir = join(root, "home");
+    await writeConfig(projectAcpusConfigPath(workspace), {
+      authoring: { agentScale: "medium" },
+      presets: { coder: { guidance: "project coder", agent: { use: "codex" } } },
+    });
+    await writeConfig(join(homeDir, ".acpus", "config.json"), {
+      authoring: { agentScale: "large" },
+      presets: {
+        coder: { guidance: "global coder", agent: { use: "claude" } },
+        reviewer: { guidance: "global reviewer", agent: { use: "codex" } },
+      },
+    });
+
+    const loaded = await Effect.runPromise(Effect.result(loadAgentAuthoringContext({
+      workspaceDir: workspace,
+      homeDir,
+      environment: {},
+      hostProvider: () => Effect.succeed([
+        { id: "reviewer", guidance: "host reviewer", agent: { use: "dsh" } },
+      ]),
+    })));
+
+    expect(Result.getOrThrow(loaded).scale).toEqual({
+      value: "medium",
+      maxAgentOccurrences: 12,
+      source: "project",
+    });
+    expect(Result.getOrThrow(loaded).presets.choices).toEqual([
+      { id: "coder", guidance: "project coder", scope: "project" },
+      { id: "reviewer", guidance: "host reviewer", scope: "host" },
+    ]);
+  });
+
+  it("normalizes scale tiers and applies a strict environment override", async () => {
+    expect(["small", "medium", "large", "unrestricted", 7].map(value =>
+      Result.getOrThrow(normalizeAuthoringAgentScale(value)))).toEqual([
+      { value: "small", maxAgentOccurrences: 4 },
+      { value: "medium", maxAgentOccurrences: 12 },
+      { value: "large", maxAgentOccurrences: 32 },
+      { value: "unrestricted" },
+      { value: 7, maxAgentOccurrences: 7 },
+    ]);
+    const root = await temporaryRoot();
+    const overridden = await Effect.runPromise(Effect.result(loadAgentAuthoringContext({
+      workspaceDir: root,
+      homeDir: root,
+      environment: { ACPUS_AUTHORING_AGENT_SCALE: "9" },
+    })));
+    expect(Result.getOrThrow(overridden).scale).toEqual({
+      value: 9,
+      maxAgentOccurrences: 9,
+      source: "environment",
+    });
+    const invalid = await Effect.runPromise(Effect.result(loadAgentAuthoringContext({
+      workspaceDir: root,
+      homeDir: root,
+      environment: { ACPUS_AUTHORING_AGENT_SCALE: "09" },
+    })));
+    expect(Result.getOrThrow(Result.flip(invalid))).toMatchObject({
+      type: "authoring-agent-scale-environment-invalid",
+    });
+  });
+
+  it("preserves config partitions across scale and Preset writes and keeps unset read-only when absent", async () => {
+    const root = await temporaryRoot();
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    await Effect.runPromise(setAuthoringAgentScale({ workspaceDir: workspace, scope: "project", value: "small" }));
+    await Effect.runPromise(addAgentPreset({
+      workspaceDir: workspace,
+      scope: "project",
+      id: "coder",
+      preset: { guidance: "Code", agent: { use: "codex" } },
+    }));
+    expect(JSON.parse(await readFile(projectAcpusConfigPath(workspace), "utf8"))).toEqual({
+      presets: { coder: { guidance: "Code", agent: { use: "codex" } } },
+      authoring: { agentScale: "small" },
+    });
+
+    const empty = join(root, "empty");
+    await mkdir(empty);
+    await Effect.runPromise(unsetAuthoringAgentScale({ workspaceDir: empty, scope: "project" }));
+    await expect(access(join(empty, ".acpus"))).rejects.toMatchObject({ code: "ENOENT" });
+    await Effect.runPromise(unsetAuthoringAgentScale({ workspaceDir: workspace, scope: "project" }));
+    expect(JSON.parse(await readFile(projectAcpusConfigPath(workspace), "utf8"))).toEqual({
+      presets: { coder: { guidance: "Code", agent: { use: "codex" } } },
+    });
+  });
+
+  it("repairs an invalid target authoring section while still validating every other section", async () => {
+    const root = await temporaryRoot();
+    const path = projectAcpusConfigPath(root);
+    await writeConfig(path, {
+      authoring: { agentScale: "invalid" },
+      presets: { coder: { guidance: "Code", agent: { use: "codex" } } },
+    });
+    await Effect.runPromise(setAuthoringAgentScale({ workspaceDir: root, scope: "project", value: "medium" }));
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({
+      presets: { coder: { guidance: "Code", agent: { use: "codex" } } },
+      authoring: { agentScale: "medium" },
+    });
+
+    await writeConfig(path, { agents: { broken: "" }, authoring: { agentScale: "invalid" } });
+    const rejected = await Effect.runPromise(Effect.result(setAuthoringAgentScale({
+      workspaceDir: root,
+      scope: "project",
+      value: "small",
+    })));
+    expect(Result.getOrThrow(Result.flip(rejected))).toMatchObject({ type: "acpus-config-invalid" });
   });
 
   it("rejects unknown catalog and writable scopes", async () => {
@@ -367,4 +487,9 @@ async function temporaryRoot(): Promise<string> {
 async function writeCatalog(path: string, presets: Record<string, unknown>): Promise<void> {
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, `${JSON.stringify({ presets })}\n`, "utf8");
+}
+
+async function writeConfig(path: string, config: Record<string, unknown>): Promise<void> {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify(config)}\n`, "utf8");
 }

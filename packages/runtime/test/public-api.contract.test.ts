@@ -5,6 +5,7 @@ import * as host from "@acpus/runtime/host";
 describe("@acpus/runtime public API", () => {
   it("exports durable runtime use cases and testable pure runtime helpers", () => {
     expect(Object.keys(runtime).sort()).toEqual([
+      "AUTHORING_AGENT_SCALE_ENV",
       "DAEMON_PROTOCOL_VERSION",
       "RUNTIME_ABI_VERSION",
       "addAgentPreset",
@@ -30,9 +31,12 @@ describe("@acpus/runtime public API", () => {
       "listKnownWorkspaces",
       "listRuns",
       "loadAcpusConfigScope",
+      "loadAgentAuthoringContext",
       "loadAgentPresetCatalog",
+      "loadAuthoringAgentScale",
       "loadHooksConfigScope",
       "loadHooksConfigScopes",
+      "normalizeAuthoringAgentScale",
       "observeInspection",
       "parseAgentInjectionMap",
       "probeDaemonEndpoint",
@@ -52,12 +56,14 @@ describe("@acpus/runtime public API", () => {
       "resolveArtifact",
       "resolveConfiguredAgentCommand",
       "resolveKnownWorkspace",
+      "setAuthoringAgentScale",
       "startDaemonLoop",
       "tryLoadRuntimeConfiguration",
       "tryNormalizeForkInput",
       "tryNormalizeWorkflowInput",
       "tryParseAgentInjectionMap",
       "unboundAgentNames",
+      "unsetAuthoringAgentScale",
       "validateHooksFile",
       "withAgentBindings",
     ]);

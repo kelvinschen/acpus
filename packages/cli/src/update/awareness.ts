@@ -153,7 +153,6 @@ export function formatUpdateNotice(input: {
   return [
     `${label("Update available:")} acpus ${input.currentVersion} → ${input.update.version}`,
     `${label("Run:")} ${command("npm install -g acpus@latest")}`,
-    `${label("Refresh skill:")} ${command("acpus skill install")}`,
     "",
   ].join("\n");
 }

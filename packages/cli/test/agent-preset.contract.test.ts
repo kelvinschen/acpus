@@ -6,6 +6,65 @@ import { CaptureStream } from "./support/capture-stream.js";
 import { withPlainTestWorkspace } from "./support/workspace.js";
 
 describe("Agent Preset CLI contract", () => {
+  it("shows unified authoring context and manages scoped scale with environment warnings", async () => {
+    await withPlainTestWorkspace("agent-context", async (workspace, home) => {
+      await withProcessHome(home, async () => {
+        await writePresets(join(workspace, ".acpus", "config.json"), {
+          coder: preset("Complex implementation", { use: "codex", env: { SECRET: "hidden" } }),
+        });
+        const set = await invoke(workspace, ["agent", "scale", "set", "medium", "--project"]);
+        expect(set).toEqual({
+          exitCode: 0,
+          stdout: "Authoring Agent scale set to 'medium' in project scope.\n",
+          stderr: "",
+        });
+        const context = await invoke(workspace, ["agent"]);
+        expect(context.exitCode).toBe(0);
+        expect(context.stdout).toContain("value: medium\n  suggested maximum Agent execution occurrences: 12\n  source: project");
+        expect(context.stdout).toContain("coder  Complex implementation");
+        expect(context.stdout).toContain("guidance: This is a guideline, not a hard limit");
+        expect(context.stdout).toContain("Agent Preset choices (select by guidance)");
+        expect(context.stdout).not.toContain("SECRET");
+
+        await withAuthoringScaleEnvironment("large", async () => {
+          const overridden = await invoke(workspace, ["agent", "scale", "set", "small", "--project"]);
+          expect(overridden.exitCode).toBe(0);
+          expect(overridden.stderr).toContain("overrides configured scale");
+          expect((await invoke(workspace, ["agent"])).stdout).toContain("value: large");
+        });
+        expect((await invoke(workspace, ["agent", "scale", "unset", "--project"])).exitCode).toBe(0);
+        expect(JSON.parse(await readFile(join(workspace, ".acpus", "config.json"), "utf8"))).toEqual({
+          presets: { coder: preset("Complex implementation", { use: "codex", env: { SECRET: "hidden" } }) },
+        });
+      });
+    });
+  });
+
+  it("fails unified context without partial output while scoped scale repair remains available", async () => {
+    await withPlainTestWorkspace("agent-context-invalid", async workspace => {
+      await withAuthoringScaleEnvironment("invalid", async () => {
+        const context = await invoke(workspace, ["agent"]);
+        expect(context.exitCode).toBe(1);
+        expect(context.stdout).toBe("");
+        expect(context.stderr).toContain("ACPUS_AUTHORING_AGENT_SCALE");
+        const repaired = await invoke(workspace, ["agent", "scale", "set", "4", "--project"]);
+        expect(repaired.exitCode).toBe(0);
+        expect(repaired.stderr).toContain("remains unavailable");
+      });
+    });
+  });
+
+  it("keeps idempotent scale unset read-only when no config exists", async () => {
+    await withPlainTestWorkspace("agent-scale-unset", async workspace => {
+      expect(await invoke(workspace, ["agent", "scale", "unset", "--project"])).toEqual({
+        exitCode: 0,
+        stdout: "Authoring Agent scale unset in project scope.\n",
+        stderr: "",
+      });
+      await expect(lstat(join(workspace, ".acpus"))).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
   it("lists the effective project-over-global catalog as natural-language text", async () => {
     await withPlainTestWorkspace("agent-preset-list", async (workspace, home) => {
       await withProcessHome(home, async () => {
@@ -155,5 +214,16 @@ async function withProcessHome<T>(home: string, fn: () => Promise<T>): Promise<T
     else process.env.HOME = previousHome;
     if (previousUserProfile === undefined) delete process.env.USERPROFILE;
     else process.env.USERPROFILE = previousUserProfile;
+  }
+}
+
+async function withAuthoringScaleEnvironment<T>(value: string, fn: () => Promise<T>): Promise<T> {
+  const previous = process.env.ACPUS_AUTHORING_AGENT_SCALE;
+  process.env.ACPUS_AUTHORING_AGENT_SCALE = value;
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) delete process.env.ACPUS_AUTHORING_AGENT_SCALE;
+    else process.env.ACPUS_AUTHORING_AGENT_SCALE = previous;
   }
 }

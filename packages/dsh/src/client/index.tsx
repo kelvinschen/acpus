@@ -94,6 +94,7 @@ type ClientDocument = {
 };
 
 const ACPUS_TOOL_NAMES = [
+  "acpus_agent",
   "acpus_presets",
   "acpus_tasks",
   "acpus_run",

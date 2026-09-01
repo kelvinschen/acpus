@@ -54,9 +54,47 @@ export type AgentPresetCatalog = {
   resolve(ids: readonly string[]): Result.Result<Record<string, ResolvedAgentPreset>, AgentPresetResolutionFailure>;
 };
 
+export const AUTHORING_AGENT_SCALE_ENV = "ACPUS_AUTHORING_AGENT_SCALE";
+
+export type AuthoringAgentScale = number | "small" | "medium" | "large" | "unrestricted";
+
+export type NormalizedAuthoringAgentScale = {
+  value: AuthoringAgentScale;
+  maxAgentOccurrences?: number;
+};
+
+export type EffectiveAuthoringAgentScale = NormalizedAuthoringAgentScale & {
+  source: "environment" | WritableAgentPresetScope;
+};
+
+export type AgentAuthoringContext = {
+  scale?: EffectiveAuthoringAgentScale;
+  presets: AgentPresetCatalog;
+};
+
+export type AuthoringAgentScaleEnvironmentFailure = {
+  type: "authoring-agent-scale-environment-invalid";
+  variable: typeof AUTHORING_AGENT_SCALE_ENV;
+  value: string;
+  message: string;
+};
+
+export type AgentAuthoringContextFailure = AgentPresetCatalogFailure | AuthoringAgentScaleEnvironmentFailure;
+
+export type AuthoringAgentScaleWriteFailure = AcpusConfigReadFailure
+  | { type: "authoring-agent-scale-scope-invalid"; message: string }
+  | { type: "authoring-agent-scale-value-invalid"; message: string }
+  | { type: "authoring-agent-scale-busy"; scope: WritableAgentPresetScope; path: string; message: string }
+  | { type: "authoring-agent-scale-write-failed"; scope: WritableAgentPresetScope; path: string; message: string };
+
+export type AcpusAuthoringConfig = {
+  agentScale?: AuthoringAgentScale;
+};
+
 export type AcpusConfig = {
   agents: Record<string, string>;
   presets: Record<string, AgentPresetSpec>;
+  authoring: AcpusAuthoringConfig;
   hooks: HooksFile;
 };
 
@@ -132,9 +170,19 @@ const AgentPresetSpecSchema = z.object({
   ]),
 }).strict();
 
+const AuthoringAgentScaleSchema = z.union([
+  z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  z.enum(["small", "medium", "large", "unrestricted"]),
+]);
+
+const AcpusAuthoringConfigSchema = z.object({
+  agentScale: AuthoringAgentScaleSchema.optional(),
+}).strict();
+
 const AcpusConfigFileSchema = z.object({
   agents: z.unknown().optional(),
   presets: z.unknown().optional(),
+  authoring: z.unknown().optional(),
   hooks: z.unknown().optional(),
 }).strict();
 
@@ -208,6 +256,123 @@ export function loadAgentPresetCatalog(input: {
   });
 }
 
+export function normalizeAuthoringAgentScale(
+  value: unknown,
+): Result.Result<NormalizedAuthoringAgentScale, { type: "authoring-agent-scale-value-invalid"; message: string }> {
+  const parsed = AuthoringAgentScaleSchema.safeParse(value);
+  if (!parsed.success) {
+    return Result.fail({
+      type: "authoring-agent-scale-value-invalid",
+      message: "Authoring Agent scale must be a positive safe integer or small, medium, large, or unrestricted.",
+    });
+  }
+  return Result.succeed(normalizeKnownAuthoringAgentScale(parsed.data as AuthoringAgentScale));
+}
+
+function normalizeKnownAuthoringAgentScale(scale: AuthoringAgentScale): NormalizedAuthoringAgentScale {
+  if (typeof scale === "number") return { value: scale, maxAgentOccurrences: scale };
+  if (scale === "unrestricted") return { value: scale };
+  return {
+    value: scale,
+    maxAgentOccurrences: scale === "small" ? 4 : scale === "medium" ? 12 : 32,
+  };
+}
+
+export function loadAuthoringAgentScale(input: {
+  workspaceDir?: string;
+  homeDir?: string;
+  environment?: NodeJS.ProcessEnv;
+}): Effect.Effect<EffectiveAuthoringAgentScale | undefined, AcpusConfigReadFailure | AuthoringAgentScaleEnvironmentFailure> {
+  return Effect.gen(function*() {
+    const configs = yield* loadAuthoringConfigs(input);
+    return yield* Effect.fromResult(resolveAuthoringAgentScale(configs, input.environment ?? process.env));
+  });
+}
+
+export function loadAgentAuthoringContext(input: {
+  workspaceDir?: string;
+  homeDir?: string;
+  hostProvider?: AgentPresetProvider;
+  environment?: NodeJS.ProcessEnv;
+}): Effect.Effect<AgentAuthoringContext, AgentAuthoringContextFailure> {
+  return Effect.gen(function*() {
+    const configs = yield* loadAuthoringConfigs(input);
+    const entries: CatalogEntry[] = [];
+    if (input.hostProvider !== undefined) {
+      const provided = yield* input.hostProvider({
+        ...(input.workspaceDir === undefined ? {} : { workspaceDir: resolve(input.workspaceDir) }),
+      });
+      entries.push(...(yield* Effect.fromResult(validateHostPresets(provided))));
+    }
+    if (configs.project !== undefined) entries.push(...entriesFromConfig("project", configs.project));
+    entries.push(...entriesFromConfig("global", configs.global));
+    const effective = new Map<string, CatalogEntry>();
+    for (const entry of entries) {
+      if (!effective.has(entry.id)) effective.set(entry.id, entry);
+    }
+    const ordered = [...effective.values()].sort((left, right) => codeUnitCompare(left.id, right.id));
+    const scale = yield* Effect.fromResult(resolveAuthoringAgentScale(configs, input.environment ?? process.env));
+    return {
+      ...(scale === undefined ? {} : { scale }),
+      presets: catalogFromEntries(ordered),
+    };
+  });
+}
+
+type LoadedAuthoringConfigs = {
+  project?: AcpusConfig;
+  global: AcpusConfig;
+};
+
+function loadAuthoringConfigs(input: {
+  workspaceDir?: string;
+  homeDir?: string;
+}): Effect.Effect<LoadedAuthoringConfigs, AcpusConfigReadFailure> {
+  return Effect.gen(function*() {
+    const project = input.workspaceDir === undefined
+      ? undefined
+      : yield* loadAcpusConfigScope({ workspaceDir: input.workspaceDir, scope: "project" });
+    const global = yield* loadAcpusConfigScope({
+      ...(input.homeDir === undefined ? {} : { homeDir: input.homeDir }),
+      scope: "global",
+    });
+    return { ...(project === undefined ? {} : { project }), global };
+  });
+}
+
+function resolveAuthoringAgentScale(
+  configs: LoadedAuthoringConfigs,
+  environment: NodeJS.ProcessEnv,
+): Result.Result<EffectiveAuthoringAgentScale | undefined, AuthoringAgentScaleEnvironmentFailure> {
+  const environmentValue = environment[AUTHORING_AGENT_SCALE_ENV];
+  if (environmentValue !== undefined) {
+    const parsedValue: unknown = /^[1-9]\d*$/.test(environmentValue) ? Number(environmentValue) : environmentValue;
+    const normalized = normalizeAuthoringAgentScale(parsedValue);
+    if (Result.isFailure(normalized)) {
+      return Result.fail({
+        type: "authoring-agent-scale-environment-invalid",
+        variable: AUTHORING_AGENT_SCALE_ENV,
+        value: environmentValue,
+        message: `${AUTHORING_AGENT_SCALE_ENV} must be a positive safe integer or small, medium, large, or unrestricted.`,
+      });
+    }
+    return Result.succeed({ ...normalized.success, source: "environment" });
+  }
+  const project = configs.project?.authoring.agentScale;
+  if (project !== undefined) {
+    return Result.succeed({ ...normalizeKnownAuthoringAgentScale(project), source: "project" });
+  }
+  const global = configs.global.authoring.agentScale;
+  if (global !== undefined) {
+    return Result.succeed({ ...normalizeKnownAuthoringAgentScale(global), source: "global" });
+  }
+  return Result.succeed(undefined);
+}
+
+function entriesFromConfig(scope: WritableAgentPresetScope, config: AcpusConfig): CatalogEntry[] {
+  return Object.entries(config.presets).map(([id, preset]) => entryFromPreset(id, scope, preset));
+}
+
 export function applyAgentPresetChanges(input: {
   workspaceDir?: string;
   homeDir?: string;
@@ -234,6 +399,121 @@ export function removeAgentPreset(input: {
   id: string;
 }): Effect.Effect<{ path: string }, AgentPresetWriteFailure> {
   return Effect.promise(() => removePreset(input)).pipe(Effect.flatMap(Effect.fromResult), Effect.uninterruptible);
+}
+
+export function setAuthoringAgentScale(input: {
+  workspaceDir?: string;
+  homeDir?: string;
+  scope: WritableAgentPresetScope;
+  value: AuthoringAgentScale;
+}): Effect.Effect<{ path: string; scale: NormalizedAuthoringAgentScale }, AuthoringAgentScaleWriteFailure> {
+  return Effect.promise(() => writeAuthoringAgentScale(input, false)).pipe(Effect.flatMap(Effect.fromResult), Effect.uninterruptible);
+}
+
+export function unsetAuthoringAgentScale(input: {
+  workspaceDir?: string;
+  homeDir?: string;
+  scope: WritableAgentPresetScope;
+}): Effect.Effect<{ path: string }, AuthoringAgentScaleWriteFailure> {
+  return Effect.promise(() => writeAuthoringAgentScale(input, true)).pipe(
+    Effect.flatMap(Effect.fromResult),
+    Effect.map(result => ({ path: result.path })),
+    Effect.uninterruptible,
+  );
+}
+
+async function writeAuthoringAgentScale(
+  input: {
+    workspaceDir?: string;
+    homeDir?: string;
+    scope: WritableAgentPresetScope;
+    value?: AuthoringAgentScale;
+  },
+  unset: boolean,
+): Promise<Result.Result<{ path: string; scale: NormalizedAuthoringAgentScale }, AuthoringAgentScaleWriteFailure>> {
+  if (input.scope !== "project" && input.scope !== "global") {
+    return Result.fail({ type: "authoring-agent-scale-scope-invalid", message: "Authoring Agent scale scope must be project or global." });
+  }
+  if (input.scope === "project" && input.workspaceDir === undefined) {
+    return Result.fail({ type: "authoring-agent-scale-scope-invalid", message: "Project Authoring Agent scale requires a workspace directory." });
+  }
+  const normalized = unset
+    ? Result.succeed<NormalizedAuthoringAgentScale>({ value: "unrestricted" })
+    : normalizeAuthoringAgentScale(input.value);
+  if (Result.isFailure(normalized)) return Result.fail(normalized.failure);
+  const rootPath = input.scope === "project" ? resolve(input.workspaceDir!) : resolve(input.homeDir ?? homedir());
+  let path = input.scope === "project" ? projectAcpusConfigPath(input.workspaceDir!) : globalAcpusConfigPath(input.homeDir);
+  let boundary: ConfigFileBoundary | undefined;
+  try {
+    boundary = unset
+      ? await preparePresetFileBoundary(rootPath, false)
+      : await preparePresetFileBoundary(rootPath, true);
+    if (boundary === undefined) return Result.succeed({ path, scale: normalized.success });
+    path = boundary.path;
+    if (input.scope === "global" && process.platform !== "win32") {
+      await verifyPresetFileBoundary(boundary);
+      await chmod(boundary.parentPath, 0o700);
+      await verifyPresetFileBoundary(boundary);
+    }
+  } catch (error) {
+    return Result.fail({
+      type: "authoring-agent-scale-write-failed",
+      scope: input.scope,
+      path,
+      message: `Failed to prepare Acpus config at '${path}': ${causeMessage(error)}`,
+    });
+  }
+  const lockPath = `${path}.lock`;
+  let lock: ConfigFileLock | undefined;
+  try {
+    lock = await acquirePresetFileLock(lockPath);
+  } catch (error) {
+    return Result.fail({
+      type: "authoring-agent-scale-write-failed",
+      scope: input.scope,
+      path,
+      message: `Failed to lock Acpus config at '${path}': ${causeMessage(error)}`,
+    });
+  }
+  if (lock === undefined) {
+    return Result.fail({
+      type: "authoring-agent-scale-busy",
+      scope: input.scope,
+      path,
+      message: `Acpus config at '${path}' is being updated by another process.`,
+    });
+  }
+  try {
+    await verifyPresetFileBoundary(boundary);
+    let current = await readAcpusConfigFile(input.scope, rootPath, path, boundary);
+    if (unset) {
+      if (Result.isSuccess(current) && current.success.authoring.agentScale === undefined) {
+        return Result.succeed({ path, scale: normalized.success });
+      }
+      if (Result.isFailure(current)) {
+        current = await readAcpusConfigFile(input.scope, rootPath, path, boundary, { ignoreAuthoring: true });
+      }
+    } else {
+      current = await readAcpusConfigFile(input.scope, rootPath, path, boundary, { ignoreAuthoring: true });
+    }
+    if (Result.isFailure(current)) return Result.fail(current.failure);
+    const authoring = unset ? {} : { agentScale: normalized.success.value };
+    try {
+      await verifyPresetFileBoundary(boundary);
+      await writePrivateJsonAtomically(path, serializeAcpusConfig({ ...current.success, authoring }));
+      await verifyPresetFileBoundary(boundary);
+    } catch (error) {
+      return Result.fail({
+        type: "authoring-agent-scale-write-failed",
+        scope: input.scope,
+        path,
+        message: `Failed to write Acpus config at '${path}': ${causeMessage(error)}`,
+      });
+    }
+    return Result.succeed({ path, scale: normalized.success });
+  } finally {
+    await lock.release().catch(() => undefined);
+  }
 }
 
 async function addPreset(input: {
@@ -477,6 +757,7 @@ async function readAcpusConfigFile(
   rootPath: string,
   path: string,
   openedBoundary?: ConfigFileBoundary,
+  options?: { ignoreAuthoring?: boolean },
 ): Promise<Result.Result<AcpusConfig, AcpusConfigReadFailure>> {
   let boundary: ConfigFileBoundary | undefined;
   let openedFileIdentity: string | undefined;
@@ -508,13 +789,14 @@ async function readAcpusConfigFile(
   } catch (error) {
     return Result.fail({ type: "acpus-config-invalid", source: scope, path, message: `Invalid JSON: ${causeMessage(error)}` });
   }
-  return parseAcpusConfig(value, scope, path);
+  return parseAcpusConfig(value, scope, path, options);
 }
 
 function parseAcpusConfig(
   value: unknown,
   scope: WritableAgentPresetScope,
   path: string,
+  options?: { ignoreAuthoring?: boolean },
 ): Result.Result<AcpusConfig, AcpusConfigReadFailure> {
   const parsed = AcpusConfigFileSchema.safeParse(value);
   if (!parsed.success) {
@@ -527,6 +809,15 @@ function parseAcpusConfig(
   }
   const agents = parseConfiguredAgents(parsed.data.agents, scope, path);
   if (Result.isFailure(agents)) return Result.fail(agents.failure);
+  const authoring = AcpusAuthoringConfigSchema.safeParse(options?.ignoreAuthoring === true ? {} : parsed.data.authoring ?? {});
+  if (!authoring.success) {
+    return Result.fail({
+      type: "acpus-config-invalid",
+      source: scope,
+      path,
+      message: authoring.error.issues.map(issue => formatIssueAt(["authoring"], issue)).join("; "),
+    });
+  }
   const presetValue = parsed.data.presets ?? {};
   if (!isPlainRecord(presetValue)) {
     return Result.fail({ type: "acpus-config-invalid", source: scope, path, message: "$.presets must be an object." });
@@ -565,6 +856,7 @@ function parseAcpusConfig(
   return Result.succeed({
     agents: agents.success,
     presets: Object.fromEntries(presetEntries) as Record<string, AgentPresetSpec>,
+    authoring: authoring.data as AcpusAuthoringConfig,
     hooks: hooks.success,
   });
 }
@@ -610,13 +902,14 @@ function parseConfiguredAgents(
 }
 
 function emptyAcpusConfig(): AcpusConfig {
-  return { agents: {}, presets: {}, hooks: {} };
+  return { agents: {}, presets: {}, authoring: {}, hooks: {} };
 }
 
 function serializeAcpusConfig(config: AcpusConfig): Partial<AcpusConfig> {
   return {
     ...(Object.keys(config.agents).length === 0 ? {} : { agents: config.agents }),
     ...(Object.keys(config.presets).length === 0 ? {} : { presets: config.presets }),
+    ...(config.authoring.agentScale === undefined ? {} : { authoring: config.authoring }),
     ...(Object.keys(config.hooks).length === 0 ? {} : { hooks: config.hooks }),
   };
 }

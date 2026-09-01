@@ -30,7 +30,9 @@
 
 ### 内置 Skill 与更新感知
 
-- 读取 Skill 时，CLI MUST 只能访问当前运行版本自带的内置 Skill。安装或移除 Skill 时，CLI MUST 先确认目标是该内置 Skill 的可识别副本，MUST 保留无关的用户内容，并且 MUST 原子发布更新；若无法完成恢复，MUST 报告上一版本的恢复位置。
+- CLI MUST 只提供当前运行版本内置完整 Skill 的只读访问，MUST NOT 负责 Skill 安装或移除。标准 Skills 工具安装的无版本路由 Skill MUST 引导 Agent 每个任务至多运行一次 `acpus skill read`，使 CLI 升级直接更新后续读取的完整指南而无需重新安装路由 Skill。
+- 裸 `acpus agent` MUST 一次显示当前工作区的 effective scale 与全部 Preset choices；任一配置或环境值无效时 MUST 失败且 MUST NOT 输出部分 catalog。`agent presets` MUST 保留分作用域发现与原子管理；`agent scale` MUST 提供查看、显式作用域 set 与幂等 unset。环境覆盖 MUST NOT 阻止配置修复写入，回执 MUST 提示其仍影响 effective context。
+- 默认 `acpus skill read` 与显式根 `SKILL.md` 读取 MUST 在资源元数据和完整 Skill 正文之间注入同一 Agent authoring context 呈现。目录和其他资源 MUST 保持纯资源输出。若 Skill 可读而 context 无效，命令 MUST 成功返回完整 Skill，并注入裁剪后的 `status: unavailable`、故障与重新运行 `acpus skill read` 的修复动作。所有 Skill 读取 MUST 保持只读。
 - CLI MAY 在交互式使用时尽力检查新版本并提供提示。该检查 MUST NOT 在工作区创建任何持久化状态；即使遇到网络异常或缓存失效，CLI 也 MUST NOT 改变普通命令的输出、行为或退出状态码。
 
 ## 验证

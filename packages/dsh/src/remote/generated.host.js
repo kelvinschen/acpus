@@ -501,7 +501,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#AwaitSessionActivityRevisionResult',
         schema: _acpus_dsh_acpus_awaitSessionActivityRevision_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":501,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":505,"column":3},
     },
     {
       id: '@acpus/dsh#acpus/cancelSessionTask',
@@ -526,7 +526,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#CancelSessionTaskResult',
         schema: _acpus_dsh_acpus_cancelSessionTask_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":512,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":516,"column":3},
     },
     {
       id: '@acpus/dsh#acpus/readActivityDetail',
@@ -551,7 +551,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#ReadActivityDetailResult',
         schema: _acpus_dsh_acpus_readActivityDetail_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":453,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":457,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readAgentPresets',
@@ -576,7 +576,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#ReadAgentPresetsResult',
         schema: _acpus_dsh_acpus_readAgentPresets_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":438,"column":9},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":442,"column":9},
     },
     {
       id: '@acpus/dsh#acpus/readSessionActivity',
@@ -601,7 +601,7 @@ export const TYPERT = {
         typeSymbol: '@acpus/dsh/projection#SessionActivityProjection',
         schema: _acpus_dsh_acpus_readSessionActivity_result$schema,
       },
-      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":446,"column":3},
+      sourceLocation: {"file":"packages/dsh/src/host/mode.ts","line":450,"column":3},
     },
   ],
   model: {
@@ -623,13 +623,8 @@ export const TYPERT = {
           },
           {
             "kind": "method",
-            "name": "trustedAgentPresetChoices",
-            "signature": "async trustedAgentPresetChoices(): Promise<readonly AgentPresetChoice[]>"
-          },
-          {
-            "kind": "method",
-            "name": "agentPresetChoices",
-            "signature": "agentPresetChoices(workspace: string): Promise<AgentPresetSelectionView[]>"
+            "name": "agentAuthoringContext",
+            "signature": "agentAuthoringContext(workspace: string): Promise<{ scale: EffectiveAuthoringAgentScale | null; presets: AgentPresetSelectionView[]; }>"
           },
           {
             "kind": "method",
@@ -743,7 +738,7 @@ export const TYPERT = {
           },
           {
             "name": "AgentPresetSelectionView",
-            "declaration": "export type AgentPresetSelectionView = Pick<AgentPresetChoice, \"id\" | \"guidance\">;"
+            "declaration": "export type AgentPresetSelectionView = Pick<AgentPresetChoice, \"id\" | \"guidance\" | \"scope\">;"
           },
           {
             "name": "AgentPresetView",

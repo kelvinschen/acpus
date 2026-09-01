@@ -1,13 +1,13 @@
 # Acpus Configuration
 
-Acpus uses one closed JSON file per scope for named Agents, Agent Presets, and Runtime Hooks.
+Acpus uses one closed JSON file per scope for named Agents, Agent Presets, Authoring Agent scale, and Runtime Hooks.
 
 ## Files And Shape
 
 - Project: `<workspace>/.acpus/config.json`
 - Global: `$HOME/.acpus/config.json`
 
-The optional top-level fields are exactly `agents`, `presets`, and `hooks`; omission means empty. Invalid JSON, an unknown top-level field, or invalid content in any section invalidates the whole file for every consumer. Use [`config/example.json`](../config/example.json) as the complete example.
+The optional top-level fields are exactly `agents`, `presets`, `authoring`, and `hooks`; omission means empty. Invalid JSON, an unknown top-level field, or invalid content in any section invalidates the whole file for every consumer. Use [`config/example.json`](../config/example.json) as the complete example.
 
 Project configuration follows the Runtime workspace, never an Agent `cwd`. Global configuration follows the Runtime/Host home, never workflow `env.HOME`.
 
@@ -69,7 +69,20 @@ Remove one definition from an explicit scope:
 acpus agent presets remove deep-coder --global
 ```
 
-Use `--project` for the workspace or `--global` for the user. Add and remove require one scope. If the user describes the desired purpose, Agent, model/options, and scope in natural language, translate that request into the complete definition. Ask when scope is missing. Preset writes modify only `presets` and preserve `agents` and `hooks`.
+Use `--project` for the workspace or `--global` for the user. Add and remove require one scope. If the user describes the desired purpose, Agent, model/options, and scope in natural language, translate that request into the complete definition. Ask when scope is missing. Preset writes modify only `presets` and preserve `agents`, `authoring`, and `hooks`.
+
+## Authoring Agent Scale
+
+Set `authoring.agentScale` to a positive safe integer or `small`, `medium`, `large`, or `unrestricted`. The named scales suggest at most 4, 12, and 32 Agent execution occurrences; `unrestricted` has no suggested maximum. Project configuration overrides global configuration, and `ACPUS_AUTHORING_AGENT_SCALE` overrides both for the current process. This is a guideline, not a hard limit — follow it unless the user's prompt calls for a different scale.
+
+```sh
+acpus agent
+acpus agent scale [--project | --global]
+acpus agent scale set medium --project
+acpus agent scale unset --project
+```
+
+Scale writes preserve every other config section. Set and unset require one explicit writable scope. An environment override does not prevent a write, but continues to determine the effective context until removed. Unset is idempotent and does not create configuration when the scope is already unconfigured.
 
 ## Runtime Hooks
 

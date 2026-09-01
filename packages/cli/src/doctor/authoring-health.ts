@@ -1,9 +1,12 @@
-import { lstat, readFile } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { homedir } from "node:os";
+import { join } from "node:path";
 import { officialAuthoringEnvironment } from "@acpus/loader";
 import { getCliPackageInfo } from "../platform/package-info.js";
 import { readAcpusSkillMetadata } from "../skill/content.js";
-import { existingSkillRootTargets, type SkillAgent, type SkillScope } from "../skill/installation.js";
+
+type SkillScope = "project" | "global";
+type SkillAgent = "universal" | "claude";
 
 type HealthStatus = "ok" | "warn" | "fail";
 const authoringSpecifiers = ["acpus/core", "acpus/expression", "acpus/tasks/git"] as const;
@@ -48,11 +51,10 @@ export async function getAuthoringHealth(cwd: string): Promise<AuthoringHealth> 
 
   const installed = await staleInstalledAcpusSkills(cwd, homedir(), cli.version);
   for (const installedSkill of installed) {
-    const remediation = `acpus skill install --${installedSkill.scope} --agent ${installedSkill.agent}`;
     checks.push({
       area: "skill",
       status: "warn",
-      message: `Installed ${installedSkill.agent} Acpus skill is stale; run '${remediation}'.`,
+      message: `Installed ${installedSkill.scope} ${installedSkill.agent} Acpus skill is stale; replace it with the router skill using 'npx skills add kelvinschen/acpus'.`,
     });
   }
 
@@ -70,25 +72,37 @@ async function staleInstalledAcpusSkills(
   home: string,
   expectedVersion: string,
 ): Promise<InstalledAcpusSkill[]> {
-  const targets = await existingSkillRootTargets(cwd, home, ["project", "global"]);
-  const stale = await Promise.all(targets.map(async target => ({
+  const targets = (["project", "global"] as const).flatMap(scope =>
+    (["universal", "claude"] as const).map(agent => {
+      const base = scope === "project" ? cwd : home;
+      return {
+        scope,
+        agent,
+        targetPath: join(base, agent === "universal" ? ".agents" : ".claude", "skills", "acpus"),
+      };
+    }));
+  const checked = await Promise.all(targets.map(async target => ({
     target,
-    stale: await installedSkillIsStale(target.targetPath, expectedVersion),
+    canonicalPath: await staleInstalledSkillPath(target.targetPath, expectedVersion),
   })));
-  return stale.flatMap(({ target, stale }) => stale
-    ? [{ scope: target.scope, agent: target.agent }]
-    : []);
+  const seen = new Set<string>();
+  return checked.flatMap(({ target, canonicalPath }) => {
+    if (canonicalPath === undefined || seen.has(canonicalPath)) return [];
+    seen.add(canonicalPath);
+    return [{ scope: target.scope, agent: target.agent }];
+  });
 }
 
-async function installedSkillIsStale(path: string, expectedVersion: string): Promise<boolean> {
+async function staleInstalledSkillPath(path: string, expectedVersion: string): Promise<string | undefined> {
   try {
     const stats = await lstat(path);
-    if (!stats.isDirectory() && !stats.isSymbolicLink()) return false;
+    if (!stats.isDirectory() && !stats.isSymbolicLink()) return undefined;
     const metadata = await readAcpusSkillMetadata(path);
-    return metadata.name === "acpus"
+    const stale = metadata.name === "acpus"
       && metadata.version !== undefined
       && metadata.version !== expectedVersion;
+    return stale ? await realpath(path) : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }

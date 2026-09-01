@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest";
 import { loadDshComposition, supervisingAgent } from "./support/dsh-composition.js";
 
 const toolNames = [
+  "acpus_agent",
   "acpus_presets",
   "acpus_tasks",
   "acpus_run",

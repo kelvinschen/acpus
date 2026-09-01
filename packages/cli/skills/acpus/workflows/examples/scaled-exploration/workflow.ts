@@ -1,5 +1,5 @@
 /*
- * Pattern: Plan a standard-scale fanout and reduce results in batches.
+ * Pattern: Plan a bounded fanout and reduce results in batches.
  * Nodes: agent, task, fanout
  * Scale: 1 planner + breadth explorers + ceil(breadth / batchSize) reducers + 1 final.
  */
@@ -28,13 +28,13 @@ const Synthesis = z.object({
 
 export default defineWorkflow({
   name: "scaled-exploration",
-  description: "Explore a broad question at standard scale and synthesize it through bounded batches.",
+  description: "Explore a broad question with a bounded fanout and synthesize it through batches.",
   inputSchema: z.object({
     subject: z.string().describe("The topic, design question, or decision space to explore."),
     rubric: z.string().describe("Goals and criteria that should shape useful directions."),
     context: z.string().default("").describe("Background, constraints, and prior decisions."),
-    breadth: z.number().default(32).describe(
-      "Number of distinct aspects to explore; the default yields standard scale.",
+    breadth: z.number().default(8).describe(
+      "Number of distinct aspects to explore.",
     ),
     batchSize: z.number().default(8).describe(
       "Explorer outputs per reducer Agent.",

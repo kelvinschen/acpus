@@ -44,7 +44,7 @@ export function vizError(message: string): CliError {
   return new CliError(1, { ok: false, phase: "viz", message });
 }
 
-export function skillError(message: string, details: Pick<CliResult, "skill" | "errorCode"> = {}): CliError {
+export function skillError(message: string, details: Pick<CliResult, "errorCode"> = {}): CliError {
   return new CliError(1, { ok: false, phase: "skill", message, ...details });
 }
 

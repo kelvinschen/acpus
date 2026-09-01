@@ -86,7 +86,7 @@ Acpus 模式始终提供内建 DSH Agent。该配置不可修改或删除。它�
 
 也可以在对话中按用途更新或删除配置。
 
-会话标题栏中的 **Agent Presets** 入口面向用户显示内建和全局 Preset 的具体 Agent、模型与 `config`；Agent 图标按 `use` 自动匹配。Supervisor 的自动目录和 `acpus_presets` 查询只返回 ID 与用途说明，不读取这些具体配置。项目 Preset 只在 Supervisor 为当前工作目录按需查询时出现，避免把仓库提供的用途文本自动提升到 System Prompt。请通过对话修改配置；持久化变更需要明确说明项目或全局作用域，并且只影响后续任务准入。
+会话标题栏中的 **Agent Presets** 入口面向用户显示内建和全局 Preset 的具体 Agent、模型与 `config`；Agent 图标按 `use` 自动匹配。Supervisor 在设计 topology 前通过只读 `acpus_agent` 一次获取 effective scale 与当前工作区的 Preset choices；这些只包含 ID、用途说明与作用域，Supervisor 根据用途说明选择 Preset。Scale 是可按用户需求调整的软性指导，不是硬限制。`acpus_presets` 仅用于显式的项目或全局原子修改。请通过 CLI、JSON 或 `ACPUS_AUTHORING_AGENT_SCALE` 修改 scale；变更只影响后续 authoring 或任务准入。
 
 具名 Agent、Preset 和项目/全局作用域统一按 [Acpus 配置](../cli/skills/acpus/references/configuration.md) 管理；配置后告诉 DSH 对应名称和用途。
 

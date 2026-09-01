@@ -1,4 +1,4 @@
-import { access, readFile } from "node:fs/promises";
+import { access, readFile, readlink } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
@@ -186,6 +186,10 @@ assert(publishWorkflow.includes('test "$(pnpm config get provenance)" = "true"')
 const cliManifest = manifests.get("cli");
 const skillVersion = (await text("packages/cli/skills/acpus/SKILL.md")).match(/^\s+acpus-version:\s*([^\s#]+)/mu)?.[1];
 equal(skillVersion, cliManifest.version, "bundled Acpus skill version");
+const routerSkill = await text("skills/acpus/SKILL.md");
+assert(routerSkill.includes("name: acpus"), "root Acpus router skill MUST exist");
+assert(!routerSkill.includes("acpus-version:"), "root Acpus router skill MUST remain unversioned");
+equal(await readlink(join(root, ".agents/skills/acpus")), "../../skills/acpus", "universal Acpus router skill link");
 
 assert((await text(".gitignore")).split(/\r?\n/u).includes("*.tsbuildinfo"), ".gitignore MUST ignore package build caches");
 

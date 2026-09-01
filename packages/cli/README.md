@@ -19,7 +19,7 @@ acpus workflow run workflow.ts --input '{"ready":true}' --follow
 acpus workflow run workflow.ts --input '{"ready":true}' --await-decision
 acpus workflow viz workflow.ts
 acpus workflow viz workflow.ts --out workflow-viz.html
-acpus skill install --project --agent universal,claude
+npx skills add kelvinschen/acpus
 ```
 
 `acpus workflow check` statically checks and prepares the workflow through
@@ -32,12 +32,9 @@ prints a compact terminal tree by default; `--out` writes a self-contained
 static HTML visualization instead. The `acpus runs` command group inspects and
 controls durable runs. `acpus wf` is a shorter alias for `acpus workflow`.
 
-`acpus skill install` copies the bundled Acpus skill to selected fixed targets:
-`.agents/skills/acpus` for universal agents and `.claude/skills/acpus` for
-Claude, rooted at either the current project or operating-system home. It
-creates selected skills roots when needed. Interactive terminals prompt for
-missing selections; scripts must pass `--project` or `--global` together with
-`--agent universal`, `--agent claude`, or `--agent universal,claude`.
-`acpus skill uninstall` removes only installed targets that can be identified
-as the Acpus skill. Use `acpus skill read` to get its bundled usage guide
-without installing it.
+The standard Skills tool installs the unversioned Acpus router Skill from the
+repository. The router runs `acpus skill read` once per task to load the
+complete Skill bundled with the current CLI version together with the current
+workspace's Agent authoring context. Updating the CLI updates that complete
+guide without reinstalling the router. `acpus skill read` can also be used
+directly without installing the router Skill.

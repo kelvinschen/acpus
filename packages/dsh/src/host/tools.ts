@@ -49,15 +49,10 @@ type PresetChangeInput =
       id: string;
     };
 
-type PresetsToolInput =
-  | {
-      operation: "list";
-    }
-  | {
-      operation: "apply";
-      scope: WritableAgentPresetScope;
-      changes: PresetChangeInput[];
-    };
+type PresetsToolInput = {
+  scope: WritableAgentPresetScope;
+  changes: PresetChangeInput[];
+};
 
 type ControlAction =
   | { type: "pause" | "resume" }
@@ -83,6 +78,7 @@ type ControlAction =
     };
 
 export function registerSupervisorTools(ctx: Context): void {
+  ctx.tools.register(agentTool(ctx));
   ctx.tools.register(presetsTool(ctx));
   ctx.tools.register(tasksTool(ctx));
   ctx.tools.register(runTool(ctx));
@@ -91,24 +87,37 @@ export function registerSupervisorTools(ctx: Context): void {
   ctx.tools.register(artifactTool(ctx));
 }
 
+function agentTool(ctx: Context) {
+  return defineTool({
+    name: "acpus_agent",
+    description: "Read the effective Authoring Agent scale and Agent Preset choices for this workspace. Scale is soft guidance, not a hard limit; select Presets by their guidance.",
+    parameters: {},
+    output: output(),
+    isConcurrencySafe: () => true,
+    async execute(args, exec) {
+      if (!isPlainObject(args) || !hasExactKeys(args, [])) {
+        throw failure("acpus_agent accepts no parameters.", "ACPUS_AGENT_CONTEXT_INVALID");
+      }
+      return json(await mode(ctx).agentAuthoringContext(workspace(exec)));
+    },
+  });
+}
+
 function presetsTool(ctx: Context) {
   return defineTool({
     name: "acpus_presets",
-    description: "List the effective safe Agent Preset catalog for this workspace, or atomically apply explicit user-requested project/global changes. The built-in dsh Preset is immutable.",
+    description: "Atomically apply explicit user-requested project/global Agent Preset changes. Use acpus_agent to read effective choices. The built-in dsh Preset is immutable.",
     parameters: {
-      operation: {
-        type: "string",
-        required: true,
-        enum: ["list", "apply"],
-      },
       scope: {
         type: "string",
+        required: true,
         enum: ["project", "global"],
-        description: "Required only for apply; persist the complete batch in exactly this scope.",
+        description: "Persist the complete batch in exactly this scope.",
       },
       changes: {
         type: "array",
-        description: "Required only for apply; one non-empty atomic set/remove batch.",
+        required: true,
+        description: "One non-empty atomic set/remove batch.",
         items: {
           oneOf: [
             operationSchema("set", {
@@ -135,9 +144,6 @@ function presetsTool(ctx: Context) {
       const service = mode(ctx);
       const activeWorkspace = workspace(exec);
       const input = parsePresetsToolInput(args);
-      if (input.operation === "list") {
-        return json({ presets: await service.agentPresetChoices(activeWorkspace) });
-      }
       return json(await service.applyAgentPresets({
         workspace: activeWorkspace,
         scope: input.scope,
@@ -148,25 +154,17 @@ function presetsTool(ctx: Context) {
 }
 
 function parsePresetsToolInput(value: unknown): PresetsToolInput {
-  if (!isPlainObject(value) || (value.operation !== "list" && value.operation !== "apply")) {
-    throw failure("Preset operation must be list or apply.", "ACPUS_AGENT_PRESETS_INVALID");
-  }
-  if (value.operation === "list") {
-    if (!hasExactKeys(value, ["operation"])) {
-      throw failure("Preset list accepts only operation.", "ACPUS_AGENT_PRESETS_INVALID");
-    }
-    return { operation: "list" };
-  }
-  if (!hasExactKeys(value, ["operation", "scope", "changes"])
+  if (!isPlainObject(value)
+    || !hasExactKeys(value, ["scope", "changes"])
     || (value.scope !== "project" && value.scope !== "global")
-    || !Array.isArray(value.changes)) {
+    || !Array.isArray(value.changes)
+    || value.changes.length === 0) {
     throw failure(
-      "Preset apply requires exactly operation, scope, and changes.",
+      "Preset changes require exactly scope and one non-empty changes array.",
       "ACPUS_AGENT_PRESETS_INVALID",
     );
   }
   return {
-    operation: "apply",
     scope: value.scope,
     changes: value.changes.map(parsePresetChange),
   };
