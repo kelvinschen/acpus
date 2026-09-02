@@ -1,5 +1,12 @@
 # @acpus/web
 
+## 0.4.2
+
+### Patch Changes
+
+- Updated dependencies [8dc899a]
+  - @acpus/runtime@0.20.0
+
 ## 0.4.1
 
 ### Patch Changes

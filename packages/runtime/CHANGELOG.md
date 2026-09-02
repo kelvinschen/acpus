@@ -1,5 +1,11 @@
 # @acpus/runtime
 
+## 0.20.0
+
+### Minor Changes
+
+- 8dc899a: Expose frozen workflow input, Agent bindings, and final Agent definitions in `run.started` Hook payloads.
+
 ## 0.19.0
 
 ### Minor Changes
