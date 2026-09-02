@@ -73,10 +73,51 @@ describe("hooks events and context", () => {
       "node.started",
       "run.awaiting",
     ]);
-    expect(contextAt(calls, 1)).toMatchObject({
+    expect(contextAt(calls, 1)).toEqual({
       event: "run.started",
       eventSequence: 1,
-      run: { id: "run_1", workflowName: "release", workflowPath: "/workspace/workflow.ts", status: "running" },
+      run: {
+        id: "run_1",
+        workflowName: "release",
+        workflowPath: "/workspace/workflow.ts",
+        workspaceDir: "/workspace",
+        status: "running",
+      },
+      input: { release: "2026.09", dryRun: false },
+      agentBindings: {
+        private: {
+          source: { kind: "direct" },
+          injection: {
+            command: "private-agent --stdio",
+            config: { endpoint: "internal" },
+            env: { PRIVATE_TOKEN: "secret" },
+          },
+        },
+        reviewer: {
+          source: { kind: "preset", id: "release-reviewer", scope: "project" },
+          injection: {
+            use: "codex",
+            model: "gpt-5.6-sol",
+            config: { reasoning_effort: "high" },
+            env: { REVIEW_MODE: "strict" },
+          },
+        },
+      },
+      agents: {
+        private: {
+          kind: "agent_command",
+          command: "private-agent --stdio",
+          config: { endpoint: "internal" },
+          env: { PRIVATE_TOKEN: "secret" },
+        },
+        reviewer: {
+          kind: "agent_definition",
+          use: "codex",
+          model: "gpt-5.6-sol",
+          config: { reasoning_effort: "high" },
+          env: { REVIEW_MODE: "strict" },
+        },
+      },
     });
     expect(contextAt(calls, 3)).toMatchObject({
       event: "run.completed",
@@ -107,6 +148,11 @@ describe("hooks events and context", () => {
       signal: { nodeId: "approve", nodeKey: "approve~1", prompt: "Approve release?" },
       node: { id: "approve", key: "approve~1", kind: "signal", status: "awaiting" },
     });
+    for (const { context } of calls.slice(1)) {
+      expect(context).not.toHaveProperty("input");
+      expect(context).not.toHaveProperty("agentBindings");
+      expect(context).not.toHaveProperty("agents");
+    }
 
     expect(dispatchCommittedHooksForRun({ cwd: "/workspace", runId: "run_1", store, hookRunner })).toEqual(Result.succeed({
       runId: "run_1",
@@ -144,8 +190,26 @@ function runtimeStore(
 function frozenRun(): FrozenRun {
   return {
     ir: workflow(),
-    input: {},
-    agentBindings: {},
+    input: { release: "2026.09", dryRun: false },
+    agentBindings: {
+      private: {
+        source: { kind: "direct" },
+        injection: {
+          command: "private-agent --stdio",
+          config: { endpoint: "internal" },
+          env: { PRIVATE_TOKEN: "secret" },
+        },
+      },
+      reviewer: {
+        source: { kind: "preset", id: "release-reviewer", scope: "project" },
+        injection: {
+          use: "codex",
+          model: "gpt-5.6-sol",
+          config: { reasoning_effort: "high" },
+          env: { REVIEW_MODE: "strict" },
+        },
+      },
+    },
     meta: { runId: "run_1", workflowName: "release", workflowPath: "workflow.ts", workspaceDir: "/workspace" },
   };
 }
@@ -172,7 +236,21 @@ function workflow(): AdmittedWorkflowIR {
   return {
     irVersion: 8,
     name: "release",
-    agents: {},
+    agents: {
+      private: {
+        kind: "agent_command",
+        command: "private-agent --stdio",
+        config: { endpoint: "internal" },
+        env: { PRIVATE_TOKEN: "secret" },
+      },
+      reviewer: {
+        kind: "agent_definition",
+        use: "codex",
+        model: "gpt-5.6-sol",
+        config: { reasoning_effort: "high" },
+        env: { REVIEW_MODE: "strict" },
+      },
+    },
     root: {
       output: { kind: "object", fields: {} },
       nodes: [

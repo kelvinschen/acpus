@@ -121,7 +121,7 @@ Each entry requires a non-empty `command` and may contain `id`, `timeout`, and `
 Hook runtime behavior:
 
 - Commands start asynchronously in the workflow workspace with no ordering guarantee; shutdown waits for active Hooks.
-- Stdin receives sensitive JSON containing `event`, `eventSequence`, `run`, and optional `node`, `output`, `error`, `cancellation`, or `signal` context.
+- Stdin receives sensitive JSON containing `event`, `eventSequence`, `run`, and optional event context. `run.started` includes complete frozen `input`, binding provenance and injections in `agentBindings`, and final effective definitions in `agents`.
 - Hooks trigger only for newly committed events, not reads or duplicate controls. Failure, timeout, and output do not change workflow state or output.
 - `timeout` accepts `ms`, `s`, `m`, `h`, and `d`; omission defaults to 30 seconds. `w` is unsupported.
 - Journal rows are terminal `completed`, `failed`, or `timed_out` records. `runs inspect` shows available history only for terminal Runs.

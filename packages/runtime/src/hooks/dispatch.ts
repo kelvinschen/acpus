@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import type { AgentNodeIR, NodeIR, TaskNodeIR, WorkflowIR } from "@acpus/core/ir";
+import type { AgentNodeIR, NodeIR, TaskNodeIR } from "@acpus/core/ir";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -22,6 +22,9 @@ export type HookContext = {
     workspaceDir: string;
     status: string;
   };
+  input?: FrozenRun["input"];
+  agentBindings?: FrozenRun["agentBindings"];
+  agents?: FrozenRun["ir"]["agents"];
   node?: {
     id: string;
     key: string;
@@ -130,6 +133,8 @@ function dispatchCommittedHooks(input: HookDispatchInput): Result.Result<HookDis
           hookEvent,
           projection: projection.success,
           ir: input.frozen.ir,
+          workflowInput: input.frozen.input,
+          agentBindings: input.frozen.agentBindings,
           workspaceDir: input.frozen.meta.workspaceDir ?? input.cwd,
           workflowPath: resolve(input.cwd, input.frozen.meta.workflowPath ?? ""),
           executionMetadata: metadata,
@@ -171,7 +176,9 @@ function buildHookContext(input: {
   row: CommittedRuntimeEventRow;
   hookEvent: HookEvent;
   projection: SchedulerProjection;
-  ir: WorkflowIR;
+  ir: FrozenRun["ir"];
+  workflowInput: FrozenRun["input"];
+  agentBindings: FrozenRun["agentBindings"];
   workspaceDir: string;
   workflowPath: string;
   executionMetadata: RunExecutionMetadata[];
@@ -189,6 +196,14 @@ function buildHookContext(input: {
     },
   };
 
+  if (input.hookEvent === "run.started") {
+    return {
+      ...context,
+      input: input.workflowInput,
+      agentBindings: input.agentBindings,
+      agents: input.ir.agents,
+    };
+  }
   if (input.hookEvent === "run.completed") return { ...context, output: input.row.payload.output };
   if (input.hookEvent === "run.failed") return { ...context, error: errorFrom(input.row.payload) };
   if (input.hookEvent === "run.canceled") {
