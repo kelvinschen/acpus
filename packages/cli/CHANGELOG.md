@@ -1,5 +1,14 @@
 # acpus
 
+## 0.15.1
+
+### Patch Changes
+
+- 8dc899a: Expose frozen workflow input, Agent bindings, and final Agent definitions in `run.started` Hook payloads.
+- Updated dependencies [8dc899a]
+  - @acpus/runtime@0.20.0
+  - @acpus/web@0.4.2
+
 ## 0.15.0
 
 ### Minor Changes
