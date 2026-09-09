@@ -75,7 +75,7 @@ describe("Acpus run through a real DSH Loader composition", () => {
         name: "acpus_run",
         arguments: {
           workflow: agentWorkflow,
-          agents: { worker: { preset: "fixture-worker" } },
+          agents: { worker: "fixture-worker" },
         },
         agent: supervisingAgent(context, workspace),
       });

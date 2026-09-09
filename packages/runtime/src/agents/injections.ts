@@ -29,7 +29,7 @@ export type AgentPresetInjectionSpec = {
   preset: string;
 };
 
-export type AgentInjectionSpec = AgentDirectInjectionSpec | AgentPresetInjectionSpec;
+export type AgentInjectionSpec = string | AgentDirectInjectionSpec | AgentPresetInjectionSpec;
 export type AgentInjectionMap = Record<string, AgentInjectionSpec>;
 
 export type AgentInjectionValidationFailure = {
@@ -79,6 +79,10 @@ const AgentDirectInjectionSchema = z.object({
   env: PreservingStringRecordSchema.optional(),
 }).strict().refine(value => value.use === undefined || value.command === undefined, {
   message: "must not specify both use and command",
+});
+
+const AgentReferenceSchema = z.string().refine(value => value.trim().length > 0, {
+  message: "must contain a non-whitespace character",
 });
 
 const AgentPresetInjectionSchema = z.object({
@@ -135,9 +139,11 @@ export function tryParseAgentInjectionMap(
   const entries: Array<[string, AgentInjectionSpec]> = [];
   for (const name of Object.keys(value).sort(codeUnitCompare)) {
     const candidate = value[name];
-    const schema = isPlainRecord(candidate) && Object.hasOwn(candidate, "preset")
-      ? AgentPresetInjectionSchema
-      : AgentDirectInjectionSchema;
+    const schema = typeof candidate === "string"
+      ? AgentReferenceSchema
+      : isPlainRecord(candidate) && Object.hasOwn(candidate, "preset")
+        ? AgentPresetInjectionSchema
+        : AgentDirectInjectionSchema;
     const parsed = schema.safeParse(candidate);
     if (!parsed.success) {
       const firstPath = parsed.error.issues[0]?.path ?? [];
@@ -172,7 +178,14 @@ function finalizeBindings(input: {
   const parsed = tryParseAgentInjectionMap(input.injections ?? {}, input.declarations);
   if (Result.isFailure(parsed)) return Result.fail(parsed.failure);
 
-  const presetIds = Object.values(parsed.success)
+  const presetNames = new Set(input.presetCatalog?.choices.map(choice => choice.id));
+  const injections = Object.fromEntries(Object.entries(parsed.success).map(([name, value]) => [
+    name,
+    typeof value === "string"
+      ? presetNames.has(value) ? { preset: value } : { use: value }
+      : value,
+  ]));
+  const presetIds = Object.values(injections)
     .filter(isPresetInjection)
     .map(injection => injection.preset);
   const resolved = resolvePresets(presetIds, input.presetCatalog);
@@ -183,7 +196,7 @@ function finalizeBindings(input: {
   const unresolved: string[] = [];
   for (const name of Object.keys(input.declarations).sort(codeUnitCompare)) {
     const declaration = input.declarations[name]!;
-    const injection = Object.hasOwn(parsed.success, name) ? parsed.success[name] : undefined;
+    const injection = Object.hasOwn(injections, name) ? injections[name] : undefined;
     const inherited = input.inherited !== undefined && Object.hasOwn(input.inherited, name)
       ? input.inherited[name]
       : undefined;
@@ -282,7 +295,7 @@ export function rebuildFrozenAgentBindings(
 }
 
 export function hasPresetInjections(injections: AgentInjectionMap | undefined): boolean {
-  return injections !== undefined && Object.values(injections).some(isPresetInjection);
+  return injections !== undefined && Object.values(injections).some(value => typeof value === "string" || isPresetInjection(value));
 }
 
 export function unboundAgentNames(declarations: Record<string, AgentDeclarationIR>): string[] {
@@ -392,7 +405,7 @@ function hasIdentity(injection: AgentDirectInjectionSpec): boolean {
 }
 
 function isPresetInjection(injection: AgentInjectionSpec): injection is AgentPresetInjectionSpec {
-  return "preset" in injection;
+  return typeof injection !== "string" && "preset" in injection;
 }
 
 function compactUndefined<T extends Record<string, unknown>>(value: T): { [K in keyof T]?: Exclude<T[K], undefined> } {

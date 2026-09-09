@@ -372,6 +372,11 @@ test("@acpus/runtime retains its baseline runtime and daemon contracts", () => {
   expectTypeOf(tryParseAgentInjectionMap).toEqualTypeOf<
     (value: unknown, declarations?: Record<string, unknown>) => Result.Result<AgentInjectionMap, AgentInjectionValidationFailure>
   >();
+  expectTypeOf<{
+    planner: string;
+    coder: { use: string; model: string };
+    compatible: { preset: string };
+  }>().toExtend<AgentInjectionMap>();
   expectTypeOf<AgentBindingSource>().toEqualTypeOf<
     | { kind: "workflow" }
     | { kind: "direct" }

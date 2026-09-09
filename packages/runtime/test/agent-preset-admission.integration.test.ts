@@ -32,7 +32,7 @@ describe("Agent Preset admission and fork freezing", () => {
           input: {},
           cwd: workspace,
           requestId: "preset-admission",
-          agentInjections: { reviewer: { preset: "reviewer" } },
+          agentInjections: { reviewer: "reviewer" },
         }))));
         expect(store.getFrozenRun(first.id)).toMatchObject({
           ir: { agents: { reviewer: { kind: "agent_definition", use: "first-agent", config: { secret: "first-secret" } } } },
@@ -45,26 +45,81 @@ describe("Agent Preset admission and fork freezing", () => {
         });
         expect(store.getRun(first.id)).not.toHaveProperty("agentBindings");
 
+        const conflict = await settle(store.admitRun({
+          prepared,
+          input: {},
+          cwd: workspace,
+          requestId: "preset-admission",
+          agentInjections: { reviewer: { preset: "reviewer" } },
+        }));
+        expect(Result.getOrThrow(Result.flip(conflict))).toMatchObject({ type: "admission-request-conflict" });
+
         await writeFile(join(workspace, ".acpus", "config.json"), "{ invalid catalog\n");
         const replay = Result.getOrThrow((await settle(store.admitRun({
           prepared,
           input: {},
           cwd: workspace,
           requestId: "preset-admission",
-          agentInjections: { reviewer: { preset: "reviewer" } },
+          agentInjections: { reviewer: "reviewer" },
         }))));
         const fresh = await settle(store.admitRun({
           prepared,
           input: {},
           cwd: workspace,
           requestId: "preset-admission-fresh",
-          agentInjections: { reviewer: { preset: "reviewer" } },
+          agentInjections: { reviewer: "reviewer" },
         }));
 
         expect(replay.id).toBe(first.id);
         expect(store.getFrozenRun(replay.id)?.ir.agents.reviewer).toMatchObject({ use: "first-agent" });
         expect(Result.isFailure(fresh) ? fresh.failure : undefined).toMatchObject({ type: "acpus-config-invalid" });
         expect(runtimeRows(workspace, "SELECT run_id FROM run_events WHERE type = 'run.admitted'")).toHaveLength(1);
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("keeps an admitted named selection when a matching preset is added", async () => {
+    await withRuntimeWorkspace("runtime-agent-string-selection", async workspace => {
+      const prepared = await prepareSyntheticWorkflow(workspace, slotWorkflow());
+      const store = await openRuntimeStoreAdapter(workspace);
+      const input = {
+        prepared, input: {}, cwd: workspace, requestId: "automatic-selection",
+        agentInjections: { reviewer: "reviewer" },
+      };
+      try {
+        const first = Result.getOrThrow(await settle(store.admitRun(input)));
+        expect(store.getFrozenRun(first.id)?.agentBindings.reviewer?.source).toEqual({ kind: "direct" });
+        await setProjectPreset(workspace, "preset-agent", "secret");
+        const replay = Result.getOrThrow(await settle(store.admitRun(input)));
+        expect(replay.id).toBe(first.id);
+        expect(store.getFrozenRun(replay.id)?.ir.agents.reviewer).toMatchObject({ use: "reviewer" });
+        const fresh = Result.getOrThrow(await settle(store.admitRun({ ...input, requestId: "new-selection" })));
+        expect(store.getFrozenRun(fresh.id)?.agentBindings.reviewer?.source).toEqual({
+          kind: "preset", id: "reviewer", scope: "project",
+        });
+        expect(store.getFrozenRun(fresh.id)?.ir.agents.reviewer).toMatchObject({ use: "preset-agent" });
+      } finally {
+        store.close();
+      }
+    });
+  });
+
+  it("does not fall back to a builtin when its preset provider fails", async () => {
+    await withRuntimeWorkspace("runtime-agent-string-provider-failure", async workspace => {
+      await initializeRuntimeStoreForTest(workspace);
+      const prepared = await prepareSyntheticWorkflow(workspace, slotWorkflow());
+      const failure = { type: "agent-preset-provider-failed" as const, message: "catalog unavailable" };
+      const store = await openRuntimeStoreAdapterAtLayout(resolveRuntimeLayout(workspace), {
+        agentPresetProvider: () => Effect.fail(failure),
+      });
+      try {
+        const result = await settle(store.admitRun({
+          prepared, input: {}, cwd: workspace, agentInjections: { reviewer: "codex" },
+        }));
+        expect(Result.getOrThrow(Result.flip(result))).toEqual(failure);
+        expect(runtimeRows(workspace, "SELECT run_id FROM run_events WHERE type = 'run.admitted'")).toEqual([]);
       } finally {
         store.close();
       }
@@ -93,7 +148,7 @@ describe("Agent Preset admission and fork freezing", () => {
           input: {},
           cwd: workspace,
           requestId: "host-preset-replay",
-          agentInjections: { reviewer: { preset: "reviewer" } },
+          agentInjections: { reviewer: "reviewer" },
         } as const;
         const first = Result.getOrThrow((await settle(store.admitRun(input))));
         const replay = Result.getOrThrow((await settle(store.admitRun(input))));
@@ -127,7 +182,7 @@ describe("Agent Preset admission and fork freezing", () => {
           input: {},
           cwd: workspace,
           requestId: "host-preset-interrupted",
-          agentInjections: { reviewer: { preset: "reviewer" } },
+          agentInjections: { reviewer: "reviewer" },
         }));
         await Effect.runPromise(Deferred.await(providerStarted));
         await Effect.runPromise(Fiber.interrupt(fiber));
@@ -152,12 +207,14 @@ describe("Agent Preset admission and fork freezing", () => {
           prepared,
           input: {},
           cwd: workspace,
-          agentInjections: { reviewer: { preset: "reviewer" } },
+          agentInjections: { reviewer: "reviewer" },
         }))));
         await setProjectPreset(workspace, "fork-agent", "fork-secret");
+        const inherited = Result.getOrThrow(await settle(store.forkRun(source.id)));
+        expect(store.getFrozenRun(inherited.id)?.agentBindings).toEqual(store.getFrozenRun(source.id)?.agentBindings);
         const first = Result.getOrThrow((await settle(store.forkRun(source.id, {
           requestId: "preset-fork",
-          agentInjections: { reviewer: { preset: "reviewer" } },
+          agentInjections: { reviewer: "reviewer" },
         }))));
         expect(store.getFrozenRun(first.id)?.ir.agents.reviewer).toMatchObject({
           use: "fork-agent",
@@ -167,7 +224,7 @@ describe("Agent Preset admission and fork freezing", () => {
         await setProjectPreset(workspace, "changed-after-fork", "changed-secret");
         const replay = Result.getOrThrow((await settle(store.forkRun(source.id, {
           requestId: "preset-fork",
-          agentInjections: { reviewer: { preset: "reviewer" } },
+          agentInjections: { reviewer: "reviewer" },
         }))));
         expect(replay).toMatchObject({ id: first.id, forkCreated: false });
         expect(store.getFrozenRun(replay.id)?.ir.agents.reviewer).toMatchObject({ use: "fork-agent" });
@@ -198,7 +255,7 @@ describe("Agent Preset admission and fork freezing", () => {
           prepared,
           input: {},
           cwd: workspace,
-          agentInjections: { reviewer: { preset: "reviewer" } },
+          agentInjections: { reviewer: "reviewer" },
         }))));
         const child = Result.getOrThrow((await settle(store.forkRun(source.id, {
           agentInjections: {

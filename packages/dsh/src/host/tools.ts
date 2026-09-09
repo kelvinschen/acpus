@@ -286,7 +286,7 @@ function runTool(ctx: Context) {
       },
       agents: {
         type: "json",
-        description: "Invocation Agent injection object keyed by logical workflow Agent slot. Bind a Preset as {\"preset\":\"<exact-id>\"}.",
+        description: "Invocation Agent injection object keyed by logical workflow Agent slot. Use string values: an exact Preset id takes priority, otherwise the value selects a named Agent, including built-ins.",
       },
     },
     output: {

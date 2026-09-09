@@ -22,7 +22,7 @@ describe("DSH admission outcome recovery", () => {
     expect(submit).toHaveBeenCalledTimes(2);
     expect(submit.mock.calls[1]?.[0]).toEqual(submit.mock.calls[0]?.[0]);
     expect(submit).toHaveBeenCalledWith(expect.objectContaining({
-      agentInjections: { worker: { preset: "dsh" } },
+      agentInjections: { worker: "dsh" },
     }));
     expect(admitted).toHaveBeenCalledWith("admission-1", run);
   });
@@ -77,7 +77,7 @@ function input(
     runtime,
     prepared: {} as never,
     normalizedInput: {},
-    agentInjections: { worker: { preset: "dsh" } },
+    agentInjections: { worker: "dsh" },
     admissionRequestId: "admission-1",
     link: {
       workspace: "/workspace",

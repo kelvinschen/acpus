@@ -28,7 +28,7 @@ describe("workflow Agent injection CLI contract", () => {
       })}\n`);
       const complete = await invoke(workspace, [
         "workflow", "check", workflow, "--agents",
-        '{"worker":{"use":"codex"},"reviewer":{"preset":"critical-reviewer"}}',
+        '{"worker":"codex","reviewer":"critical-reviewer"}',
       ]);
       expect(complete.exitCode, complete.stderr).toBe(0);
       expect(complete.stdout).not.toContain("Unbound Agent slots:");

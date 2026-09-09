@@ -4,7 +4,7 @@
 
 Resolve each unbound Agent slot in this order:
 
-1. Honor an explicit user choice. A Preset id, named Agent, or raw command becomes exactly `{ "preset": "id" }`, `{ "use": "name" }`, or `{ "command": "..." }`. Use it without discovery or reconfirmation, and do not reinterpret one kind as another.
+1. Honor an explicit user choice without discovery or reconfirmation. Strings select an exact Preset match first, otherwise a named Agent (including built-ins). Use `{ "use": "name" }` for explicit named selection or `{ "command": "..." }` for a raw command.
 2. Otherwise select the available Preset whose `guidance` best matches the slot's work.
 3. If discovery returns no Presets, stop before admission and tell the user automatic selection needs a configured Preset. Ask them for its purpose, Agent, optional model/options, and scope, then follow [Configuration](configuration.md). If scope is missing, ask.
 
@@ -23,8 +23,8 @@ Inject chosen ids by slot name:
 
 ```sh
 acpus workflow run workflow.ts --agents '{
-  "worker":{"preset":"deep-coder"},
-  "reviewer":{"preset":"critical-reviewer"}
+  "worker":"deep-coder",
+  "reviewer":"critical-reviewer"
 }'
 ```
 
@@ -34,7 +34,7 @@ Runtime expands and freezes ids. Direct fields bind one invocation:
 { "worker": { "use": "codex", "config": { "reasoning_effort": "high" } } }
 ```
 
-Every slot must bind before admission. One injection sets either `preset` or direct Agent fields, never both.
+Every slot must bind before admission.
 
 ## Concrete Agents
 

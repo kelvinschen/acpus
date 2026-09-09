@@ -51,6 +51,7 @@
 ### Agent 绑定与执行
 
 - 在准入阶段，Runtime MUST 为 Workflow 中声明的每个 Agent 解析出唯一的具体定义。如果仍有未解析的 Slot 或无效的 Agent 注入，Runtime MUST 在准入时报错；成功解析后，Runtime MUST 冻结实际生效的 Agent 定义及其来源信息。
+- 字符串 Agent 注入 MUST 优先选择同名 Preset；仅在不存在同名 Preset 时，MUST 按命名 Agent 解析。配置或 Provider 失败 MUST NOT 被视为 Preset 不存在。
 - Agent Preset 的选择、合并优先级与持久化规则 MUST 遵循 [Configuration](configuration-spec.md) 契约。常规的 Run 状态与只读检查视图中，MUST NOT 泄露展开后的 Preset 原始内容、具体执行命令、敏感配置、环境变量或冻结的注入细节。
 - Runtime MUST 仅依据 [Agent Executor](agent-executor-spec.md) 返回的规范化结果与结构化执行证据来做出持久化调度决策；MUST NOT 将底层的 ACP 传输协议帧或子进程拓扑直接当作调度器状态。
 - Agent Session 的上下文连续性 MUST 严格限制在当前 Run 内。Turn 正常完成后，或 Runtime 正常关闭并重启后，Runtime MUST 保持 Session 连续有效；Runtime MUST 仅允许 Retry、Steer 或 Fork 按照后文的控制契约重置或调整该连续性。

@@ -17,7 +17,7 @@ describe("Agent binding finalization", () => {
       type: "agent-injections-invalid",
       reason: "schema",
     });
-    expect(Result.getOrThrow(Result.flip(tryParseAgentInjectionMap({ missing: { use: "codex" } }, { reviewer: {} })))).toMatchObject({
+    expect(Result.getOrThrow(Result.flip(tryParseAgentInjectionMap({ missing: "codex" }, { reviewer: {} })))).toMatchObject({
       type: "agent-injections-invalid",
       reason: "unknown-agent",
       agentName: "missing",
@@ -27,6 +27,57 @@ describe("Agent binding finalization", () => {
       reason: "schema",
       path: "$.reviewer.cwd",
     });
+  });
+
+  it.each(["", "  \t", 42, null, []])("rejects invalid Agent reference %j at its slot", value => {
+    expect(Result.getOrThrow(Result.flip(tryParseAgentInjectionMap({ worker: value })))).toMatchObject({
+      type: "agent-injections-invalid",
+      path: "$.worker",
+    });
+  });
+
+  it("selects exact preset matches before named Agents and preserves explicit selection", async () => {
+    const presetCatalog = await Effect.runPromise(loadAgentPresetCatalog({
+      scopes: ["host"],
+      hostProvider: () => Effect.succeed([
+        { id: "codex", guidance: "Custom coding", agent: { use: "company-agent", model: "preset-model" } },
+      ]),
+    }));
+    const injections = {
+      automatic: "codex",
+      explicit: { use: "codex" },
+      compatible: { preset: "codex" },
+      builtin: "claude",
+      custom: "company-agent",
+      exact: " Codex ",
+    };
+    expect(Result.getOrThrow(tryParseAgentInjectionMap(injections))).toEqual(injections);
+    const result = Result.getOrThrow(finalizeAgentBindings({
+      declarations: Object.fromEntries(Object.keys(injections).map(name => [name, { kind: "agent_slot" as const }])),
+      injections,
+      presetCatalog,
+    }));
+    expect(result.bindings.automatic).toEqual(result.bindings.compatible);
+    expect(result.bindings.automatic?.source).toEqual({ kind: "preset", id: "codex", scope: "host" });
+    expect(result.agents.automatic).toEqual({ kind: "agent_definition", use: "company-agent", model: "preset-model" });
+    for (const [name, use] of [["explicit", "codex"], ["builtin", "claude"], ["custom", "company-agent"], ["exact", " Codex "]]) {
+      expect(result.agents[name!]).toEqual({ kind: "agent_definition", use });
+      expect(result.bindings[name!]?.source).toEqual({ kind: "direct" });
+    }
+  });
+
+  it.each(["codex", "claude"])("merges string identity %s like direct injection", use => {
+    const declarations = {
+      worker: { kind: "agent_definition" as const, use: "codex", model: "base-model", config: { effort: "high" }, env: { KEEP: "yes" } },
+    };
+    const inherited = {
+      worker: { source: { kind: "direct" as const }, injection: { use: "codex", model: "inherited-model" } },
+    };
+    const shorthand = Result.getOrThrow(finalizeAgentBindings({ declarations, inherited, injections: { worker: use } }));
+    const direct = Result.getOrThrow(finalizeAgentBindings({ declarations, inherited, injections: { worker: { use } } }));
+    expect(shorthand).toEqual(direct);
+    expect(shorthand.agents.worker?.model).toBe(use === "codex" ? "inherited-model" : undefined);
+    expect(shorthand.agents.worker?.env).toEqual({ KEEP: "yes" });
   });
 
   it("parses compact frozen bindings strictly", () => {
