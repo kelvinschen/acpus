@@ -181,7 +181,6 @@ describe("Agent Preset admission and fork freezing", () => {
         expect(event.payload_json).not.toContain("fork-secret");
         expect(JSON.parse(event.payload_json)).toMatchObject({
           requestFingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
-          semanticFingerprint: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
         });
       } finally {
         store.close();

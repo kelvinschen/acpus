@@ -253,11 +253,6 @@ describe.concurrent("runtime scheduler task process", () => {
         `, fork.id)).toEqual(sourceArtifacts);
         expect(Object.values(throwingSchedulerStore(store.scheduler).loadRunSnapshot(fork.id).projection.attempts)).toEqual([]);
 
-        executeRuntimeSql(workspace, `
-          UPDATE run_events
-          SET payload_json = json_set(payload_json, '$.semanticFingerprint', 'test-consumed')
-          WHERE run_id = ? AND type = 'run.forked'
-        `, fork.id);
         const guarded = Result.getOrThrow((await settle(store.forkRun(source.id, { agentInjections: {} }))));
         await interruptFrozenRunWhen({
           cwd: workspace,

@@ -74,8 +74,9 @@ async function readJsonFile(path: string): Promise<unknown | undefined> {
     throw error;
   }
   if (info.isSymbolicLink() || !info.isFile()) throw new RuntimeMetadataFormatError(`Runtime metadata '${path}' is not a regular file.`);
+  const content = await readFile(path, "utf8");
   try {
-    return JSON.parse(await readFile(path, "utf8")) as unknown;
+    return JSON.parse(content) as unknown;
   } catch (error) {
     throw new RuntimeMetadataFormatError(`Runtime metadata '${path}' is not valid JSON: ${errorMessage(error)}.`);
   }

@@ -230,6 +230,7 @@ function projectToSchema(schema: SchemaIR, value: JsonValue): JsonValue {
     return projected;
   }
   if (schema.kind === "union") {
+    if (Result.isSuccess(tryNormalizeValue(schema, value, "Agent union output"))) return value;
     for (const variant of schema.variants) {
       const projected = projectToSchema(variant, value);
       if (Result.isSuccess(tryNormalizeValue(variant, projected, "Agent union variant"))) return projected;

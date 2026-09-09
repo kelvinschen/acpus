@@ -1617,20 +1617,6 @@ class SqliteRuntimeStore implements RuntimeStoreAdapter {
       forkInput = normalized.success;
     }
     const forkInputJson = forkInput === undefined ? input.input_json : stableJsonLine(forkInput);
-    const semanticFingerprint = forkSemanticFingerprint({
-      runId,
-      ...(options.prepared === undefined ? {} : { prepared: options.prepared }),
-      input: JSON.parse(forkInputJson) as JsonValue,
-      agentBindings: finalized.success.bindings,
-      ...(options.target === undefined ? {} : { target: options.target }),
-    });
-    const matchingFork = (store.db.prepare(`
-      SELECT run_id, payload_json
-      FROM run_events
-      WHERE type = 'run.forked'
-    `).all() as Array<{ run_id: string; payload_json: string }>)
-      .find(row => (JSON.parse(row.payload_json) as Record<string, unknown>).semanticFingerprint === semanticFingerprint);
-    if (matchingFork) return Result.succeed({ ...store.requireRun(matchingFork.run_id), forkCreated: false });
     const forkLockJson = options.prepared ? stableJsonLine(options.prepared.lock) : sourceLockJson;
     const forkPackageLockDigest = options.prepared?.packageLockDigest ?? input.package_lock_digest ?? null;
     const forkSource = options.prepared?.source ?? persisted.source;
@@ -1816,7 +1802,6 @@ class SqliteRuntimeStore implements RuntimeStoreAdapter {
       `).run(forkId, stableJsonLine({
         sourceRunId: runId,
         requestFingerprint,
-        semanticFingerprint,
         ...(options.target === undefined ? {} : {
           target: options.target,
           replayBeforeSequence: checkpoint.success.replayBeforeSequence,
@@ -3485,28 +3470,6 @@ function admissionRequestFingerprint(
     },
     input,
     agentInjections,
-  }));
-}
-
-function forkSemanticFingerprint(semantic: {
-  runId: string;
-  prepared?: PreparedRunWorkflow;
-  input: JsonValue;
-  agentBindings: FrozenAgentBindingMap;
-  target?: string;
-}): string {
-  return sha256Digest(stableJsonLine({
-    runId: semantic.runId,
-    ...(semantic.prepared === undefined ? {} : {
-      prepared: {
-        source: semantic.prepared.source,
-        irFileDigest: semantic.prepared.lock.ir.digest,
-        sourceGraphDigest: semantic.prepared.sourceGraphDigest,
-      },
-    }),
-    input: semantic.input,
-    agentBindings: semantic.agentBindings,
-    ...(semantic.target === undefined ? {} : { target: semantic.target }),
   }));
 }
 

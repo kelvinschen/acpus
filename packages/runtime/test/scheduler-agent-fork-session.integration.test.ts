@@ -321,11 +321,6 @@ describe.concurrent("scheduler Agent fork session replay", () => {
           expect(turns[2]!.agentSessionId).toBe(turns[3]!.agentSessionId);
           expect(turns[2]!.agentSessionId).not.toBe(turns[0]!.agentSessionId);
 
-          executeRuntimeSql(workspace, `
-            UPDATE run_events
-            SET payload_json = json_set(payload_json, '$.semanticFingerprint', 'test-consumed-before-missing')
-            WHERE run_id = ? AND type = 'run.forked'
-          `, firstMismatch.id);
           const missingBeforeReplay = await forkRuntimeRun(store, source.id, { input: {} });
           executeRuntimeSql(workspace, `
             DELETE FROM fork_replay_facts
@@ -340,11 +335,6 @@ describe.concurrent("scheduler Agent fork session replay", () => {
           expect(turns[4]!.agentSessionId).toBe(turns[5]!.agentSessionId);
           expect(turns[4]!.agentSessionId).not.toBe(turns[0]!.agentSessionId);
 
-          executeRuntimeSql(workspace, `
-            UPDATE run_events
-            SET payload_json = json_set(payload_json, '$.semanticFingerprint', 'test-consumed')
-            WHERE run_id = ? AND type = 'run.forked'
-          `, missingBeforeReplay.id);
           const partial = await forkRuntimeRun(store, source.id, { agentInjections: {} });
           executeRuntimeSql(workspace, `
             DELETE FROM fork_replay_facts

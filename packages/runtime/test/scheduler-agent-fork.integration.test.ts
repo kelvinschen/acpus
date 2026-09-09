@@ -230,7 +230,7 @@ describe.concurrent("scheduler Agent injections and forks", () => {
       });
     });
 
-  it("semantically reuses omitted and explicitly equivalent normalized fork input", async () => {
+  it("creates independent forks with normalized inputs when no request ID is supplied", async () => {
       await withRuntimeWorkspace("scheduler-node-executor-fork-semantic-input", async workspace => {
         const prepared = await prepareSyntheticWorkflow(workspace, semanticForkInputWorkflow());
         const store = await openRuntimeStoreAdapter(workspace);
@@ -245,10 +245,11 @@ describe.concurrent("scheduler Agent injections and forks", () => {
           const explicitEquivalent = await forkRuntimeRun(store, source.id, { input: { value: "same" } });
           const changed = await forkRuntimeRun(store, source.id, { input: { value: "different" } });
 
-          expect(explicitEquivalent).toMatchObject({ id: inherited.id, forkCreated: false });
-          expect(changed).toMatchObject({ forkCreated: true });
-          expect(changed.id).not.toBe(inherited.id);
+          expect([inherited, explicitEquivalent, changed].every(fork => fork.forkCreated)).toBe(true);
+          expect(new Set([inherited.id, explicitEquivalent.id, changed.id]).size).toBe(3);
           expect(store.getFrozenRun(inherited.id)?.input).toEqual({ value: "same", mode: "standard" });
+          expect(store.getFrozenRun(explicitEquivalent.id)?.input).toEqual({ value: "same", mode: "standard" });
+          expect(store.getFrozenRun(changed.id)?.input).toEqual({ value: "different", mode: "standard" });
         } finally {
           store.close();
         }

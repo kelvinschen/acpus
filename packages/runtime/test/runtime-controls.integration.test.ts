@@ -180,19 +180,24 @@ describe.concurrent("runtime controls and recovery", () => {
     });
   });
 
-  it("reuses the fork run when a fork control request is replayed", async () => {
+  it("distinguishes new fork requests from replays after the child completes", async () => {
     await withRuntimeWorkspace("runtime-fork-idempotent-request", async workspace => {
       const source = await admitSyntheticWorkflow(workspace, taskArtifactWorkflow());
 
       const first = await forkRun(workspace, source.run.id, { requestId: "fork-request-1" });
+      await advanceRun(workspace, first.run.id);
       const second = await forkRun(workspace, source.run.id, { requestId: "fork-request-1" });
       const third = await forkRun(workspace, source.run.id, { requestId: "fork-request-2" });
+      const replay = await forkRun(workspace, source.run.id, { requestId: "fork-request-2" });
       const forkId = first.run.id;
 
       expect(second.run.id).toBe(forkId);
-      expect(third.run.id).toBe(forkId);
+      expect(second.run.status).toBe("completed");
+      expect(third.run.id).not.toBe(forkId);
+      expect(third.run.status).toBe("pending");
+      expect(replay.run.id).toBe(third.run.id);
       expect(Result.getOrThrow((await Effect.runPromise(Effect.result(listRuns(workspace))))).map(run => run.id).sort())
-        .toEqual([source.run.id, forkId].sort());
+        .toEqual([source.run.id, forkId, third.run.id].sort());
     });
   });
 

@@ -1,5 +1,6 @@
 import * as Result from "effect/Result";
 import type { SchemaIR } from "@acpus/core/ir";
+import { toSchemaIR, z } from "@acpus/core/schema";
 import { describe, expect, it } from "vitest";
 import {
   buildAgentOutputPrompt,
@@ -305,6 +306,35 @@ describe("Tagged JSON parsing", () => {
 });
 
 describe("schema projection and normalization", () => {
+  it.each([false, true])("preserves valid union outputs at every nesting level (reversed: %s)", reversed => {
+    const narrow = z.strictObject({ value: z.number() });
+    const wide = z.strictObject({ value: z.number(), approved: z.boolean() });
+    const union = z.union(reversed ? [wide, narrow] : [narrow, wide]);
+    const value = { value: 1, approved: false };
+    const nested = z.strictObject({ items: z.array(union) });
+
+    for (const [schema, output] of [
+      [toSchemaIR(union), value],
+      [toSchemaIR(nested), { items: [value] }],
+    ] as const) {
+      expect(accepted(schema, frame(JSON.stringify(output)))).toEqual({
+        output,
+        outputProcessing: { outcome: "accepted", parsing: "direct", projectionChanged: false },
+      });
+    }
+  });
+
+  it("projects unmatched union outputs and still rejects invalid fields", () => {
+    const schema: SchemaIR = { kind: "union", variants: [{ kind: "string" }, booleanObject] };
+    expect(accepted(schema, frame('{"ok":true,"extra":1}'))).toEqual({
+      output: { ok: true },
+      outputProcessing: { outcome: "accepted", parsing: "direct", projectionChanged: true },
+    });
+    for (const payload of ['{"ok":"yes","extra":1}', '{"extra":1}']) {
+      expect(rejected(schema, frame(payload))).toMatchObject({ kind: "output_conformance" });
+    }
+  });
+
   it("treats generated constraint descriptions as advisory", () => {
     expect(accepted({ kind: "number", description: "integer; minimum: 0" }, frame("-1"))).toMatchObject({
       output: -1,
