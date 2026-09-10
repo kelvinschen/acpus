@@ -1,5 +1,11 @@
 # @acpus/dsh
 
+## 0.3.3
+
+### Patch Changes
+
+- @acpus/runtime@0.20.2
+
 ## 0.3.2
 
 ### Patch Changes
