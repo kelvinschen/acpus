@@ -1,5 +1,13 @@
 # @acpus/runtime
 
+## 0.20.1
+
+### Patch Changes
+
+- e87e0d9: Create a new child Run for each new Fork request while preserving request-ID idempotency. Preserve valid Agent union outputs before attempting schema projection, including nested unions.
+
+  Preserve Runtime metadata read errors so permission and I/O failures are reported instead of being misclassified as corrupt metadata requiring store repair.
+
 ## 0.20.0
 
 ### Minor Changes
