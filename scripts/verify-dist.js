@@ -222,7 +222,13 @@ async function createConsumer(consumerDirectory, packages) {
       dependencies,
     }, null, 2)}\n`),
     writeFile(join(consumerDirectory, "pnpm-workspace.yaml"), `${JSON.stringify({
-      overrides: { ...externalOverrides, ...tarballs },
+      // Resolve Effect from published constraints so the workspace lock cannot hide RC drift.
+      overrides: {
+        ...Object.fromEntries(Object.entries(externalOverrides).filter(([selector]) => (
+          !/(?:^|>)(?:effect(?:@|$)|@effect\/)/u.test(selector)
+        ))),
+        ...tarballs,
+      },
       storeDir: pnpmState.storeDir,
       minimumReleaseAge: 0,
       strictDepBuilds: true,
@@ -370,11 +376,19 @@ async function assertConsumerUsesTarballs(consumerDirectory, packages) {
   const pending = JSON.parse(stdout);
   assert.ok(Array.isArray(pending), "pnpm list did not return a dependency graph");
   const resolutions = new Map([...packages].map(([name]) => [name, new Set()]));
+  const effectVersion = packages.get("acpus").manifest.dependencies.effect;
   while (pending.length > 0) {
     const dependency = pending.pop();
     if (!dependency || typeof dependency !== "object") continue;
     if (resolutions.has(dependency.from) && typeof dependency.resolved === "string") {
       resolutions.get(dependency.from).add(dependency.resolved);
+    }
+    if (dependency.from === "effect" || dependency.from?.startsWith("@effect/")) {
+      assert.equal(
+        dependency.version,
+        effectVersion,
+        `consumer resolved ${dependency.from} outside the pinned Effect release train`,
+      );
     }
     pending.push(...Object.values(dependency.dependencies ?? {}));
   }

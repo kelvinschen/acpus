@@ -33,7 +33,7 @@
   "dependencies": {
     "@acpus/acp": "workspace:*",
     "@acpus/owned-process": "workspace:*",
-    "@effect/platform-node": "4.0.0-rc.111",
+    "@effect/platform-node-shared": "4.0.0-rc.111",
     "effect": "4.0.0-rc.111",
     "tsx": "^4.23.0"
   },

@@ -1,4 +1,4 @@
-import { NodeRuntime } from "@effect/platform-node";
+import * as NodeRuntime from "@effect/platform-node-shared/NodeRuntime";
 import {
   openAcpSession,
   type AcpSession,

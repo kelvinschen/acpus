@@ -49,7 +49,7 @@
     "@acpus/web": "workspace:*",
     "@acpus/workflow-compiler": "workspace:*",
     "@clack/prompts": "^1.6.0",
-    "@effect/platform-node": "4.0.0-rc.111",
+    "@effect/platform-node-shared": "4.0.0-rc.111",
     "@zip.js/zip.js": "^2.8.26",
     "commander": "^15.0.0",
     "effect": "4.0.0-rc.111",
