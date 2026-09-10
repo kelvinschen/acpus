@@ -1,5 +1,11 @@
 # @acpus/web
 
+## 0.4.4
+
+### Patch Changes
+
+- @acpus/runtime@0.20.2
+
 ## 0.4.3
 
 ### Patch Changes

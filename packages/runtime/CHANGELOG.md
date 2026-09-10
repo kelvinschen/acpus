@@ -1,5 +1,12 @@
 # @acpus/runtime
 
+## 0.20.2
+
+### Patch Changes
+
+- Updated dependencies [7eaadb3]
+  - @acpus/agent-executor@0.7.1
+
 ## 0.20.1
 
 ### Patch Changes

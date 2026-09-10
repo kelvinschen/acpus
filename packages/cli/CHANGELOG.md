@@ -1,5 +1,13 @@
 # acpus
 
+## 0.15.3
+
+### Patch Changes
+
+- 7eaadb3: Fix daemon and agent worker startup failures after a fresh install by depending directly on the exact Effect Node runtime package. Remove the intermediate platform dependency whose shared-package range could install an incompatible Effect RC.
+  - @acpus/runtime@0.20.2
+  - @acpus/web@0.4.4
+
 ## 0.15.2
 
 ### Patch Changes
