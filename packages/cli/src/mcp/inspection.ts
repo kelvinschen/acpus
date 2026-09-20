@@ -12,7 +12,7 @@ export function inspectRun(
   workspace: string,
   query: InspectionViewQuery,
   wait?: "decision" | "terminal",
-  timeoutMs = 30_000,
+  timeoutMs?: number,
 ): Effect.Effect<Record<string, unknown>, ToolFailure> {
   return Effect.gen(function* () {
     if (wait === undefined) return { view: yield* readInspection(workspace, query) };
@@ -26,7 +26,7 @@ export function inspectRun(
     }).pipe(
       Stream.filter(event => event.kind === "closed"),
       Stream.runHead,
-      Effect.timeoutOption(timeoutMs),
+      timeoutMs === undefined ? Effect.map(Option.some) : Effect.timeoutOption(timeoutMs),
     );
     if (Option.isSome(closed) && Option.isSome(closed.value)) {
       return { view: closed.value.value.view, reason: closed.value.value.reason, timedOut: false };

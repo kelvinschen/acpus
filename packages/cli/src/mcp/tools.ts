@@ -94,10 +94,10 @@ export function registerTools(server: McpServer, run: RunTool, options: AcpusMcp
   const acpus_list_runs = registerProject("acpus_list_runs", "List workspace Runs, optionally filtered by exact workflow name. Pass nextOffset to read the next page.",
     z.strictObject({ workspace, name: nonempty.optional(), offset: z.int().min(0).default(0), limit: z.int().min(1).max(200).default(50) }),
     true, (workspace, args) => runs(workspace, args.name, args.offset, args.limit));
-  const acpus_inspect = registerProject("acpus_inspect", "Inspect a Run or exact target. Optionally wait up to 30 seconds for a decision boundary or completion. Timeout and request cancellation only detach observation; they never cancel the Run. Forensics requires target and cannot wait.",
+  const acpus_inspect = registerProject("acpus_inspect", "Read a current Run or target snapshot by default. With wait, observe until a decision boundary or completion; timeoutMs optionally sets a deadline. Do not wait before an explicit control request. Timeout and request cancellation only detach observation; they never cancel the Run. Forensics requires target and cannot wait.",
     z.strictObject({
       workspace, runId: nonempty, target: nonempty.optional(), detail: z.enum(["summary", "timeline", "forensics"]).default("summary"),
-      wait: z.enum(["decision", "terminal"]).optional(), timeoutMs: z.int().min(1).max(30_000).optional(),
+      wait: z.enum(["decision", "terminal"]).optional(), timeoutMs: z.int().min(1).optional(),
     }), true, (workspace, args) => {
       if ((args.target === undefined && args.detail !== "summary") || (args.wait === undefined && args.timeoutMs !== undefined)) {
         return Effect.fail({ code: "INVALID_QUERY", message: "Detailed inspection requires target; timeoutMs requires wait.", next: "Supply a target or wait, or omit the dependent option." });
@@ -106,7 +106,7 @@ export function registerTools(server: McpServer, run: RunTool, options: AcpusMcp
         ? { kind: "run", runId: args.runId }
         : { kind: "target", runId: args.runId, target: args.target, detail: args.detail }, args.wait, args.timeoutMs);
     });
-  const acpus_control = registerProject("acpus_control", "Apply one explicit Run control. Use exact target selectors from inspection. Fork inherits the workflow unless source or file is supplied, and inherits omitted input and Agent bindings. A receipt records the applied control, not completion of subsequent work.",
+  const acpus_control = registerProject("acpus_control", "Apply one explicit Run control directly when the Run and target are known. If the subject is unclear, inspect without wait to resolve it. Use exact target selectors from inspection. Fork inherits the workflow unless source or file is supplied, and inherits omitted input and Agent bindings. A receipt records the applied control, not completion of subsequent work.",
     z.strictObject({ workspace, runId: nonempty, action }), false, (workspace, args) => controlRun(workspace, args.runId, args.action));
   const acpus_artifact = registerProject("acpus_artifact", "List Run/target artifacts or read an artifact by ID. Text is limited to 64 KiB with an explicit truncated flag; binary artifacts return verified local paths and metadata.",
     z.strictObject({ workspace, runId: nonempty, action: z.discriminatedUnion("type", [

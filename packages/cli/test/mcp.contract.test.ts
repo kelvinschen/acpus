@@ -42,7 +42,7 @@ describe("MCP tools", () => {
         const error = await client.callTool({ name: "acpus_inspect", arguments: { workspace, runId: "missing" } });
         expect(error.isError).toBe(true);
         expect(error.structuredContent).toMatchObject({ error: { code: "RUNTIME_STORE_NOT_FOUND", next: expect.any(String) } });
-        const invalid = await client.callTool({ name: "acpus_inspect", arguments: { workspace, runId: "missing", wait: "terminal", timeoutMs: 30_001 } });
+        const invalid = await client.callTool({ name: "acpus_inspect", arguments: { workspace, runId: "missing", wait: "terminal", timeoutMs: 0 } });
         expect(invalid.isError).toBe(true);
       }, mode);
       expect(await readdir(home)).toEqual([]);

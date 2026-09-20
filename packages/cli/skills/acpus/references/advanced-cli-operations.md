@@ -46,7 +46,7 @@ Omitting `--target` inspects `root`. Forensics is one-shot and cannot be combine
 
 This section describes command mechanics. [Runtime Recovery](runtime-recovery.md#recovery-decision) owns recovery and intervention decisions.
 
-Inspect before controlling a run and use its displayed public selector rather than reconstructing an internal occurrence identity.
+Follow [Runtime controls](cli-operations.md#runtime-controls); use displayed public selectors for exact targets.
 
 - Mutating controls start or wake the workspace daemon and wait up to 30 seconds.
 - Success confirms the requested control, not downstream completion.

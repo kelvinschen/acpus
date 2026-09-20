@@ -34,6 +34,16 @@ beforeEach(async () => {
 afterEach(() => rm(workspace, { recursive: true, force: true }));
 
 describe("MCP result boundaries", () => {
+  it("accepts a caller-selected observation deadline and returns the decision", async () => {
+    const view = { kind: "run", run: { id: "run-1", status: "paused" } };
+    boundaries.observeInspection.mockReturnValue(Stream.make({ kind: "closed", reason: "paused", view }));
+    await withMcpClient(async client => {
+      expect(toolData(await client.callTool({ name: "acpus_inspect", arguments: {
+        workspace, runId: "run-1", wait: "decision", timeoutMs: 120_000,
+      } }))).toEqual({ workspace, runId: "run-1", view, reason: "paused", timedOut: false });
+    });
+  });
+
   it("retains target candidates when a control is refused for ambiguity", async () => {
     const candidates = { kind: "candidates", run: { id: "run-1", status: "awaiting" }, target: "approve", entries: [
       { selector: "@111111111111", breadcrumb: "items[0]/approve", status: "awaiting" },

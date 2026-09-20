@@ -78,7 +78,7 @@ acpus runs resume <run-id>
 acpus runs cancel <run-id> [--target <target>]
 ```
 
-- Inspect the target first; a displayed selector identifies the subject but does not recommend a control.
+- Execute requested controls directly; resolve unknown subjects with non-waiting inspection. Never wait before a requested control.
 - Signal answers an open wait; pause/resume control run admission.
 - Cancel is destructive and requires confirmation unless already requested.
 

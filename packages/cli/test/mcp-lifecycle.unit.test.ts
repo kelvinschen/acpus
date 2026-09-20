@@ -23,18 +23,41 @@ it.effect("bounds observation, releases its stream, and reads a fresh snapshot o
     Stream.ensuring(Effect.sync(() => { released = true; })),
   ));
   runtime.readInspection.mockReturnValue(Effect.succeed(latest));
-  const waiting = yield* Effect.forkChild(inspectRun("/workspace", { kind: "run", runId: "run-1" }, "terminal"));
+  const waiting = yield* Effect.forkChild(inspectRun("/workspace", { kind: "run", runId: "run-1" }, "terminal", 60_000));
   yield* Deferred.await(attached);
-  yield* TestClock.adjust(30_000);
+  yield* TestClock.adjust(60_000);
   expect(yield* Fiber.join(waiting)).toEqual({ view: latest, timedOut: true });
   expect(released).toBe(true);
 }));
 
-it.effect("returns the authoritative decision snapshot before the observation deadline", () => Effect.gen(function* () {
+it.effect("returns the authoritative decision snapshot when the boundary is already reached", () => Effect.gen(function* () {
   const view = { kind: "run", run: { id: "run-1", status: "awaiting" } };
   runtime.observeInspection.mockReturnValue(Stream.make({ kind: "closed", reason: "awaiting-input", view }));
   expect(yield* inspectRun("/workspace", { kind: "run", runId: "run-1" }, "decision"))
     .toEqual({ view, reason: "awaiting-input", timedOut: false });
+}));
+
+it.effect("waits for a decision without an implicit deadline and releases observation", () => Effect.gen(function* () {
+  const attached = yield* Deferred.make<void>();
+  const decision = yield* Deferred.make<void>();
+  const view = { kind: "run", run: { id: "run-1", status: "awaiting" } };
+  let returned = false;
+  let released = false;
+  runtime.observeInspection.mockReturnValue(Stream.fromEffect(Effect.gen(function* () {
+    yield* Deferred.succeed(attached, undefined);
+    yield* Deferred.await(decision);
+    return { kind: "closed", reason: "awaiting-input", view };
+  })).pipe(Stream.ensuring(Effect.sync(() => { released = true; }))));
+  const waiting = yield* Effect.forkChild(inspectRun("/workspace", { kind: "run", runId: "run-1" }, "decision").pipe(
+    Effect.tap(() => Effect.sync(() => { returned = true; })),
+  ));
+  yield* Deferred.await(attached);
+  yield* TestClock.adjust(120_000);
+  expect(returned).toBe(false);
+  expect(released).toBe(false);
+  yield* Deferred.succeed(decision, undefined);
+  expect(yield* Fiber.join(waiting)).toEqual({ view, reason: "awaiting-input", timedOut: false });
+  expect(released).toBe(true);
 }));
 
 it.effect("reconfirms the same mutation after request cancellation without duplicating durable work", () => Effect.gen(function* () {

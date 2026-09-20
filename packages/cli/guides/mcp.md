@@ -42,12 +42,12 @@ Use the returned `{workspace, runId}` for all follow-up calls:
 - `acpus_inspect`: read Summary once, then narrow to the target controlling the
   next decision. Copy candidate `@ref` selectors for repeated occurrences.
   `wait: "decision"` waits for input, pause, or terminal state; `wait: "terminal"`
-  waits for completion. `timeoutMs` is at most 30000. When `timedOut` is true,
-  continue bounded waiting if the goal still needs it; timeout, silence, elapsed
-  time, and metrics alone do not justify intervention. Target `detail: "timeline"`
+  waits for completion. Omit `wait` for a snapshot; deadlines require `timeoutMs`. Timeout, silence, elapsed time,
+  and metrics alone do not justify intervention. Target `detail: "timeline"`
   shows activity; `"forensics"` deepens diagnosis and cannot wait.
-- `acpus_control`: use `action` with `type` pause, resume, cancel, retry, steer,
-  signal, or fork. Inspect before intervening. Retry/steer require `target`;
+- `acpus_control`: use `action.type`: pause, resume, cancel, retry, steer,
+  signal, or fork. Execute requested controls directly; resolve unknown subjects
+  with non-waiting inspection. Never wait before a requested control. Retry/steer require `target`;
   steer also requires `instruction`; signal requires `target` and JSON `payload`.
   Fork inherits the workflow unless `source` or `file` is supplied in `action`,
   inherits omitted input and bindings, and returns the child's identity in the

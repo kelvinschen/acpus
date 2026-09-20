@@ -13,12 +13,12 @@
 - 服务启动、工具发现和读取 MUST 保持 Runtime 只读。
 - 试运行 MUST 只准备和校验 Workflow，不准入 Run 或执行其节点；工具元数据 MUST 如实反映准备过程仍会执行模块代码。
 - 工作流提交 MUST 在确认持久化准入后返回 Run 身份。请求中断时，适配器 MUST 使用原幂等请求确认已发起的状态变更；无法确认时 MUST 保留结果未知，并引导查询而非假定失败或另建请求。
-- 限时等待 MUST 依据 Runtime 的观测契约返回决策边界或终态；期限届满时 MUST 返回当前快照并明确区分等待超时与 Run 失败。取消等待、连接断开和服务正常关闭 MUST NOT 隐式取消 Run。
+- 显式等待 MUST 依据 Runtime 的观测契约等待决策边界或终态，除非调用方指定期限或取消观察；指定期限届满时 MUST 返回当前快照并明确区分等待超时与 Run 失败。取消等待、连接断开和服务正常关闭 MUST NOT 隐式取消 Run。
 - 工具业务结果 MUST 提供语义一致的结构化与文本内容。可恢复业务失败 MUST 保留可操作的错误信息和下一步；目标歧义 MUST 保留候选选择器。摘要和控制回执 MUST 遵循 Runtime 的信息裁剪契约。
 - Artifact 读取 MUST 使用 Runtime 的校验接口；文本裁剪 MUST 明确标记，二进制结果 MUST 提供经验证的本地来源而非伪装为文本。
 
 ## 验证
 
 - `pnpm test:contract packages/cli/test/mcp`：验证协议工具发现、输入与输出、编译诊断及只读行为。
-- `pnpm test:unit packages/cli/test/mcp`：验证限时观察与中断后的有界确认。
+- `pnpm test:unit packages/cli/test/mcp`：验证条件等待、显式观察期限与中断后的有界确认。
 - `pnpm test:e2e packages/cli/test/mcp`：验证真实 stdio、CLI 互操作、断开连接和持久化工作流闭环。
