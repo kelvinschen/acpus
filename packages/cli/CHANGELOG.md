@@ -1,5 +1,19 @@
 # acpus
 
+## 0.16.0
+
+### Minor Changes
+
+- c307a9a: Add a composable MCP server with bundled authoring guidance and tools for running, inspecting, and controlling durable workflows across workspaces.
+
+  Support ACPUS_HOME to isolate global configuration, runtime state, and the workflow catalog, and preserve each MCP server's Home across requests and cancellation.
+
+### Patch Changes
+
+- Updated dependencies [c307a9a]
+  - @acpus/runtime@0.21.0
+  - @acpus/web@0.4.5
+
 ## 0.15.3
 
 ### Patch Changes
