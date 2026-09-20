@@ -25,6 +25,7 @@ const mock = vi.hoisted(() => ({
 
 vi.mock("node:child_process", () => ({ spawn: mock.spawn }));
 vi.mock("@acpus/runtime", () => ({
+  resolveAcpusHome: () => "/acpus-data",
   awaitRuntimeStoreOffline: mock.awaitRuntimeStoreOffline,
   getRun: mock.getRun,
   inspectRuntimeStore: mock.inspectRuntimeStore,

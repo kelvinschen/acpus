@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { homedir } from "node:os";
+import { resolveAcpusHome } from "./acpus-home.js";
 import {
   createAgentSessionSupervisor,
   inspectAcpOwnership,
@@ -279,8 +279,9 @@ function openWorkspaceRuntimeInScope(
     yield* Scope.addFinalizer(ownedScope, Effect.sync(() => {
       store.releaseRuntimeAuthority(authorityFence);
     }));
+    const acpusHome = resolveAcpusHome();
     const hooksConfig = yield* Effect.tryPromise({
-      try: () => loadHooksConfigResult(opened.layout.canonicalPath),
+      try: () => loadHooksConfigResult(opened.layout.canonicalPath, { acpusHome }),
       catch: openFailure,
     });
     if (Result.isFailure(hooksConfig)) {
@@ -291,7 +292,6 @@ function openWorkspaceRuntimeInScope(
     const hookRunner = yield* Scope.provide(hookScope)(
       createHookRunner(hooksConfig.success, store, processes),
     );
-    const configHomeDir = homedir();
     const supervisorOptions = {
       workersRoot: opened.layout.acpWorkersRoot,
       sessionStateDirectoryForRun: (runId: string) => runAcpStateRoot(opened.layout, runId),
@@ -301,7 +301,7 @@ function openWorkspaceRuntimeInScope(
         : { namedAgentLaunches: options.namedAgentLaunches }),
       configuredAgentCommand: (names: readonly string[]) => resolveConfiguredAgentCommand({
         workspaceDir: opened.layout.canonicalPath,
-        homeDir: configHomeDir,
+        acpusHome,
         names,
       }).pipe(Effect.mapError(failure => ({
         type: "agent-config" as const,

@@ -20,6 +20,7 @@ class TtyCaptureStream extends CaptureStream {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
   vi.useRealTimers();
 });
 
@@ -38,6 +39,7 @@ describe("update awareness", () => {
     expect(isUpdateAwarenessEligible(input)).toBe(true);
     expect(isUpdateAwarenessEligible({ ...input, argv: ["workflow", "catalog", "--help"] })).toBe(false);
     expect(isUpdateAwarenessEligible({ ...input, topLevelCommand: "doctor", argv: ["doctor"] })).toBe(true);
+    expect(isUpdateAwarenessEligible({ ...input, topLevelCommand: "mcp", argv: ["mcp"] })).toBe(false);
     expect(isUpdateAwarenessEligible({ ...input, env: { CI: "1" } })).toBe(false);
     expect(isUpdateAwarenessEligible({ ...input, env: { NO_UPDATE_NOTIFIER: "1" } })).toBe(false);
     expect(isUpdateAwarenessEligible({ ...input, stdout: new CaptureStream() })).toBe(false);
@@ -127,7 +129,9 @@ describe("update awareness", () => {
     const home = await mkdtemp(join(tmpdir(), "acpus-update-awareness-"));
     const previousHome = process.env.HOME;
     const previousUserProfile = process.env.USERPROFILE;
-    const cache = join(home, ".acpus", "cache", "update-awareness");
+    const acpusHome = join(home, "custom-data");
+    vi.stubEnv("ACPUS_HOME", acpusHome);
+    const cache = join(acpusHome, "cache", "update-awareness");
     const notices = join(cache, "notices.json");
     const program = new Command("acpus");
     const doctor = new Command("doctor");

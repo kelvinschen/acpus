@@ -62,6 +62,10 @@ Orchestrator Agent 负责拆分任务、定义节点和依赖、启动 Run，并
 
 ## 快速开始
 
+支持全局配置一次的 [MCP 接入](packages/cli/skills/acpus/references/mcp.md)，无需安装 Skill，调用时选择项目。
+
+CLI 和 MCP 默认共享 `~/.acpus`。设置 `ACPUS_HOME=/绝对路径` 可隔离 ACPUS 的全局配置、运行状态和全局 Workflow 库；该路径直接作为数据根目录，不再追加 `.acpus`。
+
 ### 1. 安装 CLI 和 Skill
 
 > [!TIP]

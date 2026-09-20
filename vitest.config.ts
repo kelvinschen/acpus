@@ -8,6 +8,7 @@ const e2eTests = "packages/*/test/**/*.e2e.test.ts";
 const regressionTests = "packages/*/test/**/*.regression.test.ts";
 const typeContractTests = "packages/*/test/**/*.type.test-d.ts";
 const slowProjectTestTimeout = process.env.CI ? 30_000 : 15_000;
+const testCacheDir = process.env.ACPUS_TEST_GROUP ? `node_modules/.vite/${process.env.ACPUS_TEST_GROUP}` : undefined;
 const decoratorSyntax = /^\s*@[A-Za-z_$][\w$]*/m;
 
 function standardDecoratorPlugin() {
@@ -33,11 +34,15 @@ function standardDecoratorPlugin() {
 }
 
 export default defineConfig({
+  cacheDir: testCacheDir,
   plugins: [standardDecoratorPlugin()],
   resolve: {
     conditions: ["development", "node", "import", "default"]
   },
   test: {
+    experimental: {
+      fsModuleCachePath: testCacheDir ? `${testCacheDir}/transforms` : undefined,
+    },
     slowTestThreshold: 1_000,
     coverage: {
       reporter: ["text", "html"]

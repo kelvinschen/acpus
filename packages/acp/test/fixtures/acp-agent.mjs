@@ -188,6 +188,13 @@ async function prompt(request) {
       messageId: `late-${state.number}`,
       content: { type: "text", text: `late:${state.number}` },
     });
+    // This response proves the client received the preceding update before its next prompt.
+    resultOf(await reverse(`fence-${state.number}`, "session/request_permission", {
+      sessionId: state.sessionId,
+      toolCall: { toolCallId: `fence-${state.number}`, title: "Protocol fence", kind: "read", status: "pending" },
+      options: [{ optionId: "reject", name: "Reject", kind: "reject_once" }],
+    }));
+    writeFileSync(process.env.ACP_FIXTURE_FENCE_PATH, `${state.number}\n`);
   }
 }
 

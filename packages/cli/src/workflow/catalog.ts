@@ -1,6 +1,6 @@
 import { type Dirent } from "node:fs";
 import { lstat, mkdir, readdir, readFile, rename, stat } from "node:fs/promises";
-import { homedir } from "node:os";
+import { resolveAcpusHome } from "@acpus/runtime";
 import { basename, isAbsolute, join, resolve } from "node:path";
 import { extractWorkflowMetadata, type WorkflowMetadataError } from "@acpus/workflow-compiler";
 import * as Effect from "effect/Effect";
@@ -164,7 +164,7 @@ async function prepareCatalogCommit(cwd: string, scope: WorkflowCatalogScope, na
 function catalogRoot(cwd: string, scope: WorkflowCatalogScope): string {
   return scope === "project"
     ? resolve(cwd, ".acpus", "workflows")
-    : resolve(homedir(), ".acpus", "workflows");
+    : resolve(resolveAcpusHome(), "workflows");
 }
 
 function selectedScope(options: WorkflowCatalogScopeOptions): WorkflowCatalogScope | undefined {

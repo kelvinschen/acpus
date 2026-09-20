@@ -6,6 +6,7 @@ describe("@acpus/runtime public API", () => {
   it("exports durable runtime use cases and testable pure runtime helpers", () => {
     expect(Object.keys(runtime).sort()).toEqual([
       "AUTHORING_AGENT_SCALE_ENV",
+      "AcpusHomeError",
       "DAEMON_PROTOCOL_VERSION",
       "RUNTIME_ABI_VERSION",
       "addAgentPreset",
@@ -53,6 +54,7 @@ describe("@acpus/runtime public API", () => {
       "requestDaemonStatusProbe",
       "requestDaemonSubmitAndObserve",
       "requestPredecessorDaemonShutdown",
+      "resolveAcpusHome",
       "resolveArtifact",
       "resolveConfiguredAgentCommand",
       "resolveKnownWorkspace",
@@ -65,6 +67,7 @@ describe("@acpus/runtime public API", () => {
       "unboundAgentNames",
       "unsetAuthoringAgentScale",
       "validateHooksFile",
+      "withAcpusHome",
       "withAgentBindings",
     ]);
   });

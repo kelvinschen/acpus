@@ -29,6 +29,7 @@ describe("acpus package boundaries", () => {
     expect(Object.keys(pkg.exports ?? {}).sort()).toEqual([
       "./core",
       "./expression",
+      "./mcp",
       "./tasks/git",
     ]);
   });

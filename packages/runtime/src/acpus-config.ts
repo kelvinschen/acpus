@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { chmod, link, lstat, mkdir, open, readFile, realpath, rm } from "node:fs/promises";
-import { homedir } from "node:os";
+import { resolveAcpusHome } from "./acpus-home.js";
 import { dirname, join, resolve } from "node:path";
 import { z } from "@acpus/core/schema";
 import type { AgentCommandSpec, AgentUseSpec } from "@acpus/core";
@@ -127,9 +127,6 @@ type CatalogEntry = {
 };
 
 type ConfigFileBoundary = {
-  rootPath: string;
-  rootRealpath: string;
-  rootIdentity: string;
   parentPath: string;
   parentRealpath: string;
   parentIdentity: string;
@@ -194,13 +191,13 @@ export function projectAcpusConfigPath(workspaceDir: string): string {
   return join(resolve(workspaceDir), ".acpus", "config.json");
 }
 
-export function globalAcpusConfigPath(homeDir = homedir()): string {
-  return join(homeDir, ".acpus", "config.json");
+export function globalAcpusConfigPath(acpusHome = resolveAcpusHome()): string {
+  return join(resolveAcpusHome(acpusHome), "config.json");
 }
 
 export function loadAgentPresetCatalog(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   hostProvider?: AgentPresetProvider;
   scopes?: readonly AgentPresetScope[];
 }): Effect.Effect<AgentPresetCatalog, AgentPresetCatalogFailure> {
@@ -237,14 +234,8 @@ export function loadAgentPresetCatalog(input: {
         entries.push(...(yield* Effect.fromResult(validateHostPresets(provided))));
         continue;
       }
-      const rootPath = scope === "project" ? resolve(input.workspaceDir!) : resolve(input.homeDir ?? homedir());
-      const path = scope === "project"
-        ? projectAcpusConfigPath(input.workspaceDir!)
-        : globalAcpusConfigPath(input.homeDir);
-      const loaded = yield* Effect.promise(() => loadPresetFile(scope, rootPath, path)).pipe(
-        Effect.flatMap(Effect.fromResult),
-      );
-      entries.push(...loaded);
+      const config = yield* loadAcpusConfigScope({ ...input, scope });
+      entries.push(...entriesFromConfig(scope, config));
     }
 
     const effective = new Map<string, CatalogEntry>();
@@ -280,7 +271,7 @@ function normalizeKnownAuthoringAgentScale(scale: AuthoringAgentScale): Normaliz
 
 export function loadAuthoringAgentScale(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   environment?: NodeJS.ProcessEnv;
 }): Effect.Effect<EffectiveAuthoringAgentScale | undefined, AcpusConfigReadFailure | AuthoringAgentScaleEnvironmentFailure> {
   return Effect.gen(function*() {
@@ -291,7 +282,7 @@ export function loadAuthoringAgentScale(input: {
 
 export function loadAgentAuthoringContext(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   hostProvider?: AgentPresetProvider;
   environment?: NodeJS.ProcessEnv;
 }): Effect.Effect<AgentAuthoringContext, AgentAuthoringContextFailure> {
@@ -326,14 +317,14 @@ type LoadedAuthoringConfigs = {
 
 function loadAuthoringConfigs(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
 }): Effect.Effect<LoadedAuthoringConfigs, AcpusConfigReadFailure> {
   return Effect.gen(function*() {
     const project = input.workspaceDir === undefined
       ? undefined
       : yield* loadAcpusConfigScope({ workspaceDir: input.workspaceDir, scope: "project" });
     const global = yield* loadAcpusConfigScope({
-      ...(input.homeDir === undefined ? {} : { homeDir: input.homeDir }),
+      ...(input.acpusHome === undefined ? {} : { acpusHome: input.acpusHome }),
       scope: "global",
     });
     return { ...(project === undefined ? {} : { project }), global };
@@ -375,7 +366,7 @@ function entriesFromConfig(scope: WritableAgentPresetScope, config: AcpusConfig)
 
 export function applyAgentPresetChanges(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   scope: WritableAgentPresetScope;
   changes: readonly AgentPresetChange[];
 }): Effect.Effect<{ path: string; presets: Record<string, AgentPresetSpec> }, AgentPresetWriteFailure> {
@@ -384,7 +375,7 @@ export function applyAgentPresetChanges(input: {
 
 export function addAgentPreset(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   scope: WritableAgentPresetScope;
   id: string;
   preset: AgentPresetSpec;
@@ -394,7 +385,7 @@ export function addAgentPreset(input: {
 
 export function removeAgentPreset(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   scope: WritableAgentPresetScope;
   id: string;
 }): Effect.Effect<{ path: string }, AgentPresetWriteFailure> {
@@ -403,7 +394,7 @@ export function removeAgentPreset(input: {
 
 export function setAuthoringAgentScale(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   scope: WritableAgentPresetScope;
   value: AuthoringAgentScale;
 }): Effect.Effect<{ path: string; scale: NormalizedAuthoringAgentScale }, AuthoringAgentScaleWriteFailure> {
@@ -412,7 +403,7 @@ export function setAuthoringAgentScale(input: {
 
 export function unsetAuthoringAgentScale(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   scope: WritableAgentPresetScope;
 }): Effect.Effect<{ path: string }, AuthoringAgentScaleWriteFailure> {
   return Effect.promise(() => writeAuthoringAgentScale(input, true)).pipe(
@@ -425,7 +416,7 @@ export function unsetAuthoringAgentScale(input: {
 async function writeAuthoringAgentScale(
   input: {
     workspaceDir?: string;
-    homeDir?: string;
+    acpusHome?: string;
     scope: WritableAgentPresetScope;
     value?: AuthoringAgentScale;
   },
@@ -441,8 +432,10 @@ async function writeAuthoringAgentScale(
     ? Result.succeed<NormalizedAuthoringAgentScale>({ value: "unrestricted" })
     : normalizeAuthoringAgentScale(input.value);
   if (Result.isFailure(normalized)) return Result.fail(normalized.failure);
-  const rootPath = input.scope === "project" ? resolve(input.workspaceDir!) : resolve(input.homeDir ?? homedir());
-  let path = input.scope === "project" ? projectAcpusConfigPath(input.workspaceDir!) : globalAcpusConfigPath(input.homeDir);
+  const resolved = configuredPath(input);
+  if (Result.isFailure(resolved)) return Result.fail(resolved.failure);
+  let path = resolved.success;
+  const rootPath = dirname(path);
   let boundary: ConfigFileBoundary | undefined;
   try {
     boundary = unset
@@ -518,7 +511,7 @@ async function writeAuthoringAgentScale(
 
 async function addPreset(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   scope: WritableAgentPresetScope;
   id: string;
   preset: AgentPresetSpec;
@@ -532,7 +525,7 @@ async function addPreset(input: {
 
 async function removePreset(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   scope: WritableAgentPresetScope;
   id: string;
 }): Promise<Result.Result<{ path: string }, AgentPresetWriteFailure>> {
@@ -545,7 +538,7 @@ async function removePreset(input: {
 
 async function applyChanges(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   scope: WritableAgentPresetScope;
   changes: readonly AgentPresetChange[];
 }): Promise<Result.Result<{ path: string; presets: Record<string, AgentPresetSpec> }, AgentPresetWriteFailure>> {
@@ -554,7 +547,7 @@ async function applyChanges(input: {
 
 async function mutatePresetFile(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   scope: WritableAgentPresetScope;
   changes: readonly AgentPresetChange[];
 }, requirement?: { state: "absent" | "present"; id: string }): Promise<Result.Result<{ path: string; presets: Record<string, AgentPresetSpec> }, AgentPresetWriteFailure>> {
@@ -587,7 +580,7 @@ async function mutatePresetFile(input: {
 
   let boundary: ConfigFileBoundary;
   try {
-    boundary = await preparePresetFileBoundary(presetRootPath(input), true);
+    boundary = await preparePresetFileBoundary(dirname(path), true);
     path = boundary.path;
     if (input.scope === "global" && process.platform !== "win32") {
       await verifyPresetFileBoundary(boundary);
@@ -625,7 +618,7 @@ async function mutatePresetFile(input: {
 
   try {
     await verifyPresetFileBoundary(boundary);
-    const current = await readAcpusConfigFile(input.scope, presetRootPath(input), path, boundary);
+    const current = await readAcpusConfigFile(input.scope, dirname(path), path, boundary);
     if (Result.isFailure(current)) return Result.fail(current.failure);
     if (requirement?.state === "absent" && Object.hasOwn(current.success.presets, requirement.id)) {
       return Result.fail({ type: "agent-preset-exists", id: requirement.id, message: `Agent Preset '${requirement.id}' already exists in ${input.scope} scope.` });
@@ -668,7 +661,7 @@ async function mutatePresetFile(input: {
 
 function writablePresetPath(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   scope: WritableAgentPresetScope;
 }): Result.Result<string, AgentPresetWriteFailure> {
   if (input.scope === "project") {
@@ -677,20 +670,25 @@ function writablePresetPath(input: {
     }
     return Result.succeed(projectAcpusConfigPath(input.workspaceDir));
   }
-  return Result.succeed(globalAcpusConfigPath(input.homeDir));
+  return configuredPath(input);
 }
 
-function presetRootPath(input: {
+function configuredPath(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   scope: WritableAgentPresetScope;
-}): string {
-  return input.scope === "project" ? resolve(input.workspaceDir!) : resolve(input.homeDir ?? homedir());
+}): Result.Result<string, AcpusConfigReadFailure> {
+  return Result.try({
+    try: () => input.scope === "project"
+      ? projectAcpusConfigPath(input.workspaceDir!)
+      : globalAcpusConfigPath(input.acpusHome),
+    catch: error => ({ type: "acpus-config-invalid", source: input.scope, path: input.acpusHome ?? process.env.ACPUS_HOME ?? "", message: causeMessage(error) }),
+  });
 }
 
 export function loadAcpusConfigScope(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   scope: WritableAgentPresetScope;
 }): Effect.Effect<AcpusConfig, AcpusConfigReadFailure> {
   return Effect.promise(() => loadAcpusConfigScopeResult(input)).pipe(Effect.flatMap(Effect.fromResult));
@@ -698,7 +696,7 @@ export function loadAcpusConfigScope(input: {
 
 export function loadAcpusConfigScopeResult(input: {
   workspaceDir?: string;
-  homeDir?: string;
+  acpusHome?: string;
   scope: WritableAgentPresetScope;
 }): Promise<Result.Result<AcpusConfig, AcpusConfigReadFailure>> {
   if (input.scope === "project" && input.workspaceDir === undefined) {
@@ -709,18 +707,15 @@ export function loadAcpusConfigScopeResult(input: {
       message: "Project Acpus config requires a workspace directory.",
     }));
   }
-  const rootPath = input.scope === "project"
-    ? resolve(input.workspaceDir!)
-    : resolve(input.homeDir ?? homedir());
-  const path = input.scope === "project"
-    ? projectAcpusConfigPath(input.workspaceDir!)
-    : globalAcpusConfigPath(input.homeDir);
-  return readAcpusConfigFile(input.scope, rootPath, path);
+  const path = configuredPath(input);
+  return Result.isFailure(path)
+    ? Promise.resolve(Result.fail(path.failure))
+    : readAcpusConfigFile(input.scope, dirname(path.success), path.success);
 }
 
 export function resolveConfiguredAgentCommand(input: {
   workspaceDir: string;
-  homeDir?: string;
+  acpusHome?: string;
   names: readonly string[];
 }): Effect.Effect<string | undefined, AcpusConfigReadFailure> {
   return Effect.promise(() => resolveConfiguredAgentCommandResult(input)).pipe(Effect.flatMap(Effect.fromResult));
@@ -728,7 +723,7 @@ export function resolveConfiguredAgentCommand(input: {
 
 async function resolveConfiguredAgentCommandResult(input: {
   workspaceDir: string;
-  homeDir?: string;
+  acpusHome?: string;
   names: readonly string[];
 }): Promise<Result.Result<string | undefined, AcpusConfigReadFailure>> {
     const project = await loadAcpusConfigScopeResult({
@@ -737,7 +732,7 @@ async function resolveConfiguredAgentCommandResult(input: {
     });
     if (Result.isFailure(project)) return Result.fail(project.failure);
     const global = await loadAcpusConfigScopeResult({
-      ...(input.homeDir === undefined ? {} : { homeDir: input.homeDir }),
+      ...(input.acpusHome === undefined ? {} : { acpusHome: input.acpusHome }),
       scope: "global",
     });
     if (Result.isFailure(global)) return Result.fail(global.failure);
@@ -916,16 +911,6 @@ function serializeAcpusConfig(config: AcpusConfig): Partial<AcpusConfig> {
 
 function prefixConfigPath(section: string, path: string): string {
   return path === "$" ? `$.${section}` : `$.${section}${path.slice(1)}`;
-}
-
-async function loadPresetFile(
-  scope: WritableAgentPresetScope,
-  rootPath: string,
-  path: string,
-): Promise<Result.Result<CatalogEntry[], AgentPresetCatalogFailure>> {
-  const config = await readAcpusConfigFile(scope, rootPath, path);
-  if (Result.isFailure(config)) return Result.fail(config.failure);
-  return Result.succeed(Object.entries(config.success.presets).map(([id, preset]) => entryFromPreset(id, scope, preset)));
 }
 
 function validateHostPresets(value: readonly HostAgentPreset[]): Result.Result<CatalogEntry[], AgentPresetCatalogFailure> {
@@ -1108,34 +1093,21 @@ async function preparePresetFileBoundary(
   rootPath: string,
   createParent: boolean,
 ): Promise<ConfigFileBoundary | undefined> {
-  const rootRealpath = await realpath(resolve(rootPath));
-  const rootInfo = await lstat(rootRealpath, { bigint: true });
-  if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) {
-    throw new Error(`Acpus config root '${rootRealpath}' is not a regular directory.`);
-  }
-  const parentPath = join(rootRealpath, ".acpus");
+  const parentPath = resolve(rootPath);
   let parentInfo;
   try {
     parentInfo = await lstat(parentPath, { bigint: true });
   } catch (error) {
     if (!isNotFound(error)) throw error;
     if (!createParent) return undefined;
-    await mkdir(parentPath, { mode: 0o700 }).catch(error => {
-      if (!hasErrorCode(error, "EEXIST")) throw error;
-    });
+    await mkdir(parentPath, { recursive: true, mode: 0o700 });
     parentInfo = await lstat(parentPath, { bigint: true });
   }
   if (parentInfo.isSymbolicLink() || !parentInfo.isDirectory()) {
     throw new Error(`Acpus config directory '${parentPath}' is not a regular directory.`);
   }
   const parentRealpath = await realpath(parentPath);
-  if (parentRealpath !== join(rootRealpath, ".acpus")) {
-    throw new Error(`Acpus config directory '${parentPath}' is outside root '${rootRealpath}'.`);
-  }
   return {
-    rootPath: rootRealpath,
-    rootRealpath,
-    rootIdentity: filesystemIdentity(rootInfo, `Acpus config root '${rootRealpath}'`),
     parentPath,
     parentRealpath,
     parentIdentity: filesystemIdentity(parentInfo, `Acpus config directory '${parentPath}'`),
@@ -1144,13 +1116,6 @@ async function preparePresetFileBoundary(
 }
 
 async function verifyPresetFileBoundary(boundary: ConfigFileBoundary): Promise<string | undefined> {
-  const rootInfo = await lstat(boundary.rootPath, { bigint: true });
-  if (rootInfo.isSymbolicLink()
-    || !rootInfo.isDirectory()
-    || await realpath(boundary.rootPath) !== boundary.rootRealpath
-    || filesystemIdentity(rootInfo, `Acpus config root '${boundary.rootPath}'`) !== boundary.rootIdentity) {
-    throw new Error(`Acpus config root '${boundary.rootPath}' no longer matches its opened identity.`);
-  }
   const parentInfo = await lstat(boundary.parentPath, { bigint: true });
   if (parentInfo.isSymbolicLink()
     || !parentInfo.isDirectory()

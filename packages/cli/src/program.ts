@@ -1,8 +1,10 @@
+import { resolveAcpusHome, withAcpusHome } from "@acpus/runtime";
 import type { Readable, Writable } from "node:stream";
 import { Command, CommanderError } from "commander";
 import { createAgentCommand } from "./agent/command.js";
 import { createDoctorCommand } from "./doctor/command.js";
 import { createHooksCommand } from "./hooks/command.js";
+import { createMcpCommand } from "./mcp/command.js";
 import { getCliPackageInfo } from "./platform/package-info.js";
 import { CliError, usageError } from "./presentation/errors.js";
 import { writeResult } from "./presentation/output.js";
@@ -20,6 +22,10 @@ export type CliIo = {
 };
 
 export async function runCli(argv: string[], io: CliIo): Promise<number> {
+  return withAcpusHome(resolveAcpusHome(), () => runCommand(argv, io));
+}
+
+async function runCommand(argv: string[], io: CliIo): Promise<number> {
   let exitCode = 0;
   const awareness = createUpdateAwareness({ argv, stdout: io.stdout, stderr: io.stderr });
   const program = createProgram(io, code => {
@@ -53,6 +59,7 @@ function createProgram(
     .name("acpus")
     .description([
       "Acpus TypeScript workflow CLI.",
+      "ACPUS_HOME selects the data directory (absolute path; default: ~/.acpus).",
       "",
       "If the Acpus Skill is not loaded, use acpus skill read to get its usage guide.",
     ].join("\n"))
@@ -80,6 +87,7 @@ function createProgram(
     stdin,
     setExitCode,
   }));
+  program.addCommand(createMcpCommand({ ...io, stdin }));
   program.addCommand(createAgentCommand({
     ...io,
     setExitCode,

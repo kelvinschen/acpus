@@ -1,5 +1,5 @@
 import { chmod, lstat, mkdir, readdir, rm } from "node:fs/promises";
-import { homedir } from "node:os";
+import { resolveAcpusHome } from "@acpus/runtime";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 
 export async function ensurePrivateDirectory(path: string): Promise<void> {
@@ -16,13 +16,14 @@ export async function ensurePrivateDirectory(path: string): Promise<void> {
 }
 
 export async function ensurePrivateAcpusDirectory(path: string): Promise<void> {
-  const root = resolve(homedir(), ".acpus");
+  const root = resolveAcpusHome();
   const target = resolve(path);
   const child = relative(root, target);
   if (child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) {
     throw new Error(`Acpus-owned path '${path}' is outside '${root}'.`);
   }
 
+  await mkdir(root, { recursive: true, mode: 0o700 });
   await ensurePrivateDirectory(root);
   let current = root;
   for (const part of child.split(/[\\/]/).filter(Boolean)) {

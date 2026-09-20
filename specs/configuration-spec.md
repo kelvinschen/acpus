@@ -6,7 +6,8 @@
 
 ## 要求
 
-- 项目配置的根路径 MUST 是 Runtime 的规范工作区；全局配置的根路径 MUST 是 Host 进程的主目录。这两个根路径 MUST NOT 随 Workflow 环境变量或 Agent 的实际工作目录改变。
+- 项目配置的根路径 MUST 是 Runtime 的规范工作区；全局配置 MUST 来自入口确定的 ACPUS Home。这两个根路径 MUST NOT 随 Workflow 环境变量或 Agent 的实际工作目录改变。
+- `ACPUS_HOME` MUST 选择 ACPUS 数据根目录，未设置时使用操作系统用户目录下的 `.acpus`；非法值 MUST 报错。CLI 与 MCP 的全局配置、运行状态及全局文件 MUST 随该 Home 隔离，MUST NOT 合并默认 Home。后台执行 MUST 保持发起入口确定的 Home；嵌入式 Runtime 的显式存储根仍由宿主拥有，不改变全局配置根或操作系统用户目录。
 - Runtime MUST 将每个配置文件作为一个整体校验。任何分区中出现无效值或未声明字段时，整个文件 MUST 对所有使用方报错，MUST NOT 返回部分解析结果。
 - 解析命名 Agent 时，Runtime MUST 按 Host、项目、全局、内置的顺序选择首个匹配定义。解析相同 ID 的 Agent Preset 时，Runtime MUST 按 Host、项目、全局的顺序选择首个匹配定义。项目与全局作用域的 Hook 条目 MUST 取并集；来自两个作用域的所有匹配 Hook MUST 全部执行，任一方都 MUST NOT 覆盖或抑制另一方。
 - `authoring.agentScale` MUST 接受正 safe integer 或 `small`、`medium`、`large`、`unrestricted`；前三个档位 MUST 分别归一化为 4、12、32 个建议 Agent execution occurrences，整数本身即建议上限，`unrestricted` MUST 不产生上限。有效值 MUST 按 `ACPUS_AUTHORING_AGENT_SCALE`、项目、全局的顺序解析；未配置时 MUST 保持缺省，而非推断默认档位。环境变量无效时统一 authoring context MUST 整体失败。

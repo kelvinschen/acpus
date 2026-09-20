@@ -102,7 +102,7 @@ describe("hooks config", () => {
     await mkdir(join(workspace, ".acpus"), { recursive: true });
     await writeFile(join(workspace, ".acpus", "config.json"), "{}");
 
-    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { acpusHome: join(home, ".acpus") })));
 
     expect(Result.isSuccess(loaded)).toBe(true);
     expect(Result.getOrThrow(loaded)).toEqual([]);
@@ -114,7 +114,7 @@ describe("hooks config", () => {
     await mkdir(join(workspace, ".acpus"), { recursive: true });
     await writeFile(join(workspace, ".acpus", "config.json"), JSON.stringify({ hooks: { "run.completed": [{ command: "" }] } }));
 
-    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { acpusHome: join(home, ".acpus") })));
 
     expect(Result.isFailure(loaded)).toBe(true);
     expect(Result.getOrThrow(Result.flip(loaded))).toMatchObject({ type: "invalid-config", source: "project" });
@@ -129,7 +129,7 @@ describe("hooks config", () => {
       hooks: { "run.completed": [{ command: "echo must-not-load" }] },
     }));
 
-    expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home }))))))).toMatchObject({
+    expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { acpusHome: join(home, ".acpus") }))))))).toMatchObject({
       type: "invalid-config",
       source: "project",
     });
@@ -158,7 +158,7 @@ describe("hooks config", () => {
       "run.completed": [{ id: "same", command: "echo global" }],
     } }));
 
-    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { acpusHome: join(home, ".acpus") })));
 
     expect(Result.isSuccess(loaded)).toBe(true);
     expect(Result.getOrThrow(loaded)).toMatchObject([
@@ -176,7 +176,7 @@ describe("hooks config", () => {
       "node.failed": [{ command: "echo first" }, { command: "echo second" }],
     } }));
 
-    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { acpusHome: join(home, ".acpus") })));
 
     expect(Result.getOrThrow(loaded).map(hook => hook.effectiveId)).toEqual([
       "project:node.failed:0",
@@ -188,7 +188,7 @@ describe("hooks config", () => {
     const workspace = await tempDir("hooks-empty-workspace-");
     const home = await tempDir("hooks-empty-home-");
 
-    const loaded = await Effect.runPromise(Effect.result(loadHooksConfigScopes(workspace, { homeDir: home })));
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfigScopes(workspace, { acpusHome: join(home, ".acpus") })));
 
     expect(Result.isSuccess(loaded)).toBe(true);
     expect(Result.getOrThrow(loaded)).toEqual([
@@ -203,7 +203,7 @@ describe("hooks config", () => {
     await mkdir(join(workspace, ".acpus"), { recursive: true });
     await writeFile(join(workspace, ".acpus", "config.json"), "{");
 
-    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { homeDir: home })));
+    const loaded = await Effect.runPromise(Effect.result(loadHooksConfig(workspace, { acpusHome: join(home, ".acpus") })));
 
     expect(Result.isFailure(loaded)).toBe(true);
     expect(Result.getOrThrow(Result.flip(loaded))).toMatchObject({ type: "invalid-config", source: "project" });

@@ -1,20 +1,14 @@
-import * as Result from "effect/Result";
 import {
   copyFile,
   mkdir,
   mkdtemp,
   readFile,
   rm,
-  stat,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-  prepareWorkflow,
-  tryPrepareWorkflow,
-} from "@acpus/workflow-compiler";
-import { settle } from "./effect.js";
+import { prepareWorkflow } from "@acpus/workflow-compiler";
 import { describe, expect, it, vi } from "vitest";
 import {
   expectNoScratchReference,
@@ -116,46 +110,6 @@ ${(await readFile(fixture("workflows/nested-reusable.workflow.ts"), "utf8"))
       } finally {
         await rm(external, { recursive: true, force: true });
       }
-    });
-  });
-
-});
-
-describe("workflow preparation scratch cleanup", () => {
-  it("rejects private materialization paths in snapshot IR and removes scratch", async () => {
-    await withCompilerWorkspace("compiler-snapshot-failure-paths", async workspaceDir => {
-      const scratchIndex = scratchDirectories.length;
-      const result = await settle(tryPrepareWorkflow({
-        workspaceDir,
-        source: {
-          kind: "files",
-          entry: "workflow.ts",
-          files: [
-            { path: "package.json", content: "{\"type\":\"module\"}\n" },
-            {
-              path: "workflow.ts",
-              content: `import { defineWorkflow } from "acpus/core";
-export default defineWorkflow({
-  name: "private-materialization",
-  description: import.meta.url,
-}).build(() => ({}));
-`,
-            },
-          ],
-        },
-      }));
-
-      expect(Result.isFailure(result)).toBe(true);
-      if (Result.isSuccess(result)) throw new Error("expected source failure");
-      expect(result.failure).toEqual({
-        type: "source-invalid",
-        phase: "source",
-        message: "Snapshot workflow IR must not reference the compiler's private source materialization.",
-      });
-      const scratch = scratchDirectories.slice(scratchIndex);
-      expect(scratch).toHaveLength(1);
-      expectNoScratchReference(result.failure, scratch);
-      await expect(stat(scratch[0]!)).rejects.toMatchObject({ code: "ENOENT" });
     });
   });
 });

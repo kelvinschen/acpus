@@ -79,14 +79,14 @@ describe("Agent Preset catalog integration", () => {
     }));
     await writeFile(globalPath, JSON.stringify({ agents: { factorydroid: "global-alias --stdio", worker: "global-worker --stdio", reviewer: "global-reviewer --stdio" } }));
 
-    expect(Result.getOrThrow((await Effect.runPromise(Effect.result(resolveConfiguredAgentCommand({ workspaceDir: workspace, homeDir, names: ["worker"] })))))).toBe("project-worker --stdio");
-    expect(Result.getOrThrow((await Effect.runPromise(Effect.result(resolveConfiguredAgentCommand({ workspaceDir: workspace, homeDir, names: ["reviewer"] })))))).toBe("global-reviewer --stdio");
-    expect(Result.getOrThrow((await Effect.runPromise(Effect.result(resolveConfiguredAgentCommand({ workspaceDir: workspace, homeDir, names: ["factorydroid", "droid"] })))))).toBe("project-droid --stdio");
+    expect(Result.getOrThrow((await Effect.runPromise(Effect.result(resolveConfiguredAgentCommand({ workspaceDir: workspace, acpusHome: join(homeDir, ".acpus"), names: ["worker"] })))))).toBe("project-worker --stdio");
+    expect(Result.getOrThrow((await Effect.runPromise(Effect.result(resolveConfiguredAgentCommand({ workspaceDir: workspace, acpusHome: join(homeDir, ".acpus"), names: ["reviewer"] })))))).toBe("global-reviewer --stdio");
+    expect(Result.getOrThrow((await Effect.runPromise(Effect.result(resolveConfiguredAgentCommand({ workspaceDir: workspace, acpusHome: join(homeDir, ".acpus"), names: ["factorydroid", "droid"] })))))).toBe("project-droid --stdio");
     await writeFile(projectPath, JSON.stringify({
       agents: { droid: "project-droid --stdio", worker: "updated-project-worker --stdio" },
       hooks: { "run.completed": [{ command: "echo preserved" }] },
     }));
-    expect(Result.getOrThrow((await Effect.runPromise(Effect.result(resolveConfiguredAgentCommand({ workspaceDir: workspace, homeDir, names: ["worker"] })))))).toBe("updated-project-worker --stdio");
+    expect(Result.getOrThrow((await Effect.runPromise(Effect.result(resolveConfiguredAgentCommand({ workspaceDir: workspace, acpusHome: join(homeDir, ".acpus"), names: ["worker"] })))))).toBe("updated-project-worker --stdio");
     await Effect.runPromise(Effect.result(addAgentPreset({
       workspaceDir: workspace,
       scope: "project",
@@ -155,7 +155,7 @@ describe("Agent Preset catalog integration", () => {
 
     const catalog = await Effect.runPromise(Effect.result(loadAgentPresetCatalog({
       workspaceDir: workspace,
-      homeDir,
+      acpusHome: join(homeDir, ".acpus"),
       scopes: ["global", "project", "host"],
       hostProvider: () => Effect.succeed([
           { id: "reviewer", guidance: "host", agent: { use: "host-agent" } },
@@ -190,7 +190,7 @@ describe("Agent Preset catalog integration", () => {
 
     const loaded = await Effect.runPromise(Effect.result(loadAgentAuthoringContext({
       workspaceDir: workspace,
-      homeDir,
+      acpusHome: join(homeDir, ".acpus"),
       environment: {},
       hostProvider: () => Effect.succeed([
         { id: "reviewer", guidance: "host reviewer", agent: { use: "dsh" } },
@@ -220,7 +220,7 @@ describe("Agent Preset catalog integration", () => {
     const root = await temporaryRoot();
     const overridden = await Effect.runPromise(Effect.result(loadAgentAuthoringContext({
       workspaceDir: root,
-      homeDir: root,
+      acpusHome: join(root, ".acpus"),
       environment: { ACPUS_AUTHORING_AGENT_SCALE: "9" },
     })));
     expect(Result.getOrThrow(overridden).scale).toEqual({
@@ -230,7 +230,7 @@ describe("Agent Preset catalog integration", () => {
     });
     const invalid = await Effect.runPromise(Effect.result(loadAgentAuthoringContext({
       workspaceDir: root,
-      homeDir: root,
+      acpusHome: join(root, ".acpus"),
       environment: { ACPUS_AUTHORING_AGENT_SCALE: "09" },
     })));
     expect(Result.getOrThrow(Result.flip(invalid))).toMatchObject({
@@ -289,12 +289,12 @@ describe("Agent Preset catalog integration", () => {
   it("rejects unknown catalog and writable scopes", async () => {
     const root = await temporaryRoot();
     expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(loadAgentPresetCatalog({
-      homeDir: root,
+      acpusHome: join(root, ".acpus"),
       scopes: ["bogus" as any],
     }))))))).toMatchObject({ type: "agent-preset-catalog-scope-invalid" });
 
     expect(Result.getOrThrow(Result.flip((await Effect.runPromise(Effect.result(applyAgentPresetChanges({
-      homeDir: root,
+      acpusHome: join(root, ".acpus"),
       scope: "bogus" as any,
       changes: [{ type: "set", id: "reviewer", preset: { guidance: "Review", agent: { use: "codex" } } }],
     }))))))).toMatchObject({ type: "agent-preset-catalog-scope-invalid" });
@@ -399,7 +399,7 @@ describe("Agent Preset catalog integration", () => {
     await chmod(directory, 0o777);
 
     const added = await Effect.runPromise(Effect.result(addAgentPreset({
-      homeDir: root,
+      acpusHome: join(root, ".acpus"),
       scope: "global",
       id: "reviewer",
       preset: { guidance: "Review", agent: { use: "codex" } },
@@ -466,7 +466,7 @@ describe("Agent Preset catalog integration", () => {
     await symlink(outside, join(homeDir, ".acpus"), "dir");
 
     const added = await Effect.runPromise(Effect.result(addAgentPreset({
-      homeDir,
+      acpusHome: join(homeDir, ".acpus"),
       scope: "global",
       id: "reviewer",
       preset: { guidance: "Review", agent: { use: "codex" } },

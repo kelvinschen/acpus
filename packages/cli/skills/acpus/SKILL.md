@@ -20,7 +20,6 @@ For Agent-heavy authoring, select Presets by their guidance. The scale counts ex
 ### **READ first**
 
 - **Authoring** Read `references/authoring.md`;
-- **Bind an agent:** Read `references/acp-agents.md` before selecting Presets or concrete Agent backends.
 - **Run or observe:** Read `references/cli-operations.md` for admission, inspection, artifacts, ordinary interaction, and stop controls;
 - **Library/catalog reuse:** Enable only for user-written `/wf:<hint>` or `/workflow:<hint>`. Read the README first; read implementation only to modify or diagnose. Without a marker, read only user-named workflows.
 
@@ -32,6 +31,7 @@ For Agent-heavy authoring, select Presets by their guidance. The scale counts ex
 - **Advanced CLI operations:** Read `references/advanced-cli-operations.md` only for Forensics, detailed controls, catalogs/import, visualization, WebUI, deletion, or version lookup.
 - **Review Agent records:** Read `references/agent-records.md` only for settled turn artifacts or the run-local ACP session projection.
 - **Configure Acpus:** Read `references/configuration.md` for named Agents, Presets, and Hooks.
+- **Configure MCP:** Read `references/mcp.md` for client setup and connection verification.
 
 ### **Explain concepts:**
 Search all available documentation under `references/` to explain concepts. Choose the most relevant reference(s) for each topic.

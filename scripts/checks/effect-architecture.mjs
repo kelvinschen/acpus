@@ -9,6 +9,8 @@ const promiseAdapters = new Set([
   "packages/cli/src/cli.ts",
   "packages/cli/src/doctor/command.ts",
   "packages/cli/src/hooks/command.ts",
+  "packages/cli/src/mcp/command.ts",
+  "packages/cli/src/mcp/index.ts",
   "packages/cli/src/presentation/json-input.ts",
   "packages/cli/src/runs/artifacts.ts",
   "packages/cli/src/runs/controls.ts",

@@ -2,8 +2,6 @@
 
 ## Start
 
-**For workflow authoring, use HEREDOC for one-off workflows; use a file-backed workflow.ts only for workflows requiring imports, edits, or reuse.**
-
 Import only the symbols used:
 
 ```ts
@@ -49,6 +47,54 @@ When the effective scale provides a suggested maximum, keep the expected occurre
 Apply scale only when choosing topology. Do not use it to reconsider a Workflow, topology, or Agent count explicitly chosen by the user.
 
 Assign every occurrence a distinct item, lens, hypothesis, or verification duty.
+
+## Select And Bind Agents
+
+For workflows with Agent slots, resolve each unbound slot in this order:
+
+1. Honor an explicit user choice without discovery or reconfirmation. Strings select an exact Preset match first, otherwise a named Agent (including built-ins). Use `{ "use": "name" }` for explicit named selection or `{ "command": "..." }` for a raw command.
+2. Otherwise select the available Preset whose `guidance` best matches the slot's work.
+3. If discovery returns no Presets, stop before admission and tell the user automatic selection needs a configured Preset. Ask them for its purpose, Agent, optional model/options, and scope, then have them configure it using [Configuration](configuration.md). If scope is missing, ask.
+
+When no Preset exists, also offer direct built-in choices such as `codex` or `claude`. They need no `agents` configuration, but the user must choose one and confirm that the corresponding Agent is installed, authenticated, and usable. Do not choose one silently.
+
+Reusable workflows declare unbound Agent slots:
+
+```ts
+agents: {
+  worker: {},
+  reviewer: {},
+}
+```
+
+Inject chosen ids by slot name:
+
+```json
+{ "worker": "deep-coder", "reviewer": "critical-reviewer" }
+```
+
+Runtime expands and freezes ids. Direct fields bind one invocation:
+
+```json
+{ "worker": { "use": "codex", "config": { "reasoning_effort": "high" } } }
+```
+
+Every slot must bind before admission.
+
+### Concrete Agents
+
+A workflow may bind `use`, or `command` for a user-supplied raw ACP server:
+
+```ts
+agents: {
+  reviewer: { use: "codex" },
+  private: { command: "my-acp-server --stdio" },
+}
+```
+
+An explicit `command` launches as written and bypasses named Agent lookup.
+
+Built-ins are `pi`, `openclaw`, `codex`, `claude`, `gemini`, `cursor`, `copilot`, `droid`, `fast-agent`, `grok-build`, `iflow`, `kilocode`, `kimi`, `kiro`, `mux`, `opencode`, `pool`, `qoder`, `qwen`, `trae`, and `zeroclaw`.
 
 ## Expressions And Shapes
 
@@ -101,7 +147,7 @@ Leaf nodes use the enclosing `step` dispatcher:
 const review = step("review").agent({
   // `timeout`: leave unset unless the user or workflow explicitly requires a hard elapsed deadline
   // `sessionKey`: only set for when reusing context across occurrences, such as loop rounds or different steps; otherwise omit it
-  agent: agents.worker, // read `acp-agents.md` before choosing agent backends/models.
+  agent: agents.worker,
   prompt: template`Review ${input.topic}.`,
 });
 
@@ -197,13 +243,6 @@ Only after applying the rules above, choose the closest compact teaching example
 | [`issue-triage`](../workflows/examples/issue-triage/workflow.ts) | `agent`, `task`, `switch`, `parallel`, `fanout` | Triage items in parallel and route them by switch. |
 | [`scaled-exploration`](../workflows/examples/scaled-exploration/workflow.ts) | `agent`, `task`, `fanout` | Plan a bounded fanout and reduce results in batches. |
 | [`worktree-tournament`](../workflows/examples/worktree-tournament/workflow.ts) | `agent`, `task`, `fanout` | Fan out six worktree candidates and judge them. |
-
-## Declaration Lookup
-
-Only look up declaration when the above rules and examples don't already answer the exact usage, since lookups consume context.
-
-1. Run `acpus doctor` with the active CLI and find the package in its `Types:` block.
-2. Read only the relevant symbol and nearby signature from its reported `typesPath`.
 
 ## Advance
 - Read `advanced-authoring.md` ONLY for Agent session reuse, reusable/prebuilt Tasks, imports, artifacts, Task process controls, cancellation, or Agent tracing.

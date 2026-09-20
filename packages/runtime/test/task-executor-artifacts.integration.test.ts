@@ -87,7 +87,7 @@ describe.concurrent("task executor artifacts", () => {
         size: 9,
         path: inputPath,
       }, runDir);
-      const execution = executeTaskNode(
+      const failure = executeTaskNode(
         inlineTask("replaced_input_path", barrierTaskSource(
           ready,
           release,
@@ -108,14 +108,14 @@ describe.concurrent("task executor artifacts", () => {
         }),
         {},
         options,
-      );
+      ).then(() => undefined, error => error);
 
       await waitForPath(ready);
       await rename(inputPath, `${inputPath}.opened`);
       await writeFile(inputPath, "original\n");
       await writeFile(release, "continue\n");
 
-      await expect(execution).rejects.toMatchObject({
+      await expect(failure).resolves.toMatchObject({
         name: "TaskProcessSystemError",
       });
       await expect(readFile(inputPath, "utf8")).resolves.toBe("original\n");
@@ -205,7 +205,7 @@ describe.concurrent("task executor artifacts", () => {
       const ready = join(workspace, "write-ready");
       const release = join(workspace, "write-release");
       const options = taskOptions(runId);
-      const execution = executeTaskNode(
+      const failure = executeTaskNode(
         inlineTask("replaced_artifact_write", barrierTaskSource(
           ready,
           release,
@@ -213,14 +213,14 @@ describe.concurrent("task executor artifacts", () => {
         )),
         {},
         options,
-      );
+      ).then(() => undefined, error => error);
 
       await waitForPath(ready);
       await rename(runDir, `${runDir}.opened`);
       await mkdir(runDir);
       await writeFile(release, "continue\n");
 
-      await expect(execution).rejects.toMatchObject({
+      await expect(failure).resolves.toMatchObject({
         name: "TaskProcessSystemError",
       });
       await expect(readdir(runDir)).resolves.toEqual([]);

@@ -70,4 +70,8 @@ the same assertion at every layer.
   behavior unless explicitly requested.
 - After material test changes, benchmark `pnpm test` against the <10s baseline;
   investigate regressions over 500ms and report the conclusion.
+- Measure the complete command's wall time, including startup. Compare repeated
+  runs and distinguish cold from warm caches. The full runner isolates each
+  process's timing and filesystem transform caches;
+  source, configuration, and lockfile changes invalidate transformed modules.
 - Informative-asset-only changes run only relevant repository hygiene checks.

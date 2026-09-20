@@ -16,7 +16,7 @@ import * as Result from "effect/Result";
 import type { WorkflowCatalogScopeOptions } from "../workflow/catalog.js";
 import { controlError, usageError, validationError } from "../presentation/errors.js";
 import { parseAgents, parseInput, parseRequiredPayload } from "../presentation/json-input.js";
-import { writeResult, type CliAppliedControl, type CliResult } from "../presentation/output.js";
+import { writeResult, type CliResult } from "../presentation/output.js";
 import {
   daemonControlRequestId,
   sendDaemonControl,
@@ -25,7 +25,7 @@ import {
 import { prepareWorkflowForCli } from "../workflow/preparation.js";
 import type { RunsCommandContext } from "./context.js";
 import { formatInspectionCandidates } from "./inspection-surface.js";
-import { toRunRecord } from "./record.js";
+import { appliedControl, toRunRecord } from "./record.js";
 import { runtimeReadFailureCode, runtimeReadFailureMessage } from "./runtime-read.js";
 
 type Target = {
@@ -282,45 +282,6 @@ function controlSuccessMessage(type: Exclude<DaemonControlResult["type"], "signa
     case "retry": return "Retry applied.";
     case "fork": return "Fork run created.";
     case "cancel": return "Run canceled.";
-  }
-}
-
-function appliedControl(result: DaemonControlResult, requestedTarget?: string): CliAppliedControl {
-  switch (result.type) {
-    case "pause":
-    case "resume":
-      return { type: result.type, state: "applied", runId: result.run.id };
-    case "retry":
-      return { type: "retry", state: "applied", runId: result.run.id, target: requestedTarget ?? result.target };
-    case "cancel":
-      return {
-        type: result.type,
-        state: "applied",
-        runId: result.run.id,
-        ...((requestedTarget ?? result.target) === undefined
-          ? {}
-          : { target: requestedTarget ?? result.target! }),
-      };
-    case "fork":
-      return { type: "fork", state: "applied", sourceRunId: result.sourceRunId };
-    case "signal":
-      return {
-        type: "signal",
-        state: "consumed",
-        runId: result.run.id,
-        target: requestedTarget ?? result.requestedTarget,
-        validation: result.validation,
-      };
-    case "steer":
-      return {
-        type: "steer",
-        state: "applied",
-        runId: result.run.id,
-        steerId: result.steerId,
-        target: requestedTarget ?? result.requestedTarget,
-        delivery: result.delivery,
-        continuation: result.continuation,
-      };
   }
 }
 

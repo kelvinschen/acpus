@@ -256,14 +256,18 @@ describe("@acpus/acp session process integration", () => {
 
   it("quarantines updates received after the prompt response fence", async () => {
     const fixture = await createFixture();
+    const fencePath = join(fixture.root, "received-update-fence");
     const session = await openSession(fixture, {
       recordId: "late-update-fence",
       scenarios: ["post-response-update"],
+      env: { ACP_FIXTURE_FENCE_PATH: fencePath },
     });
     const firstEvents: AcpEvent[] = [];
     const secondEvents: AcpEvent[] = [];
     await runTurn(session, { prompt: "first", onEvent: event => firstEvents.push(event) });
+    await waitUntil(async () => await pathExists(fencePath) && (await readFile(fencePath, "utf8")) === "1\n");
     await runTurn(session, { prompt: "second", onEvent: event => secondEvents.push(event) });
+    await waitUntil(async () => (await readFile(fencePath, "utf8")) === "2\n");
 
     const projection = await readProjection(fixture, session);
     expect(firstEvents).not.toEqual(expect.arrayContaining([

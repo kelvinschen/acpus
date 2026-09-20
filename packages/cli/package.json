@@ -11,6 +11,11 @@
     "acpus": "./dist/cli.js"
   },
   "exports": {
+    "./mcp": {
+      "development": "./src/mcp/index.ts",
+      "types": "./dist/mcp/index.d.ts",
+      "default": "./dist/mcp/index.js"
+    },
     "./core": {
       "development": "./src/authoring/core.ts",
       "types": "./dist/authoring/core.d.ts",
@@ -30,6 +35,7 @@
   "files": [
     "dist",
     "skills",
+    "guides",
     "README.md"
   ],
   "publishConfig": {
@@ -50,13 +56,16 @@
     "@acpus/workflow-compiler": "workspace:*",
     "@clack/prompts": "^1.6.0",
     "@effect/platform-node-shared": "4.0.0-rc.111",
+    "@modelcontextprotocol/server": "2.0.0",
     "@zip.js/zip.js": "^2.8.26",
     "commander": "^15.0.0",
     "effect": "4.0.0-rc.111",
     "semver": "^7.8.4",
-    "tar": "^7.5.22"
+    "tar": "^7.5.22",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@modelcontextprotocol/client": "2.0.0",
     "@types/node": "^22.20.1",
     "@types/semver": "^7.7.1",
     "tsx": "^4.23.0"

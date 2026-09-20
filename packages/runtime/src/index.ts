@@ -1,3 +1,4 @@
+export { AcpusHomeError, resolveAcpusHome, withAcpusHome } from "./acpus-home.js";
 export {
   tryNormalizeWorkflowInput,
   type SchemaNormalizationFailure,

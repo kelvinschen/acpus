@@ -5,11 +5,11 @@ Acpus uses one closed JSON file per scope for named Agents, Agent Presets, Autho
 ## Files And Shape
 
 - Project: `<workspace>/.acpus/config.json`
-- Global: `$HOME/.acpus/config.json`
+- Global: `$ACPUS_HOME/config.json`; Home defaults to `~/.acpus`.
 
 The optional top-level fields are exactly `agents`, `presets`, `authoring`, and `hooks`; omission means empty. Invalid JSON, an unknown top-level field, or invalid content in any section invalidates the whole file for every consumer. Use [`config/example.json`](../config/example.json) as the complete example.
 
-Project configuration follows the Runtime workspace, never an Agent `cwd`. Global configuration follows the Runtime/Host home, never workflow `env.HOME`.
+Project configuration follows the Runtime workspace, never an Agent `cwd`. Global configuration follows the entry’s fixed ACPUS Home, never Workflow environment overrides.
 
 ## Named Agents
 
@@ -134,4 +134,4 @@ acpus hooks validate [--project | --global]
 acpus hooks list [--project | --global]
 ```
 
-The scope flags are mutually exclusive and the commands do not accept `--path`. For scratch global validation, point `HOME` at a directory containing `.acpus/config.json`, then run `acpus hooks validate --global`.
+The scope flags are mutually exclusive and the commands do not accept `--path`. For scratch global validation, set `ACPUS_HOME` to an absolute directory containing `config.json`, then run `acpus hooks validate --global`.

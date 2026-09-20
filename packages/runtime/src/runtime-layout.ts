@@ -1,3 +1,4 @@
+import { resolveAcpusHome } from "./acpus-home.js";
 import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { chmod, lstat, mkdir, readFile } from "node:fs/promises";
@@ -140,7 +141,7 @@ export function resolveRuntimeWorkspaceLayout(
   if (!stats.isDirectory()) throw new Error(`Runtime workspace '${canonicalPath}' is not a directory.`);
   const key = workspaceKey(canonicalPath, dependencies.platform);
   const home = runtimeHome === undefined
-    ? runtimeHomeOverrides.get(canonicalPath)?.at(-1)?.home ?? join(dependencies.homedir(), ".acpus")
+    ? runtimeHomeOverrides.get(canonicalPath)?.at(-1)?.home ?? resolveAcpusHome(undefined, dependencies.homedir())
     : resolve(runtimeHome);
   return workspaceLayout({
     canonicalPath,

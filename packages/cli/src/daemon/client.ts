@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
+  resolveAcpusHome,
   awaitRuntimeStoreOffline,
   getRun,
   inspectRuntimeStore,
@@ -201,7 +202,10 @@ function ensureRuntimeAuthorityEffect(
         }
         childState = {};
         child = yield* Effect.try({
-          try: () => spawn(process.execPath, daemonEntryArgs(cwd), { cwd, detached: true, stdio: "ignore" }),
+          try: () => spawn(process.execPath, daemonEntryArgs(cwd), {
+            cwd, detached: true, stdio: "ignore",
+            env: { ...process.env, ACPUS_HOME: resolveAcpusHome() },
+          }),
           catch: cause => ({
             type: "daemon-spawn-failed" as const,
             ...errnoField(cause),
@@ -260,7 +264,7 @@ export function sendDaemonSubmitAndObserve(
   return Stream.toAsyncIterable(Stream.result(stream));
 }
 
-function submitAndObserveStream(
+export function submitAndObserveStream(
   cwd: string,
   input: DaemonSubmitInput,
 ): Stream.Stream<DaemonRunStreamFrame, CliDaemonFailure> {

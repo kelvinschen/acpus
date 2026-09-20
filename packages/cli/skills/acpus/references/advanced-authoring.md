@@ -13,7 +13,7 @@ Contents:
 
 ## Choose Task Form
 
-- **Default:** Use an inline Task; it remains compatible with a self-contained heredoc.
+- **Default:** Use an inline Task; keep it self-contained.
 - **Reusable Task:** Use at the second authored call site or when module/third-party imports are required.
 - **Not reuse:** Fanout and loop runtime instances do not count as a second authored call site.
 
@@ -146,7 +146,7 @@ const inspect = step("inspect").task({
 
 - Keep the resolved Agent launch, effective cwd, model, and `config` identical across occurrences sharing a key.
 - Acpus validates the binding before Provider startup and reports only `launch | cwd | model | options` mismatch categories, never raw values.
-- See [ACP Agents](acp-agents.md#acp-agent-config) for configuration.
+- See [Agent bindings](authoring.md#select-and-bind-agents) for Preset and direct binding forms.
 
 In a fix/review loop, give only the fixer a key so each review starts fresh:
 

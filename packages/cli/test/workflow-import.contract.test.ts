@@ -1,3 +1,5 @@
+import { withAcpusHome } from "@acpus/runtime";
+import { discoverWorkflowCatalog } from "../src/workflow/catalog.js";
 import { createServer, type RequestListener, type Server } from "node:http";
 import { access, chmod, link, mkdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -65,6 +67,29 @@ describe("workflow import contracts", () => {
           stderr: expect.stringContaining("--project and --global are mutually exclusive."),
         });
       });
+    });
+  });
+
+  it("imports global packages and temporary files into the selected ACPUS Home only", async () => {
+    await withPlainTestWorkspace("workflow-import-home", async (workspace, userHome) => {
+      const firstHome = join(userHome, "first/data");
+      const secondHome = join(userHome, "second/data");
+      const source = join(workspace, "source.ts");
+      await writeFile(source, workflowSource("isolated-import"));
+      await withAcpusHome(firstHome, async () => {
+        expectOk(await importDirect(workspace, source, { scope: "global" }), "isolated-import", "global");
+        expect(await readNames(join(firstHome, "tmp/workflow-imports"))).toEqual([]);
+        expect(await discoverWorkflowCatalog(workspace, { global: true })).toMatchObject([
+          { name: "isolated-import", packagePath: join(firstHome, "workflows/isolated-import") },
+        ]);
+      });
+      await withAcpusHome(secondHome, async () => {
+        expect(await discoverWorkflowCatalog(workspace, { global: true })).toEqual([]);
+        expectOk(await importDirect(workspace, source, { scope: "global" }), "isolated-import", "global");
+        expect(await readNames(join(secondHome, "workflows"))).toEqual(["isolated-import"]);
+      });
+      expect(await readNames(userHome)).toEqual(["first", "second"]);
+      expect(await readNames(workspace)).toEqual(["source.ts"]);
     });
   });
 

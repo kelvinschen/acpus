@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { open, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { resolveAcpusHome } from "@acpus/runtime";
 import { dirname, extname, join } from "node:path";
 import type { Writable } from "node:stream";
 import type { Command } from "commander";
@@ -12,7 +12,7 @@ import { ansi, supportsColor } from "../presentation/terminal-style.js";
 
 const HOUR_MS = 60 * 60 * 1_000;
 const REGISTRY_URL = "https://registry.npmjs.org";
-const UPDATE_CACHE_DIRECTORY = [".acpus", "cache", "update-awareness"];
+const UPDATE_CACHE_DIRECTORY = ["cache", "update-awareness"];
 
 // Adjust this single policy when Acpus release cadence changes.
 const UPDATE_AWARENESS_POLICY = {
@@ -71,8 +71,7 @@ export function createUpdateAwareness(input: UpdateAwarenessInput): UpdateAwaren
         ...input,
         ...(topLevelCommand === undefined ? {} : { topLevelCommand }),
       })) return;
-      const home = homedir();
-      if (!home) return;
+      const home = resolveAcpusHome();
       const packageInfo = getCliPackageInfo();
       const paths = updateAwarenessCachePaths(home);
       startUpdateWorker(packageInfo.packageName, packageInfo.version, packageInfo.entry, paths);
@@ -93,6 +92,7 @@ export function isUpdateAwarenessEligible({
   env = process.env,
 }: UpdateAwarenessEligibility): boolean {
   return topLevelCommand !== undefined
+    && topLevelCommand !== "mcp"
     && (stdout as Writable & { isTTY?: boolean }).isTTY === true
     && (stderr as Writable & { isTTY?: boolean }).isTTY === true
     && !argv.some(argument => argument === "--help" || argument === "-h")
@@ -201,7 +201,7 @@ function startUpdateWorker(packageName: string, version: string, cliEntry: strin
       packageName,
       version,
       paths.directory,
-    ], { detached: true, stdio: "ignore", windowsHide: true });
+    ], { detached: true, stdio: "ignore", windowsHide: true, env: { ...process.env, ACPUS_HOME: resolveAcpusHome() } });
     child.on("error", () => {});
     child.unref();
   } catch {
@@ -359,7 +359,7 @@ async function writeJson(path: string, value: unknown): Promise<void> {
 }
 
 async function ensurePrivateUpdateCacheDirectory(directory: string): Promise<void> {
-  const expected = join(homedir(), ...UPDATE_CACHE_DIRECTORY);
+  const expected = join(resolveAcpusHome(), ...UPDATE_CACHE_DIRECTORY);
   if (directory === expected) await ensurePrivateAcpusDirectory(directory);
   else await ensurePrivateDirectory(directory);
 }

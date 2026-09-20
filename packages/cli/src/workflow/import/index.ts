@@ -1,5 +1,5 @@
 import { mkdir, mkdtemp } from "node:fs/promises";
-import { homedir } from "node:os";
+import { resolveAcpusHome } from "@acpus/runtime";
 import { join, resolve } from "node:path";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
@@ -133,7 +133,7 @@ function importCleanupFailure(
 function workflowImportRoot(cwd: string, scope: WorkflowCatalogScope): string {
   return scope === "project"
     ? resolve(cwd, ".acpus", "tmp")
-    : resolve(homedir(), ".acpus", "tmp", "workflow-imports");
+    : resolve(resolveAcpusHome(), "tmp", "workflow-imports");
 }
 
 function catalogImportErrorCode(type: "invalid-name" | "collision" | "commit-failed"): string {

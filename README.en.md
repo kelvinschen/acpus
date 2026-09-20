@@ -62,6 +62,10 @@ When a decision needs human input, it can pause the Run, retry a node, create a 
 
 ## Quick Start
 
+Configure [MCP](packages/cli/skills/acpus/references/mcp.md) once globally; select the project per call, with no Skill installation.
+
+CLI and MCP share `~/.acpus` by default. Set `ACPUS_HOME=/absolute/path` to isolate global configuration, Run state, and the global Workflow library. This path is the data root itself; `.acpus` is not appended.
+
 ### 1. Install the CLI and Skill
 
 > [!TIP]

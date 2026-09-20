@@ -24,31 +24,31 @@ export function formatHookLoadError(error: HookLoadError): string {
   return `Invalid Acpus config at ${error.path}: ${error.message}`;
 }
 
-export function loadHooksConfig(workspaceDir: string, options: { homeDir?: string } = {}): Effect.Effect<LoadedHookConfig[], HookLoadError> {
+export function loadHooksConfig(workspaceDir: string, options: { acpusHome?: string } = {}): Effect.Effect<LoadedHookConfig[], HookLoadError> {
   return Effect.promise(() => loadHooksConfigResult(workspaceDir, options)).pipe(Effect.flatMap(Effect.fromResult));
 }
 
-export function loadHooksConfigScopes(workspaceDir: string, options: { homeDir?: string } = {}): Effect.Effect<HookConfigScope[], HookLoadError> {
+export function loadHooksConfigScopes(workspaceDir: string, options: { acpusHome?: string } = {}): Effect.Effect<HookConfigScope[], HookLoadError> {
   return Effect.promise(() => loadHooksConfigScopesResult(workspaceDir, options)).pipe(Effect.flatMap(Effect.fromResult));
 }
 
 export function loadHooksConfigScope(
   source: HookSource,
-  options: { workspaceDir?: string; homeDir?: string },
+  options: { workspaceDir?: string; acpusHome?: string },
 ): Effect.Effect<HookConfigScope, HookLoadError> {
   return Effect.promise(() => loadHooksConfigScopeResult(source, options)).pipe(Effect.flatMap(Effect.fromResult));
 }
 
 export async function loadHooksConfigResult(
   workspaceDir: string,
-  options: { homeDir?: string } = {},
+  options: { acpusHome?: string } = {},
 ): Promise<Result.Result<LoadedHookConfig[], HookLoadError>> {
   return Result.map(await loadHooksConfigScopesResult(workspaceDir, options), scopes => scopes.flatMap(scope => scope.hooks));
 }
 
 async function loadHooksConfigScopesResult(
   workspaceDir: string,
-  options: { homeDir?: string } = {},
+  options: { acpusHome?: string } = {},
 ): Promise<Result.Result<HookConfigScope[], HookLoadError>> {
   const project = await loadHooksConfigScopeResult("project", { workspaceDir });
   if (Result.isFailure(project)) return Result.fail(project.failure);
@@ -59,15 +59,12 @@ async function loadHooksConfigScopesResult(
 
 async function loadHooksConfigScopeResult(
   source: HookSource,
-  options: { workspaceDir?: string; homeDir?: string },
+  options: { workspaceDir?: string; acpusHome?: string },
 ): Promise<Result.Result<HookConfigScope, HookLoadError>> {
-  const path = source === "project"
-    ? projectAcpusConfigPath(options.workspaceDir ?? "")
-    : globalAcpusConfigPath(options.homeDir);
   const loaded = await loadAcpusConfigScopeResult({
     scope: source,
     ...(options.workspaceDir === undefined ? {} : { workspaceDir: options.workspaceDir }),
-    ...(options.homeDir === undefined ? {} : { homeDir: options.homeDir }),
+    ...(options.acpusHome === undefined ? {} : { acpusHome: options.acpusHome }),
   });
   if (Result.isFailure(loaded)) {
     const error = loaded.failure;
@@ -80,6 +77,9 @@ async function loadHooksConfigScopeResult(
           errors: [{ path: "$", message: error.message }],
         });
   }
+  const path = source === "project"
+    ? projectAcpusConfigPath(options.workspaceDir ?? "")
+    : globalAcpusConfigPath(options.acpusHome);
   return Result.succeed({ source, path, hooks: flattenHooksFile(loaded.success.hooks, source, path) });
 }
 

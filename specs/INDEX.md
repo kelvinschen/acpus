@@ -53,4 +53,5 @@ SPEC 定义了 Acpus 当前稳定的产品契约：即在底层实现变更后�
 | --- | --- | --- |
 | [DeepSeek Harness 集成](dsh-spec.md) | `@acpus/dsh` | 隔离的嵌入式准入、持久化监管与控制，以及分别向人和模型提供经过信息裁剪的视图 |
 | [CLI](cli-spec.md) | `acpus` | Workflow 准备、持久 Run、控制、恢复与内置 Skill 的安全管理 |
+| [MCP](mcp-spec.md) | `acpus` | 本地 MCP 工作流工具、限时观察与连接生命周期 |
 | [WebUI](webui-spec.md) | `@acpus/web` | 工作区安全的浏览器检查、图语义、控制、Artifact 安全与交互语言 |

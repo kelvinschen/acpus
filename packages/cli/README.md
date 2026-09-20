@@ -38,3 +38,30 @@ complete Skill bundled with the current CLI version together with the current
 workspace's Agent authoring context. Updating the CLI updates that complete
 guide without reinstalling the router. `acpus skill read` can also be used
 directly without installing the router Skill.
+
+## Compose an MCP server
+
+Install `acpus` and `@modelcontextprotocol/server`, then compose:
+
+```ts
+import { McpServer } from "@modelcontextprotocol/server";
+import { acpusInstructions, registerAcpusTools } from "acpus/mcp";
+
+const server = new McpServer({ name: "my-agent", version: "1.0.0" }, {
+  instructions: `${acpusInstructions}\nUse our project conventions.`,
+});
+const tools = registerAcpusTools(server, {
+  wrapTool: (name, call) => async (args, context) => {
+    const result = await call(args, context);
+    console.error(name, result.structuredContent);
+    return result;
+  },
+});
+tools.acpus_run.update({ title: "Run workflow" });
+```
+
+Choose your transport. Wrappers receive validated arguments and SDK context;
+cancellation preserves admitted Runs. Registration captures `ACPUS_HOME`.
+Instructions are replaceable. For UI, associate successful `workspace` / `runId`
+results with trusted host sessions, then observe separately. The host owns
+observers and shutdown; await pending calls after closing.

@@ -5,9 +5,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const projects = [
-  { name: "integration", args: ["--project", "integration", "--maxConcurrency=2"], maxWorkers: "40%" },
-  { name: "unit", args: ["--project", "unit"], maxWorkers: "22%" },
-  { name: "contract", args: ["--project", "contract"], maxWorkers: "11%" },
+  { name: "integration", args: ["--project", "integration", "--maxConcurrency=2"], maxWorkers: "35%" },
+  { name: "unit", args: ["--project", "unit"], maxWorkers: "31%" },
+  { name: "contract", args: ["--project", "contract"], maxWorkers: "12%" },
   { name: "type-contract", args: ["--typecheck.only", "--project", "type-contract"], maxWorkers: "2%" },
   { name: "e2e+regression", args: ["--project", "e2e", "--project", "regression"], maxWorkers: "5%" },
 ];
@@ -48,8 +48,10 @@ async function main() {
 function runProject(vitestCli, project) {
   return new Promise(resolve => {
     const output = [];
-    const child = spawn(process.execPath, [vitestCli, "run", ...project.args, `--maxWorkers=${project.maxWorkers ?? "19%"}`], {
+    const child = spawn(process.execPath, [vitestCli, "run", "--experimental.fsModuleCache", ...project.args, `--maxWorkers=${project.maxWorkers}`], {
       cwd: root,
+      // Each process owns its caches, including invalidation after lockfile changes.
+      env: { ...process.env, ACPUS_TEST_GROUP: project.name },
       detached: process.platform !== "win32",
       stdio: ["ignore", "pipe", "pipe"],
     });

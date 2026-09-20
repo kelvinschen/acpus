@@ -3,14 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { Command } from "commander";
 import {
-  finalizeAgentBindings,
-  hasPresetInjections,
-  loadAgentPresetCatalog,
-  tryNormalizeWorkflowInput,
-  tryParseAgentInjectionMap,
-  unboundAgentNames,
   type AgentInjectionMap,
-  type AgentPresetCatalog,
   type InspectionObservation,
   type PreparedRunWorkflow,
   type RunDetails,
@@ -30,6 +23,7 @@ import {
   type CliDaemonFailure,
 } from "../daemon/client.js";
 import { toRunRecord } from "../runs/record.js";
+import { checkWorkflowInvocation } from "./validation.js";
 import { importWorkflowPackage } from "./import/index.js";
 import { renderWorkflowTerminalViz } from "./terminal-viz.js";
 import { supportsColor } from "../presentation/terminal-style.js";
@@ -218,35 +212,16 @@ async function checkWorkflow(ctx: WorkflowCommandContext, workflow: string, opti
     ...(options.project ? { project: true } : {}),
     ...(options.global ? { global: true } : {}),
   });
-  if (input !== undefined) {
-    const normalized = tryNormalizeWorkflowInput(prepared.ir, input);
-    if (Result.isFailure(normalized)) throw validationError(normalized.failure.message);
-  }
-  const unresolved = agentInjections === undefined ? unboundAgentNames(prepared.ir.agents) : [];
-  if (agentInjections !== undefined) {
-    const parsed = tryParseAgentInjectionMap(agentInjections, prepared.ir.agents);
-    if (Result.isFailure(parsed)) throw validationError(parsed.failure.message);
-    let presetCatalog: AgentPresetCatalog | undefined;
-    if (hasPresetInjections(parsed.success)) {
-      const loaded = await Effect.runPromise(Effect.result(
-        loadAgentPresetCatalog({ workspaceDir: ctx.cwd }),
-      ));
-      if (Result.isFailure(loaded)) throw validationError(loaded.failure.message);
-      presetCatalog = loaded.success;
-    }
-    const finalized = finalizeAgentBindings({
-      declarations: prepared.ir.agents,
-      injections: parsed.success,
-      ...(presetCatalog === undefined ? {} : { presetCatalog }),
-    });
-    if (Result.isFailure(finalized)) throw validationError(finalized.failure.message);
-  }
+  const checked = await Effect.runPromise(Effect.result(
+    checkWorkflowInvocation(ctx.cwd, prepared, input, agentInjections),
+  ));
+  if (Result.isFailure(checked)) throw validationError(checked.failure.message);
   ctx.setExitCode(writeResult({
     ok: true,
     phase: "check",
     message: "Workflow check passed.",
     workflow: summarizeWorkflow(prepared.ir),
-    unboundAgents: unresolved,
+    unboundAgents: checked.success.unboundAgents,
     diagnostics: prepared.ir.diagnostics,
     ...(catalog ? { catalog } : {}),
   }, ctx, 0));
@@ -263,14 +238,10 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
     ...(options.project ? { project: true } : {}),
     ...(options.global ? { global: true } : {}),
   });
-  const normalizedInput = tryNormalizeWorkflowInput(prepared.ir, input);
-  if (Result.isFailure(normalizedInput)) throw validationError(normalizedInput.failure.message);
-  let admittedInjections: AgentInjectionMap | undefined;
-  if (agentInjections !== undefined) {
-    const parsed = tryParseAgentInjectionMap(agentInjections, prepared.ir.agents);
-    if (Result.isFailure(parsed)) throw validationError(parsed.failure.message);
-    admittedInjections = parsed.success;
-  }
+  const checked = await Effect.runPromise(Effect.result(
+    checkWorkflowInvocation(ctx.cwd, prepared, input, agentInjections),
+  ));
+  if (Result.isFailure(checked)) throw validationError(checked.failure.message);
   const until = options.follow
     ? "subject-terminal" as const
     : options.awaitDecision
@@ -279,8 +250,8 @@ async function runWorkflow(ctx: WorkflowCommandContext, workflow: string, option
   const submitted = await submitWorkflowThroughDaemon(
     ctx,
     prepared,
-    normalizedInput.success,
-    admittedInjections,
+    checked.success.input!,
+    checked.success.agentInjections,
     until,
   );
 

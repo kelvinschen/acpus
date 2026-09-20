@@ -1,3 +1,4 @@
+import { resolveAcpusHome } from "../acpus-home.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { chmod, lstat, mkdir, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
@@ -991,6 +992,7 @@ class SqliteRuntimeStore implements RuntimeStoreAdapter {
   private observationLogInstance?: AgentObservationLog;
   private readonly inspectionReadModel: SqliteRuntimeInspectionReadModel;
   private readonly cwd: string;
+  private readonly acpusHome = resolveAcpusHome();
   private readonly generation: OpenedRuntimeGeneration;
 
   constructor(
@@ -1208,6 +1210,7 @@ class SqliteRuntimeStore implements RuntimeStoreAdapter {
       const presetCatalog = hasPresetInjections(agentInjections)
         ? yield* loadAgentPresetCatalog({
           workspaceDir: store.cwd,
+          acpusHome: store.acpusHome,
           ...(store.agentPresetProvider === undefined ? {} : { hostProvider: store.agentPresetProvider }),
         })
         : undefined;
@@ -1519,6 +1522,7 @@ class SqliteRuntimeStore implements RuntimeStoreAdapter {
       const presetCatalog = parsedInjections !== undefined && hasPresetInjections(parsedInjections)
         ? yield* loadAgentPresetCatalog({
           workspaceDir: store.cwd,
+          acpusHome: store.acpusHome,
           ...(store.agentPresetProvider === undefined ? {} : { hostProvider: store.agentPresetProvider }),
         })
         : undefined;
