@@ -1,5 +1,12 @@
 # @acpus/dsh
 
+## 0.3.4
+
+### Patch Changes
+
+- Updated dependencies [c307a9a]
+  - @acpus/runtime@0.21.0
+
 ## 0.3.3
 
 ### Patch Changes

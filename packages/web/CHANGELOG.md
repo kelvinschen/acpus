@@ -1,5 +1,12 @@
 # @acpus/web
 
+## 0.4.5
+
+### Patch Changes
+
+- Updated dependencies [c307a9a]
+  - @acpus/runtime@0.21.0
+
 ## 0.4.4
 
 ### Patch Changes
