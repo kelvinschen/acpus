@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Context } from "@deepseek-ai/cordis";
-import { CallId } from "@deepseek-ai/dsh-llm";
+import { ToolCallId } from "@deepseek-ai/dsh-llm";
 import { describe, expect, it } from "vitest";
 import { loadDshComposition, supervisingAgent } from "./support/dsh-composition.js";
 
@@ -71,7 +71,7 @@ describe("Acpus run through a real DSH Loader composition", () => {
       expect(context.tools.schemas().map(schema => schema.name)).toEqual(toolNames);
       const run = await context.tools.execute({
         signal: new AbortController().signal,
-        callId: CallId("run-call"),
+        callId: ToolCallId("run-call"),
         name: "acpus_run",
         arguments: {
           workflow: agentWorkflow,

@@ -15,7 +15,6 @@ import type { Context } from "@deepseek-ai/cordis";
 import { HarnessError } from "@deepseek-ai/dsh-llm";
 import {
   defineTool,
-  type JsonValue as DshJsonValue,
   type ParameterPropertySpec,
   type ToolRunContext,
   type ValueSchemaSpec,
@@ -60,7 +59,7 @@ type ControlAction =
   | { type: "cancel"; scope: "target"; target: string }
   | { type: "retry"; scope: "target"; target: string }
   | { type: "steer"; target: string; instruction: string }
-  | { type: "signal"; target: string; payload: DshJsonValue }
+  | { type: "signal"; target: string; payload: AcpusJsonValue }
   | {
       type: "fork";
       workflow:
@@ -68,10 +67,10 @@ type ControlAction =
         | { type: "replace"; source: string };
       input:
         | { type: "inherit" }
-        | { type: "replace"; value: DshJsonValue };
+        | { type: "replace"; value: AcpusJsonValue };
       agents:
         | { type: "inherit" }
-        | { type: "replace"; value: DshJsonValue };
+        | { type: "replace"; value: AcpusJsonValue };
       restart:
         | { type: "compatible" }
         | { type: "target"; target: string };
@@ -829,7 +828,7 @@ function taskParameter(required: boolean): ParameterPropertySpec {
 }
 
 function output() {
-  return { schema: JSON_OUTPUT, render: (_args: unknown, value: DshJsonValue) => text(value) };
+  return { schema: JSON_OUTPUT, render: (_args: unknown, value: AcpusJsonValue) => text(value) };
 }
 
 function safeArtifact(artifact: { id: string; size: number; mediaType?: string }) {
@@ -872,7 +871,7 @@ function workspace(exec: ToolRunContext): string {
   return cwd;
 }
 
-function text(value: DshJsonValue) {
+function text(value: AcpusJsonValue) {
   return [{ type: "text" as const, text: JSON.stringify(value) }];
 }
 
@@ -893,8 +892,8 @@ function truncateUtf8(value: string, limit: number): string {
   return Buffer.from(value).subarray(0, limit).toString("utf8").replace(/\uFFFD$/u, "");
 }
 
-function json(value: unknown): DshJsonValue {
-  return JSON.parse(JSON.stringify(value)) as DshJsonValue;
+function json(value: unknown): AcpusJsonValue {
+  return JSON.parse(JSON.stringify(value)) as AcpusJsonValue;
 }
 
 function failure(message: string, code: string): HarnessError {

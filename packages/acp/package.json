@@ -39,7 +39,7 @@
   },
   "dependencies": {
     "@acpus/owned-process": "workspace:*",
-    "@agentclientprotocol/sdk": "1.3.0",
+    "@agentclientprotocol/sdk": "1.5.1",
     "effect": "4.0.0-rc.111"
   },
   "devDependencies": {

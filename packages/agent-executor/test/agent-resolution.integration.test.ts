@@ -9,10 +9,10 @@ import {
 import { settle } from "./effect.js";
 
 const builtInAgents = {
-  pi: ["npx", "pi-acp@^0.0.31"],
+  pi: ["npx", "-y", "pi-acp@^0.0.34"],
   openclaw: ["openclaw", "acp"],
-  codex: ["npx", "-y", "@agentclientprotocol/codex-acp@^1.1.5"],
-  claude: ["npx", "-y", "@agentclientprotocol/claude-agent-acp@^0.60.0"],
+  codex: ["npx", "-y", "@agentclientprotocol/codex-acp@^2.0.1"],
+  claude: ["npx", "-y", "@agentclientprotocol/claude-agent-acp@^0.84.0"],
   gemini: ["gemini", "--acp"],
   cursor: ["cursor-agent", "acp"],
   copilot: ["copilot", "--acp", "--stdio"],
@@ -23,7 +23,7 @@ const builtInAgents = {
   kilocode: ["npx", "-y", "@kilocode/cli", "acp"],
   kimi: ["kimi", "acp"],
   kiro: ["kiro-cli-chat", "acp"],
-  mux: ["npx", "-y", "mux@^0.28.0", "acp"],
+  mux: ["npx", "-y", "@coder/xum@^0.30.0", "acp"],
   opencode: ["npx", "-y", "opencode-ai", "acp"],
   pool: ["pool", "acp"],
   qoder: ["qodercli", "--acp"],

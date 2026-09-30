@@ -1,5 +1,7 @@
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 import Loader from "@deepseek-ai/cordis-plugin-loader";
@@ -94,7 +96,14 @@ describe("@acpus/dsh public contract", () => {
     })).toEqual({ revision: 5 });
   });
 
-  it("ships the fifth complete Supervisor preset with only the Acpus plugin row", async () => {
+  it("ships the fifth complete Supervisor preset with only the Acpus plugin row", async ({ onTestFinished }) => {
+    const harness = await mkdtemp(join(tmpdir(), "acpus-dsh-preset-discovery-"));
+    onTestFinished(() => rm(harness, { recursive: true, force: true }));
+    for (const name of ["@deepseek-ai/dsh-persona", "@acpus/dsh"]) {
+      const directory = join(harness, "node_modules", name);
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, "package.json"), JSON.stringify({ name }));
+    }
     const [manifestSource, metadata, composition, bundle, discovered] = await Promise.all([
       readFile(new URL("package.json", packageRoot), "utf8"),
       readFile(new URL("preset/acpus/preset.yml", packageRoot), "utf8"),
@@ -103,7 +112,7 @@ describe("@acpus/dsh public contract", () => {
       scanRoot({
         path: fileURLToPath(new URL("preset/", packageRoot)),
         trust: "system",
-      }),
+      }, pathToFileURL(harness).href),
     ]);
     const manifest = JSON.parse(manifestSource);
 
@@ -122,7 +131,7 @@ describe("@acpus/dsh public contract", () => {
       bundle: { patch: "./cordis.patch.yml" },
       client: {
         inject: [
-          "@deepseek-ai/dsh-client-runtime",
+          "@deepseek-ai/dsh-client-ui-renderer",
           "@deepseek-ai/dsh-client-ui-conversation",
           "@deepseek-ai/dsh-client-ui-tool",
           "@deepseek-ai/dsh-api-remotes",
@@ -141,24 +150,24 @@ describe("@acpus/dsh public contract", () => {
       "@acpus/expression": "workspace:*",
       "@acpus/runtime": "workspace:*",
       "@acpus/workflow-compiler": "workspace:*",
-      "@deepseek-ai/dsh-acp": "0.1.1-rc.2",
+      "@deepseek-ai/dsh-acp": "0.1.5-rc.2",
       effect: "4.0.0-rc.111",
       zod: "^4.4.3",
     });
     expect(manifest.peerDependencies).toMatchObject({
-      "@deepseek-ai/dsh-agent-presets": "0.1.1-rc.2",
-      "@deepseek-ai/dsh-app-boot": "0.1.1-rc.2",
-      "@deepseek-ai/dsh-base": "0.1.1-rc.2",
-      "@deepseek-ai/dsh-session": "0.1.1-rc.2",
-      "@deepseek-ai/dsh-typert-protocol": "0.1.1-rc.2",
+      "@deepseek-ai/dsh-agent-presets": "0.1.5-rc.2",
+      "@deepseek-ai/dsh-app-boot": "0.1.5-rc.2",
+      "@deepseek-ai/dsh-base": "0.1.5-rc.2",
+      "@deepseek-ai/dsh-session": "0.1.5-rc.2",
+      "@deepseek-ai/dsh-typert-protocol": "0.1.5-rc.2",
       react: "^18.2.0",
       "react-dom": "^18.2.0",
     });
     expect(manifest.devDependencies).toMatchObject({
-      "@deepseek-ai/dsh-agent-presets": "0.1.1-rc.2",
-      "@deepseek-ai/dsh-app-boot": "0.1.1-rc.2",
-      "@deepseek-ai/dsh-base": "0.1.1-rc.2",
-      "@deepseek-ai/dsh-typert-protocol": "0.1.1-rc.2",
+      "@deepseek-ai/dsh-agent-presets": "0.1.5-rc.2",
+      "@deepseek-ai/dsh-app-boot": "0.1.5-rc.2",
+      "@deepseek-ai/dsh-base": "0.1.5-rc.2",
+      "@deepseek-ai/dsh-typert-protocol": "0.1.5-rc.2",
       react: "18.3.1",
       "react-dom": "18.3.1",
     });

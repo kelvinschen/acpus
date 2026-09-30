@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Context } from "@deepseek-ai/cordis";
-import { CallId } from "@deepseek-ai/dsh-llm";
+import { ToolCallId } from "@deepseek-ai/dsh-llm";
 import { describe, expect, it, vi } from "vitest";
 import { createDshAgentLaunches } from "../src/host/dsh-agent.js";
 import { loadDshComposition, supervisingAgent, terminalRun } from "./support/dsh-composition.js";
@@ -91,7 +91,7 @@ describe.concurrent("DSH ACP Agent", () => {
       context = await loadDshComposition({ dshHome, stateDir });
       const run = await context.tools.execute({
         signal: new AbortController().signal,
-        callId: CallId("dsh-agent-run-call"),
+        callId: ToolCallId("dsh-agent-run-call"),
         name: "acpus_run",
         arguments: { workflow: dshAgentWorkflow },
         agent: supervisingAgent(context, workspace),

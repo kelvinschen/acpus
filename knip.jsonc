@@ -84,7 +84,8 @@
       "ignoreDependencies": [
         // Public declaration dependency erased from runtime output.
         "@acpus/expression!",
-        // Slot prop types remain in public declarations but are erased from the Client bundle.
+        // Client hook types and slot augmentation are erased from the Client bundle.
+        "@deepseek-ai/dsh-api-session-controller!",
         "@deepseek-ai/dsh-client-ui-slots!",
         // Type augmentation needed only while compiling the Agent executable.
         "@deepseek-ai/dsh-agent!",

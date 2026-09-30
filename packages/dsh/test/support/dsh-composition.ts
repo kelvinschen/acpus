@@ -1,8 +1,7 @@
 import { Context } from "@deepseek-ai/cordis";
 import Loader from "@deepseek-ai/cordis-plugin-loader";
 import type { Agent } from "@deepseek-ai/dsh-agent";
-import { Inbox } from "@deepseek-ai/dsh-agent";
-import { Session, SessionId } from "@deepseek-ai/dsh-session";
+import { SESSION_FORMAT_VERSION, Session, SessionId } from "@deepseek-ai/dsh-session";
 import SystemPrompt from "@deepseek-ai/dsh-system-prompt";
 import ToolRuntime from "@deepseek-ai/dsh-tools";
 import AcpusMode from "@acpus/dsh";
@@ -40,16 +39,18 @@ export async function loadDshComposition(config: {
 export function supervisingAgent(ctx: Context, cwd: string): Agent {
   const id = SessionId("acpus-supervisor-session");
   const scope = ctx.plugin(() => {});
-  const session = Session.create(id, [], { version: 0, id, createdAt: 0, cwd });
+  const session = Session.create(id, [], {
+    version: SESSION_FORMAT_VERSION,
+    isSeeded: false,
+    id,
+    createdAt: 0,
+    cwd,
+  });
   return {
     id,
     options: {},
     session,
-    inbox: new Inbox(session, {
-      inserted() {},
-      discarded() {},
-      claimed() {},
-    }),
+    inbox: {} as Agent["inbox"],
     status: "idle",
     ctx: scope.ctx,
     cancel() {},

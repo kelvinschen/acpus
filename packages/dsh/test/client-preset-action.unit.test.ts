@@ -157,9 +157,7 @@ async function renderAction(
   const props = {
     acpus: { readAgentPresets },
     sessionId: "session-1",
-    useSessions: (selector: (state: unknown) => unknown) => selector({
-      byId: { "session-1": { agentPreset } },
-    }),
+    useProjection: (name: string) => name === "agentPreset" ? agentPreset : undefined,
   } as unknown as AcpusPresetActionProps;
   await act(async () => root.render(React.createElement(AcpusPresetAction, props)));
 }
@@ -167,9 +165,7 @@ async function renderAction(
 async function renderBrand(agentPreset = "acpus") {
   const props = {
     sessionId: "session-1",
-    useSessions: (selector: (state: unknown) => unknown) => selector({
-      byId: { "session-1": { agentPreset } },
-    }),
+    useProjection: (name: string) => name === "agentPreset" ? agentPreset : undefined,
   } as unknown as AcpusBrandLabelProps;
   await act(async () => root.render(React.createElement(AcpusBrandLabel, props)));
 }

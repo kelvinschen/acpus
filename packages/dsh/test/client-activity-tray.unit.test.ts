@@ -104,9 +104,7 @@ async function renderTray(unavailable = false): Promise<AcpusClientState> {
   await act(async () => root.render(React.createElement(AcpusActivityTray, {
     acpus,
     sessionId: "session-1",
-    useSessions: (selector: (state: unknown) => unknown) => selector({
-      byId: { "session-1": { agentPreset: "acpus" } },
-    }),
+    useProjection: (name: string) => name === "agentPreset" ? "acpus" : undefined,
   } as unknown as AcpusActivityTrayProps)));
   return acpus;
 }

@@ -1,4 +1,4 @@
-import type { PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
+import type { UseProjection } from "@deepseek-ai/dsh-api-session-controller/client";
 import {
   useCallback,
   useEffect,
@@ -12,24 +12,18 @@ import type { AcpusClientState } from "./state.js";
 
 type PresetCatalogReader = Pick<AcpusClientState, "readAgentPresets">;
 
-export type AcpusPresetActionProps =
-  & PropsRuntime<"conversation.session.header.actions">
-  & { acpus: PresetCatalogReader };
+export type AcpusBrandLabelProps = { useProjection: UseProjection };
 
-export type AcpusBrandLabelProps =
-  PropsRuntime<"conversation.session.header.actions">;
+export type AcpusPresetActionProps = AcpusBrandLabelProps & { acpus: PresetCatalogReader };
 
 type PresetReadState =
   | { status: "idle" | "loading" | "error" }
   | { status: "ready"; presets: AgentPresetView[] };
 
 export function AcpusBrandLabel({
-  sessionId,
-  useSessions,
+  useProjection,
 }: AcpusBrandLabelProps) {
-  const enabled = useSessions(
-    sessions => sessions.byId[sessionId]?.agentPreset === "acpus",
-  );
+  const enabled = useProjection("agentPreset") === "acpus";
   if (!enabled) return null;
   return (
     <img
@@ -43,12 +37,9 @@ export function AcpusBrandLabel({
 
 export function AcpusPresetAction({
   acpus,
-  sessionId,
-  useSessions,
+  useProjection,
 }: AcpusPresetActionProps) {
-  const enabled = useSessions(
-    sessions => sessions.byId[sessionId]?.agentPreset === "acpus",
-  );
+  const enabled = useProjection("agentPreset") === "acpus";
   const [open, setOpen] = useState(false);
   const [read, setRead] = useState<PresetReadState>({ status: "idle" });
   const rootRef = useRef<HTMLDivElement>(null);

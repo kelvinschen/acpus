@@ -7,14 +7,14 @@ import type {
 } from "./types.js";
 
 const ADAPTER_RANGES = {
-  pi: "^0.0.31",
-  codex: "^1.1.5",
-  claude: "^0.60.0",
-  mux: "^0.28.0",
+  pi: "^0.0.34",
+  codex: "^2.0.1",
+  claude: "^0.84.0",
+  mux: "^0.30.0",
 } as const;
 
 const BUILT_IN_AGENT_LAUNCHES: Readonly<Record<string, readonly [string, ...string[]]>> = {
-  pi: ["npx", `pi-acp@${ADAPTER_RANGES.pi}`],
+  pi: ["npx", "-y", `pi-acp@${ADAPTER_RANGES.pi}`],
   openclaw: ["openclaw", "acp"],
   codex: ["npx", "-y", `@agentclientprotocol/codex-acp@${ADAPTER_RANGES.codex}`],
   claude: ["npx", "-y", `@agentclientprotocol/claude-agent-acp@${ADAPTER_RANGES.claude}`],
@@ -28,7 +28,7 @@ const BUILT_IN_AGENT_LAUNCHES: Readonly<Record<string, readonly [string, ...stri
   kilocode: ["npx", "-y", "@kilocode/cli", "acp"],
   kimi: ["kimi", "acp"],
   kiro: ["kiro-cli-chat", "acp"],
-  mux: ["npx", "-y", `mux@${ADAPTER_RANGES.mux}`, "acp"],
+  mux: ["npx", "-y", `@coder/xum@${ADAPTER_RANGES.mux}`, "acp"],
   opencode: ["npx", "-y", "opencode-ai", "acp"],
   pool: ["pool", "acp"],
   qoder: ["qodercli", "--acp"],

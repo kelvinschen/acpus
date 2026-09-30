@@ -5,7 +5,7 @@ import { describe, expect, it, onTestFinished, vi } from "vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import { Context } from "@deepseek-ai/cordis";
-import { CallId } from "@deepseek-ai/dsh-llm";
+import { ToolCallId } from "@deepseek-ai/dsh-llm";
 import { DurableSupervisorStateStore } from "../src/host/run-links.js";
 import type { StoredRunProjection } from "../src/host/run-projection.js";
 import { loadDshComposition as loadComposition, supervisingAgent } from "./support/dsh-composition.js";
@@ -66,7 +66,7 @@ describe("Acpus mode through a real DSH Loader composition", () => {
     const owner = supervisingAgent(context, workspace);
     const invalid = await context.tools.execute({
       signal: new AbortController().signal,
-      callId: CallId("invalid-source"),
+      callId: ToolCallId("invalid-source"),
       name: "acpus_run",
       arguments: { workflow: "not valid TypeScript" },
       agent: owner,
@@ -103,7 +103,7 @@ describe("Acpus mode through a real DSH Loader composition", () => {
     const owner = supervisingAgent(context, workspace);
     const submitted = await context.tools.execute({
       signal: new AbortController().signal,
-      callId: CallId("signal-run"),
+      callId: ToolCallId("signal-run"),
       name: "acpus_run",
       arguments: {
         workflow: [
@@ -147,7 +147,7 @@ describe("Acpus mode through a real DSH Loader composition", () => {
 
     const targetInspection = await context.tools.execute({
       signal: new AbortController().signal,
-      callId: CallId("inspect-awaiting"),
+      callId: ToolCallId("inspect-awaiting"),
       name: "acpus_inspect",
       arguments: {},
       agent: owner,
@@ -175,7 +175,7 @@ describe("Acpus mode through a real DSH Loader composition", () => {
 
     const signaled = await context.tools.execute({
       signal: new AbortController().signal,
-      callId: CallId("signal-control"),
+      callId: ToolCallId("signal-control"),
       name: "acpus_control",
       arguments: {
         task: { name: "dsh-signal", occurrence: 1 },
@@ -299,7 +299,7 @@ describe("Acpus mode through a real DSH Loader composition", () => {
     const context = await resources.load({ dshHome, stateDir });
     const result = await context.tools.execute({
       signal: new AbortController().signal,
-      callId: CallId("corrupt-links"),
+      callId: ToolCallId("corrupt-links"),
       name: "acpus_run",
       arguments: {
         workflow: [

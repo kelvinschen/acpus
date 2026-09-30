@@ -1,4 +1,7 @@
-import type { ClientContext } from "@deepseek-ai/dsh-client-runtime/client";
+import type { Context } from "@deepseek-ai/cordis";
+import type {} from "@deepseek-ai/dsh-api-remotes/client";
+import type {} from "@deepseek-ai/dsh-client-ui-renderer/client";
+import type {} from "@deepseek-ai/dsh-client-ui-session/client";
 import type {} from "@deepseek-ai/dsh-client-ui-conversation/client";
 import type {} from "@deepseek-ai/dsh-client-ui-tool/client";
 import TYPERT_REMOTE from "../remote/generated.js";
@@ -13,7 +16,7 @@ import presetActionStyles from "./preset-action.css";
 
 export const inject = ["slots", "remote"];
 
-export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
+export async function apply(ctx: Context): Promise<() => Promise<void>> {
   const removeStyles = installStyles();
   const disposeRemote = await ctx.remote.$mount(TYPERT_REMOTE);
   const remote = ctx.get("remote.acpus") as AcpusRemote | undefined;

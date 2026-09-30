@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { Context, Service } from "@deepseek-ai/cordis";
-import { resolveSessionPreset } from "@deepseek-ai/dsh-agent-presets";
+import { agentPresetProjectionDefinition } from "@deepseek-ai/dsh-agent-presets";
 import { Remote, TypertRemoteService } from "@deepseek-ai/dsh-typert-protocol";
 import type { JsonValue } from "@acpus/expression/ir";
 import {
@@ -135,7 +135,10 @@ export class AcpusMode extends TypertRemoteService {
           agentPresets,
           sessions,
           ...(sessionPersistence === undefined ? {} : { sessionPersistence }),
-        }, resolveSessionPreset);
+        }, ({ header, events }) => events.reduce(
+          agentPresetProjectionDefinition.apply,
+          agentPresetProjectionDefinition.init(header),
+        ) ?? undefined);
   }
 
   protected async [Service.init](): Promise<void> {

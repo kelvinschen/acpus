@@ -1,4 +1,4 @@
-import type { PropsRuntime } from "@deepseek-ai/dsh-client-ui-slots";
+import type { UseProjection } from "@deepseek-ai/dsh-api-session-controller/client";
 import {
   useCallback,
   useEffect,
@@ -30,9 +30,11 @@ import {
   type SessionConnectionPhase,
 } from "./state.js";
 
-export type AcpusActivityTrayProps =
-  & PropsRuntime<"conversation.input.dock">
-  & { acpus: AcpusClientState };
+export type AcpusActivityTrayProps = {
+  acpus: AcpusClientState;
+  sessionId: string;
+  useProjection: UseProjection;
+};
 
 const ACTIVITY_HOVER_DELAY_MS = 700;
 const useBrowserLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
@@ -40,13 +42,11 @@ const useBrowserLayoutEffect = typeof window === "undefined" ? useEffect : useLa
 export function AcpusActivityTray({
   acpus,
   sessionId,
-  useSessions,
+  useProjection,
 }: AcpusActivityTrayProps) {
   const [subscribe, snapshot] = subscribeStore(acpus.projections);
   const state = useSyncExternalStore(subscribe, snapshot);
-  const enabled = useSessions(
-    sessions => sessions.byId[sessionId]?.agentPreset === "acpus",
-  );
+  const enabled = useProjection("agentPreset") === "acpus";
   const projection = enabled ? state.sessions[sessionId] : undefined;
   const connection = enabled ? state.connections[sessionId] : undefined;
   const selection = enabled ? state.selections[sessionId] : undefined;

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MessageId } from "@deepseek-ai/dsh-llm";
-import { Session, SessionId } from "@deepseek-ai/dsh-session";
+import { SESSION_FORMAT_VERSION, Session, SessionId, SessionSeq } from "@deepseek-ai/dsh-session";
 import type { Agent } from "@deepseek-ai/dsh-agent";
 import {
   ParentSessionAgentAdapter,
@@ -34,7 +34,8 @@ describe("parent Supervisor Agent notice delivery", () => {
 
     inspect.mockResolvedValue(inspection([{
       type: "user/message",
-      seq: 1,
+      surfaceOp: "append",
+      seq: SessionSeq(1),
       time: 1,
       data: notice.message,
     }]));
@@ -176,7 +177,7 @@ function pendingNotice(id = "notice-1") {
 function inspection(events: SessionInspection["events"] = []): SessionInspection {
   const id = SessionId("session-1");
   return {
-    meta: { version: 0, id, createdAt: 0, cwd: "/workspace" },
+    meta: { version: SESSION_FORMAT_VERSION, isSeeded: false, id, createdAt: 0, cwd: "/workspace" },
     events,
   };
 }
@@ -184,7 +185,8 @@ function inspection(events: SessionInspection["events"] = []): SessionInspection
 function sessionFor(value: string): Session {
   const id = SessionId(value);
   return Session.create(id, [], {
-    version: 0,
+    version: SESSION_FORMAT_VERSION,
+    isSeeded: false,
     id,
     createdAt: 0,
     cwd: "/workspace",

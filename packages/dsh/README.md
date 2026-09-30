@@ -26,7 +26,7 @@ Acpus 模式把 DSH 设为 Supervisor。Supervisor 负责理解目标、设计 W
 
 ## 安装
 
-`@acpus/dsh` 要求 DSH `0.1.1-rc.2` 宿主。把插件安装到要使用的 DSH profile (由于 pnpm 的限制，所以需要增加额外参数)：
+`@acpus/dsh` 要求 DSH `0.1.5-rc.2` 宿主。把插件安装到要使用的 DSH profile (由于 pnpm 的限制，所以需要增加额外参数)：
 
 如果你用的是 pnpm 10+:
 
