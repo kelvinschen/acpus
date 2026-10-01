@@ -1,5 +1,16 @@
 # @acpus/agent-executor
 
+## 0.7.2
+
+### Patch Changes
+
+- 748a358: Update the ACP SDK to 1.5.1 and built-in Pi, Codex, Claude, and Mux adapter ranges to their latest releases. Launch Mux directly through its renamed `@coder/xum` package and allow unattended first-time installation of Pi. The updated Pi adapter requires a host-provided Pi runtime of at least 0.80.4.
+
+  Upgrade the DeepSeek Harness integration to the 0.1.5-rc.2 release train and its current browser runtime APIs.
+
+- Updated dependencies [748a358]
+  - @acpus/acp@0.2.1
+
 ## 0.7.1
 
 ### Patch Changes

@@ -1,5 +1,13 @@
 # acpus
 
+## 0.16.1
+
+### Patch Changes
+
+- 83acd86: Make MCP inspection wait until the requested decision or terminal state unless an explicit timeout is supplied, removing the implicit 30-second deadline and timeout cap. Clarify that agents should execute explicit control requests directly and resolve unknown targets without waiting.
+  - @acpus/runtime@0.21.1
+  - @acpus/web@0.4.6
+
 ## 0.16.0
 
 ### Minor Changes
